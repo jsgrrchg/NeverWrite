@@ -7,6 +7,7 @@ describe("AIChatAgentControls", () => {
     it("filters reasoning efforts to the selected model", () => {
         renderComponent(
             <AIChatAgentControls
+                runtimeId="codex-acp"
                 modelId="gpt-5.2-codex"
                 modeId="default"
                 effortsByModel={{
@@ -71,6 +72,7 @@ describe("AIChatAgentControls", () => {
 
         renderComponent(
             <AIChatAgentControls
+                runtimeId="codex-acp"
                 modelId="fallback-model"
                 modeId="default"
                 effortsByModel={{
@@ -125,5 +127,126 @@ describe("AIChatAgentControls", () => {
             "model",
             "gpt-5.2-codex",
         );
+    });
+
+    it("shows a model search field only for Kilo and filters results", () => {
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="kilo-acp"
+                modelId="gpt-4o"
+                modeId="default"
+                effortsByModel={{}}
+                models={[]}
+                modes={[
+                    {
+                        id: "default",
+                        runtimeId: "kilo-acp",
+                        name: "Auto",
+                        description: "",
+                        disabled: false,
+                    },
+                ]}
+                configOptions={[
+                    {
+                        id: "model",
+                        runtimeId: "kilo-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "gpt-4o",
+                        options: [
+                            {
+                                value: "gpt-4o",
+                                label: "Kilo Gateway/OpenAI: GPT-4o",
+                            },
+                            {
+                                value: "claude-sonnet-4.6",
+                                label: "Kilo Gateway/Anthropic: Claude Sonnet 4.6",
+                            },
+                            {
+                                value: "gemini-2.5-pro",
+                                label: "Kilo Gateway/Google: Gemini 2.5 Pro",
+                            },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={onConfigOptionChange}
+            />,
+        );
+
+        fireEvent.click(screen.getByTitle("Model"));
+
+        const search = screen.getByLabelText("Model search");
+        expect(search).toBeInTheDocument();
+        expect(
+            screen.getAllByText("Kilo Gateway/OpenAI: GPT-4o").length,
+        ).toBeGreaterThan(0);
+        expect(
+            screen.getByText("Kilo Gateway/Anthropic: Claude Sonnet 4.6"),
+        ).toBeInTheDocument();
+
+        fireEvent.change(search, { target: { value: "claude" } });
+
+        expect(
+            screen.getByText("Kilo Gateway/Anthropic: Claude Sonnet 4.6"),
+        ).toBeInTheDocument();
+        expect(screen.getAllByText("Kilo Gateway/OpenAI: GPT-4o")).toHaveLength(
+            1,
+        );
+        expect(
+            screen.queryByText("Kilo Gateway/Google: Gemini 2.5 Pro"),
+        ).not.toBeInTheDocument();
+    });
+
+    it("does not show the model search field for non-Kilo runtimes", () => {
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="codex-acp"
+                modelId="gpt-5.2-codex"
+                modeId="default"
+                effortsByModel={{}}
+                models={[]}
+                modes={[
+                    {
+                        id: "default",
+                        runtimeId: "codex-acp",
+                        name: "Auto",
+                        description: "",
+                        disabled: false,
+                    },
+                ]}
+                configOptions={[
+                    {
+                        id: "model",
+                        runtimeId: "codex-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "gpt-5.2-codex",
+                        options: [
+                            {
+                                value: "gpt-5.2-codex",
+                                label: "GPT 5.2 Codex",
+                            },
+                            {
+                                value: "gpt-5.4",
+                                label: "GPT 5.4",
+                            },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        fireEvent.click(screen.getByTitle("Model"));
+
+        expect(screen.queryByLabelText("Model search")).not.toBeInTheDocument();
     });
 });

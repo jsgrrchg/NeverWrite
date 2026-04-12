@@ -176,6 +176,7 @@ describe("SettingsPanel", () => {
         expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
         expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
         expect(screen.getByText("Gemini")).toBeInTheDocument();
+        expect(screen.getByText("Kilo")).toBeInTheDocument();
     });
 
     it("filters recent vaults in a scrollable list", () => {

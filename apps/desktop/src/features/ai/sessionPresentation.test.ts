@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { AIChatSession } from "./types";
+import type { AIChatSession, AIRuntimeDescriptor } from "./types";
 import {
     findSessionForHistorySelection,
+    getReviewTabTitle,
     getHistorySelectionId,
 } from "./sessionPresentation";
 
@@ -35,12 +36,16 @@ describe("sessionPresentation history selection", () => {
         const liveSession = createSession("live-session-1", "history-1");
 
         expect(
-            findSessionForHistorySelection([liveSession], "history-1")?.sessionId,
+            findSessionForHistorySelection([liveSession], "history-1")
+                ?.sessionId,
         ).toBe("live-session-1");
     });
 
     it("still resolves legacy persisted-prefixed selection ids", () => {
-        const persistedSession = createSession("persisted:history-1", "history-1");
+        const persistedSession = createSession(
+            "persisted:history-1",
+            "history-1",
+        );
 
         expect(
             findSessionForHistorySelection(
@@ -48,5 +53,27 @@ describe("sessionPresentation history selection", () => {
                 "persisted:history-1",
             )?.sessionId,
         ).toBe("persisted:history-1");
+    });
+
+    it("formats review tab titles with normalized runtime names for Kilo", () => {
+        const session = {
+            ...createSession("live-session-2", "history-2"),
+            runtimeId: "kilo-acp",
+        };
+        const runtimes: AIRuntimeDescriptor[] = [
+            {
+                runtime: {
+                    id: "kilo-acp",
+                    name: "Kilo ACP",
+                    description: "Kilo runtime",
+                    capabilities: [],
+                },
+                models: [],
+                modes: [],
+                configOptions: [],
+            },
+        ];
+
+        expect(getReviewTabTitle(session, runtimes)).toBe("Review Kilo");
     });
 });

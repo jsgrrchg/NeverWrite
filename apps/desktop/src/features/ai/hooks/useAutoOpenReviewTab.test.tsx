@@ -75,6 +75,17 @@ const runtimes: AIRuntimeDescriptor[] = [
         modes: [],
         configOptions: [],
     },
+    {
+        runtime: {
+            id: "kilo-acp",
+            name: "Kilo ACP",
+            description: "",
+            capabilities: [],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
 ];
 
 describe("useAutoOpenReviewTab", () => {
@@ -334,5 +345,32 @@ describe("useAutoOpenReviewTab", () => {
         }));
 
         expect(countSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses the runtime-specific review title for Kilo sessions", () => {
+        renderComponent(<AutoOpenReviewHarness />);
+
+        const session = createSession(
+            "session-kilo",
+            ["/vault/kilo.ts"],
+            "kilo-acp",
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        }));
+
+        const reviewTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) =>
+                    isReviewTab(tab) && tab.sessionId === session.sessionId,
+            );
+
+        expect(reviewTab?.title).toBe("Review Kilo");
     });
 });

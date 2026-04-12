@@ -9,6 +9,14 @@ import {
 } from "../ai/api";
 import { AIAuthTerminalModal } from "../ai/components/AIAuthTerminalModal";
 import { APP_BRAND_NAME } from "../../app/utils/branding";
+import {
+    isClaudeTerminalAuthMethodId,
+    isIntegratedTerminalAuthMethod,
+} from "../ai/utils/authMethods";
+import {
+    getRuntimeDisplayName,
+    PROVIDER_CATALOG,
+} from "../ai/utils/runtimeMetadata";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
 import type {
     AIEnvironmentDiagnostics,
@@ -16,20 +24,6 @@ import type {
     AIRuntimeSetupStatus,
     AISecretPatch,
 } from "../ai/types";
-
-/* ── Provider registry ─────────────────────────────────────────── */
-
-interface ProviderMeta {
-    id: string;
-    name: string;
-    company: string;
-}
-
-const PROVIDERS: ProviderMeta[] = [
-    { id: "codex-acp", name: "Codex", company: "OpenAI" },
-    { id: "claude-acp", name: "Claude", company: "Anthropic" },
-    { id: "gemini-acp", name: "Gemini", company: "Google" },
-];
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -49,14 +43,6 @@ function isGatewayMethod(id?: string) {
     return id === "gateway";
 }
 
-function isClaudeTerminalAuthMethod(id?: string) {
-    return (
-        id === "claude-login" ||
-        id === "claude-ai-login" ||
-        id === "console-login"
-    );
-}
-
 function getMethodDisplayName(
     status: AIRuntimeSetupStatus | null,
 ): string | null {
@@ -73,6 +59,7 @@ function getShortMethodDesc(id: string): string {
         case "claude-ai-login":
         case "console-login":
         case "claude-login":
+        case "kilo-login":
             return "Terminal sign-in";
         case "openai-api-key":
             return "OpenAI API key";
@@ -99,6 +86,8 @@ function getAuthHelpText(id: string): string {
             return "Opens a sign-in terminal for Anthropic Console inside the app.";
         case "claude-login":
             return "Opens a sign-in terminal inside the app.";
+        case "kilo-login":
+            return "Opens a Kilo sign-in terminal inside the app.";
         case "openai-api-key":
             return `Store an OpenAI API key locally for ${APP_BRAND_NAME} only.`;
         case "codex-api-key":
@@ -127,8 +116,9 @@ function getActionLabel(
 ): string {
     if (!methodId) return "Connect";
     if (methodId === "chatgpt") return "Continue with ChatGPT";
-    if (isClaudeTerminalAuthMethod(methodId)) return "Open sign-in terminal";
+    if (isClaudeTerminalAuthMethodId(methodId)) return "Open sign-in terminal";
     if (methodId === "login_with_google") return "Open sign-in terminal";
+    if (methodId === "kilo-login") return "Open sign-in terminal";
     if (isApiKeyMethod(methodId)) {
         return status.authReady && status.authMethod === methodId
             ? "Replace key"
@@ -803,18 +793,14 @@ export function AIProvidersSettings() {
             );
 
             if (
-                (input.runtimeId === "claude-acp" &&
-                    isClaudeTerminalAuthMethod(input.methodId)) ||
-                (input.runtimeId === "gemini-acp" &&
-                    input.methodId === "login_with_google")
+                isIntegratedTerminalAuthMethod(input.runtimeId, input.methodId)
             ) {
                 setAuthTerminalRequest({
                     runtimeId: input.runtimeId,
-                    runtimeName:
-                        runtime?.runtime.name.replace(/ ACP$/, "") ??
-                        (input.runtimeId === "claude-acp"
-                            ? "Claude"
-                            : "Gemini"),
+                    runtimeName: getRuntimeDisplayName(
+                        input.runtimeId,
+                        runtime?.runtime.name,
+                    ),
                     customBinaryPath: input.customBinaryPath,
                 });
                 return;
@@ -947,7 +933,7 @@ export function AIProvidersSettings() {
 
     /* ── Derived data ── */
 
-    const installedProviders = PROVIDERS.flatMap((p) => {
+    const installedProviders = PROVIDER_CATALOG.flatMap((p) => {
         const hasRuntime = runtimes.some((r) => r.runtime.id === p.id);
         if (!hasRuntime) return [];
         return [
@@ -1285,7 +1271,7 @@ export function AIProvidersSettings() {
                                 />
                                 <DiagnosticsPathBlock
                                     label="Injected Runtime PATH"
-                                    helper={`This is the normalized PATH that ${APP_BRAND_NAME} now injects into Codex, Claude and Gemini child processes.`}
+                                    helper={`This is the normalized PATH that ${APP_BRAND_NAME} now injects into Codex, Claude, Gemini, and Kilo child processes.`}
                                     entries={diagnostics.preferredEntries}
                                 />
 
@@ -1423,7 +1409,7 @@ export function AIProvidersSettings() {
                     overflow: "hidden",
                 }}
             >
-                {PROVIDERS.map((provider, i) => {
+                {PROVIDER_CATALOG.map((provider, i) => {
                     const installed = runtimes.some(
                         (r) => r.runtime.id === provider.id,
                     );

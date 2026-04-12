@@ -463,7 +463,7 @@ describe("AIChatPanel tabs lifecycle", () => {
         renderComponent(<AIChatPanel />);
 
         expect(
-            await screen.findByText("Connect Claude ACP to start chatting"),
+            await screen.findByText("Connect Claude to start chatting"),
         ).toBeInTheDocument();
         expect(
             screen.getByRole("button", { name: "Open sign-in terminal" }),
@@ -523,10 +523,10 @@ describe("AIChatPanel tabs lifecycle", () => {
         renderComponent(<AIChatPanel />);
 
         expect(
-            await screen.findByText("Connect Claude ACP to start chatting"),
+            await screen.findByText("Connect Claude to start chatting"),
         ).toBeInTheDocument();
         expect(
-            screen.queryByText("Connect Codex ACP to start chatting"),
+            screen.queryByText("Connect Codex to start chatting"),
         ).not.toBeInTheDocument();
     });
 

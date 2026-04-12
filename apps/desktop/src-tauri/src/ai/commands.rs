@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Mutex};
 
 use neverwrite_ai::{
     AiRuntimeDescriptor, AiRuntimeSessionSummary, AiRuntimeSetupStatus, AiSession,
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID, KILO_RUNTIME_ID,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -10,6 +10,7 @@ use tauri::{AppHandle, State};
 use crate::AppState;
 
 use super::{
+    catalog::diagnostic_executable_names,
     claude::{ClaudeRuntime, ClaudeSetupInput},
     codex::{CodexRuntime, CodexSetupInput},
     emit::{emit_session_created, emit_session_error, emit_session_updated},
@@ -18,6 +19,7 @@ use super::{
         preferred_path_value,
     },
     gemini::{GeminiRuntime, GeminiSetupInput},
+    kilo::{KiloRuntime, KiloSetupInput},
     manager::{AiAttachmentInput, AiManager},
     persistence::{
         self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
@@ -127,6 +129,25 @@ pub struct AiEnvironmentDiagnostics {
     pub runtimes: Vec<AiRuntimeDiagnostic>,
 }
 
+fn build_runtime_diagnostic(
+    runtime_id: &str,
+    runtime_name: &str,
+    setup_status: Result<AiRuntimeSetupStatus, String>,
+    launch_program: Option<String>,
+    launch_args: Vec<String>,
+    resolution_display: Option<String>,
+) -> AiRuntimeDiagnostic {
+    AiRuntimeDiagnostic {
+        runtime_id: runtime_id.to_string(),
+        runtime_name: runtime_name.to_string(),
+        setup_status: setup_status.clone().ok(),
+        setup_error: setup_status.as_ref().err().cloned(),
+        launch_program,
+        launch_args,
+        resolution_display,
+    }
+}
+
 #[tauri::command]
 pub async fn ai_get_setup_status(
     runtime_id: Option<String>,
@@ -159,25 +180,21 @@ pub async fn ai_get_environment_diagnostics(
         .map(|path| path.display().to_string())
         .collect();
 
-    let executables = [
-        "rg",
-        "node",
-        "npm",
-        "cargo",
-        "codex-acp",
-        "claude-agent-acp",
-        "gemini",
-    ]
-    .into_iter()
-    .map(|name| AiResolvedExecutable {
-        name: name.to_string(),
-        path: find_program_on_preferred_path(name).map(|path| path.display().to_string()),
-    })
-    .collect();
+    let executables = diagnostic_executable_names()
+        .iter()
+        .map(|name| AiResolvedExecutable {
+            name: (*name).to_string(),
+            path: find_program_on_preferred_path(name).map(|path| path.display().to_string()),
+        })
+        .collect();
 
     let codex_runtime = CodexRuntime;
     let codex_setup = codex_runtime.setup_status(&app);
     let codex_spec = codex_runtime.process_spec(&app, None);
+    let codex_resolution_display = codex_setup
+        .as_ref()
+        .ok()
+        .and_then(|status| status.binary_path.clone());
 
     let claude_runtime = ClaudeRuntime;
     let claude_setup = claude_runtime.setup_status(&app);
@@ -189,48 +206,59 @@ pub async fn ai_get_environment_diagnostics(
     let gemini_spec = gemini_runtime.process_spec(&app, None);
     let gemini_resolved = gemini_runtime.resolved_binary(&app);
 
+    let kilo_runtime = KiloRuntime;
+    let kilo_setup = kilo_runtime.setup_status(&app);
+    let kilo_spec = kilo_runtime.process_spec(&app, None);
+    let kilo_resolved = kilo_runtime.resolved_binary(&app);
+
     let runtimes = vec![
-        AiRuntimeDiagnostic {
-            runtime_id: CODEX_RUNTIME_ID.to_string(),
-            runtime_name: "Codex".to_string(),
-            setup_status: codex_setup.clone().ok(),
-            setup_error: codex_setup.as_ref().err().cloned(),
-            launch_program: codex_spec
+        build_runtime_diagnostic(
+            CODEX_RUNTIME_ID,
+            "Codex",
+            codex_setup,
+            codex_spec
                 .as_ref()
                 .ok()
                 .map(|spec| spec.binary_path.display().to_string()),
-            launch_args: Vec::new(),
-            resolution_display: codex_setup
-                .as_ref()
-                .ok()
-                .and_then(|status| status.binary_path.clone()),
-        },
-        AiRuntimeDiagnostic {
-            runtime_id: CLAUDE_RUNTIME_ID.to_string(),
-            runtime_name: "Claude".to_string(),
-            setup_status: claude_setup.clone().ok(),
-            setup_error: claude_setup.as_ref().err().cloned(),
-            launch_program: claude_spec.as_ref().ok().map(|spec| spec.program.clone()),
-            launch_args: claude_spec
+            Vec::new(),
+            codex_resolution_display,
+        ),
+        build_runtime_diagnostic(
+            CLAUDE_RUNTIME_ID,
+            "Claude",
+            claude_setup,
+            claude_spec.as_ref().ok().map(|spec| spec.program.clone()),
+            claude_spec
                 .as_ref()
                 .ok()
                 .map(|spec| spec.args.clone())
                 .unwrap_or_default(),
-            resolution_display: claude_resolved.ok().and_then(|resolved| resolved.display),
-        },
-        AiRuntimeDiagnostic {
-            runtime_id: GEMINI_RUNTIME_ID.to_string(),
-            runtime_name: "Gemini".to_string(),
-            setup_status: gemini_setup.clone().ok(),
-            setup_error: gemini_setup.as_ref().err().cloned(),
-            launch_program: gemini_spec.as_ref().ok().map(|spec| spec.program.clone()),
-            launch_args: gemini_spec
+            claude_resolved.ok().and_then(|resolved| resolved.display),
+        ),
+        build_runtime_diagnostic(
+            GEMINI_RUNTIME_ID,
+            "Gemini",
+            gemini_setup,
+            gemini_spec.as_ref().ok().map(|spec| spec.program.clone()),
+            gemini_spec
                 .as_ref()
                 .ok()
                 .map(|spec| spec.args.clone())
                 .unwrap_or_default(),
-            resolution_display: gemini_resolved.ok().and_then(|resolved| resolved.display),
-        },
+            gemini_resolved.ok().and_then(|resolved| resolved.display),
+        ),
+        build_runtime_diagnostic(
+            KILO_RUNTIME_ID,
+            "Kilo",
+            kilo_setup,
+            kilo_spec.as_ref().ok().map(|spec| spec.program.clone()),
+            kilo_spec
+                .as_ref()
+                .ok()
+                .map(|spec| spec.args.clone())
+                .unwrap_or_default(),
+            kilo_resolved.ok().and_then(|resolved| resolved.display),
+        ),
     ];
 
     Ok(AiEnvironmentDiagnostics {
@@ -296,6 +324,9 @@ fn map_setup_input(
             google_cloud_location: input.google_cloud_location,
             gateway_base_url: input.gateway_base_url,
             gateway_headers: input.gateway_headers,
+        })),
+        KILO_RUNTIME_ID => Ok(AiRuntimeSetupInput::Kilo(KiloSetupInput {
+            custom_binary_path: input.custom_binary_path,
         })),
         other => Err(format!("Runtime no soportado: {other}")),
     }

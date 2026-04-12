@@ -3,6 +3,7 @@ import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
 
 interface AIChatAgentControlsProps {
     disabled?: boolean;
+    runtimeId?: string;
     modelId: string;
     modeId: string;
     effortsByModel?: Record<string, string[]>;
@@ -26,6 +27,9 @@ interface DropdownFieldProps {
     label: string;
     value: string;
     options: DropdownOption[];
+    searchable?: boolean;
+    searchPlaceholder?: string;
+    emptySearchMessage?: string;
     onChange: (value: string) => void;
 }
 
@@ -53,12 +57,34 @@ function DropdownField({
     label,
     value,
     options,
+    searchable = false,
+    searchPlaceholder = "Search…",
+    emptySearchMessage = "No matches found.",
     onChange,
 }: DropdownFieldProps) {
     const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
     const ref = useRef<HTMLDivElement>(null);
+    const searchInputRef = useRef<HTMLInputElement>(null);
     const selected = options.find((option) => option.value === value);
     const isDisabled = disabled || options.length === 0;
+    const filteredOptions = useMemo(() => {
+        const normalizedQuery = query.trim().toLowerCase();
+        if (!searchable || !normalizedQuery) {
+            return options;
+        }
+
+        return options.filter((option) => {
+            const label = option.label.toLowerCase();
+            const rawValue = option.value.toLowerCase();
+            const description = option.description?.toLowerCase() ?? "";
+            return (
+                label.includes(normalizedQuery) ||
+                rawValue.includes(normalizedQuery) ||
+                description.includes(normalizedQuery)
+            );
+        });
+    }, [options, query, searchable]);
 
     useEffect(() => {
         if (!open) return;
@@ -69,6 +95,18 @@ function DropdownField({
         document.addEventListener("mousedown", handleClick);
         return () => document.removeEventListener("mousedown", handleClick);
     }, [open]);
+
+    useEffect(() => {
+        if (!open) {
+            setQuery("");
+            return;
+        }
+
+        if (searchable) {
+            searchInputRef.current?.focus();
+            searchInputRef.current?.select();
+        }
+    }, [open, searchable]);
 
     return (
         <div ref={ref} className="relative">
@@ -125,44 +163,98 @@ function DropdownField({
                         backgroundColor: "var(--bg-secondary)",
                         border: "1px solid var(--border)",
                         boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        maxHeight: searchable ? 320 : undefined,
+                        display: searchable ? "flex" : undefined,
+                        flexDirection: searchable ? "column" : undefined,
                     }}
                 >
-                    {options.map((option) => (
-                        <button
-                            key={option.value}
-                            type="button"
-                            disabled={option.disabled}
-                            onClick={() => {
-                                onChange(option.value);
-                                setOpen(false);
-                            }}
-                            className="flex w-full items-center px-3 py-1.5 text-left text-xs"
+                    {searchable && (
+                        <div
+                            className="px-1.5 pb-1"
                             style={{
-                                color:
-                                    option.value === value
-                                        ? "var(--accent)"
-                                        : option.disabled
-                                          ? "var(--text-secondary)"
-                                          : "var(--text-primary)",
-                                backgroundColor: "transparent",
-                                border: "none",
-                                opacity: option.disabled ? 0.4 : 1,
-                                transition: "background-color 80ms ease",
-                            }}
-                            onMouseEnter={(event) => {
-                                if (!option.disabled) {
-                                    event.currentTarget.style.backgroundColor =
-                                        "var(--bg-tertiary)";
-                                }
-                            }}
-                            onMouseLeave={(event) => {
-                                event.currentTarget.style.backgroundColor =
-                                    "transparent";
+                                borderBottom: "1px solid var(--border)",
                             }}
                         >
-                            {option.label}
-                        </button>
-                    ))}
+                            <input
+                                ref={searchInputRef}
+                                type="text"
+                                value={query}
+                                onChange={(event) => {
+                                    setQuery(event.target.value);
+                                }}
+                                onKeyDown={(event) => {
+                                    event.stopPropagation();
+                                }}
+                                placeholder={searchPlaceholder}
+                                aria-label={`${label} search`}
+                                className="mt-0.5 w-full rounded-md px-1.5 py-0.5 text-[8px]"
+                                style={{
+                                    color: "var(--text-primary)",
+                                    backgroundColor: "var(--bg-primary)",
+                                    border: "1px solid var(--border)",
+                                    outline: "none",
+                                    minHeight: 22,
+                                    lineHeight: 1.1,
+                                }}
+                            />
+                        </div>
+                    )}
+                    <div
+                        style={{
+                            maxHeight: searchable ? 240 : undefined,
+                            overflowY: searchable ? "auto" : undefined,
+                            flex: searchable ? "1 1 auto" : undefined,
+                        }}
+                    >
+                        {filteredOptions.length === 0 ? (
+                            <div
+                                className="px-3 py-2 text-xs"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                }}
+                            >
+                                {emptySearchMessage}
+                            </div>
+                        ) : (
+                            filteredOptions.map((option) => (
+                                <button
+                                    key={option.value}
+                                    type="button"
+                                    disabled={option.disabled}
+                                    onClick={() => {
+                                        onChange(option.value);
+                                        setOpen(false);
+                                    }}
+                                    className="flex w-full items-center px-3 py-1.5 text-left text-xs"
+                                    style={{
+                                        color:
+                                            option.value === value
+                                                ? "var(--accent)"
+                                                : option.disabled
+                                                  ? "var(--text-secondary)"
+                                                  : "var(--text-primary)",
+                                        backgroundColor: "transparent",
+                                        border: "none",
+                                        opacity: option.disabled ? 0.4 : 1,
+                                        transition:
+                                            "background-color 80ms ease",
+                                    }}
+                                    onMouseEnter={(event) => {
+                                        if (!option.disabled) {
+                                            event.currentTarget.style.backgroundColor =
+                                                "var(--bg-tertiary)";
+                                        }
+                                    }}
+                                    onMouseLeave={(event) => {
+                                        event.currentTarget.style.backgroundColor =
+                                            "transparent";
+                                    }}
+                                >
+                                    {option.label}
+                                </button>
+                            ))
+                        )}
+                    </div>
                 </div>
             )}
         </div>
@@ -203,6 +295,7 @@ function filterConfigOptions(
 
 export function AIChatAgentControls({
     disabled = false,
+    runtimeId,
     modelId,
     modeId,
     effortsByModel,
@@ -252,6 +345,9 @@ export function AIChatAgentControls({
                 disabled={disabled}
                 label="Model"
                 value={selectedModelId}
+                searchable={runtimeId === "kilo-acp"}
+                searchPlaceholder="Select a model..."
+                emptySearchMessage="No Kilo models match that search."
                 options={
                     modelConfig
                         ? mapConfigOption(modelConfig)

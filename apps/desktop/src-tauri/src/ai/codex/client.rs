@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
     process::Stdio,
     rc::Rc,
     sync::{
@@ -18,7 +19,7 @@ use agent_client_protocol::{
     RequestPermissionRequest, RequestPermissionResponse, Result as AcpResult,
     SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest, ToolCall,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -111,6 +112,11 @@ enum RuntimeCommand {
         request_id: String,
         answers: HashMap<String, Vec<String>>,
         response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    RegisterFileBaseline {
+        session_id: String,
+        display_path: String,
+        content: String,
     },
     ClearSessionState {
         session_id: String,
@@ -210,35 +216,86 @@ struct ToolState {
     calls: Arc<Mutex<HashMap<String, ToolCall>>>,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
+    session_cwds: Arc<Mutex<HashMap<String, PathBuf>>>,
+    write_diffs: Arc<Mutex<HashMap<String, Vec<AiFileDiffPayload>>>>,
+    file_baselines: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl ToolState {
+    fn register_session_cwd(&self, session_id: &str, cwd: PathBuf) {
+        if let Ok(mut guard) = self.session_cwds.lock() {
+            guard.insert(session_id.to_string(), cwd);
+        }
+    }
+
     fn upsert_tool_call(&self, session_id: &str, tool_call: ToolCall) -> ToolCall {
+        let key = format!("{session_id}::{}", tool_call.tool_call_id.0);
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.insert(key, tool_call.clone());
+        }
+        self.cache_read_baseline(session_id, &tool_call);
+        self.capture_write_diff(
+            session_id,
+            &tool_call.tool_call_id.0,
+            tool_call.raw_input.as_ref(),
+        );
+        self.cache_content_diffs(session_id, &tool_call);
         self.record_terminal_meta(
             session_id,
             &tool_call.tool_call_id.0,
             tool_call.meta.as_ref(),
         );
-        let key = format!("{session_id}::{}", tool_call.tool_call_id.0);
-        if let Ok(mut guard) = self.calls.lock() {
-            guard.insert(key, tool_call.clone());
+        if tool_call.status == ToolCallStatus::Completed {
+            self.advance_baseline_after_success(session_id, tool_call.raw_input.as_ref());
         }
         tool_call
     }
 
     fn apply_tool_update(&self, session_id: &str, update: ToolCallUpdate) -> Option<ToolCall> {
         self.record_terminal_meta(session_id, &update.tool_call_id.0, update.meta.as_ref());
+        self.capture_write_diff(
+            session_id,
+            &update.tool_call_id.0,
+            update.fields.raw_input.as_ref(),
+        );
         let key = format!("{session_id}::{}", update.tool_call_id.0);
         let mut guard = self.calls.lock().ok()?;
 
-        if let Some(existing) = guard.get_mut(&key) {
+        let tool_call = if let Some(existing) = guard.get_mut(&key) {
             existing.update(update.fields);
-            return Some(existing.clone());
+            existing.clone()
+        } else {
+            let tool_call = ToolCall::try_from(update).ok()?;
+            guard.insert(key, tool_call.clone());
+            tool_call
+        };
+
+        drop(guard);
+        self.cache_content_diffs(session_id, &tool_call);
+        self.cache_read_baseline(session_id, &tool_call);
+        if tool_call.status == ToolCallStatus::Completed {
+            self.advance_baseline_after_success(session_id, tool_call.raw_input.as_ref());
+        }
+        Some(tool_call)
+    }
+
+    fn normalized_diffs_for_tool_call(
+        &self,
+        session_id: &str,
+        tool_call: &ToolCall,
+    ) -> Vec<AiFileDiffPayload> {
+        let cwd = self.session_cwd(session_id);
+        let actual = collect_tool_call_diffs(tool_call, cwd.as_deref());
+
+        if tool_call.status != ToolCallStatus::Failed {
+            if let Some(cached) = self.cached_diffs(session_id, &tool_call.tool_call_id.0) {
+                if !cached.is_empty() {
+                    return cached;
+                }
+            }
         }
 
-        let tool_call = ToolCall::try_from(update).ok()?;
-        guard.insert(key, tool_call.clone());
-        Some(tool_call)
+        actual
     }
 
     fn terminal_summary(&self, session_id: &str, tool_call_id: &str) -> Option<String> {
@@ -283,6 +340,197 @@ impl ToolState {
         }
     }
 
+    fn session_cwd(&self, session_id: &str) -> Option<PathBuf> {
+        self.session_cwds
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(session_id).cloned())
+    }
+
+    fn cached_diffs(&self, session_id: &str, tool_call_id: &str) -> Option<Vec<AiFileDiffPayload>> {
+        let key = format!("{session_id}::{tool_call_id}");
+        self.write_diffs
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key).cloned())
+    }
+
+    fn capture_write_diff(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        raw_input: Option<&serde_json::Value>,
+    ) {
+        let Some(raw_input) = raw_input else {
+            return;
+        };
+        let cwd = self.session_cwd(session_id);
+
+        let baseline_diff = self.reconstruct_with_baseline(session_id, raw_input, cwd.as_deref());
+        let diff = baseline_diff
+            .or_else(|| reconstruct_write_diff_payload(raw_input, cwd.as_deref()))
+            .or_else(|| reconstruct_edit_diff_payload(raw_input, cwd.as_deref()));
+
+        let Some(diff) = diff else {
+            return;
+        };
+        let key = format!("{session_id}::{tool_call_id}");
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            guard.entry(key).or_insert(vec![diff]);
+        }
+    }
+
+    fn cache_content_diffs(&self, session_id: &str, tool_call: &ToolCall) {
+        let cwd = self.session_cwd(session_id);
+        let diffs = collect_tool_call_diffs(tool_call, cwd.as_deref());
+        if diffs.is_empty() {
+            return;
+        }
+        let tool_call_id = &tool_call.tool_call_id.0;
+        let key = format!("{session_id}::{tool_call_id}");
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            let has_old_text = diffs.iter().any(|d| d.old_text.is_some());
+            let existing_is_reliable = guard
+                .get(&key)
+                .map(|cached| cached.iter().any(|d| d.old_text.is_some() && d.reversible))
+                .unwrap_or(false);
+
+            if existing_is_reliable {
+                return;
+            }
+
+            if has_old_text {
+                guard.insert(key, diffs);
+            } else {
+                guard.entry(key).or_insert(diffs);
+            }
+        }
+    }
+
+    fn cache_read_baseline(&self, session_id: &str, tool_call: &ToolCall) {
+        if tool_call.kind != ToolKind::Read || tool_call.status != ToolCallStatus::Completed {
+            return;
+        }
+        let Some(input) = read_tool_input(tool_call.raw_input.as_ref()) else {
+            return;
+        };
+        if input.file_path.trim().is_empty() {
+            return;
+        }
+        let cwd = self.session_cwd(session_id);
+        let resolved = resolve_tool_path(&input.file_path, cwd.as_deref());
+        let display_path = to_display_path(&resolved, cwd.as_deref());
+
+        let content = match read_existing_text_snapshot(&resolved) {
+            ExistingTextSnapshot::Text(text) => text,
+            _ => return,
+        };
+
+        let key = format!("{session_id}::{display_path}");
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.entry(key).or_insert(content);
+        }
+    }
+
+    fn get_file_baseline(&self, session_id: &str, display_path: &str) -> Option<String> {
+        let key = format!("{session_id}::{display_path}");
+        self.file_baselines.lock().ok()?.get(&key).cloned()
+    }
+
+    pub fn store_file_baseline(&self, session_id: &str, display_path: &str, content: String) {
+        let key = format!("{session_id}::{display_path}");
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.insert(key, content);
+        }
+    }
+
+    fn reconstruct_with_baseline(
+        &self,
+        session_id: &str,
+        raw_input: &serde_json::Value,
+        cwd: Option<&Path>,
+    ) -> Option<AiFileDiffPayload> {
+        if let Some(input) = write_tool_input(Some(raw_input)) {
+            if input.file_path.trim().is_empty() {
+                return None;
+            }
+            let resolved_path = resolve_tool_path(&input.file_path, cwd);
+            let display_path = to_display_path(&resolved_path, cwd);
+            let old_text = self.get_file_baseline(session_id, &display_path)?;
+
+            return Some(AiFileDiffPayload {
+                path: display_path,
+                kind: "update".to_string(),
+                previous_path: None,
+                reversible: true,
+                is_text: true,
+                old_text: Some(old_text),
+                new_text: Some(input.content),
+                hunks: None,
+            });
+        }
+
+        let input = edit_tool_input(Some(raw_input))?;
+        if input.file_path.trim().is_empty() || input.new_string.is_empty() {
+            return None;
+        }
+        let resolved_path = resolve_tool_path(&input.file_path, cwd);
+        let display_path = to_display_path(&resolved_path, cwd);
+        let old_text = self.get_file_baseline(session_id, &display_path)?;
+        let new_text = replace_exactly_once(&old_text, &input.old_string, &input.new_string)?;
+
+        Some(AiFileDiffPayload {
+            path: display_path,
+            kind: "update".to_string(),
+            previous_path: None,
+            reversible: true,
+            is_text: true,
+            old_text: Some(old_text),
+            new_text: Some(new_text),
+            hunks: None,
+        })
+    }
+
+    fn advance_baseline_after_success(
+        &self,
+        session_id: &str,
+        raw_input: Option<&serde_json::Value>,
+    ) {
+        let cwd = self.session_cwd(session_id);
+
+        if let Some(input) = write_tool_input(raw_input) {
+            if input.file_path.trim().is_empty() {
+                return;
+            }
+            let resolved_path = resolve_tool_path(&input.file_path, cwd.as_deref());
+            let display_path = to_display_path(&resolved_path, cwd.as_deref());
+            let key = format!("{session_id}::{display_path}");
+            if let Ok(mut guard) = self.file_baselines.lock() {
+                guard.insert(key, input.content);
+            }
+            return;
+        }
+
+        if let Some(input) = edit_tool_input(raw_input) {
+            if input.file_path.trim().is_empty() || input.new_string.is_empty() {
+                return;
+            }
+            let resolved_path = resolve_tool_path(&input.file_path, cwd.as_deref());
+            let display_path = to_display_path(&resolved_path, cwd.as_deref());
+            let key = format!("{session_id}::{display_path}");
+
+            if let Ok(mut guard) = self.file_baselines.lock() {
+                if let Some(previous) = guard.get(&key).cloned() {
+                    if let Some(next) =
+                        replace_exactly_once(&previous, &input.old_string, &input.new_string)
+                    {
+                        guard.insert(key, next);
+                    }
+                }
+            }
+        }
+    }
+
     fn clear_session(&self, session_id: &str) {
         let prefix = format!("{session_id}::");
         if let Ok(mut guard) = self.calls.lock() {
@@ -292,6 +540,15 @@ impl ToolState {
             guard.retain(|key, _| !key.starts_with(&prefix));
         }
         if let Ok(mut guard) = self.terminal_exit.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Ok(mut guard) = self.session_cwds.lock() {
+            guard.remove(session_id);
+        }
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            guard.retain(|key, _| !key.starts_with(&prefix));
+        }
+        if let Ok(mut guard) = self.file_baselines.lock() {
             guard.retain(|key, _| !key.starts_with(&prefix));
         }
     }
@@ -306,6 +563,15 @@ impl ToolState {
         if let Ok(mut guard) = self.terminal_exit.lock() {
             guard.clear();
         }
+        if let Ok(mut guard) = self.session_cwds.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.write_diffs.lock() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.file_baselines.lock() {
+            guard.clear();
+        }
     }
 }
 
@@ -313,6 +579,24 @@ impl ToolState {
 struct TerminalExitMeta {
     exit_code: Option<i64>,
     signal: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WriteToolInput {
+    file_path: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditToolInput {
+    file_path: String,
+    old_string: String,
+    new_string: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadToolInput {
+    file_path: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -522,13 +806,13 @@ impl Client for VaultAiAcpClient {
             .and_then(|locations| locations.first())
             .map(|location| location.path.display().to_string());
 
-        // Extract diffs from tool call content (for patch approval requests).
-        let diffs = collect_tool_call_update_diffs(&args.tool_call);
-
         // Register the tool call so subsequent ToolCallUpdates can find it.
         let pending_tool_call = ToolCall::try_from(args.tool_call.clone())
             .unwrap_or_else(|_| ToolCall::new(args.tool_call.tool_call_id.clone(), title.clone()));
         let registered = self.tools.upsert_tool_call(&session_id, pending_tool_call);
+        let diffs = self
+            .tools
+            .normalized_diffs_for_tool_call(&session_id, &registered);
         emit_tool_activity(
             &self.app,
             map_tool_call(
@@ -536,6 +820,7 @@ impl Client for VaultAiAcpClient {
                 &registered,
                 self.tools
                     .terminal_summary(&session_id, &registered.tool_call_id.0),
+                diffs.clone(),
             ),
         );
 
@@ -614,6 +899,8 @@ impl Client for VaultAiAcpClient {
                             &tool_call,
                             self.tools
                                 .terminal_summary(&session_id, &tool_call.tool_call_id.0),
+                            self.tools
+                                .normalized_diffs_for_tool_call(&session_id, &tool_call),
                         ),
                     );
                 }
@@ -637,6 +924,8 @@ impl Client for VaultAiAcpClient {
                                 &tool_call,
                                 self.tools
                                     .terminal_summary(&session_id, &tool_call.tool_call_id.0),
+                                self.tools
+                                    .normalized_diffs_for_tool_call(&session_id, &tool_call),
                             ),
                         );
                     }
@@ -868,6 +1157,21 @@ impl CodexRuntimeHandle {
         });
     }
 
+    pub fn register_file_baseline(
+        &self,
+        session_id: &str,
+        display_path: &str,
+        content: String,
+    ) -> Result<(), String> {
+        self.command_tx
+            .send(RuntimeCommand::RegisterFileBaseline {
+                session_id: session_id.to_string(),
+                display_path: display_path.to_string(),
+                content,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     pub fn check_health(&self) -> Result<(), String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
@@ -1045,6 +1349,14 @@ impl RuntimeActor {
                     .await;
                 let _ = response_tx.send(result);
             }
+            RuntimeCommand::RegisterFileBaseline {
+                session_id,
+                display_path,
+                content,
+            } => {
+                self.tools
+                    .store_file_baseline(&session_id, &display_path, content);
+            }
             RuntimeCommand::ClearSessionState { session_id } => {
                 self.clear_session_state(&session_id);
             }
@@ -1181,6 +1493,8 @@ impl RuntimeActor {
             .new_session(NewSessionRequest::new(cwd))
             .await
             .map_err(|error| error.to_string())?;
+        self.tools
+            .register_session_cwd(&response.session_id.0, spec.cwd.clone().unwrap());
 
         let current_model_id = response
             .models
@@ -1231,6 +1545,8 @@ impl RuntimeActor {
             ))
             .await
             .map_err(|error| error.to_string())?;
+        self.tools
+            .register_session_cwd(&session_id, spec.cwd.clone().unwrap());
 
         map_loaded_session_state(
             session_id,
@@ -1695,9 +2011,8 @@ fn map_tool_call(
     session_id: &str,
     tool_call: &ToolCall,
     terminal_summary: Option<String>,
+    diffs: Vec<AiFileDiffPayload>,
 ) -> AiToolActivityPayload {
-    let diffs = collect_tool_call_diffs(tool_call);
-
     AiToolActivityPayload {
         session_id: session_id.to_string(),
         tool_call_id: tool_call.tool_call_id.0.to_string(),
@@ -1918,12 +2233,188 @@ fn format_terminal_exit_only(exit: &TerminalExitMeta) -> String {
     }
 }
 
-fn diff_previous_path(diff: &agent_client_protocol::Diff) -> Option<String> {
+fn write_tool_input(raw_input: Option<&serde_json::Value>) -> Option<WriteToolInput> {
+    serde_json::from_value(raw_input?.clone()).ok()
+}
+
+fn edit_tool_input(raw_input: Option<&serde_json::Value>) -> Option<EditToolInput> {
+    serde_json::from_value(raw_input?.clone()).ok()
+}
+
+fn read_tool_input(raw_input: Option<&serde_json::Value>) -> Option<ReadToolInput> {
+    serde_json::from_value(raw_input?.clone()).ok()
+}
+
+fn is_edit_tool_input(raw_input: Option<&serde_json::Value>) -> bool {
+    let Some(raw_input) = raw_input else {
+        return false;
+    };
+    let Some(object) = raw_input.as_object() else {
+        return false;
+    };
+    object.contains_key("file_path")
+        && (object.contains_key("old_string") || object.contains_key("new_string"))
+}
+
+fn resolve_tool_path(file_path: &str, cwd: Option<&Path>) -> PathBuf {
+    let candidate = PathBuf::from(file_path);
+    if candidate.is_absolute() {
+        candidate
+    } else if let Some(cwd) = cwd {
+        cwd.join(candidate)
+    } else {
+        candidate
+    }
+}
+
+fn to_display_path(file_path: &Path, cwd: Option<&Path>) -> String {
+    let Some(cwd) = cwd else {
+        return file_path.to_string_lossy().to_string();
+    };
+
+    if file_path.is_absolute() && file_path.starts_with(cwd) {
+        if let Ok(relative) = file_path.strip_prefix(cwd) {
+            return relative.to_string_lossy().to_string();
+        }
+    }
+
+    file_path.to_string_lossy().to_string()
+}
+
+enum ExistingTextSnapshot {
+    Missing,
+    Text(String),
+    Unavailable,
+}
+
+fn read_existing_text_snapshot(path: &Path) -> ExistingTextSnapshot {
+    match fs::read(path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => ExistingTextSnapshot::Text(text),
+            Err(_) => ExistingTextSnapshot::Unavailable,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ExistingTextSnapshot::Missing,
+        Err(_) => ExistingTextSnapshot::Unavailable,
+    }
+}
+
+fn replace_exactly_once(text: &str, needle: &str, replacement: &str) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+
+    let mut matches = text.match_indices(needle);
+    let (first_index, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+
+    let mut result =
+        String::with_capacity(text.len() + replacement.len().saturating_sub(needle.len()));
+    result.push_str(&text[..first_index]);
+    result.push_str(replacement);
+    result.push_str(&text[first_index + needle.len()..]);
+    Some(result)
+}
+
+fn reconstruct_write_diff_payload(
+    raw_input: &serde_json::Value,
+    cwd: Option<&Path>,
+) -> Option<AiFileDiffPayload> {
+    let input = write_tool_input(Some(raw_input))?;
+    if input.file_path.trim().is_empty() {
+        return None;
+    }
+
+    let resolved_path = resolve_tool_path(&input.file_path, cwd);
+    let display_path = to_display_path(&resolved_path, cwd);
+
+    let diff = match read_existing_text_snapshot(&resolved_path) {
+        ExistingTextSnapshot::Missing => AiFileDiffPayload {
+            path: display_path,
+            kind: "add".to_string(),
+            previous_path: None,
+            reversible: true,
+            is_text: true,
+            old_text: None,
+            new_text: Some(input.content),
+            hunks: None,
+        },
+        ExistingTextSnapshot::Text(old_text) => {
+            if old_text == input.content {
+                AiFileDiffPayload {
+                    path: display_path,
+                    kind: "update".to_string(),
+                    previous_path: None,
+                    reversible: false,
+                    is_text: true,
+                    old_text: None,
+                    new_text: Some(input.content),
+                    hunks: None,
+                }
+            } else {
+                AiFileDiffPayload {
+                    path: display_path,
+                    kind: "update".to_string(),
+                    previous_path: None,
+                    reversible: true,
+                    is_text: true,
+                    old_text: Some(old_text),
+                    new_text: Some(input.content),
+                    hunks: None,
+                }
+            }
+        }
+        ExistingTextSnapshot::Unavailable => AiFileDiffPayload {
+            path: display_path,
+            kind: "update".to_string(),
+            previous_path: None,
+            reversible: false,
+            is_text: false,
+            old_text: None,
+            new_text: Some(input.content),
+            hunks: None,
+        },
+    };
+
+    Some(diff)
+}
+
+fn reconstruct_edit_diff_payload(
+    raw_input: &serde_json::Value,
+    cwd: Option<&Path>,
+) -> Option<AiFileDiffPayload> {
+    let input = edit_tool_input(Some(raw_input))?;
+    if input.file_path.trim().is_empty() {
+        return None;
+    }
+
+    let resolved_path = resolve_tool_path(&input.file_path, cwd);
+    let display_path = to_display_path(&resolved_path, cwd);
+    let current_text = match read_existing_text_snapshot(&resolved_path) {
+        ExistingTextSnapshot::Text(text) => text,
+        _ => return None,
+    };
+    let old_text = replace_exactly_once(&current_text, &input.new_string, &input.old_string)?;
+
+    Some(AiFileDiffPayload {
+        path: display_path,
+        kind: "update".to_string(),
+        previous_path: None,
+        reversible: true,
+        is_text: true,
+        old_text: Some(old_text),
+        new_text: Some(current_text),
+        hunks: None,
+    })
+}
+
+fn diff_previous_path(diff: &agent_client_protocol::Diff, cwd: Option<&Path>) -> Option<String> {
     diff.meta
         .as_ref()
         .and_then(|meta| meta_get(meta, ACP_DIFF_PREVIOUS_PATH_KEY))
         .and_then(|value| value.as_str())
-        .map(ToString::to_string)
+        .map(|path| to_display_path(&resolve_tool_path(path, cwd), cwd))
 }
 
 fn diff_hunks(diff: &agent_client_protocol::Diff) -> Option<Vec<AiFileDiffHunkPayload>> {
@@ -1939,18 +2430,41 @@ fn has_reliable_old_text(old_text: Option<&str>) -> bool {
     matches!(old_text, Some(text) if text != FILE_DELETED_PLACEHOLDER)
 }
 
-fn map_diff_payload(diff: &agent_client_protocol::Diff) -> AiFileDiffPayload {
-    let previous_path = diff_previous_path(diff);
-    let old_text = diff.old_text.as_deref();
-    let kind = if previous_path.is_some() {
-        "move"
-    } else if old_text.is_none() {
+fn classify_diff_kind(
+    diff: &agent_client_protocol::Diff,
+    raw_input: Option<&serde_json::Value>,
+    previous_path: Option<&String>,
+) -> &'static str {
+    if previous_path.is_some() {
+        return "move";
+    }
+    if is_edit_tool_input(raw_input) {
+        return "update";
+    }
+    if write_tool_input(raw_input).is_some() {
+        return if diff.old_text.is_none() {
+            "add"
+        } else {
+            "update"
+        };
+    }
+    if diff.old_text.is_none() {
         "add"
     } else if diff.new_text.is_empty() {
         "delete"
     } else {
         "update"
-    };
+    }
+}
+
+fn map_diff_payload(
+    diff: &agent_client_protocol::Diff,
+    raw_input: Option<&serde_json::Value>,
+    cwd: Option<&Path>,
+) -> AiFileDiffPayload {
+    let previous_path = diff_previous_path(diff, cwd);
+    let old_text = diff.old_text.as_deref();
+    let kind = classify_diff_kind(diff, raw_input, previous_path.as_ref());
     let text_changed = old_text
         .map(|text| text != diff.new_text)
         .unwrap_or(!diff.new_text.is_empty());
@@ -1962,13 +2476,13 @@ fn map_diff_payload(diff: &agent_client_protocol::Diff) -> AiFileDiffPayload {
     };
 
     AiFileDiffPayload {
-        path: diff.path.display().to_string(),
+        path: to_display_path(&diff.path, cwd),
         kind: kind.to_string(),
         previous_path,
         reversible,
         is_text: true,
         old_text: diff.old_text.clone(),
-        new_text: if diff.new_text.is_empty() {
+        new_text: if kind == "delete" {
             None
         } else {
             Some(diff.new_text.clone())
@@ -1977,34 +2491,17 @@ fn map_diff_payload(diff: &agent_client_protocol::Diff) -> AiFileDiffPayload {
     }
 }
 
-fn collect_tool_call_diffs(tool_call: &ToolCall) -> Vec<AiFileDiffPayload> {
+fn collect_tool_call_diffs(tool_call: &ToolCall, cwd: Option<&Path>) -> Vec<AiFileDiffPayload> {
     tool_call
         .content
         .iter()
         .filter_map(|item| match item {
-            ToolCallContent::Diff(diff) => Some(map_diff_payload(diff)),
+            ToolCallContent::Diff(diff) => {
+                Some(map_diff_payload(diff, tool_call.raw_input.as_ref(), cwd))
+            }
             _ => None,
         })
         .collect()
-}
-
-fn collect_tool_call_update_diffs(
-    tool_call: &agent_client_protocol::ToolCallUpdate,
-) -> Vec<AiFileDiffPayload> {
-    tool_call
-        .fields
-        .content
-        .as_ref()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| match item {
-                    ToolCallContent::Diff(diff) => Some(map_diff_payload(diff)),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn prepare_runtime_command(command: &mut Command, cwd: Option<&Path>) -> Result<(), String> {
@@ -2029,7 +2526,7 @@ fn prepare_runtime_command(command: &mut Command, cwd: Option<&Path>) -> Result<
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{Diff, Meta, ToolCallId, ToolKind};
-    use std::{env, ffi::OsStr, path::PathBuf};
+    use std::{env, ffi::OsStr, fs, path::PathBuf};
 
     use super::*;
     use crate::ai::env::preferred_path_value;
@@ -2045,7 +2542,12 @@ mod tests {
                 ToolCallContent::Diff(Diff::new("/tmp/deleted.rs", "").old_text("gone")),
             ]);
 
-        let payload = map_tool_call("session-1", &tool_call, None);
+        let payload = map_tool_call(
+            "session-1",
+            &tool_call,
+            None,
+            collect_tool_call_diffs(&tool_call, None),
+        );
 
         assert_eq!(payload.kind, "edit");
         assert_eq!(payload.diffs.as_ref().map(Vec::len), Some(3));
@@ -2092,7 +2594,7 @@ mod tests {
                 agent_client_protocol::Content::new("README.md"),
             )]);
 
-        let payload = map_tool_call("session-1", &tool_call, None);
+        let payload = map_tool_call("session-1", &tool_call, None, Vec::new());
 
         assert_eq!(payload.summary.as_deref(), Some("README.md"));
         assert!(payload.diffs.is_none());
@@ -2107,7 +2609,12 @@ mod tests {
                 Diff::new("/tmp/deleted.rs", "").old_text(FILE_DELETED_PLACEHOLDER),
             )]);
 
-        let payload = map_tool_call("session-1", &tool_call, None);
+        let payload = map_tool_call(
+            "session-1",
+            &tool_call,
+            None,
+            collect_tool_call_diffs(&tool_call, None),
+        );
         let diff = payload
             .diffs
             .as_ref()
@@ -2133,7 +2640,12 @@ mod tests {
                     )])),
             )]);
 
-        let payload = map_tool_call("session-1", &tool_call, None);
+        let payload = map_tool_call(
+            "session-1",
+            &tool_call,
+            None,
+            collect_tool_call_diffs(&tool_call, None),
+        );
         let diff = payload
             .diffs
             .as_ref()
@@ -2170,7 +2682,12 @@ mod tests {
                     )])),
             )]);
 
-        let payload = map_tool_call("session-1", &tool_call, None);
+        let payload = map_tool_call(
+            "session-1",
+            &tool_call,
+            None,
+            collect_tool_call_diffs(&tool_call, None),
+        );
         let diff = payload
             .diffs
             .as_ref()
@@ -2199,7 +2716,12 @@ mod tests {
                 Diff::new("/tmp/deleted.rs", "").old_text("real previous content"),
             )]);
 
-        let payload = map_tool_call("session-1", &tool_call, None);
+        let payload = map_tool_call(
+            "session-1",
+            &tool_call,
+            None,
+            collect_tool_call_diffs(&tool_call, None),
+        );
         let diff = payload
             .diffs
             .as_ref()
@@ -2225,6 +2747,7 @@ mod tests {
             "session-1",
             &tool_call,
             Some("running tests\n\n[process exited: code 0]".to_string()),
+            Vec::new(),
         );
 
         assert_eq!(
@@ -2277,6 +2800,40 @@ mod tests {
             tools.terminal_summary(session_id, tool_call_id).as_deref(),
             Some("fmt output\n\n[process exited: code 0]")
         );
+    }
+
+    #[test]
+    fn external_baseline_reconstructs_full_write_diff() {
+        let temp_dir = env::temp_dir().join(format!(
+            "neverwrite-codex-baseline-tests-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(temp_dir.join("notes")).unwrap();
+        let file_path = temp_dir.join("notes").join("external.md");
+        fs::write(&file_path, "disk content").unwrap();
+
+        let tools = ToolState::default();
+        tools.register_session_cwd("session-1", temp_dir.clone());
+        tools.store_file_baseline("session-1", "notes/external.md", "editor content".into());
+
+        let tool_call = ToolCall::new(ToolCallId::from("tool-9"), "Write external.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({
+                "file_path": "notes/external.md",
+                "content": "codex content"
+            }))
+            .content(vec![ToolCallContent::Diff(
+                Diff::new(file_path.display().to_string(), "codex content")
+                    .old_text("wrong old text from ACP"),
+            )]);
+
+        let registered = tools.upsert_tool_call("session-1", tool_call);
+        let diffs = tools.normalized_diffs_for_tool_call("session-1", &registered);
+
+        assert_eq!(diffs[0].old_text.as_deref(), Some("editor content"));
+        assert_eq!(diffs[0].new_text.as_deref(), Some("codex content"));
+        assert!(diffs[0].reversible);
     }
 
     #[test]

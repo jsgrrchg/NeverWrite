@@ -5,7 +5,10 @@ use neverwrite_ai::{
 };
 use tauri::AppHandle;
 
-use super::{claude::ClaudeSetupInput, codex::CodexSetupInput, gemini::GeminiSetupInput};
+use super::{
+    claude::ClaudeSetupInput, codex::CodexSetupInput, gemini::GeminiSetupInput,
+    kilo::KiloSetupInput,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AiRuntimeCapabilities {
@@ -23,6 +26,7 @@ pub enum AiRuntimeSetupInput {
     Codex(CodexSetupInput),
     Claude(ClaudeSetupInput),
     Gemini(GeminiSetupInput),
+    Kilo(KiloSetupInput),
 }
 
 impl AiRuntimeSetupInput {
@@ -31,6 +35,7 @@ impl AiRuntimeSetupInput {
             Self::Codex(input) => Ok(input),
             Self::Claude(_) => Err("Configuracion de Claude enviada a Codex.".to_string()),
             Self::Gemini(_) => Err("Configuracion de Gemini enviada a Codex.".to_string()),
+            Self::Kilo(_) => Err("Configuracion de Kilo enviada a Codex.".to_string()),
         }
     }
 
@@ -39,6 +44,7 @@ impl AiRuntimeSetupInput {
             Self::Claude(input) => Ok(input),
             Self::Codex(_) => Err("Configuracion de Codex enviada a Claude.".to_string()),
             Self::Gemini(_) => Err("Configuracion de Gemini enviada a Claude.".to_string()),
+            Self::Kilo(_) => Err("Configuracion de Kilo enviada a Claude.".to_string()),
         }
     }
 
@@ -47,6 +53,16 @@ impl AiRuntimeSetupInput {
             Self::Gemini(input) => Ok(input),
             Self::Codex(_) => Err("Configuracion de Codex enviada a Gemini.".to_string()),
             Self::Claude(_) => Err("Configuracion de Claude enviada a Gemini.".to_string()),
+            Self::Kilo(_) => Err("Configuracion de Kilo enviada a Gemini.".to_string()),
+        }
+    }
+
+    pub fn into_kilo(self) -> Result<KiloSetupInput, String> {
+        match self {
+            Self::Kilo(input) => Ok(input),
+            Self::Codex(_) => Err("Configuracion de Codex enviada a Kilo.".to_string()),
+            Self::Claude(_) => Err("Configuracion de Claude enviada a Kilo.".to_string()),
+            Self::Gemini(_) => Err("Configuracion de Gemini enviada a Kilo.".to_string()),
         }
     }
 }

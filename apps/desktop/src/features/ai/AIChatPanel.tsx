@@ -29,6 +29,8 @@ import { AIChatHeader } from "./components/AIChatHeader";
 import { AIChatMessageList } from "./components/AIChatMessageList";
 import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
 import { AIAuthTerminalModal } from "./components/AIAuthTerminalModal";
+import { isIntegratedTerminalAuthMethod } from "./utils/authMethods";
+import { getRuntimeDisplayName } from "./utils/runtimeMetadata";
 import { QueuedMessagesPanel } from "./components/QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
 import {
@@ -493,19 +495,13 @@ export function AIChatPanel() {
             const runtime = runtimes.find(
                 (descriptor) => descriptor.runtime.id === runtimeId,
             );
-            if (
-                (runtimeId === "claude-acp" &&
-                    (input.methodId === "claude-login" ||
-                        input.methodId === "claude-ai-login" ||
-                        input.methodId === "console-login")) ||
-                (runtimeId === "gemini-acp" &&
-                    input.methodId === "login_with_google")
-            ) {
+            if (isIntegratedTerminalAuthMethod(runtimeId, input.methodId)) {
                 setAuthTerminalRequest({
                     runtimeId,
-                    runtimeName:
-                        runtime?.runtime.name.replace(/ ACP$/, "") ??
-                        (runtimeId === "claude-acp" ? "Claude" : "Gemini"),
+                    runtimeName: getRuntimeDisplayName(
+                        runtimeId,
+                        runtime?.runtime.name,
+                    ),
                     customBinaryPath: input.customBinaryPath,
                 });
                 return;
@@ -872,6 +868,7 @@ export function AIChatPanel() {
                     footer={
                         <AIChatAgentControls
                             disabled={agentControlsDisabled}
+                            runtimeId={currentSession?.runtimeId}
                             modelId={currentSession?.modelId ?? ""}
                             modeId={currentSession?.modeId ?? ""}
                             effortsByModel={

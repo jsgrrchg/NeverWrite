@@ -485,6 +485,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     footer={
                         <AIChatAgentControls
                             disabled={agentControlsDisabled}
+                            runtimeId={session?.runtimeId}
                             modelId={session?.modelId ?? ""}
                             modeId={session?.modeId ?? ""}
                             effortsByModel={session?.effortsByModel ?? {}}

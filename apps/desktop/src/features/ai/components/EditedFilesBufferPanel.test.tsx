@@ -34,7 +34,11 @@ function createTrackedFile(
     });
 }
 
-function createSession(sessionId: string, files: TrackedFile[]): AIChatSession {
+function createSession(
+    sessionId: string,
+    files: TrackedFile[],
+    runtimeId = "codex-acp",
+): AIChatSession {
     const workCycleId = "cycle-1";
     const tracked: Record<string, TrackedFile> = {};
     for (const file of files) {
@@ -56,7 +60,7 @@ function createSession(sessionId: string, files: TrackedFile[]): AIChatSession {
                       lastRejectUndo: null,
                   }
                 : undefined,
-        runtimeId: "codex-acp",
+        runtimeId,
         modelId: "test-model",
         modeId: "default",
         models: [],
@@ -444,6 +448,51 @@ describe("EditedFilesBufferPanel", () => {
         expect(reviewTab).toBeDefined();
         expect(activeTabId).toBe(reviewTab?.id);
         expect(reviewTab?.title).toBe("Review Codex");
+    });
+
+    it("opens the full review tab with the Kilo runtime title", () => {
+        const session = createSession(
+            "session-review-kilo",
+            [createTrackedFile("/vault/src/review-kilo.ts")],
+            "kilo-acp",
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "kilo-acp",
+                        name: "Kilo ACP",
+                        description: "Kilo runtime",
+                        capabilities: [],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            rejectEditedFile: vi.fn(async () => {}),
+            rejectAllEditedFiles: vi.fn(async () => {}),
+            keepAllEditedFiles: vi.fn(),
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+        const reviewTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) =>
+                    isReviewTab(tab) && tab.sessionId === session.sessionId,
+            );
+
+        expect(reviewTab?.title).toBe("Review Kilo");
     });
 
     it("limits the expanded compact list to four visible items and scrolls the rest", () => {
