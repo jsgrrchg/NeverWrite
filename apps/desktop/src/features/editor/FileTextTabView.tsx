@@ -506,8 +506,11 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         return unsub;
     }, [inlineReviewEnabled, tabRef]);
 
+    const tabPath = tab?.path ?? null;
+    const tabContent = tab?.content ?? null;
+
     useEffect(() => {
-        if (!tab || tab.content == null) {
+        if (!tabPath || tabContent == null) {
             return;
         }
 
@@ -517,11 +520,11 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
                 continue;
             }
 
-            aiRegisterFileBaseline(sessionId, tab.path, tab.content).catch(
+            aiRegisterFileBaseline(sessionId, tabPath, tabContent).catch(
                 () => {},
             );
         }
-    }, [tab?.path, tab?.content]);
+    }, [tabPath, tabContent]);
 
     useEffect(() => {
         return subscribeEditorReviewSync(

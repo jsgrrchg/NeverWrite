@@ -589,7 +589,7 @@ export function useEditableFileResource({
         });
 
         return unsubscribe;
-    }, [acceptTab, applyIncomingContent, getCurrentContent, paneId]);
+    }, [acceptTab, applyIncomingContent, getCurrentContent, paneId, vaultPath]);
 
     useEffect(() => {
         return () => {
