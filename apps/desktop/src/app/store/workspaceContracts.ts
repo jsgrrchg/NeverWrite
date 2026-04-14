@@ -341,15 +341,11 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         id: "chat-pane-movement-bridge",
         role: "chat-sidebar-bridge",
         file: "apps/desktop/src/features/ai/chatPaneMovement.ts",
-        symbols: [
-            "openChatSessionInWorkspace",
-            "createNewChatInWorkspace",
-            "revealChatInSidebar",
-        ],
+        symbols: ["openChatSessionInWorkspace", "createNewChatInWorkspace"],
         reads: ["focusedPaneId"],
         writes: [],
         summary:
-            "This module now resolves chat actions against the focused workspace pane and only reveals the sidebar as an auxiliary surface.",
+            "This module resolves chat actions against the focused workspace pane and keeps chat creation/opening workspace-first.",
         migrationIntent:
             "Keep workspace opening and sidebar reveal as distinct intentions so the chat UI does not split ownership again.",
     },

@@ -13,8 +13,8 @@ import {
 import { useTabDragReorder } from "./useTabDragReorder";
 import {
     dispatchCrossPaneTabDropPreview,
-    resolveWorkspaceTabDropTarget,
-    toCrossPaneTabDropPreview,
+    resolveWorkspaceTabDropIntent,
+    type CrossPaneTabDropPreview,
 } from "./workspaceTabDropPreview";
 
 interface DragTabLike {
@@ -85,17 +85,25 @@ function isLayoutWorkspaceDropTarget(
     );
 }
 
-function getPreviewSignature(target: WorkspaceDropTarget) {
-    switch (target.type) {
-        case "strip":
-            return `strip:${target.paneId}:${target.index}`;
-        case "pane-center":
-            return `center:${target.paneId}`;
-        case "split":
-            return `split:${target.paneId}:${target.direction}`;
-        default:
-            return "none";
+function getPreviewSignature(
+    target: WorkspaceDropTarget,
+    preview: CrossPaneTabDropPreview | null,
+) {
+    if (preview?.lineRect) {
+        const { left, top, width, height } = preview.lineRect;
+        return `line:${preview.targetPaneId}:${preview.insertIndex}:${left}:${top}:${width}:${height}`;
     }
+
+    if (preview?.overlayRect) {
+        const { left, top, width, height } = preview.overlayRect;
+        return `overlay:${preview.targetPaneId}:${preview.position}:${left}:${top}:${width}:${height}`;
+    }
+
+    if (target.type === "none") {
+        return "none";
+    }
+
+    return `hidden:${target.type}`;
 }
 
 /**
@@ -138,6 +146,7 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
     const pendingDetachDropTargetRef =
         useRef<ExternalWorkspaceDropTarget | null>(null);
     const detachEndHandledByDragEndRef = useRef(false);
+    const dragDropHandledRef = useRef(false);
     const workspaceDropTargetRef = useRef<WorkspaceDropTarget>({
         type: "none",
     });
@@ -176,20 +185,21 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
     );
 
     const publishWorkspaceDropPreview = useCallback(
-        (tabId: string, target: WorkspaceDropTarget) => {
+        (
+            target: WorkspaceDropTarget,
+            preview: CrossPaneTabDropPreview | null,
+        ) => {
             if (!sourcePaneId || !onCommitWorkspaceDrop) {
                 return;
             }
 
-            const signature = getPreviewSignature(target);
+            const signature = getPreviewSignature(target, preview);
             if (workspacePreviewSignatureRef.current === signature) {
                 return;
             }
 
             workspacePreviewSignatureRef.current = signature;
-            dispatchCrossPaneTabDropPreview(
-                toCrossPaneTabDropPreview(sourcePaneId, tabId, target),
-            );
+            dispatchCrossPaneTabDropPreview(preview);
         },
         [onCommitWorkspaceDrop, sourcePaneId],
     );
@@ -205,31 +215,43 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
     }, []);
 
     const resolveCurrentWorkspaceDropTarget = useCallback(
-        (tabId: string, coords: { clientX: number; clientY: number }) => {
+        (
+            tabId: string,
+            coords: { clientX: number; clientY: number },
+            options?: { publishPreview?: boolean },
+        ) => {
+            const shouldPublishPreview = options?.publishPreview ?? true;
             const externalTarget = resolveExternalDropTarget?.(
                 tabId,
                 coords,
             ) ?? { type: "none" };
             if (externalTarget.type !== "none") {
                 workspaceDropTargetRef.current = externalTarget;
-                publishWorkspaceDropPreview(tabId, externalTarget);
+                if (shouldPublishPreview) {
+                    publishWorkspaceDropPreview(externalTarget, null);
+                }
                 return externalTarget;
             }
 
             if (!sourcePaneId || !onCommitWorkspaceDrop) {
                 const target: WorkspaceDropTarget = { type: "none" };
                 workspaceDropTargetRef.current = target;
+                if (shouldPublishPreview) {
+                    publishWorkspaceDropPreview(target, null);
+                }
                 return target;
             }
 
-            const target = resolveWorkspaceTabDropTarget({
+            const { target, preview } = resolveWorkspaceTabDropIntent({
                 sourcePaneId,
                 tabId,
                 clientX: coords.clientX,
                 clientY: coords.clientY,
             });
             workspaceDropTargetRef.current = target;
-            publishWorkspaceDropPreview(tabId, target);
+            if (shouldPublishPreview) {
+                publishWorkspaceDropPreview(target, preview);
+            }
             return target;
         },
         [
@@ -238,6 +260,19 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             resolveExternalDropTarget,
             sourcePaneId,
         ],
+    );
+
+    const getCommittedWorkspaceDropTarget = useCallback(
+        (tabId: string, coords: { clientX: number; clientY: number }) => {
+            if (workspaceDropTargetRef.current.type !== "none") {
+                return workspaceDropTargetRef.current;
+            }
+
+            return resolveCurrentWorkspaceDropTarget(tabId, coords, {
+                publishPreview: false,
+            });
+        },
+        [resolveCurrentWorkspaceDropTarget],
     );
 
     const emitAttachmentDragDetail = useCallback(
@@ -318,7 +353,11 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             return target.type === "detach-window";
         },
         shouldCommitDrag: (tabId, coords) => {
-            const workspaceTarget = resolveCurrentWorkspaceDropTarget(
+            if (dragDropHandledRef.current) {
+                return false;
+            }
+
+            const workspaceTarget = getCommittedWorkspaceDropTarget(
                 tabId,
                 coords,
             );
@@ -354,11 +393,13 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
 
             pendingDetachDropTargetRef.current = null;
             activeDragTabIdRef.current = null;
+            dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
         },
         onDetachCancel: () => {
             pendingDetachDropTargetRef.current = null;
             detachEndHandledByDragEndRef.current = false;
+            dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
             onDetachCancel?.();
         },
@@ -368,6 +409,7 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             latestDragCoordsRef.current = coords;
             pendingDetachDropTargetRef.current = null;
             detachEndHandledByDragEndRef.current = false;
+            dragDropHandledRef.current = false;
             updateTabDragPreview(tabId, coords.clientX, coords.clientY);
             emitAttachmentDragDetail(tabId, "start", coords);
         },
@@ -383,11 +425,12 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             emitAttachmentDragDetail(tabId, "end", coords);
             setDragPreviewTabId(null);
 
-            const workspaceTarget = resolveCurrentWorkspaceDropTarget(
+            const workspaceTarget = getCommittedWorkspaceDropTarget(
                 tabId,
                 coords,
             );
             if (isLayoutWorkspaceDropTarget(workspaceTarget)) {
+                dragDropHandledRef.current = true;
                 onCommitWorkspaceDrop?.(tabId, workspaceTarget);
                 activeDragTabIdRef.current = null;
                 pendingDetachDropTargetRef.current = null;
@@ -396,17 +439,20 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             }
 
             if (workspaceTarget.type === "detach-window") {
+                dragDropHandledRef.current = true;
                 pendingDetachDropTargetRef.current = workspaceTarget;
                 detachEndHandledByDragEndRef.current = true;
                 return;
             }
 
             if (workspaceTarget.type !== "none") {
+                dragDropHandledRef.current = true;
                 void onCommitExternalDrop?.(tabId, workspaceTarget, coords);
             }
 
             activeDragTabIdRef.current = null;
             pendingDetachDropTargetRef.current = null;
+            dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
         },
         onDragCancel: (tabId) => {
@@ -416,6 +462,7 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             activeDragTabIdRef.current = null;
             pendingDetachDropTargetRef.current = null;
             detachEndHandledByDragEndRef.current = false;
+            dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
         },
     });

@@ -31,7 +31,6 @@ import {
     selectPaneCount,
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
-import { revealChatInSidebar } from "../ai/chatPaneMovement";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -1597,11 +1596,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
                         if (isChatTab(tab)) {
                             return [
-                                {
-                                    label: "Show in Sidebar",
-                                    action: () =>
-                                        revealChatInSidebar(tab.sessionId),
-                                },
                                 {
                                     label: "Close",
                                     action: () => void handleCloseTab(tab.id),

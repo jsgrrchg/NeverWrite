@@ -25,6 +25,7 @@ interface HistorySessionListProps {
     runtimes: AIRuntimeOption[];
     selectedSessionId: string | null;
     onSelectSession: (sessionId: string) => void;
+    onRestoreSession: (sessionId: string) => void;
     onDeleteSession: (sessionId: string) => void;
     onDeleteSessions: (sessionIds: string[]) => void;
     onForkSession: (sessionId: string) => void;
@@ -64,6 +65,7 @@ export function HistorySessionList({
     runtimes,
     selectedSessionId,
     onSelectSession,
+    onRestoreSession,
     onDeleteSession,
     onDeleteSessions,
     onForkSession,
@@ -251,9 +253,9 @@ export function HistorySessionList({
         (session: AIChatSession) => {
             setSelectedHistoryIds([]);
             setSelectionAnchorId(getHistorySelectionId(session));
-            onSelectSession(getHistorySelectionId(session));
+            onRestoreSession(getHistorySelectionId(session));
         },
-        [onSelectSession],
+        [onRestoreSession],
     );
 
     return (

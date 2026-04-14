@@ -5276,8 +5276,9 @@ fn is_native_menu_command(id: &str) -> bool {
             | "layout:toggle-right-panel"
             | "nav:command-palette"
             | "nav:quick-switcher"
-            | "editor:font-size-up"
-            | "editor:font-size-down"
+            | "app:zoom-in"
+            | "app:zoom-out"
+            | "app:zoom-reset"
             | "nav:back"
             | "nav:forward"
             | "nav:next-tab"
@@ -5439,7 +5440,7 @@ fn build_macos_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Res
             manager,
             "editor:heading-0",
             "Remove Heading",
-            Some("Cmd+0"),
+            Some("Shift+Cmd+0"),
         )?)
         .build()?;
 
@@ -5479,15 +5480,21 @@ fn build_macos_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Res
         .separator()
         .item(&macos_menu_item(
             manager,
-            "editor:font-size-up",
-            "Increase Font Size",
+            "app:zoom-in",
+            "Zoom In",
             Some("Cmd+="),
         )?)
         .item(&macos_menu_item(
             manager,
-            "editor:font-size-down",
-            "Decrease Font Size",
+            "app:zoom-out",
+            "Zoom Out",
             Some("Cmd+-"),
+        )?)
+        .item(&macos_menu_item(
+            manager,
+            "app:zoom-reset",
+            "Actual Size",
+            Some("Cmd+0"),
         )?)
         .separator()
         .fullscreen()

@@ -15,6 +15,7 @@ interface HistoryTranscriptViewerProps {
     chatFontSize?: number;
     chatFontFamily?: EditorFontFamily;
     onExport?: () => void;
+    onRestore?: () => void;
 }
 
 function matchesMessageSearch(
@@ -32,11 +33,13 @@ function matchesMessageSearch(
 function TranscriptHeader({
     session,
     onExport,
+    onRestore,
     searchOpen,
     onToggleSearch,
 }: {
     session: AIChatSession;
     onExport?: () => void;
+    onRestore?: () => void;
     searchOpen: boolean;
     onToggleSearch: () => void;
 }) {
@@ -62,6 +65,35 @@ function TranscriptHeader({
             <span className="min-w-0 flex-1 truncate text-xs font-medium">
                 {title}
             </span>
+            {onRestore && (
+                <button
+                    type="button"
+                    onClick={onRestore}
+                    className="flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[10px] font-medium"
+                    style={{
+                        background:
+                            "color-mix(in srgb, var(--accent) 12%, transparent)",
+                        border: "1px solid var(--accent)",
+                        color: "var(--text-primary)",
+                    }}
+                    title="Restore this chat"
+                >
+                    <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <path d="M2.5 6h7" />
+                        <path d="M6 2.5 9.5 6 6 9.5" />
+                    </svg>
+                    Restore
+                </button>
+            )}
             {onExport && (
                 <button
                     type="button"
@@ -170,6 +202,7 @@ export function HistoryTranscriptViewer({
     chatFontSize,
     chatFontFamily,
     onExport,
+    onRestore,
 }: HistoryTranscriptViewerProps) {
     const sessionsById = useChatStore((s) => s.sessionsById);
     const ensureTranscriptLoaded = useChatStore(
@@ -248,6 +281,7 @@ export function HistoryTranscriptViewer({
             <TranscriptHeader
                 session={session}
                 onExport={onExport}
+                onRestore={onRestore}
                 searchOpen={searchOpen}
                 onToggleSearch={() => {
                     setSearchOpen((open) => !open);

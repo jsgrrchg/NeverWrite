@@ -141,8 +141,10 @@ describe("EditorPaneBar", () => {
 
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
-        expect(screen.getByText("Pane 1")).toBeInTheDocument();
         expect(screen.getByText("No tabs open")).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Pane 1 actions" }),
+        ).toBeInTheDocument();
         expect(
             document.querySelector('[data-pane-empty="true"]'),
         ).not.toBeNull();

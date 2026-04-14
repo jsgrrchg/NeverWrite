@@ -128,7 +128,7 @@ describe("AIChatPanel", () => {
 
         renderComponent(<AIChatPanel />);
 
-        fireEvent.click(screen.getByRole("button", { name: "New Chat" }));
+        fireEvent.click(screen.getByRole("button", { name: "New" }));
         fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
         await waitFor(() => {
@@ -160,10 +160,57 @@ describe("AIChatPanel", () => {
 
         renderComponent(<AIChatPanel />);
 
-        expect(screen.getByText("Focused Workspace Chat")).toBeInTheDocument();
-        expect(screen.getAllByText("Workspace chat")).toHaveLength(2);
+        expect(screen.queryByText("Focused Workspace Chat")).toBeNull();
+        expect(screen.getByText("Workspace chat")).toBeInTheDocument();
         expect(
             screen.queryByRole("textbox", { name: /message composer/i }),
         ).not.toBeInTheDocument();
+    });
+
+    it("restores the selected history session into the workspace", async () => {
+        const sessionA = createSession("session-a", "Saved conversation");
+        const loadSession = vi.fn().mockResolvedValue(undefined);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            loadSession,
+            historyViewOpen: true,
+            historySelectedSessionId: "session-a",
+            runtimes: [
+                {
+                    runtime: {
+                        id: "codex",
+                        name: "Codex ACP",
+                        description: "",
+                        capabilities: [],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "session-a": sessionA,
+            },
+            sessionOrder: ["session-a"],
+        }));
+
+        renderComponent(<AIChatPanel />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+        await waitFor(() => {
+            expect(loadSession).toHaveBeenCalledWith("session-a");
+            expect(useChatStore.getState().historyViewOpen).toBe(false);
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.some(
+                        (tab) =>
+                            tab.kind === "ai-chat" &&
+                            tab.sessionId === "session-a",
+                    ),
+            ).toBe(true);
+        });
     });
 });

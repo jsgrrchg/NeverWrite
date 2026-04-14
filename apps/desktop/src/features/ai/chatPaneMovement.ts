@@ -1,4 +1,3 @@
-import { useLayoutStore } from "../../app/store/layoutStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
@@ -75,11 +74,4 @@ export async function ensureWorkspaceChatSession(
     }
 
     return createNewChatInWorkspace(options?.runtimeId, options);
-}
-
-export function revealChatInSidebar(sessionId?: string | null) {
-    useLayoutStore.getState().activateRightView("chat");
-    if (!sessionId) return;
-
-    void useChatStore.getState().loadSession(sessionId);
 }

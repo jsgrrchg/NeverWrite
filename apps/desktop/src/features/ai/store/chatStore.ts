@@ -2061,6 +2061,9 @@ function migrateSessionLocalState(
             toSession.historySessionId,
             toSession.runtimeId,
         );
+    useEditorStore
+        .getState()
+        .replaceAiSessionId(fromSessionId, toSession.sessionId);
     registerOpenEditorBaselines(toSession.sessionId);
 
     return true;

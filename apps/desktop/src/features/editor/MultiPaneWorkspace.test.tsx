@@ -324,7 +324,7 @@ describe("MultiPaneWorkspace", () => {
         );
     });
 
-    it("renders pane drop overlays for center and edge previews", () => {
+    it("renders global drop overlays for center, edge and strip previews", () => {
         renderComponent(<MultiPaneWorkspace />);
 
         act(() => {
@@ -336,16 +336,24 @@ describe("MultiPaneWorkspace", () => {
                         position: "center",
                         insertIndex: null,
                         tabId: "tab-a",
+                        overlayRect: {
+                            left: 210,
+                            top: 40,
+                            right: 430,
+                            bottom: 220,
+                            width: 220,
+                            height: 180,
+                        },
+                        lineRect: null,
                     },
                 }),
             );
         });
 
         expect(
-            screen
-                .getByTestId("pane-content-secondary")
-                .closest('[data-editor-pane-id="secondary"]')
-                ?.querySelector('[data-pane-drop-overlay-position="center"]'),
+            document.querySelector(
+                '[data-workspace-drop-overlay-position="center"]',
+            ),
         ).not.toBeNull();
 
         act(() => {
@@ -357,16 +365,51 @@ describe("MultiPaneWorkspace", () => {
                         position: "left",
                         insertIndex: null,
                         tabId: "tab-a",
+                        overlayRect: {
+                            left: 210,
+                            top: 40,
+                            right: 320,
+                            bottom: 220,
+                            width: 110,
+                            height: 180,
+                        },
+                        lineRect: null,
                     },
                 }),
             );
         });
 
         expect(
-            screen
-                .getByTestId("pane-content-secondary")
-                .closest('[data-editor-pane-id="secondary"]')
-                ?.querySelector('[data-pane-drop-overlay-position="left"]'),
+            document.querySelector(
+                '[data-workspace-drop-overlay-position="left"]',
+            ),
+        ).not.toBeNull();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(CROSS_PANE_TAB_DROP_PREVIEW_EVENT, {
+                    detail: {
+                        sourcePaneId: "primary",
+                        targetPaneId: "secondary",
+                        position: "center",
+                        insertIndex: 1,
+                        tabId: "tab-a",
+                        overlayRect: null,
+                        lineRect: {
+                            left: 288,
+                            top: 52,
+                            right: 290,
+                            bottom: 76,
+                            width: 2,
+                            height: 24,
+                        },
+                    },
+                }),
+            );
+        });
+
+        expect(
+            document.querySelector('[data-workspace-drop-line="true"]'),
         ).not.toBeNull();
     });
 });

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    isChatTab,
     isFileTab,
     isNoteTab,
     isReviewTab,
@@ -2757,6 +2758,9 @@ describe("chatStore", () => {
             ],
             activeTabId: "tab-detached",
         });
+        useEditorStore.getState().openChat(detachedSessionId, {
+            title: "Detached chat",
+        });
         useChatStore.setState((state) => ({
             composerPartsBySessionId: {
                 ...state.composerPartsBySessionId,
@@ -2909,6 +2913,22 @@ describe("chatStore", () => {
                 runtimeId: "codex-acp",
             },
         ]);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.some(
+                    (tab) =>
+                        isChatTab(tab) && tab.sessionId === resumedSessionId,
+                ),
+        ).toBe(true);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.some(
+                    (tab) =>
+                        isChatTab(tab) && tab.sessionId === detachedSessionId,
+                ),
+        ).toBe(false);
     });
 
     it("adds the user message and turns the session into error when the runtime fails", async () => {

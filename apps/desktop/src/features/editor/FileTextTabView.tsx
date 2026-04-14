@@ -25,10 +25,7 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
-import {
-    selectFocusedPaneId,
-    useEditorStore,
-} from "../../app/store/editorStore";
+import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -128,9 +125,6 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         getCurrentContent,
         applyIncomingContent: replaceEditorDocument,
     });
-    const isPaneFocused = useEditorStore(
-        (state) => selectFocusedPaneId(state) === paneId,
-    );
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;
     const trackedFileMatch = tab
@@ -142,30 +136,6 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
               },
           ).match
         : null;
-
-    useEffect(() => {
-        if (paneId && !isPaneFocused) return;
-        const handler = (event: KeyboardEvent) => {
-            if (event.defaultPrevented) return;
-            if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-
-            const { editorFontSize, setSetting } = useSettingsStore.getState();
-
-            if (event.key === "+" || event.key === "=") {
-                event.preventDefault();
-                setSetting("editorFontSize", Math.min(24, editorFontSize + 1));
-                return;
-            }
-
-            if (event.key === "-" || event.key === "_") {
-                event.preventDefault();
-                setSetting("editorFontSize", Math.max(10, editorFontSize - 1));
-            }
-        };
-
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, [isPaneFocused, paneId]);
 
     const copySelectedText = useCallback(async () => {
         const view = viewRef.current;

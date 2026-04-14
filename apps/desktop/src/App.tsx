@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -18,6 +19,7 @@ import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
+import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
@@ -86,6 +88,13 @@ import {
     getShortcutDefinition,
 } from "./app/shortcuts/registry";
 import { getDesktopPlatform } from "./app/utils/platform";
+import {
+    decreaseAppZoom,
+    increaseAppZoom,
+    readAppZoom,
+    resetAppZoom,
+    subscribeAppZoom,
+} from "./app/utils/appZoom";
 import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
 import {
     canUseExcalidrawRuntime,
@@ -187,12 +196,16 @@ function toggleLivePreviewSetting() {
     setSetting("livePreviewEnabled", !livePreviewEnabled);
 }
 
-function adjustEditorFontSize(delta: number) {
-    const { editorFontSize, setSetting } = useSettingsStore.getState();
-    setSetting(
-        "editorFontSize",
-        Math.max(10, Math.min(24, editorFontSize + delta)),
-    );
+function zoomInApp() {
+    increaseAppZoom();
+}
+
+function zoomOutApp() {
+    decreaseAppZoom();
+}
+
+function resetAppToActualSize() {
+    resetAppZoom();
 }
 
 function RightPanel() {
@@ -376,6 +389,7 @@ function useRegisterCommands(
         const quickSwitcherShortcut = getShortcutDefinition("quick_switcher");
         const openVaultShortcut = getShortcutDefinition("open_vault");
         const newNoteShortcut = getShortcutDefinition("new_note");
+        const newAgentShortcut = getShortcutDefinition("new_agent");
         const closeTabShortcut = getShortcutDefinition("close_tab");
         const newTabShortcut = getShortcutDefinition("new_tab");
         const reopenClosedTabShortcut =
@@ -385,6 +399,9 @@ function useRegisterCommands(
         );
         const toggleRightPanelShortcut =
             getShortcutDefinition("toggle_right_panel");
+        const zoomInShortcut = getShortcutDefinition("zoom_in");
+        const zoomOutShortcut = getShortcutDefinition("zoom_out");
+        const resetZoomShortcut = getShortcutDefinition("reset_zoom");
         const searchInVaultShortcut = getShortcutDefinition("search_in_vault");
         const openSettingsShortcut = getShortcutDefinition("open_settings");
         const toggleLivePreviewShortcut = getShortcutDefinition(
@@ -510,6 +527,17 @@ function useRegisterCommands(
         });
 
         register({
+            id: "ai:new-agent",
+            label: newAgentShortcut.label,
+            shortcut: formatShortcutAction(newAgentShortcut.id, platform),
+            category: newAgentShortcut.category,
+            when: hasVault,
+            execute: () => {
+                void createNewChatInWorkspace();
+            },
+        });
+
+        register({
             id: "vault:new-concept-map",
             label: "New Concept Map",
             category: "Vault",
@@ -586,19 +614,27 @@ function useRegisterCommands(
         });
 
         register({
-            id: "editor:font-size-up",
-            label: "Increase Font Size",
-            shortcut: platform === "macos" ? "⌘=" : "Ctrl+=",
-            category: "Editor",
-            execute: () => adjustEditorFontSize(1),
+            id: "app:zoom-in",
+            label: zoomInShortcut.label,
+            shortcut: formatShortcutAction(zoomInShortcut.id, platform),
+            category: zoomInShortcut.category,
+            execute: zoomInApp,
         });
 
         register({
-            id: "editor:font-size-down",
-            label: "Decrease Font Size",
-            shortcut: platform === "macos" ? "⌘-" : "Ctrl-",
-            category: "Editor",
-            execute: () => adjustEditorFontSize(-1),
+            id: "app:zoom-out",
+            label: zoomOutShortcut.label,
+            shortcut: formatShortcutAction(zoomOutShortcut.id, platform),
+            category: zoomOutShortcut.category,
+            execute: zoomOutApp,
+        });
+
+        register({
+            id: "app:zoom-reset",
+            label: resetZoomShortcut.label,
+            shortcut: formatShortcutAction(resetZoomShortcut.id, platform),
+            category: resetZoomShortcut.category,
+            execute: resetAppToActualSize,
         });
 
         register({
@@ -842,6 +878,24 @@ function useGlobalShortcuts(openSettings: () => void) {
                 return;
             }
 
+            if (matchesShortcutAction(e, "zoom_in", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("app:zoom-in");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "zoom_out", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("app:zoom-out");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "reset_zoom", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("app:zoom-reset");
+                return;
+            }
+
             if (matchesShortcutAction(e, "search_in_vault", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("vault:search");
@@ -851,6 +905,12 @@ function useGlobalShortcuts(openSettings: () => void) {
             if (matchesShortcutAction(e, "new_note", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("vault:new-note");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "new_agent", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("ai:new-agent");
                 return;
             }
 
@@ -896,6 +956,28 @@ function useGlobalShortcuts(openSettings: () => void) {
         window.addEventListener("keydown", handler, true);
         return () => window.removeEventListener("keydown", handler, true);
     }, [activeModal, closeModal, openCommandPalette, openSettings]);
+}
+
+function useAppWebviewZoom() {
+    const [appZoom, setAppZoom] = useState(() => readAppZoom());
+
+    useEffect(() => {
+        return subscribeAppZoom((nextZoom) => {
+            setAppZoom(nextZoom);
+        });
+    }, []);
+
+    useEffect(() => {
+        const applyZoom = async () => {
+            try {
+                await getCurrentWebview().setZoom(appZoom);
+            } catch {
+                // Ignore unsupported environments such as tests.
+            }
+        };
+
+        void applyZoom();
+    }, [appZoom]);
 }
 
 function useNativeMenuActions(windowMode: ReturnType<typeof getWindowMode>) {
@@ -1258,6 +1340,7 @@ export default function App() {
 
     useRegisterCommands(openSearchPanel, openSettings, windowMode === "main");
     useGlobalShortcuts(openSettings);
+    useAppWebviewZoom();
     useNativeMenuActions(windowMode);
     useDynamicScrollbars();
     useAutoOpenReviewTab();

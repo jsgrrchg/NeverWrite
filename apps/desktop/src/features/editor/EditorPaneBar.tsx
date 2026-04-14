@@ -15,7 +15,6 @@ import {
     useEditorStore,
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
-import { revealChatInSidebar } from "../ai/chatPaneMovement";
 import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
 import { useInlineRename } from "../ai/components/useInlineRename";
@@ -44,7 +43,6 @@ import {
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
 } from "./workspaceChromeControls";
-import type { CrossPaneTabDropPreview } from "./workspaceTabDropPreview";
 
 function getTabLabel(
     tab: Tab,
@@ -66,7 +64,6 @@ function getTabLabel(
 interface EditorPaneBarProps {
     paneId: string;
     isFocused: boolean;
-    crossPaneDropPreview?: CrossPaneTabDropPreview | null;
 }
 
 function getPaneHeaderActionButtonStyle(active = false) {
@@ -80,11 +77,7 @@ function getPaneHeaderActionButtonStyle(active = false) {
     };
 }
 
-export function EditorPaneBar({
-    paneId,
-    isFocused,
-    crossPaneDropPreview = null,
-}: EditorPaneBarProps) {
+export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const pane = useEditorStore((state) =>
         selectEditorPaneState(state, paneId),
     );
@@ -289,14 +282,7 @@ export function EditorPaneBar({
             : projectedDropIndex > draggingOriginalIndex
               ? projectedDropIndex + 1
               : projectedDropIndex;
-    const crossPaneInsertionIndicatorIndex =
-        crossPaneDropPreview?.targetPaneId === paneId &&
-        crossPaneDropPreview.position === "center" &&
-        crossPaneDropPreview.insertIndex !== null
-            ? crossPaneDropPreview.insertIndex
-            : null;
-    const insertionIndicatorIndex =
-        localInsertionIndicatorIndex ?? crossPaneInsertionIndicatorIndex;
+    const insertionIndicatorIndex = localInsertionIndicatorIndex;
     const handleTabPointerDownCapture = useCallback(
         (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
             if (event.button !== 0) return;
@@ -350,47 +336,6 @@ export function EditorPaneBar({
                 data-pane-empty={hasTabs ? undefined : "true"}
             >
                 <div className="flex shrink-0 items-center gap-2">
-                    <div
-                        className="flex h-8 items-center gap-2 rounded-xl px-2.5"
-                        style={{
-                            border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
-                            background:
-                                "color-mix(in srgb, var(--bg-primary) 72%, transparent)",
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        <span
-                            aria-hidden="true"
-                            className="block h-2 w-2 rounded-full"
-                            style={{
-                                background: isFocused
-                                    ? "var(--accent)"
-                                    : "color-mix(in srgb, var(--text-secondary) 45%, transparent)",
-                                boxShadow: isFocused
-                                    ? "0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent)"
-                                    : "none",
-                            }}
-                        />
-                        <span
-                            className="text-[11px] font-semibold uppercase tracking-[0.12em]"
-                            style={{ color: "var(--text-secondary)" }}
-                        >
-                            {paneLabel}
-                        </span>
-                        {hasTabs && (
-                            <span
-                                className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
-                                style={{
-                                    background:
-                                        "color-mix(in srgb, var(--bg-tertiary) 68%, transparent)",
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                {pane.tabs.length}
-                            </span>
-                        )}
-                    </div>
-
                     <div
                         className="flex shrink-0 items-center"
                         style={chromeControlsGroupStyle}
@@ -836,11 +781,6 @@ export function EditorPaneBar({
                             entries.push({
                                 label: "Rename chat",
                                 action: () => beginChatRename(targetTab),
-                            });
-                            entries.push({
-                                label: "Show in Sidebar",
-                                action: () =>
-                                    revealChatInSidebar(targetTab.sessionId),
                             });
                         }
 

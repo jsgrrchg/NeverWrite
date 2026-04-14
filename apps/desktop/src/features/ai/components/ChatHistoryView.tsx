@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { useEditorStore } from "../../../app/store/editorStore";
+import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { useChatStore } from "../store/chatStore";
 import { exportChatSessionToVaultNote } from "../chatExport";
 import { findSessionForHistorySelection } from "../sessionPresentation";
@@ -199,6 +200,20 @@ export function ChatHistoryView() {
         [ensureTranscriptLoaded, runtimeOptions, notes, createNote, openNote],
     );
 
+    const handleRestoreSession = useCallback(
+        (historySessionId: string) => {
+            const session = findSessionForHistorySelection(
+                sessionsById,
+                historySessionId,
+            );
+            if (!session) return;
+
+            closeHistoryView();
+            openChatSessionInWorkspace(session.sessionId);
+        },
+        [closeHistoryView, sessionsById],
+    );
+
     return (
         <div
             className="flex h-full min-h-0 flex-col"
@@ -282,6 +297,7 @@ export function ChatHistoryView() {
                         runtimes={runtimeOptions}
                         selectedSessionId={historySelectedSessionId}
                         onSelectSession={setHistorySelectedSessionId}
+                        onRestoreSession={handleRestoreSession}
                         onDeleteSession={handleDeleteSession}
                         onDeleteSessions={handleDeleteSessions}
                         onForkSession={forkSession}
@@ -317,6 +333,9 @@ export function ChatHistoryView() {
                     {historySelectedSessionId ? (
                         <HistoryTranscriptViewer
                             historySessionId={historySelectedSessionId}
+                            onRestore={() =>
+                                handleRestoreSession(historySelectedSessionId)
+                            }
                             onExport={() =>
                                 selectedSession
                                     ? handleExportSession(

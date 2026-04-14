@@ -18,7 +18,6 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
-import { getWindowMode } from "../../../app/detachedWindows";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
@@ -41,7 +40,6 @@ import {
     createEmptyComposerParts,
 } from "../composerParts";
 import { getSessionTitle } from "../sessionPresentation";
-import { revealChatInSidebar } from "../chatPaneMovement";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -56,7 +54,6 @@ interface AIChatSessionViewProps {
 
 export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
-    const canRevealSidebar = getWindowMode() === "main";
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -336,20 +333,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 >
                     {session ? getSessionTitle(session) : "Chat"}
                 </span>
-                {canRevealSidebar ? (
-                    <button
-                        className="shrink-0 rounded px-2 py-0.5 text-[11px] hover:opacity-80"
-                        style={{
-                            background:
-                                "color-mix(in srgb, var(--accent) 10%, transparent)",
-                            color: "var(--accent)",
-                        }}
-                        onClick={() => revealChatInSidebar(sessionId)}
-                        title="Show in sidebar"
-                    >
-                        Show in Sidebar
-                    </button>
-                ) : null}
             </div>
 
             <AIChatRuntimeBanner

@@ -10,7 +10,6 @@ import {
 import type { WorkspaceLayoutNode } from "../../app/store/workspaceLayoutTree";
 import { EditorPaneBar } from "./EditorPaneBar";
 import { EditorPaneContent } from "./EditorPaneContent";
-import type { CrossPaneTabDropPreview } from "./workspaceTabDropPreview";
 
 const RESIZER_HITBOX_SIZE = 10;
 const RESIZER_VISIBLE_SIZE = 1;
@@ -37,74 +36,6 @@ interface WorkspaceSplitContainerProps {
     focusedPaneId: string | null;
     onPaneFocus: (paneId: string) => void;
     onResizeSplit: (splitId: string, sizes: readonly number[]) => void;
-    dropPreview: CrossPaneTabDropPreview | null;
-}
-
-function getDropOverlayLabel(position: CrossPaneTabDropPreview["position"]) {
-    switch (position) {
-        case "left":
-            return "Split left";
-        case "right":
-            return "Split right";
-        case "up":
-            return "Split up";
-        case "down":
-            return "Split down";
-        default:
-            return "Add as tab";
-    }
-}
-
-function getDropOverlayStyle(position: CrossPaneTabDropPreview["position"]) {
-    const base = {
-        position: "absolute" as const,
-        pointerEvents: "none" as const,
-        borderRadius: 12,
-        background: "color-mix(in srgb, var(--accent) 14%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)",
-        boxShadow:
-            "0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent)",
-    };
-
-    switch (position) {
-        case "left":
-            return {
-                ...base,
-                left: 8,
-                top: 8,
-                bottom: 8,
-                width: "34%",
-            };
-        case "right":
-            return {
-                ...base,
-                right: 8,
-                top: 8,
-                bottom: 8,
-                width: "34%",
-            };
-        case "up":
-            return {
-                ...base,
-                left: 8,
-                right: 8,
-                top: 8,
-                height: "34%",
-            };
-        case "down":
-            return {
-                ...base,
-                left: 8,
-                right: 8,
-                bottom: 8,
-                height: "34%",
-            };
-        default:
-            return {
-                ...base,
-                inset: 8,
-            };
-    }
 }
 
 function getNodeConstraints(node: WorkspaceLayoutNode): NodeConstraints {
@@ -161,22 +92,11 @@ function WorkspacePane({
     paneId,
     isFocused,
     onPaneFocus,
-    dropPreview,
 }: {
     paneId: string;
     isFocused: boolean;
     onPaneFocus: (paneId: string) => void;
-    dropPreview: CrossPaneTabDropPreview | null;
 }) {
-    const activeDropPreview =
-        dropPreview?.targetPaneId === paneId ? dropPreview : null;
-    const showPaneDropOverlay =
-        activeDropPreview !== null &&
-        !(
-            activeDropPreview.position === "center" &&
-            activeDropPreview.insertIndex !== null
-        );
-
     return (
         <div
             className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden"
@@ -195,36 +115,7 @@ function WorkspacePane({
             data-editor-pane-id={paneId}
             data-editor-pane-focused={isFocused || undefined}
         >
-            {showPaneDropOverlay ? (
-                <div
-                    aria-hidden="true"
-                    data-pane-drop-overlay-position={activeDropPreview.position}
-                    style={getDropOverlayStyle(activeDropPreview.position)}
-                >
-                    <div
-                        style={{
-                            position: "absolute",
-                            left: 10,
-                            top: 10,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            background:
-                                "color-mix(in srgb, var(--bg-primary) 90%, white 10%)",
-                            color: "var(--text-primary)",
-                            fontSize: 11,
-                            fontWeight: 600,
-                            letterSpacing: "0.01em",
-                        }}
-                    >
-                        {getDropOverlayLabel(activeDropPreview.position)}
-                    </div>
-                </div>
-            ) : null}
-            <EditorPaneBar
-                paneId={paneId}
-                isFocused={isFocused}
-                crossPaneDropPreview={activeDropPreview}
-            />
+            <EditorPaneBar paneId={paneId} isFocused={isFocused} />
             <EditorPaneContent
                 paneId={paneId}
                 emptyStateMessage="This pane is empty. Open a note here or close the pane from its menu."
@@ -238,7 +129,6 @@ export function WorkspaceSplitContainer({
     focusedPaneId,
     onPaneFocus,
     onResizeSplit,
-    dropPreview,
 }: WorkspaceSplitContainerProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const resizeSessionRef = useRef<ResizeSession | null>(null);
@@ -367,7 +257,6 @@ export function WorkspaceSplitContainer({
                 paneId={node.paneId}
                 isFocused={node.paneId === focusedPaneId}
                 onPaneFocus={onPaneFocus}
-                dropPreview={dropPreview}
             />
         );
     }
@@ -407,7 +296,6 @@ export function WorkspaceSplitContainer({
                                 focusedPaneId={focusedPaneId}
                                 onPaneFocus={onPaneFocus}
                                 onResizeSplit={onResizeSplit}
-                                dropPreview={dropPreview}
                             />
                         </div>
                         {index < node.children.length - 1 ? (

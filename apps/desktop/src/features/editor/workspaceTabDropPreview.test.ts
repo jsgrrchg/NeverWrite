@@ -107,6 +107,15 @@ describe("workspaceTabDropPreview", () => {
             position: "center",
             insertIndex: 0,
             tabId: "tab-a",
+            overlayRect: null,
+            lineRect: {
+                left: 219,
+                right: 221,
+                top: 10,
+                bottom: 34,
+                width: 2,
+                height: 24,
+            },
         });
     });
 
@@ -153,6 +162,86 @@ describe("workspaceTabDropPreview", () => {
             type: "split",
             paneId: "primary",
             direction: "left",
+        });
+
+        expect(
+            toCrossPaneTabDropPreview("primary", "tab-a", edgeTarget),
+        ).toEqual({
+            sourcePaneId: "primary",
+            targetPaneId: "primary",
+            position: "left",
+            insertIndex: null,
+            tabId: "tab-a",
+            overlayRect: {
+                left: 0,
+                top: 0,
+                right: 92.4,
+                bottom: 180,
+                width: 92.4,
+                height: 180,
+            },
+            lineRect: null,
+        });
+    });
+
+    it("builds an inset center overlay for foreign pane drops", () => {
+        document.body.innerHTML = `
+            <div data-editor-pane-id="primary">
+              <div data-pane-tab-strip="primary"></div>
+            </div>
+            <div data-editor-pane-id="secondary">
+              <div data-pane-tab-strip="secondary"></div>
+            </div>
+        `;
+
+        const primaryPane = document.querySelector(
+            '[data-editor-pane-id="primary"]',
+        ) as HTMLElement;
+        const primaryStrip = document.querySelector(
+            '[data-pane-tab-strip="primary"]',
+        ) as HTMLElement;
+        const secondaryPane = document.querySelector(
+            '[data-editor-pane-id="secondary"]',
+        ) as HTMLElement;
+        const secondaryStrip = document.querySelector(
+            '[data-pane-tab-strip="secondary"]',
+        ) as HTMLElement;
+
+        primaryPane.getBoundingClientRect = () =>
+            mockRect({ left: 0, top: 0, width: 180, height: 140 });
+        primaryStrip.getBoundingClientRect = () =>
+            mockRect({ left: 8, top: 8, width: 164, height: 30 });
+        secondaryPane.getBoundingClientRect = () =>
+            mockRect({ left: 200, top: 0, width: 240, height: 180 });
+        secondaryStrip.getBoundingClientRect = () =>
+            mockRect({ left: 208, top: 8, width: 224, height: 30 });
+
+        const target = resolveWorkspaceTabDropTarget({
+            sourcePaneId: "primary",
+            tabId: "tab-a",
+            clientX: 320,
+            clientY: 120,
+        });
+
+        expect(target).toEqual({
+            type: "pane-center",
+            paneId: "secondary",
+        });
+        expect(toCrossPaneTabDropPreview("primary", "tab-a", target)).toEqual({
+            sourcePaneId: "primary",
+            targetPaneId: "secondary",
+            position: "center",
+            insertIndex: null,
+            tabId: "tab-a",
+            overlayRect: {
+                left: 206,
+                top: 6,
+                right: 434,
+                bottom: 174,
+                width: 228,
+                height: 168,
+            },
+            lineRect: null,
         });
     });
 });

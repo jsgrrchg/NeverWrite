@@ -155,6 +155,7 @@ export interface EditorWorkspaceActions {
         options?: { background?: boolean; title?: string; paneId?: string },
     ) => void;
     closeChat: (sessionId: string) => void;
+    replaceAiSessionId: (fromSessionId: string, toSessionId: string) => void;
     goBack: () => void;
     goForward: () => void;
     navigateToHistoryIndex: (index: number) => void;
@@ -758,6 +759,24 @@ export function selectFocusedEditorTab<
     TState extends EditorWorkspaceReadableState,
 >(state: TState) {
     return selectEditorPaneActiveTab(state);
+}
+
+function replaceAiSessionTabReference(
+    tab: Tab,
+    fromSessionId: string,
+    toSessionId: string,
+) {
+    if (
+        (isChatTab(tab) || isReviewTab(tab)) &&
+        tab.sessionId === fromSessionId
+    ) {
+        return {
+            ...tab,
+            sessionId: toSessionId,
+        };
+    }
+
+    return tab;
 }
 
 export function selectEditorWorkspaceTabs<
@@ -2120,6 +2139,86 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 (t) => isChatTab(t) && t.sessionId === sessionId,
             );
             if (tab) get().closeTab(tab.id);
+        },
+
+        replaceAiSessionId: (fromSessionId, toSessionId) => {
+            if (
+                !fromSessionId ||
+                !toSessionId ||
+                fromSessionId === toSessionId
+            ) {
+                return;
+            }
+
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                let panesChanged = false;
+                const panes = workspace.panes.map((pane) => {
+                    let paneChanged = false;
+                    const tabs = pane.tabs.map((tab) => {
+                        const nextTab = replaceAiSessionTabReference(
+                            tab,
+                            fromSessionId,
+                            toSessionId,
+                        );
+                        if (nextTab !== tab) {
+                            paneChanged = true;
+                        }
+                        return nextTab;
+                    });
+
+                    if (!paneChanged) {
+                        return pane;
+                    }
+
+                    panesChanged = true;
+                    return createEditorPaneState(pane.id, {
+                        ...pane,
+                        tabs,
+                    });
+                });
+
+                let recentlyClosedChanged = false;
+                const recentlyClosedTabs = state.recentlyClosedTabs.map(
+                    (entry) => {
+                        const nextTab = replaceAiSessionTabReference(
+                            entry.tab,
+                            fromSessionId,
+                            toSessionId,
+                        );
+                        if (nextTab === entry.tab) {
+                            return entry;
+                        }
+
+                        recentlyClosedChanged = true;
+                        return {
+                            ...entry,
+                            tab: nextTab,
+                        };
+                    },
+                );
+
+                if (!panesChanged && !recentlyClosedChanged) {
+                    return state;
+                }
+
+                if (!panesChanged) {
+                    return { recentlyClosedTabs };
+                }
+
+                const snapshot = buildWorkspaceSnapshot({
+                    panes,
+                    focusedPaneId: workspace.focusedPaneId,
+                    layoutTree: workspace.layoutTree,
+                });
+
+                return {
+                    ...snapshot,
+                    recentlyClosedTabs: recentlyClosedChanged
+                        ? recentlyClosedTabs
+                        : state.recentlyClosedTabs,
+                };
+            });
         },
 
         goBack: () => {

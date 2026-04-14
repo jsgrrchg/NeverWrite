@@ -561,7 +561,7 @@ describe("FileTabView", () => {
         expect(document.querySelector(".cm-panels")).toBeNull();
     });
 
-    it("supports Command plus and minus to adjust font size for text files", async () => {
+    it("does not let text files intercept app zoom shortcuts", async () => {
         setVaultEntries([]);
         setEditorTabs([
             {
@@ -589,7 +589,7 @@ describe("FileTabView", () => {
             );
         });
 
-        expect(useSettingsStore.getState().editorFontSize).toBe(15);
+        expect(useSettingsStore.getState().editorFontSize).toBe(14);
 
         await act(async () => {
             window.dispatchEvent(
