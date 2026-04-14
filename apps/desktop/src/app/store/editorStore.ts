@@ -130,7 +130,7 @@ export const useEditorStore = create<EditorStore>((set, get, api) => ({
     clearCurrentSelection: () => set({ currentSelection: null }),
 }));
 
-// Debounced session persistence — only write when tab list or active tab changes
+// Debounced session persistence — only write when the workspace snapshot changes.
 let _sessionTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastSessionJson = "";
 let _lastSessionSig = "";

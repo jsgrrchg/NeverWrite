@@ -60,11 +60,10 @@ import {
 import { findAdjacentPane } from "./workspaceLayoutNavigation";
 
 /**
- * Phase 1 extraction boundary for the hybrid workspace model.
+ * Pane-centric workspace ownership boundary.
  *
- * The data model is still legacy+pane-bridged on purpose, but all workspace
- * ownership now lives behind this module so the pane-centric migration can
- * evolve without colliding with editor-only state.
+ * The store still projects the focused pane into top-level compatibility
+ * fields, but workspace structure and tab ownership live here now.
  */
 const MAX_RECENTLY_CLOSED_TABS = 20;
 
@@ -77,7 +76,7 @@ type WorkspaceSetState<TState> = (
 
 type WorkspaceGetState<TState> = () => TState;
 
-export interface LegacyWorkspaceState {
+export interface PaneWorkspaceState {
     tabs: Tab[];
     activeTabId: string | null;
     activationHistory: string[];
@@ -85,7 +84,7 @@ export interface LegacyWorkspaceState {
     tabNavigationIndex: number;
 }
 
-export interface EditorPaneState extends LegacyWorkspaceState {
+export interface EditorPaneState extends PaneWorkspaceState {
     id: string;
     tabIds: string[];
 }
@@ -112,7 +111,7 @@ export interface ReloadedDetail {
     contentHash?: ResourceReloadDetail["contentHash"];
 }
 
-export interface EditorWorkspaceState extends LegacyWorkspaceState {
+export interface EditorWorkspaceState extends PaneWorkspaceState {
     layoutTree: WorkspaceLayoutNode;
     panes: EditorPaneState[];
     focusedPaneId: string | null;
@@ -214,7 +213,6 @@ export interface EditorWorkspaceActions {
     updatePdfPage: (tabId: string, page: number) => void;
     updatePdfZoom: (tabId: string, zoom: number) => void;
     updatePdfViewMode: (tabId: string, viewMode: PdfViewMode) => void;
-    reorderTabs: (fromIndex: number, toIndex: number) => void;
     hydrateWorkspace: (
         panes: EditorPaneInput[],
         focusedPaneId?: string | null,
@@ -261,16 +259,16 @@ type EditorWorkspaceReadableState = Pick<
     EditorWorkspaceState,
     "panes" | "focusedPaneId" | "layoutTree" | "tabsById"
 > &
-    Partial<LegacyWorkspaceState>;
+    Partial<PaneWorkspaceState>;
 
-type EditorPaneWorkspaceInput = Partial<LegacyWorkspaceState> & {
+type EditorPaneWorkspaceInput = Partial<PaneWorkspaceState> & {
     tabIds?: readonly string[];
     tabsById?: Record<string, Tab>;
 };
 
-function normalizeLegacyWorkspaceState(
+function normalizePaneWorkspaceState(
     workspace: EditorPaneWorkspaceInput,
-): LegacyWorkspaceState & { tabIds: string[] } {
+): PaneWorkspaceState & { tabIds: string[] } {
     const resolvedTabsById = { ...(workspace.tabsById ?? {}) };
     for (const tab of workspace.tabs ?? []) {
         resolvedTabsById[tab.id] = tab;
@@ -345,7 +343,7 @@ export function createEditorPaneState(
 ): EditorPaneState {
     return {
         id,
-        ...normalizeLegacyWorkspaceState(workspace),
+        ...normalizePaneWorkspaceState(workspace),
     };
 }
 
@@ -539,7 +537,7 @@ export function getEffectivePaneWorkspace<
     TState extends EditorWorkspaceReadableState,
 >(state: TState) {
     const panes = state.panes.length > 0 ? state.panes : [];
-    const hasLegacyWorkspace =
+    const hasFocusedPaneFallbackState =
         Array.isArray(state.tabs) &&
         (state.tabs.length > 0 ||
             state.activeTabId !== null ||
@@ -547,7 +545,7 @@ export function getEffectivePaneWorkspace<
             (state.tabNavigationHistory?.length ?? 0) > 0 ||
             (state.tabNavigationIndex ?? -1) >= 0);
 
-    if (panes.length > 1 || !hasLegacyWorkspace) {
+    if (panes.length > 1 || !hasFocusedPaneFallbackState) {
         const effectivePanes =
             panes.length > 0
                 ? panes
@@ -647,7 +645,7 @@ export function getEffectivePaneWorkspace<
         };
     }
 
-    const legacyPane = createEditorPaneState(INITIAL_EDITOR_PANE_ID, {
+    const fallbackPane = createEditorPaneState(INITIAL_EDITOR_PANE_ID, {
         tabs: state.tabs ?? [],
         activeTabId: state.activeTabId ?? null,
         activationHistory: state.activationHistory ?? [],
@@ -655,9 +653,9 @@ export function getEffectivePaneWorkspace<
         tabNavigationIndex: state.tabNavigationIndex ?? -1,
     });
     const snapshot = buildWorkspaceSnapshot({
-        panes: [legacyPane],
+        panes: [fallbackPane],
         focusedPaneId: state.focusedPaneId,
-        layoutTree: resolveLayoutTreeFromState(state, [legacyPane.id]),
+        layoutTree: resolveLayoutTreeFromState(state, [fallbackPane.id]),
         tabsById: state.tabsById,
     });
 
@@ -1710,7 +1708,7 @@ function mutatePaneWorkspace(
         | "tabNavigationIndex"
     >,
     paneId: string,
-    mutate: (pane: EditorPaneState) => Partial<LegacyWorkspaceState>,
+    mutate: (pane: EditorPaneState) => Partial<PaneWorkspaceState>,
     options?: {
         focusedPaneId?: string | null;
     },
@@ -1746,7 +1744,7 @@ function mutateFocusedPaneWorkspace(
         | "tabNavigationHistory"
         | "tabNavigationIndex"
     >,
-    mutate: (pane: EditorPaneState) => Partial<LegacyWorkspaceState>,
+    mutate: (pane: EditorPaneState) => Partial<PaneWorkspaceState>,
     options?: {
         preserveFocus?: boolean;
     },
@@ -2730,10 +2728,6 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 const [tab] = tabs.splice(fromIndex, 1);
                 tabs.splice(toIndex, 0, tab);
 
-                // Phase 0 note: this is the structural reorder path we want to
-                // keep. It mutates pane-owned tab order, then rebuilds the
-                // global bridge through buildFocusedPaneProjection until the
-                // normalized model lands.
                 return buildWorkspaceSnapshot({
                     panes: workspace.panes.map((candidate) =>
                         candidate.id === paneId
@@ -3097,14 +3091,6 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             });
         },
 
-        reorderTabs: (fromIndex, toIndex) => {
-            const paneId = selectFocusedPaneId(get());
-            if (!paneId) {
-                return;
-            }
-            get().reorderPaneTabs(paneId, fromIndex, toIndex);
-        },
-
         hydrateWorkspace: (panes, focusedPaneId, layoutTree) => {
             const seenGraph = new Set<string>();
             const hydratedPanes = panes.flatMap((pane, index) => {
@@ -3163,6 +3149,8 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         hydrateTabs: (tabs, activeTabId) => {
+            // Detached windows and a few test helpers still hydrate a
+            // single-pane workspace directly through this API.
             const seenGraph = new Set<string>();
             const hydratedTabs: Tab[] = tabs.flatMap((tab): Tab[] => {
                 const normalized = normalizeHydratedTab(tab);

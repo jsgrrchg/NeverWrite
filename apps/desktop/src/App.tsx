@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
@@ -16,6 +17,7 @@ import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
+import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
@@ -392,7 +394,7 @@ function useRegisterCommands(
         const previousTabShortcut = getShortcutDefinition("previous_tab");
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
-            useEditorStore.getState().activeTabId !== null;
+            selectFocusedEditorTab(useEditorStore.getState()) !== null;
         const canSplitPane = () =>
             selectPaneCount(useEditorStore.getState()) < MAX_EDITOR_PANES;
         const canClosePane = () =>
@@ -536,23 +538,18 @@ function useRegisterCommands(
             category: closeTabShortcut.category,
             when: hasActiveTab,
             execute: () => {
-                const { activeTabId, tabs, closeTab } =
-                    useEditorStore.getState();
-                if (!activeTabId) return;
+                const state = useEditorStore.getState();
+                const activeTab = selectFocusedEditorTab(state);
+                if (!activeTab) return;
 
-                const activeTab = tabs.find((tab) => tab.id === activeTabId);
-                if (
-                    activeTab &&
-                    isNoteTab(activeTab) &&
-                    activeTab.noteId !== ""
-                ) {
+                if (isNoteTab(activeTab) && activeTab.noteId !== "") {
                     window.dispatchEvent(
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );
                     return;
                 }
 
-                closeTab(activeTabId);
+                state.closeTab(activeTab.id);
             },
         });
 
@@ -1063,8 +1060,10 @@ export default function App() {
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
-    const tabs = useEditorStore((s) => s.tabs);
-    const activeTabId = useEditorStore((s) => s.activeTabId);
+    const workspaceTabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
+    const focusedWorkspaceTabId = useEditorStore(
+        (state) => selectFocusedEditorTab(state)?.id ?? null,
+    );
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const developerModeEnabled = useSettingsStore(
         (s) => s.developerModeEnabled,
@@ -1131,7 +1130,7 @@ export default function App() {
                     label,
                     windowMode,
                     vaultPath,
-                    tabs: editor.tabs,
+                    tabs: selectEditorWorkspaceTabs(editor),
                     dirtyTabIds: editor.dirtyTabIds,
                     sessionsById: chat.sessionsById,
                 }),
@@ -1272,18 +1271,31 @@ export default function App() {
             setEditorPaneSizes(1, []);
             return;
         }
-        const paneCount = restored.panes?.length ?? 1;
+        const restoredPanes =
+            restored.panes?.length && restored.panes.length > 0
+                ? restored.panes
+                : [
+                      {
+                          id: "primary",
+                          tabs: restored.tabs,
+                          activeTabId: restored.activeTabId,
+                          activationHistory: restored.activeTabId
+                              ? [restored.activeTabId]
+                              : [],
+                          tabNavigationHistory: restored.activeTabId
+                              ? [restored.activeTabId]
+                              : [],
+                          tabNavigationIndex: restored.activeTabId ? 0 : -1,
+                      },
+                  ];
+        const paneCount = restoredPanes.length;
         setEditorPaneSizes(paneCount, restored.paneSizes ?? []);
-        if (restored.panes?.length) {
-            hydrateWorkspace(
-                restored.panes,
-                restored.focusedPaneId,
-                restored.layoutTree,
-            );
-            return;
-        }
-        hydrateTabs(restored.tabs, restored.activeTabId);
-    }, [hydrateTabs, hydrateWorkspace, setEditorPaneSizes]);
+        hydrateWorkspace(
+            restoredPanes,
+            restored.focusedPaneId ?? restoredPanes[0]?.id ?? null,
+            restored.layoutTree,
+        );
+    }, [hydrateWorkspace, setEditorPaneSizes]);
 
     useEffect(() => {
         const blockNativeContextMenu = (event: MouseEvent) => {
@@ -1313,8 +1325,8 @@ export default function App() {
             label,
             windowMode,
             vaultPath,
-            tabs,
-            activeTabId,
+            tabs: workspaceTabs,
+            activeTabId: focusedWorkspaceTabId,
         });
 
         writeWindowSessionEntry(label, entry);
@@ -1331,7 +1343,13 @@ export default function App() {
             window.removeEventListener("focus", refresh);
             window.clearInterval(interval);
         };
-    }, [activeTabId, tabs, vaultPath, windowMode, windowSessionReady]);
+    }, [
+        focusedWorkspaceTabId,
+        vaultPath,
+        windowMode,
+        windowSessionReady,
+        workspaceTabs,
+    ]);
 
     useEffect(() => {
         if (!isSessionReady()) return;
@@ -1350,8 +1368,6 @@ export default function App() {
                     focusedPaneId,
                     layoutTree: editor.layoutTree,
                     paneSizes: useLayoutStore.getState().editorPaneSizes,
-                    tabs: editor.tabs,
-                    activeTabId: editor.activeTabId,
                 }),
             );
         }, 250);
@@ -1473,6 +1489,7 @@ export default function App() {
                 restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
             );
             const editorState = useEditorStore.getState();
+            const focusedEditorTab = selectFocusedEditorTab(editorState);
             await useChatStore.getState().reconcileRestoredWorkspaceTabs(
                 selectEditorWorkspaceTabs(editorState)
                     .filter((tab) => isChatTab(tab))
@@ -1488,9 +1505,7 @@ export default function App() {
                             runtimeId: metadata?.runtimeId ?? null,
                         };
                     }),
-                isChatTab(selectFocusedEditorTab(editorState))
-                    ? editorState.activeTabId
-                    : null,
+                isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,
             );
             markChatTabsReady();
         })();
@@ -1825,7 +1840,7 @@ export default function App() {
     if (windowMode === "note") {
         return (
             <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
-                <AIChatWorkspaceHost />
+                <AIChatDetachedWindowHost />
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
                     <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />

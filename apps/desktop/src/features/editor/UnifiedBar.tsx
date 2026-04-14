@@ -24,7 +24,9 @@ import {
     isReviewTab,
     isFileTab,
     isPdfTab,
+    selectEditorPaneState,
     selectEditorWorkspaceTabs,
+    selectFocusedEditorTab,
     selectFocusedPaneId,
     selectPaneCount,
 } from "../../app/store/editorStore";
@@ -139,11 +141,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const desktopPlatform = getDesktopPlatform();
     const trailingDragZoneWidth =
         windowMode === "main" ? 152 : desktopPlatform === "windows" ? 16 : 8;
-    const tabs = useEditorStore((s) => s.tabs);
-    const activeTabId = useEditorStore((s) => s.activeTabId);
+    const focusedPane = useEditorStore(selectEditorPaneState);
+    const tabs = focusedPane.tabs;
+    const activeTabId = focusedPane.activeTabId;
     const switchTab = useEditorStore((s) => s.switchTab);
     const closeTab = useEditorStore((s) => s.closeTab);
-    const reorderTabs = useEditorStore((s) => s.reorderTabs);
+    const reorderPaneTabs = useEditorStore((s) => s.reorderPaneTabs);
     const moveTabToPaneDropTarget = useEditorStore(
         (s) => s.moveTabToPaneDropTarget,
     );
@@ -159,39 +162,41 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
+    const focusedPaneId = useEditorStore(selectFocusedPaneId);
     // Primitive selectors — stable when values don't change
     const canGoBack = useEditorStore((s) => {
+        const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
-            const tab = s.tabs.find((t) => t.id === s.activeTabId);
+            const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
             return tab && (isNoteTab(tab) || isFileTab(tab) || isPdfTab(tab))
                 ? tab.historyIndex > 0
                 : false;
         }
-        if (s.tabNavigationIndex <= 0) return false;
-        return s.tabNavigationHistory
-            .slice(0, s.tabNavigationIndex)
-            .some((tabId) => s.tabs.some((tab) => tab.id === tabId));
+        if (pane.tabNavigationIndex <= 0) return false;
+        return pane.tabNavigationHistory
+            .slice(0, pane.tabNavigationIndex)
+            .some((tabId) => pane.tabs.some((tab) => tab.id === tabId));
     });
     const canGoForward = useEditorStore((s) => {
+        const pane = selectEditorPaneState(s);
         if (tabOpenBehavior === "history") {
-            const tab = s.tabs.find((t) => t.id === s.activeTabId);
+            const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
             return tab && (isNoteTab(tab) || isFileTab(tab) || isPdfTab(tab))
                 ? tab.historyIndex < tab.history.length - 1
                 : false;
         }
-        if (s.tabNavigationIndex >= s.tabNavigationHistory.length - 1) {
+        if (pane.tabNavigationIndex >= pane.tabNavigationHistory.length - 1) {
             return false;
         }
-        return s.tabNavigationHistory
-            .slice(s.tabNavigationIndex + 1)
-            .some((tabId) => s.tabs.some((tab) => tab.id === tabId));
+        return pane.tabNavigationHistory
+            .slice(pane.tabNavigationIndex + 1)
+            .some((tabId) => pane.tabs.some((tab) => tab.id === tabId));
     });
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
-    const focusedPaneId = useEditorStore(selectFocusedPaneId);
     const paneCount = useEditorStore(selectPaneCount);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
@@ -265,7 +270,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         consumeSuppressedClick,
     } = useWorkspaceTabDrag({
         tabs,
-        onCommitReorder: reorderTabs,
+        onCommitReorder: (fromIndex, toIndex) => {
+            if (!focusedPaneId) {
+                return;
+            }
+            reorderPaneTabs(focusedPaneId, fromIndex, toIndex);
+        },
         onActivate: switchTab,
         liveReorder: false,
         resolveExternalDropTarget: (tabId, coords) => {
@@ -290,9 +300,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         onDetachMove: detachedTabWindowDrop.handleDetachMove,
         onDetachCancel: detachedTabWindowDrop.handleDetachCancel,
         buildAttachmentDetail: (tabId, phase, coords) => {
-            const tab = useEditorStore
-                .getState()
-                .tabs.find((item) => item.id === tabId);
+            const tab = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((item) => item.id === tabId);
             if (!tab) {
                 return null;
             }
@@ -423,8 +433,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
     const handleCloseTab = useCallback(
         async (tabId: string) => {
-            const { tabs: currentTabs, activeTabId } =
-                useEditorStore.getState();
+            const state = useEditorStore.getState();
+            const currentTabs = selectEditorWorkspaceTabs(state);
+            const focusedTab = selectFocusedEditorTab(state);
 
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
@@ -434,8 +445,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
-            if (windowMode === "main" && tabId === activeTabId) {
-                const activeTab = currentTabs.find((tab) => tab.id === tabId);
+            if (windowMode === "main" && tabId === focusedTab?.id) {
+                const activeTab = focusedTab;
                 if (
                     activeTab &&
                     isNoteTab(activeTab) &&
@@ -561,8 +572,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     );
 
     const closeOtherTabs = useCallback((tabId: string) => {
-        const tabIds = useEditorStore
-            .getState()
+        const tabIds = selectEditorPaneState(useEditorStore.getState())
             .tabs.filter((tab) => tab.id !== tabId)
             .map((tab) => tab.id);
 
@@ -572,11 +582,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     }, []);
 
     const closeTabsToTheRight = useCallback((tabId: string) => {
-        const state = useEditorStore.getState();
-        const index = state.tabs.findIndex((tab) => tab.id === tabId);
+        const pane = selectEditorPaneState(useEditorStore.getState());
+        const index = pane.tabs.findIndex((tab) => tab.id === tabId);
         if (index === -1) return;
 
-        const tabIds = state.tabs
+        const tabIds = pane.tabs
             .slice(index + 1)
             .map((tab) => tab.id)
             .reverse();
@@ -586,11 +596,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     }, []);
 
     const closeTabsToTheLeft = useCallback((tabId: string) => {
-        const state = useEditorStore.getState();
-        const index = state.tabs.findIndex((tab) => tab.id === tabId);
+        const pane = selectEditorPaneState(useEditorStore.getState());
+        const index = pane.tabs.findIndex((tab) => tab.id === tabId);
         if (index === -1) return;
 
-        const tabIds = state.tabs.slice(0, index).map((tab) => tab.id);
+        const tabIds = pane.tabs.slice(0, index).map((tab) => tab.id);
         for (const id of tabIds) {
             useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
         }
@@ -1494,10 +1504,8 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             </WindowChrome>
             {historyContextMenu &&
                 (() => {
-                    const { tabs: currentTabs, activeTabId: currentActiveId } =
-                        useEditorStore.getState();
-                    const currentActiveTab = currentTabs.find(
-                        (t) => t.id === currentActiveId,
+                    const currentActiveTab = selectFocusedEditorTab(
+                        useEditorStore.getState(),
                     );
                     if (!currentActiveTab || !isNoteTab(currentActiveTab)) {
                         return null;

@@ -220,8 +220,8 @@ export interface EditorSessionState {
     layoutTree?: WorkspaceLayoutNode;
     paneSizes?: number[];
     tabsById?: Record<string, Tab>;
-    tabs: Tab[];
-    activeTabId: string | null;
+    tabs?: Tab[];
+    activeTabId?: string | null;
     activationHistory?: string[];
     tabNavigationHistory?: string[];
     tabNavigationIndex?: number;
@@ -385,8 +385,8 @@ function buildPersistedWorkspacePanes(
         focusedPaneId: state.focusedPaneId ?? null,
         layoutTree: state.layoutTree,
         tabsById: state.tabsById ?? {},
-        tabs: state.tabs,
-        activeTabId: state.activeTabId,
+        tabs: state.tabs ?? [],
+        activeTabId: state.activeTabId ?? null,
         activationHistory: state.activationHistory ?? [],
         tabNavigationHistory: state.tabNavigationHistory ?? [],
         tabNavigationIndex: state.tabNavigationIndex ?? -1,
@@ -522,8 +522,8 @@ export function buildPersistedSession(
         focusedPaneId: state.focusedPaneId ?? null,
         layoutTree: state.layoutTree,
         tabsById: state.tabsById ?? {},
-        tabs: state.tabs,
-        activeTabId: state.activeTabId,
+        tabs: state.tabs ?? [],
+        activeTabId: state.activeTabId ?? null,
         activationHistory: state.activationHistory ?? [],
         tabNavigationHistory: state.tabNavigationHistory ?? [],
         tabNavigationIndex: state.tabNavigationIndex ?? -1,
