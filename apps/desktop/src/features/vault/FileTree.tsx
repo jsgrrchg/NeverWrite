@@ -24,13 +24,8 @@ import {
     isPdfTab,
     selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
-    selectPaneCount,
     type NoteTab,
 } from "../../app/store/editorStore";
-import {
-    MAX_EDITOR_PANES,
-    type WorkspaceSplitDirection,
-} from "../../app/store/workspaceLayoutTree";
 import {
     buildEntryMovePath,
     buildNoteMoveOperations,
@@ -1571,10 +1566,6 @@ export function FileTree() {
     const openNote = useEditorStore((s) => s.openNote);
     const closeTab = useEditorStore((s) => s.closeTab);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
-    const insertExternalTabInNewSplit = useEditorStore(
-        (s) => s.insertExternalTabInNewSplit,
-    );
-    const paneCount = useEditorStore(selectPaneCount);
     const bookmarkItems = useBookmarkStore((s) => s.items);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
@@ -2997,39 +2988,6 @@ export function FileTree() {
         [insertExternalTab, readNoteContent],
     );
 
-    const handleOpenNoteInSplit = useCallback(
-        async (note: NoteDto, direction: WorkspaceSplitDirection) => {
-            try {
-                const existing = selectEditorWorkspaceTabs(
-                    useEditorStore.getState(),
-                ).find(
-                    (tab): tab is NoteTab =>
-                        isNoteTab(tab) && tab.noteId === note.id,
-                );
-                const content =
-                    existing?.content ??
-                    (await readNoteContent(note.id)).content;
-
-                insertExternalTabInNewSplit(
-                    {
-                        id: crypto.randomUUID(),
-                        noteId: note.id,
-                        title: note.title,
-                        content,
-                    },
-                    direction,
-                );
-            } catch (error) {
-                logError(
-                    "file-tree",
-                    "Failed to open tree note in split",
-                    error,
-                );
-            }
-        },
-        [insertExternalTabInNewSplit, readNoteContent],
-    );
-
     const handleNoteClick = async (
         note: NoteDto,
         modifiers: { cmd: boolean; shift: boolean },
@@ -3740,17 +3698,6 @@ export function FileTree() {
                         label: "Open in New Tab",
                         action: () => void handleOpenNoteInNewTab(note),
                     },
-                    {
-                        label: "Open in Right Split",
-                        action: () => void handleOpenNoteInSplit(note, "row"),
-                        disabled: paneCount >= MAX_EDITOR_PANES,
-                    },
-                    {
-                        label: "Open in Bottom Split",
-                        action: () =>
-                            void handleOpenNoteInSplit(note, "column"),
-                        disabled: paneCount >= MAX_EDITOR_PANES,
-                    },
                     { type: "separator" },
                     {
                         label:
@@ -4016,7 +3963,6 @@ export function FileTree() {
         handleEntryRenameStart,
         handleFolderRenameStart,
         handleAddFileToChat,
-        handleOpenNoteInSplit,
         handleAddPdfToChat,
         handleMoveEntryToTrash,
         handlePdfClick,
@@ -4027,7 +3973,6 @@ export function FileTree() {
         handleRevealNoteInFinder,
         openMoveMenu,
         openTreeNote,
-        paneCount,
         startCreating,
         treeClipboard,
         bookmarkItems,

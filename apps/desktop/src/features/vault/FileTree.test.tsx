@@ -836,9 +836,8 @@ describe("FileTree", () => {
         ).toBe("Beta body");
     });
 
-    it("opens a note in a right split from the context menu", async () => {
+    it("does not expose pane-splitting actions in the note context menu", async () => {
         const user = userEvent.setup();
-        vi.mocked(invoke).mockResolvedValue({ content: "Beta body" });
 
         setVaultNotes([
             {
@@ -872,20 +871,13 @@ describe("FileTree", () => {
         await expandFolder(user, "notes");
 
         fireEvent.contextMenu(getNoteRow("Beta"));
-        await user.click(
-            await screen.findByRole("button", { name: "Open in Right Split" }),
-        );
 
-        await waitFor(() => {
-            expect(useEditorStore.getState().panes).toHaveLength(2);
-        });
-
-        const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("pane-2");
-        expect(state.panes[1]?.tabs[0]).toMatchObject({
-            noteId: "notes/beta",
-            content: "Beta body",
-        });
+        expect(
+            screen.queryByRole("button", { name: "Open in Right Split" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Open in Bottom Split" }),
+        ).not.toBeInTheDocument();
     });
 
     it("opens a file in a new tab on middle click", async () => {
