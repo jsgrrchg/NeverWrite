@@ -177,13 +177,11 @@ function WorkspacePane({
             style={{
                 minWidth: MIN_PANE_WIDTH,
                 minHeight: MIN_PANE_HEIGHT,
-                border: isFocused
-                    ? "1px solid color-mix(in srgb, var(--accent) 26%, var(--border))"
-                    : "1px solid transparent",
+                border: "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
                 borderRadius: 0,
                 background: "var(--bg-primary)",
                 boxShadow: isFocused
-                    ? "0 14px 32px rgba(15, 23, 42, 0.08)"
+                    ? "inset 0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent)"
                     : "none",
             }}
             onPointerDownCapture={() => onPaneFocus(paneId)}

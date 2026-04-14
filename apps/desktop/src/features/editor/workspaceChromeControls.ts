@@ -33,15 +33,16 @@ export function getChromeNavigationButtonStyle(
     enabled: boolean,
 ): CSSProperties {
     return {
-        width: 30,
-        height: 30,
-        borderRadius: side === "leading" ? "9px 0 0 9px" : "0 9px 9px 0",
-        border: "1px solid var(--border)",
+        width: 28,
+        height: 28,
+        borderRadius: side === "leading" ? "8px 0 0 8px" : "0 8px 8px 0",
+        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
         borderRight: side === "leading" ? "none" : undefined,
-        backgroundColor: "var(--bg-secondary)",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+        backgroundColor:
+            "color-mix(in srgb, var(--bg-primary) 66%, var(--bg-secondary))",
+        boxShadow: "none",
         color: "var(--text-secondary)",
-        opacity: enabled ? 0.85 : 0.35,
+        opacity: enabled ? 0.92 : 0.38,
         cursor: enabled ? "pointer" : "default",
     };
 }

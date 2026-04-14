@@ -1,686 +1,83 @@
-import {
-    useCallback,
-    useEffect,
-    useMemo,
-    useRef,
-    useState,
-    type MutableRefObject,
-} from "react";
-import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
+import { useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { useEditorStore } from "../../app/store/editorStore";
-import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import { openSettingsWindow } from "../../app/detachedWindows";
+import {
+    isChatTab,
+    selectFocusedEditorTab,
+    selectEditorWorkspaceTabs,
+    useEditorStore,
+} from "../../app/store/editorStore";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
-import { isTextLikeVaultEntry } from "../../app/utils/vaultEntries";
 import {
-    type AIChatSession,
-    type AIRuntimeConnectionState,
-    type AIRuntimeDescriptor,
-    type AIComposerPart,
-    type AISecretPatch,
-    type QueuedChatMessage,
-} from "./types";
-import { AIChatAgentControls } from "./components/AIChatAgentControls";
-import { AIChatComposer } from "./components/AIChatComposer";
-import { AIChatContextBar } from "./components/AIChatContextBar";
-import { EditedFilesBufferPanel } from "./components/EditedFilesBufferPanel";
-import { AIChatHeader } from "./components/AIChatHeader";
-import { AIChatMessageList } from "./components/AIChatMessageList";
-import { AIChatOnboardingCard } from "./components/AIChatOnboardingCard";
-import { AIAuthTerminalModal } from "./components/AIAuthTerminalModal";
-import { isIntegratedTerminalAuthMethod } from "./utils/authMethods";
-import { getRuntimeDisplayName } from "./utils/runtimeMetadata";
-import { QueuedMessagesPanel } from "./components/QueuedMessagesPanel";
-import { AIChatRuntimeBanner } from "./components/AIChatRuntimeBanner";
-import {
-    appendFileAttachmentPart,
-    appendScreenshotPart,
-    createEmptyComposerParts,
-    normalizeComposerParts,
-} from "./composerParts";
-import { exportChatSessionToVaultNote } from "./chatExport";
+    createNewChatInWorkspace,
+    openChatSessionInWorkspace,
+} from "./chatPaneMovement";
 import { ChatHistoryView } from "./components/ChatHistoryView";
+import { AIChatSessionList } from "./components/AIChatSessionList";
+import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
-import { useChatTabsStore } from "./store/chatTabsStore";
-import { useAiChatEventBridge } from "./useAiChatEventBridge";
-
-const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
-const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
-const IDLE_CONNECTION: AIRuntimeConnectionState = {
-    status: "idle",
-    message: null,
-};
-const UNCHANGED_SECRET_PATCH: AISecretPatch = { action: "unchanged" };
-
-function getAgentCatalog(
-    session: Pick<AIChatSession, "models" | "modes" | "configOptions"> | null,
-    runtime: AIRuntimeDescriptor | undefined,
-) {
-    return {
-        models:
-            session && session.models.length > 0
-                ? session.models
-                : (runtime?.models ?? []),
-        modes:
-            session && session.modes.length > 0
-                ? session.modes
-                : (runtime?.modes ?? []),
-        configOptions:
-            session && session.configOptions.length > 0
-                ? session.configOptions
-                : (runtime?.configOptions ?? []),
-    };
-}
+import { getRuntimeDisplayName } from "./utils/runtimeMetadata";
 
 export function AIChatPanel() {
-    const [composerExpanded, setComposerExpanded] = useState(false);
-    const [authTerminalRequest, setAuthTerminalRequest] = useState<{
-        runtimeId: string;
-        runtimeName: string;
-        customBinaryPath?: string;
-    } | null>(null);
-    const tabDrivenSessionIdRef = useRef<string | null>(null);
-    const recoveringTabSessionIdRef = useRef<string | null>(null);
-    const suppressedAutoTabSessionIdRef = useRef<string | null>(null);
-    // Data selectors — only subscribe to data that drives renders
-    const runtimes = useChatStore((s) => s.runtimes);
-    const activeSessionId = useChatStore((s) => s.activeSessionId);
-    const selectedRuntimeId = useChatStore((s) => s.selectedRuntimeId);
-    const isInitializing = useChatStore((s) => s.isInitializing);
-    const historyViewOpen = useChatStore((s) => s.historyViewOpen);
-
-    // Actions — access via getState() to avoid 30+ unnecessary subscriptions
-    const chatActions = useRef(useChatStore.getState()).current;
-    useAiChatEventBridge();
-    const refreshEntries = useVaultStore((state) => state.refreshEntries);
+    const [newMenuOpen, setNewMenuOpen] = useState(false);
     const vaultPath = useVaultStore((state) => state.vaultPath);
-    const screenshotRetentionSeconds = useChatStore(
-        (state) => state.screenshotRetentionSeconds,
+    const panelExpanded = useLayoutStore((state) => state.rightPanelExpanded);
+    const toggleRightPanelExpanded = useLayoutStore(
+        (state) => state.toggleRightPanelExpanded,
     );
-    const composerPartsBySessionId = useChatStore(
-        (state) => state.composerPartsBySessionId,
-    );
-    const interruptedTurnStateBySessionId = useChatStore(
-        (state) => state.interruptedTurnStateBySessionId,
-    );
-    const screenshotTimersRef = useRef<
-        Map<string, { timeoutId: number; durationMs: number }>
-    >(new Map());
+    const historyViewOpen = useChatStore((state) => state.historyViewOpen);
+    const activeSessionId = useChatStore((state) => state.activeSessionId);
+    const sessionsById = useChatStore((state) => state.sessionsById);
+    const sessionOrder = useChatStore((state) => state.sessionOrder);
+    const runtimes = useChatStore((state) => state.runtimes);
+    const selectedRuntimeId = useChatStore((state) => state.selectedRuntimeId);
+    const chatActions = useRef(useChatStore.getState()).current;
 
-    const handleRemoveAttachment = useCallback(
-        (sessionId: string, attachmentId: string) => {
-            chatActions.removeAttachment(attachmentId, sessionId);
-        },
-        [chatActions],
-    );
-
-    const handleClearAttachments = useCallback(
-        (sessionId: string) => {
-            chatActions.clearAttachments(sessionId);
-        },
-        [chatActions],
-    );
-
-    const handleAttachFile = useCallback(
-        async (sessionId: string) => {
-            const selected = await tauriOpen({
-                multiple: false,
-                filters: [
-                    {
-                        name: "Files",
-                        extensions: [
-                            "txt",
-                            "json",
-                            "csv",
-                            "pdf",
-                            "xml",
-                            "yaml",
-                            "yml",
-                            "toml",
-                            "log",
-                        ],
-                    },
-                ],
-            });
-            if (!selected) return;
-            const filePath =
-                typeof selected === "string"
-                    ? selected
-                    : (selected as { path: string }).path;
-            const fileName = filePath.split(/[/\\]/).pop() ?? "file";
-            const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-            const mimeMap: Record<string, string> = {
-                txt: "text/plain",
-                json: "application/json",
-                csv: "text/csv",
-                pdf: "application/pdf",
-                xml: "application/xml",
-                yaml: "text/yaml",
-                yml: "text/yaml",
-                toml: "text/toml",
-                log: "text/plain",
-            };
-            const currentParts =
-                useChatStore.getState().composerPartsBySessionId[sessionId] ??
-                createEmptyComposerParts();
-            chatActions.setComposerParts(
-                appendFileAttachmentPart(currentParts, {
-                    filePath,
-                    mimeType: mimeMap[ext] ?? "application/octet-stream",
-                    label: fileName,
-                }),
-                sessionId,
-            );
-        },
-        [chatActions],
-    );
-
-    const handlePasteImage = useCallback(
-        async (sessionId: string, file: File) => {
-            const MAX_SIZE = 25 * 1024 * 1024; // 25 MB
-            if (file.size > MAX_SIZE) {
-                console.warn("[chat] Pasted image too large:", file.size);
-                return;
-            }
-            try {
-                const buffer = await file.arrayBuffer();
-                const bytes = Array.from(new Uint8Array(buffer));
-                const ext =
-                    file.type === "image/jpeg"
-                        ? "jpg"
-                        : file.type === "image/gif"
-                          ? "gif"
-                          : file.type === "image/webp"
-                            ? "webp"
-                            : "png";
-                const now = new Date();
-                const ts = [
-                    now.getFullYear(),
-                    String(now.getMonth() + 1).padStart(2, "0"),
-                    String(now.getDate()).padStart(2, "0"),
-                    "-",
-                    String(now.getHours()).padStart(2, "0"),
-                    String(now.getMinutes()).padStart(2, "0"),
-                    String(now.getSeconds()).padStart(2, "0"),
-                ].join("");
-                const fileName = `pasted-image-${ts}.${ext}`;
-
-                const saved = await vaultInvoke<{
-                    path: string;
-                    relative_path: string;
-                    file_name: string;
-                    mime_type: string | null;
-                }>("save_vault_binary_file", {
-                    relativeDir: "assets/chat",
-                    fileName,
-                    bytes,
-                });
-                await refreshEntries();
-
-                const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
-                const currentParts =
-                    useChatStore.getState().composerPartsBySessionId[
-                        sessionId
-                    ] ?? createEmptyComposerParts();
-                chatActions.setComposerParts(
-                    appendScreenshotPart(currentParts, {
-                        filePath: saved.path,
-                        mimeType: saved.mime_type ?? file.type,
-                        label: timeLabel,
-                    }),
-                    sessionId,
-                );
-            } catch (error) {
-                console.error("[chat] Failed to save pasted image:", error);
-            }
-        },
-        [chatActions, refreshEntries],
-    );
-
-    const requireCmdEnterToSend = useChatStore(
-        (state) => state.requireCmdEnterToSend,
-    );
-    const composerFontSize = useChatStore((state) => state.composerFontSize);
-    const composerFontFamily = useChatStore(
-        (state) => state.composerFontFamily,
-    );
-    const chatFontSize = useChatStore((state) => state.chatFontSize);
-    const chatFontFamily = useChatStore((state) => state.chatFontFamily);
-    const allChatTabs = useChatTabsStore((state) => state.tabs);
-    // Only show sidebar tabs — workspace tabs are rendered by AIChatSessionView
-    const tabs = useMemo(
-        () => allChatTabs.filter((tab) => tab.location !== "workspace"),
-        [allChatTabs],
-    );
-    const activeTabId = useChatTabsStore((state) => state.activeTabId);
-    const tabsReady = useChatTabsStore((state) => state.isReady);
-    const ensureSessionTab = useChatTabsStore(
-        (state) => state.ensureSessionTab,
-    );
-    const setActiveTab = useChatTabsStore((state) => state.setActiveTab);
-
-    const notes = useVaultStore((state) => state.notes);
-    const entries = useVaultStore((state) => state.entries);
-    const createNote = useVaultStore((state) => state.createNote);
-    const openNote = useEditorStore((state) => state.openNote);
-    const activeTab = activeTabId
-        ? (tabs.find((tab) => tab.id === activeTabId) ?? null)
-        : null;
-    const activeTabSessionId = activeTab?.sessionId ?? null;
-    const {
-        activeSession,
-        currentSession,
-        composerParts,
-        queuedMessages,
-        queuedMessageEdit,
-    } = useChatStore(
-        useShallow((state) => {
-            const nextActiveSession = activeSessionId
-                ? (state.sessionsById[activeSessionId] ?? null)
-                : null;
-            const nextCurrentSession = activeTabSessionId
-                ? (state.sessionsById[activeTabSessionId] ?? null)
-                : null;
-            const sessionId = nextCurrentSession?.sessionId ?? null;
-            return {
-                activeSession: nextActiveSession,
-                currentSession: nextCurrentSession,
-                composerParts: sessionId
-                    ? (state.composerPartsBySessionId[sessionId] ??
-                      EMPTY_COMPOSER_PARTS)
-                    : EMPTY_COMPOSER_PARTS,
-                queuedMessages: sessionId
-                    ? (state.queuedMessagesBySessionId[sessionId] ??
-                      EMPTY_QUEUED_MESSAGES)
-                    : EMPTY_QUEUED_MESSAGES,
-                queuedMessageEdit: sessionId
-                    ? (state.queuedMessageEditBySessionId[sessionId] ?? null)
-                    : null,
-            };
-        }),
-    );
-    const composerSessionId = currentSession?.sessionId ?? null;
-    const composerInterruptedTurnState = composerSessionId
-        ? (interruptedTurnStateBySessionId[composerSessionId] ?? null)
-        : null;
-    const fileOptions = useMemo(
-        () =>
-            entries
-                .filter(
-                    (entry) =>
-                        entry.kind === "file" && isTextLikeVaultEntry(entry),
-                )
-                .map((entry) => ({
-                    id: entry.id,
-                    title: entry.title,
-                    path: entry.path,
-                    relativePath: entry.relative_path,
-                    fileName: entry.file_name,
-                    mimeType: entry.mime_type,
-                })),
-        [entries],
-    );
-
-    useEffect(() => {
-        const timers = screenshotTimersRef.current;
-        const durationMs = screenshotRetentionSeconds * 1000;
-
-        if (durationMs <= 0) {
-            for (const { timeoutId } of timers.values()) {
-                window.clearTimeout(timeoutId);
-            }
-            timers.clear();
-            return;
-        }
-
-        const activeKeys = new Set<string>();
-
-        for (const [sessionId, parts] of Object.entries(
-            composerPartsBySessionId,
-        )) {
-            for (const part of parts) {
-                if (part.type !== "screenshot") continue;
-
-                const key = `${sessionId}:${part.id}`;
-                activeKeys.add(key);
-
-                const existing = timers.get(key);
-                if (existing && existing.durationMs === durationMs) {
-                    continue;
-                }
-                if (existing) {
-                    window.clearTimeout(existing.timeoutId);
-                }
-
-                const timeoutId = window.setTimeout(() => {
-                    const currentParts =
-                        useChatStore.getState().composerPartsBySessionId[
-                            sessionId
-                        ] ?? createEmptyComposerParts();
-                    const nextParts = normalizeComposerParts(
-                        currentParts.filter(
-                            (candidate) =>
-                                candidate.type !== "screenshot" ||
-                                candidate.id !== part.id,
-                        ),
-                    );
-                    chatActions.setComposerParts(nextParts, sessionId);
-                    screenshotTimersRef.current.delete(key);
-                }, durationMs);
-
-                timers.set(key, { timeoutId, durationMs });
-            }
-        }
-
-        for (const [key, { timeoutId }] of timers.entries()) {
-            if (activeKeys.has(key)) continue;
-            window.clearTimeout(timeoutId);
-            timers.delete(key);
-        }
-    }, [chatActions, composerPartsBySessionId, screenshotRetentionSeconds]);
-
-    useEffect(() => {
-        const timers = screenshotTimersRef.current;
-        return () => {
-            for (const { timeoutId } of timers.values()) {
-                window.clearTimeout(timeoutId);
-            }
-            timers.clear();
-        };
-    }, []);
-
-    const noteOptions = notes.map((note) => ({
-        id: note.id,
-        title: note.title,
-        path: note.path,
-    }));
-    const selectedSetupStatus = useChatStore((state) =>
-        selectedRuntimeId
-            ? (state.setupStatusByRuntimeId[selectedRuntimeId] ?? null)
-            : null,
-    );
-    const selectedConnection = useChatStore((state) =>
-        selectedRuntimeId
-            ? (state.runtimeConnectionByRuntimeId[selectedRuntimeId] ??
-              IDLE_CONNECTION)
-            : IDLE_CONNECTION,
-    );
-    const shouldFocusSelectedRuntime =
-        Boolean(selectedRuntimeId) &&
-        selectedRuntimeId !== currentSession?.runtimeId &&
-        (!currentSession ||
-            Boolean(selectedSetupStatus?.onboardingRequired) ||
-            selectedConnection.status !== "idle" ||
-            authTerminalRequest?.runtimeId === selectedRuntimeId);
-    const activeRuntimeId = shouldFocusSelectedRuntime
-        ? selectedRuntimeId
-        : (currentSession?.runtimeId ??
-          selectedRuntimeId ??
-          runtimes[0]?.runtime.id ??
-          null);
-    const activeRuntime = runtimes.find(
-        (descriptor) => descriptor.runtime.id === activeRuntimeId,
-    );
-    const activeSetupStatus = useChatStore((state) =>
-        activeRuntimeId
-            ? (state.setupStatusByRuntimeId[activeRuntimeId] ?? null)
-            : null,
-    );
-    const activeConnection = useChatStore((state) =>
-        activeRuntimeId
-            ? (state.runtimeConnectionByRuntimeId[activeRuntimeId] ??
-              IDLE_CONNECTION)
-            : IDLE_CONNECTION,
-    );
-    const agentCatalog = getAgentCatalog(currentSession ?? null, activeRuntime);
-    const runtimeModels = agentCatalog.models;
-    const runtimeModes = agentCatalog.modes;
-    const runtimeConfigOptions = agentCatalog.configOptions;
-    const agentControlsDisabled =
-        !currentSession || Boolean(currentSession?.isResumingSession);
-    const composerRuntimeLabel =
-        (currentSession
-            ? runtimes.find(
-                  (descriptor) =>
-                      descriptor.runtime.id === currentSession.runtimeId,
-              )?.runtime.name
-            : activeRuntime?.runtime.name
-        )?.replace(/ ACP$/, "") ?? "Assistant";
-    const handleRefreshSetup = useCallback(
-        async (runtimeId: string) => {
-            await chatActions.refreshSetupStatus(runtimeId);
-        },
-        [chatActions],
-    );
-    const handleOnboardingSaveSetup = useCallback(
-        async (input: {
-            runtimeId?: string;
-            customBinaryPath?: string;
-            codexApiKey: AISecretPatch;
-            openaiApiKey: AISecretPatch;
-            geminiApiKey: AISecretPatch;
-            gatewayBaseUrl?: string;
-            gatewayHeaders: AISecretPatch;
-            anthropicBaseUrl?: string;
-            anthropicCustomHeaders: AISecretPatch;
-            anthropicAuthToken: AISecretPatch;
-        }) => {
-            await chatActions.saveSetup({
-                ...input,
-                googleApiKey: UNCHANGED_SECRET_PATCH,
-                googleCloudProject: undefined,
-                googleCloudLocation: undefined,
-            });
-        },
-        [chatActions],
-    );
-    const handleOnboardingAuthenticate = useCallback(
-        async (input: {
-            runtimeId?: string;
-            methodId: string;
-            customBinaryPath?: string;
-            openaiApiKey: AISecretPatch;
-            codexApiKey: AISecretPatch;
-            geminiApiKey: AISecretPatch;
-            gatewayBaseUrl?: string;
-            gatewayHeaders: AISecretPatch;
-            anthropicBaseUrl?: string;
-            anthropicCustomHeaders: AISecretPatch;
-            anthropicAuthToken: AISecretPatch;
-        }) => {
-            const runtimeId = input.runtimeId ?? activeRuntimeId;
-            if (!runtimeId) return;
-
-            const runtime = runtimes.find(
-                (descriptor) => descriptor.runtime.id === runtimeId,
-            );
-            if (isIntegratedTerminalAuthMethod(runtimeId, input.methodId)) {
-                setAuthTerminalRequest({
-                    runtimeId,
-                    runtimeName: getRuntimeDisplayName(
-                        runtimeId,
-                        runtime?.runtime.name,
-                    ),
-                    customBinaryPath: input.customBinaryPath,
-                });
-                return;
-            }
-
-            await chatActions.startAuth({
-                ...input,
-                runtimeId,
-                googleApiKey: UNCHANGED_SECRET_PATCH,
-                googleCloudProject: undefined,
-                googleCloudLocation: undefined,
-            });
-        },
-        [activeRuntimeId, chatActions, runtimes],
-    );
-
-    useEffect(() => {
-        if (!authTerminalRequest) return;
-        if (activeSetupStatus?.runtimeId !== authTerminalRequest.runtimeId)
-            return;
-        if (activeSetupStatus.onboardingRequired) return;
-        setAuthTerminalRequest(null);
-    }, [activeSetupStatus, authTerminalRequest]);
-
-    useEffect(() => {
-        if (!tabsReady) return;
-        if (!activeSessionId) return;
-        if (activeTabSessionId && !currentSession) return;
-
-        if (
-            suppressedAutoTabSessionIdRef.current &&
-            suppressedAutoTabSessionIdRef.current !== activeSessionId
-        ) {
-            suppressedAutoTabSessionIdRef.current = null;
-        }
-
-        if (
-            suppressedAutoTabSessionIdRef.current === activeSessionId &&
-            (tabs.length === 0 || activeTabSessionId !== activeSessionId)
-        ) {
-            return;
-        }
-
-        if (
-            suppressedAutoTabSessionIdRef.current === activeSessionId &&
-            activeTabSessionId === activeSessionId
-        ) {
-            suppressedAutoTabSessionIdRef.current = null;
-        }
-
-        if (tabDrivenSessionIdRef.current === activeSessionId) {
-            tabDrivenSessionIdRef.current = null;
-            return;
-        }
-
-        const activeSessionSidebarTabId =
-            tabs.find((tab) => tab.sessionId === activeSessionId)?.id ?? null;
-        const activeSessionHasAnyTab = allChatTabs.some(
-            (tab) => tab.sessionId === activeSessionId,
+    const { focusedWorkspaceChatSessionId, visibleWorkspaceChatCount } =
+        useEditorStore(
+            useShallow((state) => {
+                const focusedTab = selectFocusedEditorTab(state);
+                const visibleWorkspaceChatCount = selectEditorWorkspaceTabs(
+                    state,
+                ).filter((tab) => isChatTab(tab)).length;
+                return {
+                    focusedWorkspaceChatSessionId:
+                        focusedTab && isChatTab(focusedTab)
+                            ? focusedTab.sessionId
+                            : null,
+                    visibleWorkspaceChatCount,
+                };
+            }),
         );
-        if (!activeSessionHasAnyTab) {
-            const tabId = ensureSessionTab(
-                activeSessionId,
-                activeSession?.historySessionId ?? null,
-                activeSession?.runtimeId ?? null,
-            );
-            setActiveTab(tabId);
-            return;
-        }
 
-        if (!activeTabId && activeSessionSidebarTabId) {
-            setActiveTab(activeSessionSidebarTabId);
-        }
-    }, [
-        activeSessionId,
-        activeSession,
-        activeTabId,
-        activeTabSessionId,
-        allChatTabs,
-        currentSession,
-        ensureSessionTab,
-        setActiveTab,
-        tabs,
-        tabsReady,
-    ]);
+    const sessions = useMemo(
+        () =>
+            sessionOrder
+                .map((sessionId) => sessionsById[sessionId])
+                .filter((session): session is NonNullable<typeof session> =>
+                    Boolean(session),
+                ),
+        [sessionOrder, sessionsById],
+    );
 
-    useEffect(() => {
-        if (
-            recoveringTabSessionIdRef.current &&
-            recoveringTabSessionIdRef.current !== activeTabSessionId
-        ) {
-            recoveringTabSessionIdRef.current = null;
-        }
+    const focusedWorkspaceSession =
+        (focusedWorkspaceChatSessionId
+            ? (sessionsById[focusedWorkspaceChatSessionId] ?? null)
+            : null) ?? null;
+    const launcherSession =
+        focusedWorkspaceSession ??
+        (activeSessionId ? (sessionsById[activeSessionId] ?? null) : null);
 
-        if (shouldFocusSelectedRuntime || !tabsReady || !activeTabSessionId) {
-            return;
-        }
-
-        if (currentSession) {
-            if (recoveringTabSessionIdRef.current === activeTabSessionId) {
-                recoveringTabSessionIdRef.current = null;
-            }
-            return;
-        }
-
-        if (recoveringTabSessionIdRef.current === activeTabSessionId) {
-            return;
-        }
-
-        recoveringTabSessionIdRef.current = activeTabSessionId;
-        void chatActions.loadSession(activeTabSessionId).finally(() => {
-            if (recoveringTabSessionIdRef.current === activeTabSessionId) {
-                recoveringTabSessionIdRef.current = null;
-            }
+    const orderedRuntimes = useMemo(() => {
+        const nextRuntimes = [...runtimes];
+        nextRuntimes.sort((left, right) => {
+            if (left.runtime.id === selectedRuntimeId) return -1;
+            if (right.runtime.id === selectedRuntimeId) return 1;
+            return left.runtime.name.localeCompare(right.runtime.name);
         });
-    }, [
-        activeTabSessionId,
-        chatActions,
-        currentSession,
-        shouldFocusSelectedRuntime,
-        tabsReady,
-    ]);
-
-    useEffect(() => {
-        if (shouldFocusSelectedRuntime) {
-            return;
-        }
-        if (!activeTabSessionId || activeTabSessionId === activeSessionId) {
-            return;
-        }
-
-        if (!currentSession) return;
-        tabDrivenSessionIdRef.current = activeTabSessionId;
-        void chatActions.loadSession(activeTabSessionId);
-    }, [
-        activeSessionId,
-        activeTabSessionId,
-        chatActions,
-        currentSession,
-        shouldFocusSelectedRuntime,
-    ]);
-
-    useEffect(() => {
-        if (shouldFocusSelectedRuntime) {
-            return;
-        }
-        if (!tabsReady || !activeTabSessionId) {
-            return;
-        }
-
-        if (
-            currentSession?.runtimeState === "live" ||
-            currentSession?.isResumingSession
-        ) {
-            return;
-        }
-
-        void chatActions.resumeSession(activeTabSessionId);
-    }, [
-        activeTabSessionId,
-        chatActions,
-        currentSession,
-        shouldFocusSelectedRuntime,
-        tabsReady,
-    ]);
-
-    // When the active sidebar tab moves to workspace, switch to the next sidebar tab
-    useEffect(() => {
-        if (!activeTabId) return;
-        const activeTab = allChatTabs.find((t) => t.id === activeTabId);
-        if (activeTab?.location === "workspace") {
-            const nextSidebarTab = allChatTabs.find(
-                (t) => t.id !== activeTabId && t.location !== "workspace",
-            );
-            if (nextSidebarTab) {
-                setActiveTab(nextSidebarTab.id);
-            }
-        }
-    }, [activeTabId, allChatTabs, setActiveTab]);
+        return nextRuntimes;
+    }, [runtimes, selectedRuntimeId]);
 
     if (historyViewOpen) {
         return <ChatHistoryView />;
@@ -688,393 +85,288 @@ export function AIChatPanel() {
 
     return (
         <div
-            className="relative flex h-full min-h-0 flex-col"
+            className="flex h-full min-h-0 flex-col"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
-            <AIChatHeaderBridge
-                activeTabId={activeTabId}
-                tabs={tabs}
-                notes={notes}
-                createNote={createNote}
-                openNote={openNote}
-                runtimes={runtimes}
-                chatActions={chatActions}
-                suppressedAutoTabSessionIdRef={suppressedAutoTabSessionIdRef}
-            />
-            <AIChatRuntimeBanner
-                connection={activeConnection}
-                runtimeName={activeRuntime?.runtime.name.replace(/ ACP$/, "")}
-            />
-            {activeSetupStatus?.onboardingRequired ? (
-                <AIChatOnboardingCard
-                    runtime={activeRuntime?.runtime ?? null}
-                    setupStatus={activeSetupStatus}
-                    onSaveSetup={handleOnboardingSaveSetup}
-                    onAuthenticate={handleOnboardingAuthenticate}
-                />
-            ) : null}
-            {!composerExpanded && (
-                <AIChatMessageList
-                    sessionId={composerSessionId}
-                    messages={currentSession?.messages ?? []}
-                    status={currentSession?.status ?? "idle"}
-                    hasOlderMessages={
-                        (currentSession?.loadedPersistedMessageStart ?? 0) > 0
-                    }
-                    isLoadingOlderMessages={
-                        currentSession?.isLoadingPersistedMessages ?? false
-                    }
-                    visibleWorkCycleId={
-                        currentSession?.visibleWorkCycleId ?? null
-                    }
-                    chatFontSize={chatFontSize}
-                    chatFontFamily={chatFontFamily}
-                    onLoadOlderMessages={() => {
-                        if (!composerSessionId) return;
-                        void chatActions.loadOlderMessages(composerSessionId);
-                    }}
-                    onPermissionResponse={(requestId, optionId) => {
-                        if (!composerSessionId) return;
-                        void chatActions.respondPermissionForSession(
-                            composerSessionId,
-                            requestId,
-                            optionId,
-                        );
-                    }}
-                    onUserInputResponse={(requestId, answers) => {
-                        if (!composerSessionId) return;
-                        void chatActions.respondUserInput(
-                            requestId,
-                            answers,
-                            composerSessionId,
-                        );
-                    }}
-                />
-            )}
-            <EditedFilesBufferPanel sessionId={composerSessionId} />
             <div
-                className={
-                    composerExpanded
-                        ? "flex min-h-0 flex-1 flex-col px-1.5 pb-1.5 pt-1.5"
-                        : "px-3 pb-3 pt-2"
-                }
+                className="flex items-center justify-between gap-2 px-3 py-2"
+                style={{
+                    borderBottom: "1px solid var(--border)",
+                    minHeight: 40,
+                }}
             >
-                <QueuedMessagesPanel
-                    items={queuedMessages}
-                    editingItem={queuedMessageEdit?.item ?? null}
-                    onCancel={(messageId) => {
-                        if (!composerSessionId) return;
-                        chatActions.removeQueuedMessage(
-                            composerSessionId,
-                            messageId,
-                        );
-                    }}
-                    onClearAll={() => {
-                        if (!composerSessionId) return;
-                        chatActions.clearSessionQueue(composerSessionId);
-                    }}
-                    onEdit={(messageId) => {
-                        if (!composerSessionId) return;
-                        chatActions.editQueuedMessage(
-                            composerSessionId,
-                            messageId,
-                        );
-                    }}
-                    onSendNow={(messageId) => {
-                        if (!composerSessionId) return;
-                        void chatActions.sendQueuedMessageNow(
-                            composerSessionId,
-                            messageId,
-                        );
-                    }}
-                    onCancelEdit={() => {
-                        if (!composerSessionId) return;
-                        chatActions.cancelQueuedMessageEdit(composerSessionId);
-                    }}
-                />
-                <AIChatComposer
-                    key={composerSessionId ?? "no-session"}
-                    parts={composerParts}
-                    notes={noteOptions}
-                    files={fileOptions}
-                    status={currentSession?.status ?? "idle"}
-                    runtimeName={composerRuntimeLabel}
-                    runtimeId={currentSession?.runtimeId}
-                    requireCmdEnterToSend={requireCmdEnterToSend}
-                    composerFontSize={composerFontSize}
-                    composerFontFamily={composerFontFamily}
-                    availableCommands={currentSession?.availableCommands}
-                    isStopping={Boolean(
-                        composerInterruptedTurnState?.isStopping,
-                    )}
-                    hasPendingSubmitAfterStop={Boolean(
-                        composerInterruptedTurnState?.pendingManualSend,
-                    )}
-                    expanded={composerExpanded}
-                    onToggleExpanded={() => setComposerExpanded((v) => !v)}
-                    disabled={
-                        !currentSession ||
-                        isInitializing ||
-                        activeConnection.status === "loading" ||
-                        Boolean(currentSession?.isResumingSession) ||
-                        Boolean(activeSetupStatus?.onboardingRequired)
-                    }
-                    contextBar={
-                        <AIChatContextBar
-                            attachments={[
-                                ...(currentSession?.attachments ?? [])
-                                    .filter(
-                                        (a) =>
-                                            !composerParts.some(
-                                                (p) =>
-                                                    (p.type === "mention" &&
-                                                        p.noteId ===
-                                                            a.noteId) ||
-                                                    (p.type ===
-                                                        "file_mention" &&
-                                                        a.type === "file" &&
-                                                        a.path === p.path) ||
-                                                    (p.type ===
-                                                        "folder_mention" &&
-                                                        a.type === "folder" &&
-                                                        p.folderPath ===
-                                                            a.noteId),
-                                            ),
-                                    )
-                                    .map((attachment) => ({
-                                        id: attachment.id,
-                                        noteId: attachment.noteId,
-                                        label: attachment.label,
-                                        path: attachment.path,
-                                        removable: true,
-                                        type: attachment.type,
-                                        status: attachment.status,
-                                        errorMessage: attachment.errorMessage,
-                                    })),
-                            ]}
-                            onRemoveAttachment={(attachmentId) => {
-                                if (!composerSessionId) return;
-                                handleRemoveAttachment(
-                                    composerSessionId,
-                                    attachmentId,
-                                );
-                            }}
-                            onClearAll={() => {
-                                if (!composerSessionId) return;
-                                handleClearAttachments(composerSessionId);
-                            }}
-                        />
-                    }
-                    footer={
-                        <AIChatAgentControls
-                            disabled={agentControlsDisabled}
-                            runtimeId={currentSession?.runtimeId}
-                            modelId={currentSession?.modelId ?? ""}
-                            modeId={currentSession?.modeId ?? ""}
-                            effortsByModel={
-                                currentSession?.effortsByModel ?? {}
-                            }
-                            models={runtimeModels}
-                            modes={runtimeModes}
-                            configOptions={runtimeConfigOptions}
-                            onModelChange={(modelId) => {
-                                if (!composerSessionId) return;
-                                void chatActions.setModel(
-                                    modelId,
-                                    composerSessionId,
-                                );
-                            }}
-                            onModeChange={(modeId) => {
-                                if (!composerSessionId) return;
-                                void chatActions.setMode(
-                                    modeId,
-                                    composerSessionId,
-                                );
-                            }}
-                            onConfigOptionChange={(optionId, value) => {
-                                if (!composerSessionId) return;
-                                void chatActions.setConfigOption(
-                                    optionId,
-                                    value,
-                                    composerSessionId,
-                                );
-                            }}
-                        />
-                    }
-                    onChange={(parts) => {
-                        if (!composerSessionId) return;
-                        chatActions.setComposerParts(parts, composerSessionId);
-                    }}
-                    onAttachFile={() => {
-                        if (!composerSessionId) return;
-                        void handleAttachFile(composerSessionId);
-                    }}
-                    onPasteImage={(file) => {
-                        if (!composerSessionId) return;
-                        void handlePasteImage(composerSessionId, file);
-                    }}
-                    onMentionAttach={(note) => {
-                        if (!composerSessionId) return;
-                        chatActions.attachNote(note, composerSessionId);
-                    }}
-                    onFileMentionAttach={(file) => {
-                        if (!composerSessionId) return;
-                        chatActions.attachVaultFile(file, composerSessionId);
-                    }}
-                    onFolderAttach={(folderPath, name) => {
-                        if (!composerSessionId) return;
-                        chatActions.attachFolder(
-                            folderPath,
-                            name,
-                            composerSessionId,
-                        );
-                    }}
-                    onSubmit={() => {
-                        if (!composerSessionId) return;
-                        void chatActions.sendMessage(composerSessionId);
-                    }}
-                    onStop={() => {
-                        if (!composerSessionId) return;
-                        void chatActions.stopStreaming(composerSessionId);
-                    }}
-                />
+                <div className="min-w-0">
+                    <div
+                        className="text-[11px] uppercase tracking-[0.16em]"
+                        style={{ color: "var(--accent)" }}
+                    >
+                        Workspace Agents
+                    </div>
+                    <div
+                        className="truncate text-xs font-medium"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        Launch and inspect chats without taking ownership away
+                        from the workspace.
+                    </div>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-1">
+                    <button
+                        type="button"
+                        onClick={() => chatActions.openHistoryView()}
+                        className="rounded px-2 py-1 text-[11px]"
+                        style={{
+                            color: "var(--text-secondary)",
+                            border: "1px solid var(--border)",
+                            background: "transparent",
+                        }}
+                        title="Open chat history"
+                    >
+                        History
+                    </button>
+                    <button
+                        type="button"
+                        onClick={toggleRightPanelExpanded}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded"
+                        style={{
+                            color: panelExpanded
+                                ? "var(--accent)"
+                                : "var(--text-secondary)",
+                            backgroundColor: panelExpanded
+                                ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                                : "transparent",
+                        }}
+                        title={
+                            panelExpanded
+                                ? "Restore chat sidebar"
+                                : "Expand chat sidebar"
+                        }
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            {panelExpanded ? (
+                                <>
+                                    <path d="M5 2.5H2.5V5" />
+                                    <path d="M9 2.5h2.5V5" />
+                                    <path d="M5 11.5H2.5V9" />
+                                    <path d="M9 11.5h2.5V9" />
+                                </>
+                            ) : (
+                                <>
+                                    <path d="M5 5 2.5 2.5" />
+                                    <path d="M9 5 11.5 2.5" />
+                                    <path d="M5 9 2.5 11.5" />
+                                    <path d="M9 9 11.5 11.5" />
+                                </>
+                            )}
+                        </svg>
+                    </button>
+                </div>
             </div>
-            {authTerminalRequest ? (
-                <AIAuthTerminalModal
-                    open
-                    runtimeId={authTerminalRequest.runtimeId}
-                    runtimeName={authTerminalRequest.runtimeName}
-                    vaultPath={vaultPath}
-                    customBinaryPath={authTerminalRequest.customBinaryPath}
-                    onClose={() => setAuthTerminalRequest(null)}
-                    onRefreshSetup={handleRefreshSetup}
-                />
-            ) : null}
+
+            <div
+                className="overflow-y-auto px-3 py-3"
+                data-scrollbar-active="true"
+            >
+                <section
+                    className="rounded-xl p-3"
+                    style={{
+                        border: "1px solid var(--border)",
+                        background:
+                            "color-mix(in srgb, var(--bg-primary) 72%, transparent)",
+                    }}
+                >
+                    <div
+                        className="text-[11px] uppercase tracking-[0.16em]"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        {focusedWorkspaceSession
+                            ? "Focused Workspace Chat"
+                            : "Workspace Chat Surface"}
+                    </div>
+                    <div
+                        className="mt-2 text-sm font-semibold"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        {launcherSession
+                            ? getSessionTitle(launcherSession)
+                            : "No chat tab open"}
+                    </div>
+                    <div
+                        className="mt-1 text-xs"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        {launcherSession
+                            ? `${visibleWorkspaceChatCount} open workspace ${
+                                  visibleWorkspaceChatCount === 1
+                                      ? "chat"
+                                      : "chats"
+                              }`
+                            : "Chats now live in workspace tabs. Use this sidebar to launch, inspect and revisit sessions."}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        {launcherSession ? (
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    openChatSessionInWorkspace(
+                                        launcherSession.sessionId,
+                                    )
+                                }
+                                className="rounded px-2.5 py-1.5 text-xs font-medium"
+                                style={{
+                                    background:
+                                        "color-mix(in srgb, var(--accent) 16%, transparent)",
+                                    color: "var(--accent)",
+                                    border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)",
+                                }}
+                            >
+                                Open in Focused Pane
+                            </button>
+                        ) : null}
+
+                        <div className="relative">
+                            <button
+                                type="button"
+                                onClick={() => setNewMenuOpen((open) => !open)}
+                                className="rounded px-2.5 py-1.5 text-xs font-medium"
+                                style={{
+                                    color: "var(--text-primary)",
+                                    border: "1px solid var(--border)",
+                                    background: "transparent",
+                                }}
+                            >
+                                New Chat
+                            </button>
+
+                            {newMenuOpen ? (
+                                <div
+                                    className="absolute left-0 top-full z-20 mt-2 min-w-52 rounded-xl p-1"
+                                    style={{
+                                        backgroundColor: "var(--bg-secondary)",
+                                        border: "1px solid var(--border)",
+                                        boxShadow:
+                                            "0 18px 40px rgb(0 0 0 / 0.28)",
+                                    }}
+                                >
+                                    {orderedRuntimes.length > 0 ? (
+                                        orderedRuntimes.map((runtime) => (
+                                            <button
+                                                key={runtime.runtime.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    setNewMenuOpen(false);
+                                                    void createNewChatInWorkspace(
+                                                        runtime.runtime.id,
+                                                    );
+                                                }}
+                                                className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                                style={{
+                                                    color: "var(--text-primary)",
+                                                    background: "transparent",
+                                                }}
+                                            >
+                                                {getRuntimeDisplayName(
+                                                    runtime.runtime.id,
+                                                    runtime.runtime.name,
+                                                )}
+                                            </button>
+                                        ))
+                                    ) : (
+                                        <div
+                                            className="px-2.5 py-2 text-xs"
+                                            style={{
+                                                color: "var(--text-secondary)",
+                                            }}
+                                        >
+                                            No providers available yet.
+                                        </div>
+                                    )}
+                                    <div
+                                        style={{
+                                            height: 1,
+                                            backgroundColor: "var(--border)",
+                                            margin: "4px 0",
+                                        }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setNewMenuOpen(false);
+                                            void openSettingsWindow(vaultPath);
+                                        }}
+                                        className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                        style={{
+                                            color: "var(--text-secondary)",
+                                            background: "transparent",
+                                        }}
+                                    >
+                                        Add providers
+                                    </button>
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                </section>
+
+                <section className="mt-4">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                            <div
+                                className="text-[11px] uppercase tracking-[0.16em]"
+                                style={{ color: "var(--text-secondary)" }}
+                            >
+                                Recent Sessions
+                            </div>
+                            <div
+                                className="text-xs"
+                                style={{ color: "var(--text-secondary)" }}
+                            >
+                                Selecting a session opens it as a workspace tab
+                                in the focused pane.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div
+                        className="overflow-hidden rounded-xl"
+                        style={{
+                            border: "1px solid var(--border)",
+                            background:
+                                "color-mix(in srgb, var(--bg-primary) 68%, transparent)",
+                        }}
+                    >
+                        <AIChatSessionList
+                            activeSessionId={
+                                focusedWorkspaceChatSessionId ?? activeSessionId
+                            }
+                            sessions={sessions}
+                            runtimes={orderedRuntimes.map(
+                                (descriptor) => descriptor.runtime,
+                            )}
+                            onSelectSession={(sessionId) => {
+                                void openChatSessionInWorkspace(sessionId);
+                            }}
+                            onDeleteSession={(sessionId) => {
+                                void chatActions.deleteSession(sessionId);
+                            }}
+                            onRenameSession={(sessionId, newTitle) => {
+                                chatActions.renameSession(sessionId, newTitle);
+                            }}
+                        />
+                    </div>
+                </section>
+            </div>
         </div>
-    );
-}
-
-function AIChatHeaderBridge({
-    activeTabId,
-    tabs,
-    notes,
-    createNote,
-    openNote,
-    runtimes,
-    chatActions,
-    suppressedAutoTabSessionIdRef,
-}: {
-    activeTabId: string | null;
-    tabs: ReturnType<typeof useChatTabsStore.getState>["tabs"];
-    notes: ReturnType<typeof useVaultStore.getState>["notes"];
-    createNote: ReturnType<typeof useVaultStore.getState>["createNote"];
-    openNote: ReturnType<typeof useEditorStore.getState>["openNote"];
-    runtimes: ReturnType<typeof useChatStore.getState>["runtimes"];
-    chatActions: ReturnType<typeof useChatStore.getState>;
-    suppressedAutoTabSessionIdRef: MutableRefObject<string | null>;
-}) {
-    const activeSessionId = useChatStore((state) => state.activeSessionId);
-    const sessionsById = useChatStore((state) => state.sessionsById);
-    const sessionOrder = useChatStore((state) => state.sessionOrder);
-    const panelExpanded = useLayoutStore((state) => state.rightPanelExpanded);
-    const toggleRightPanelExpanded = useLayoutStore(
-        (state) => state.toggleRightPanelExpanded,
-    );
-    const openSessionTab = useChatTabsStore((state) => state.openSessionTab);
-    const setActiveTab = useChatTabsStore((state) => state.setActiveTab);
-    const reorderTabs = useChatTabsStore((state) => state.reorderTabs);
-    const closeTab = useChatTabsStore((state) => state.closeTab);
-    const resetTabs = useChatTabsStore((state) => state.reset);
-
-    const orderedSessions = sessionOrder
-        .map((sessionId) => sessionsById[sessionId])
-        .filter((session): session is NonNullable<typeof session> =>
-            Boolean(session),
-        );
-    const runtimeOptions = runtimes.map((descriptor) => descriptor.runtime);
-
-    return (
-        <AIChatHeader
-            activeSessionId={activeSessionId}
-            activeTabId={activeTabId}
-            tabs={tabs}
-            sessionsById={sessionsById}
-            sessions={orderedSessions}
-            runtimes={runtimeOptions}
-            panelExpanded={panelExpanded}
-            onNewChat={(runtimeId) => {
-                void chatActions.newSession(runtimeId);
-            }}
-            onSelectSession={(sessionId) => {
-                openSessionTab(sessionId, {
-                    activate: true,
-                    historySessionId:
-                        sessionsById[sessionId]?.historySessionId ?? null,
-                    runtimeId: sessionsById[sessionId]?.runtimeId ?? null,
-                });
-                void chatActions.loadSession(sessionId);
-            }}
-            onSelectTab={(tabId) => {
-                setActiveTab(tabId);
-            }}
-            onReorderTabs={(fromIndex, toIndex) => {
-                reorderTabs(fromIndex, toIndex);
-            }}
-            onCloseTab={(tabId) => {
-                const closingTab = tabs.find((tab) => tab.id === tabId) ?? null;
-                if (closingTab && closingTab.id === activeTabId) {
-                    suppressedAutoTabSessionIdRef.current =
-                        closingTab.sessionId;
-                }
-
-                closeTab(tabId);
-            }}
-            onExportSession={(sessionId) => {
-                const session = sessionsById[sessionId];
-                if (!session) {
-                    return;
-                }
-
-                void (async () => {
-                    const transcriptLoaded =
-                        await chatActions.ensureSessionTranscriptLoaded(
-                            sessionId,
-                            "full",
-                        );
-                    if (!transcriptLoaded) {
-                        throw new Error(
-                            "Failed to load the full saved transcript before exporting.",
-                        );
-                    }
-
-                    const hydratedSession =
-                        useChatStore.getState().sessionsById[sessionId];
-                    if (!hydratedSession) {
-                        return;
-                    }
-
-                    await exportChatSessionToVaultNote({
-                        session: hydratedSession,
-                        runtimes: runtimeOptions,
-                        notes,
-                        createNote,
-                        openNote,
-                    });
-                })().catch((error) => {
-                    console.error("Failed to export chat session:", error);
-                });
-            }}
-            onDeleteSession={(sessionId) => {
-                void chatActions.deleteSession(sessionId);
-            }}
-            onDeleteAllSessions={() => {
-                resetTabs();
-                void chatActions.deleteAllSessions();
-            }}
-            onRenameSession={(sessionId, newTitle) => {
-                chatActions.renameSession(sessionId, newTitle);
-            }}
-            onToggleExpanded={toggleRightPanelExpanded}
-        />
     );
 }

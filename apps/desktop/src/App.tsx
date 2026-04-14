@@ -15,7 +15,7 @@ import { SearchPanel } from "./features/search/SearchPanel";
 import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
-import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
+import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
@@ -56,6 +56,7 @@ import {
 import {
     fileViewerNeedsTextContent,
     useEditorStore,
+    isChatTab,
     isFileTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
@@ -159,12 +160,13 @@ function SidebarPanel({ view }: { view: SidebarView }) {
 }
 
 function cycleEditorTabs(backward: boolean) {
-    const { tabs, activeTabId, switchTab } = useEditorStore.getState();
-    const idx = tabs.findIndex((tab) => tab.id === activeTabId);
-    if (idx === -1 || tabs.length <= 1) return;
+    const state = useEditorStore.getState();
+    const pane = selectPaneState(state);
+    const idx = pane.tabs.findIndex((tab) => tab.id === pane.activeTabId);
+    if (idx === -1 || pane.tabs.length <= 1) return;
 
-    const offset = backward ? tabs.length - 1 : 1;
-    switchTab(tabs[(idx + offset) % tabs.length].id);
+    const offset = backward ? pane.tabs.length - 1 : 1;
+    state.switchTab(pane.tabs[(idx + offset) % pane.tabs.length].id);
 }
 
 function openEmptyTab() {
@@ -195,16 +197,7 @@ function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     return (
         <>
-            {/* Always mount AIChatPanel so its Tauri event listeners stay
-                bound even when a ChatTab lives in the editor workspace and
-                the sidebar is switched to outline/links. */}
-            <div
-                style={{
-                    display: rightPanelView === "chat" ? "contents" : "none",
-                }}
-            >
-                <AIChatPanel />
-            </div>
+            {rightPanelView === "chat" && <AIChatPanel />}
             {rightPanelView === "outline" && <OutlineRightPanel />}
             {rightPanelView === "links" && <LinksPanel />}
         </>
@@ -1476,14 +1469,28 @@ export default function App() {
                 chatState.activeSessionId,
             );
             const restoredChatWorkspace = useChatTabsStore.getState();
+            const restoredChatMetadataBySessionId = new Map(
+                restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
+            );
+            const editorState = useEditorStore.getState();
             await useChatStore.getState().reconcileRestoredWorkspaceTabs(
-                restoredChatWorkspace.tabs.map((tab) => ({
-                    id: tab.id,
-                    sessionId: tab.sessionId,
-                    historySessionId: tab.historySessionId ?? null,
-                    runtimeId: tab.runtimeId ?? null,
-                })),
-                restoredChatWorkspace.activeTabId,
+                selectEditorWorkspaceTabs(editorState)
+                    .filter((tab) => isChatTab(tab))
+                    .map((tab) => {
+                        const metadata = restoredChatMetadataBySessionId.get(
+                            tab.sessionId,
+                        );
+                        return {
+                            id: tab.id,
+                            sessionId: tab.sessionId,
+                            historySessionId:
+                                metadata?.historySessionId ?? null,
+                            runtimeId: metadata?.runtimeId ?? null,
+                        };
+                    }),
+                isChatTab(selectFocusedEditorTab(editorState))
+                    ? editorState.activeTabId
+                    : null,
             );
             markChatTabsReady();
         })();
@@ -1818,7 +1825,7 @@ export default function App() {
     if (windowMode === "note") {
         return (
             <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
-                <AIChatDetachedWindowHost />
+                <AIChatWorkspaceHost />
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
                     <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />
@@ -1832,11 +1839,8 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            {paneCount > 1 ? (
-                <WorkspaceChromeBar />
-            ) : (
-                <UnifiedBar windowMode="main" />
-            )}
+            <AIChatWorkspaceHost />
+            <WorkspaceChromeBar />
 
             <div className="relative flex-1 flex overflow-hidden">
                 <ActivityBar
@@ -1850,13 +1854,7 @@ export default function App() {
                 <div className="min-w-0 flex-1 overflow-hidden">
                     <AppLayout
                         left={<SidebarPanel view={sidebarView} />}
-                        center={
-                            paneCount > 1 ? (
-                                <MultiPaneWorkspace />
-                            ) : (
-                                <EditorPaneContent />
-                            )
-                        }
+                        center={<MultiPaneWorkspace />}
                         right={<RightPanel />}
                         bottom={
                             developerModeEnabled &&

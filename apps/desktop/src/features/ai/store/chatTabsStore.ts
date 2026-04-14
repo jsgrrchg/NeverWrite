@@ -14,8 +14,6 @@ export interface ChatWorkspaceTab {
     historySessionId?: string;
     runtimeId?: string;
     pinned?: boolean;
-    /** Where this tab is currently displayed. undefined = "sidebar". */
-    location?: "sidebar" | "workspace";
 }
 
 export interface PersistedChatWorkspace {
@@ -62,8 +60,6 @@ interface ChatTabsStore {
         historySessionId?: string | null,
         runtimeId?: string | null,
     ) => void;
-    moveToWorkspace: (sessionId: string) => void;
-    moveToSidebar: (sessionId: string) => void;
     reset: () => void;
 }
 
@@ -521,16 +517,8 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
 
     hydrateForVault: (payload) => {
         const workspace = normalizeWorkspace(payload);
-        // Reset location: transient ChatTabs don't survive restarts
-        const tabs = (workspace?.tabs ?? []).map((tab) => {
-            if (tab.location) {
-                const { location: _, ...rest } = tab;
-                return rest;
-            }
-            return tab;
-        });
         set({
-            tabs,
+            tabs: workspace?.tabs ?? [],
             activeTabId: workspace?.activeTabId ?? null,
         });
     },
@@ -658,58 +646,6 @@ export const useChatTabsStore = create<ChatTabsStore>((set, get) => ({
         });
     },
 
-    moveToWorkspace: (sessionId) => {
-        if (!sessionId) return;
-
-        set((state) => {
-            const existing = state.tabs.find(
-                (tab) => tab.sessionId === sessionId,
-            );
-
-            if (!existing) {
-                return {
-                    tabs: [
-                        ...state.tabs,
-                        { ...createTab(sessionId), location: "workspace" },
-                    ],
-                };
-            }
-
-            if (existing.location === "workspace") {
-                return state;
-            }
-
-            return {
-                tabs: state.tabs.map((tab) =>
-                    tab.sessionId === sessionId
-                        ? { ...tab, location: "workspace" as const }
-                        : tab,
-                ),
-            };
-        });
-    },
-
-    moveToSidebar: (sessionId) => {
-        if (!sessionId) return;
-
-        set((state) => {
-            const existing = state.tabs.find(
-                (tab) => tab.sessionId === sessionId,
-            );
-            if (!existing || existing.location === undefined) {
-                return state;
-            }
-
-            return {
-                tabs: state.tabs.map((tab) =>
-                    tab.sessionId === sessionId
-                        ? { ...tab, location: undefined }
-                        : tab,
-                ),
-            };
-        });
-    },
-
     reset: () => {
         set({
             tabs: [],
@@ -726,7 +662,7 @@ useChatTabsStore.subscribe((state) => {
     // Cheap fingerprint to skip expensive serialization when nothing relevant changed
     let sig = state.activeTabId ?? "";
     for (const t of state.tabs) {
-        sig += `|${t.id}|${t.sessionId ?? ""}|${t.historySessionId ?? ""}|${t.runtimeId ?? ""}|${t.pinned ? "1" : "0"}|${t.location ?? "s"}`;
+        sig += `|${t.id}|${t.sessionId ?? ""}|${t.historySessionId ?? ""}|${t.runtimeId ?? ""}|${t.pinned ? "1" : "0"}`;
     }
     if (sig === _lastChatTabsSig) return;
     _lastChatTabsSig = sig;
@@ -768,13 +704,4 @@ export function resetChatTabsStore() {
         tabs: [],
         activeTabId: null,
     });
-}
-
-export function isChatSessionInWorkspace(
-    tabs: ChatWorkspaceTab[],
-    sessionId: string,
-): boolean {
-    return tabs.some(
-        (tab) => tab.sessionId === sessionId && tab.location === "workspace",
-    );
 }

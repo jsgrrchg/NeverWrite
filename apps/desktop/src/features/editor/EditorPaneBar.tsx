@@ -14,7 +14,9 @@ import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
     type Tab,
     isChatTab,
+    isFileTab,
     isNoteTab,
+    isPdfTab,
     selectEditorPaneState,
     selectEditorWorkspaceTabs,
     selectLeafPaneIds,
@@ -23,7 +25,7 @@ import {
     useEditorStore,
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
-import { moveChatToSidebar } from "../ai/chatPaneMovement";
+import { revealChatInSidebar } from "../ai/chatPaneMovement";
 import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
 import { useInlineRename } from "../ai/components/useInlineRename";
@@ -60,6 +62,11 @@ import {
 } from "./tabDragAttachments";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
+import {
+    chromeControlsGroupStyle,
+    getChromeIconButtonStyle,
+    getChromeNavigationButtonStyle,
+} from "./workspaceChromeControls";
 
 function getTabLabel(
     tab: Tab,
@@ -87,6 +94,17 @@ function getAppWindow() {
     return getCurrentWindow();
 }
 
+function getPaneHeaderActionButtonStyle(active = false) {
+    return {
+        ...getChromeIconButtonStyle(active),
+        width: 28,
+        height: 28,
+        borderRadius: 8,
+        opacity: 1,
+        boxShadow: "none",
+    };
+}
+
 export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const pane = useEditorStore((state) =>
         selectEditorPaneState(state, paneId),
@@ -98,6 +116,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
     const switchTab = useEditorStore((state) => state.switchTab);
     const closeTab = useEditorStore((state) => state.closeTab);
+    const goBack = useEditorStore((state) => state.goBack);
+    const goForward = useEditorStore((state) => state.goForward);
     const closePane = useEditorStore((state) => state.closePane);
     const splitEditorPane = useEditorStore((state) => state.splitEditorPane);
     const balancePaneLayout = useEditorStore(
@@ -116,6 +136,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const fileTreeShowExtensions = useSettingsStore(
         (state) => state.fileTreeShowExtensions,
     );
+    const tabOpenBehavior = useSettingsStore((state) => state.tabOpenBehavior);
     const developerModeEnabled = useSettingsStore(
         (state) => state.developerModeEnabled,
     );
@@ -149,6 +170,28 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
 
     const paneIndex = paneIds.indexOf(paneId);
     const canCreateSplit = paneCount < MAX_EDITOR_PANES;
+    const hasTabs = pane.tabs.length > 0;
+    const paneLabel = `Pane ${paneIndex + 1}`;
+    const activePaneTab =
+        pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
+    const canGoBack =
+        tabOpenBehavior === "history"
+            ? activePaneTab &&
+              (isNoteTab(activePaneTab) ||
+                  isFileTab(activePaneTab) ||
+                  isPdfTab(activePaneTab))
+                ? activePaneTab.historyIndex > 0
+                : false
+            : pane.tabNavigationIndex > 0;
+    const canGoForward =
+        tabOpenBehavior === "history"
+            ? activePaneTab &&
+              (isNoteTab(activePaneTab) ||
+                  isFileTab(activePaneTab) ||
+                  isPdfTab(activePaneTab))
+                ? activePaneTab.historyIndex < activePaneTab.history.length - 1
+                : false
+            : pane.tabNavigationIndex < pane.tabNavigationHistory.length - 1;
     const leftNeighborPaneId = useEditorStore((state) =>
         selectPaneNeighbor(state, paneId, "left"),
     );
@@ -512,362 +555,477 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     return (
         <>
             <div
-                className="flex items-center gap-1 px-2 py-0.5 shrink-0"
+                className="flex items-center gap-2 px-2.5 py-1 shrink-0"
                 style={{
-                    height: 38,
-                    minHeight: 38,
+                    height: 44,
+                    minHeight: 44,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     background: isFocused
-                        ? "color-mix(in srgb, var(--bg-secondary) 96%, var(--accent) 4%)"
-                        : "var(--bg-secondary)",
+                        ? "color-mix(in srgb, var(--bg-secondary) 94%, var(--accent) 6%)"
+                        : "color-mix(in srgb, var(--bg-secondary) 98%, transparent)",
                 }}
-                onWheel={(event) => {
-                    if (event.deltaY !== 0) {
-                        event.currentTarget.scrollLeft += event.deltaY;
-                        event.preventDefault();
-                    }
-                }}
+                data-pane-empty={hasTabs ? undefined : "true"}
             >
-                <div className="relative flex min-w-0 flex-1 overflow-hidden">
+                <div className="flex shrink-0 items-center gap-2">
                     <div
-                        ref={tabStripRef}
-                        data-pane-tab-strip={paneId}
-                        data-pane-tab-density={tabLayout.density}
-                        data-pane-tab-overflowing={
-                            tabLayout.overflow || undefined
-                        }
-                        className="flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
+                        className="flex h-8 items-center gap-2 rounded-xl px-2.5"
                         style={{
-                            gap: tabLayout.stripGap,
-                            padding: `0 ${tabLayout.stripPaddingX}px`,
-                        }}
-                        onWheel={(event) => {
-                            if (event.deltaY !== 0) {
-                                event.currentTarget.scrollLeft += event.deltaY;
-                                event.preventDefault();
-                            }
+                            border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
+                            background:
+                                "color-mix(in srgb, var(--bg-primary) 72%, transparent)",
+                            color: "var(--text-secondary)",
                         }}
                     >
-                        {insertionIndicatorIndex === 0 && (
-                            <div
-                                aria-hidden="true"
-                                className="shrink-0 rounded-full"
+                        <span
+                            aria-hidden="true"
+                            className="block h-2 w-2 rounded-full"
+                            style={{
+                                background: isFocused
+                                    ? "var(--accent)"
+                                    : "color-mix(in srgb, var(--text-secondary) 45%, transparent)",
+                                boxShadow: isFocused
+                                    ? "0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent)"
+                                    : "none",
+                            }}
+                        />
+                        <span
+                            className="text-[11px] font-semibold uppercase tracking-[0.12em]"
+                            style={{ color: "var(--text-secondary)" }}
+                        >
+                            {paneLabel}
+                        </span>
+                        {hasTabs && (
+                            <span
+                                className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
                                 style={{
-                                    width: 3,
-                                    height: 20,
-                                    backgroundColor: "var(--accent)",
-                                    boxShadow:
-                                        "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                    background:
+                                        "color-mix(in srgb, var(--bg-tertiary) 68%, transparent)",
+                                    color: "var(--text-secondary)",
                                 }}
-                            />
+                            >
+                                {pane.tabs.length}
+                            </span>
                         )}
-                        {visualTabs.map((tab, index) => {
-                            const isActive = tab.id === pane.activeTabId;
-                            const isDragging = tab.id === draggingTabId;
-                            const isEditing = editingKey === tab.id;
-                            const canRename = isChatTab(tab);
-                            const tabLabel = getTabLabel(
-                                tab,
-                                fileTreeShowExtensions,
-                                chatSessionsById,
-                            );
-                            return (
-                                <Fragment key={tab.id}>
-                                    <div
-                                        ref={(node) =>
-                                            registerTabNode(tab.id, node)
-                                        }
-                                        data-pane-tab-id={tab.id}
-                                        role="tab"
-                                        tabIndex={0}
-                                        aria-selected={isActive}
-                                        className="group inline-flex h-8 shrink-0 items-center rounded-lg text-left"
-                                        onPointerDownCapture={(event) =>
-                                            isEditing
-                                                ? undefined
-                                                : handleTabPointerDownCapture(
-                                                      tab.id,
-                                                      event,
-                                                  )
-                                        }
-                                        onPointerDown={(event) =>
-                                            isEditing
-                                                ? undefined
-                                                : handlePointerDown(
-                                                      tab.id,
-                                                      index,
-                                                      event,
-                                                  )
-                                        }
-                                        onPointerMove={(event) =>
-                                            isEditing
-                                                ? undefined
-                                                : handlePointerMove(
-                                                      tab.id,
-                                                      event,
-                                                  )
-                                        }
-                                        onPointerUp={(event) =>
-                                            isEditing
-                                                ? undefined
-                                                : handlePointerUp(
-                                                      event.pointerId,
-                                                      {
-                                                          clientX:
-                                                              event.clientX,
-                                                          clientY:
-                                                              event.clientY,
-                                                          screenX:
-                                                              event.screenX,
-                                                          screenY:
-                                                              event.screenY,
-                                                      },
-                                                  )
-                                        }
-                                        onPointerCancel={(event) =>
-                                            isEditing
-                                                ? undefined
-                                                : handlePointerUp(
-                                                      event.pointerId,
-                                                      {
-                                                          clientX:
-                                                              event.clientX,
-                                                          clientY:
-                                                              event.clientY,
-                                                          screenX:
-                                                              event.screenX,
-                                                          screenY:
-                                                              event.screenY,
-                                                      },
-                                                  )
-                                        }
-                                        onLostPointerCapture={(event) =>
-                                            isEditing
-                                                ? undefined
-                                                : handleLostPointerCapture(
-                                                      event.pointerId,
-                                                  )
-                                        }
-                                        onClick={() => handleTabClick(tab.id)}
-                                        onContextMenu={(event) => {
-                                            if (isEditing) return;
-                                            event.preventDefault();
-                                            setTabContextMenu({
-                                                x: event.clientX,
-                                                y: event.clientY,
-                                                payload: { tabId: tab.id },
-                                            });
-                                        }}
-                                        style={{
-                                            width: tabLayout.tabWidth,
-                                            minWidth: tabLayout.tabWidth,
-                                            boxSizing: "border-box",
-                                            gap: tabLayout.tabGap,
-                                            padding: `0 ${tabLayout.tabPaddingX}px`,
-                                            border: isActive
-                                                ? "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))"
-                                                : "1px solid color-mix(in srgb, var(--border) 46%, transparent)",
-                                            background: isActive
-                                                ? "var(--bg-primary)"
-                                                : "color-mix(in srgb, var(--bg-primary) 38%, transparent)",
-                                            color: isActive
-                                                ? "var(--text-primary)"
-                                                : "var(--text-secondary)",
-                                            boxShadow: isActive
-                                                ? "0 10px 24px rgba(15, 23, 42, 0.08)"
-                                                : "none",
-                                            opacity: isDragging ? 0.72 : 1,
-                                            cursor: isDragging
-                                                ? "grabbing"
-                                                : "pointer",
-                                        }}
-                                    >
-                                        {renderEditorTabLeadingIcon(tab)}
-                                        {isEditing ? (
-                                            <input
-                                                ref={inputRef}
-                                                value={editValue}
-                                                onChange={(event) =>
-                                                    setEditValue(
-                                                        event.target.value,
-                                                    )
-                                                }
-                                                onKeyDown={(event) => {
-                                                    if (event.key === "Enter") {
-                                                        commitEditing(
-                                                            commitChatRename,
-                                                        );
-                                                    } else if (
-                                                        event.key === "Escape"
-                                                    ) {
-                                                        cancelEditing();
-                                                    }
-                                                }}
-                                                onBlur={() =>
-                                                    commitEditing(
-                                                        commitChatRename,
-                                                    )
-                                                }
-                                                onPointerDown={(event) =>
-                                                    event.stopPropagation()
-                                                }
-                                                onClick={(event) =>
-                                                    event.stopPropagation()
-                                                }
-                                                className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none"
-                                                style={{
-                                                    fontSize:
-                                                        tabLayout.titleFontSize,
-                                                    color: "var(--text-primary)",
-                                                    border: "none",
-                                                    padding: 0,
-                                                    minHeight: 0,
-                                                    boxSizing: "border-box",
-                                                    boxShadow:
-                                                        "inset 0 -1px 0 var(--accent)",
-                                                }}
-                                            />
-                                        ) : (
-                                            <span
-                                                className="min-w-0 flex-1 truncate font-medium"
-                                                onDoubleClick={() => {
-                                                    if (!canRename) return;
-                                                    beginChatRename(tab);
-                                                }}
-                                                title={
-                                                    canRename
-                                                        ? "Double-click to rename"
-                                                        : undefined
-                                                }
-                                                style={{
-                                                    fontSize:
-                                                        tabLayout.titleFontSize,
-                                                }}
-                                            >
-                                                {tabLabel}
-                                            </span>
-                                        )}
-                                        <button
-                                            type="button"
-                                            title={`Close ${tabLabel}`}
-                                            onClick={(event) => {
-                                                event.stopPropagation();
-                                                if (isChatTab(tab)) {
-                                                    moveChatToSidebar(
-                                                        tab.sessionId,
-                                                    );
-                                                } else {
-                                                    closeTab(tab.id);
-                                                }
-                                            }}
-                                            className="inline-flex shrink-0 items-center justify-center rounded opacity-45 transition group-hover:opacity-100"
-                                            style={{
-                                                width: tabLayout.closeButtonSize,
-                                                height: tabLayout.closeButtonSize,
-                                                color: "inherit",
-                                            }}
-                                        >
-                                            <svg
-                                                width={tabLayout.closeIconSize}
-                                                height={tabLayout.closeIconSize}
-                                                viewBox="0 0 16 16"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                strokeWidth="1.8"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            >
-                                                <path d="M4 4l8 8M4 12l8-8" />
-                                            </svg>
-                                        </button>
-                                    </div>
-                                    {insertionIndicatorIndex === index + 1 && (
-                                        <div
-                                            aria-hidden="true"
-                                            className="shrink-0 rounded-full"
-                                            style={{
-                                                width: 3,
-                                                height: 20,
-                                                backgroundColor:
-                                                    "var(--accent)",
-                                                boxShadow:
-                                                    "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
-                                            }}
-                                        />
-                                    )}
-                                </Fragment>
-                            );
-                        })}
+                    </div>
+
+                    <div
+                        className="flex shrink-0 items-center"
+                        style={chromeControlsGroupStyle}
+                    >
+                        <button
+                            type="button"
+                            onClick={goBack}
+                            disabled={!canGoBack}
+                            title="Go back"
+                            className="flex shrink-0 items-center justify-center"
+                            style={getChromeNavigationButtonStyle(
+                                "leading",
+                                canGoBack,
+                            )}
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M9.5 3L4.5 8l5 5" />
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={goForward}
+                            disabled={!canGoForward}
+                            title="Go forward"
+                            className="flex shrink-0 items-center justify-center"
+                            style={getChromeNavigationButtonStyle(
+                                "trailing",
+                                canGoForward,
+                            )}
+                        >
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M6.5 3L11.5 8l-5 5" />
+                            </svg>
+                        </button>
                     </div>
                 </div>
 
-                {vaultPath && (
+                <div className="relative flex min-w-0 flex-1 overflow-hidden">
+                    {hasTabs ? (
+                        <div
+                            ref={tabStripRef}
+                            data-pane-tab-strip={paneId}
+                            data-pane-tab-density={tabLayout.density}
+                            data-pane-tab-overflowing={
+                                tabLayout.overflow || undefined
+                            }
+                            className="flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
+                            style={{
+                                gap: tabLayout.stripGap,
+                                padding: `0 ${tabLayout.stripPaddingX}px`,
+                            }}
+                            onWheel={(event) => {
+                                if (event.deltaY !== 0) {
+                                    event.currentTarget.scrollLeft +=
+                                        event.deltaY;
+                                    event.preventDefault();
+                                }
+                            }}
+                        >
+                            {insertionIndicatorIndex === 0 && (
+                                <div
+                                    aria-hidden="true"
+                                    className="shrink-0 rounded-full"
+                                    style={{
+                                        width: 3,
+                                        height: 20,
+                                        backgroundColor: "var(--accent)",
+                                        boxShadow:
+                                            "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                    }}
+                                />
+                            )}
+                            {visualTabs.map((tab, index) => {
+                                const isActive = tab.id === pane.activeTabId;
+                                const isDragging = tab.id === draggingTabId;
+                                const isEditing = editingKey === tab.id;
+                                const canRename = isChatTab(tab);
+                                const tabLabel = getTabLabel(
+                                    tab,
+                                    fileTreeShowExtensions,
+                                    chatSessionsById,
+                                );
+                                return (
+                                    <Fragment key={tab.id}>
+                                        <div
+                                            ref={(node) =>
+                                                registerTabNode(tab.id, node)
+                                            }
+                                            data-pane-tab-id={tab.id}
+                                            role="tab"
+                                            tabIndex={0}
+                                            aria-selected={isActive}
+                                            className="group inline-flex h-8 shrink-0 items-center rounded-lg text-left"
+                                            onPointerDownCapture={(event) =>
+                                                isEditing
+                                                    ? undefined
+                                                    : handleTabPointerDownCapture(
+                                                          tab.id,
+                                                          event,
+                                                      )
+                                            }
+                                            onPointerDown={(event) =>
+                                                isEditing
+                                                    ? undefined
+                                                    : handlePointerDown(
+                                                          tab.id,
+                                                          index,
+                                                          event,
+                                                      )
+                                            }
+                                            onPointerMove={(event) =>
+                                                isEditing
+                                                    ? undefined
+                                                    : handlePointerMove(
+                                                          tab.id,
+                                                          event,
+                                                      )
+                                            }
+                                            onPointerUp={(event) =>
+                                                isEditing
+                                                    ? undefined
+                                                    : handlePointerUp(
+                                                          event.pointerId,
+                                                          {
+                                                              clientX:
+                                                                  event.clientX,
+                                                              clientY:
+                                                                  event.clientY,
+                                                              screenX:
+                                                                  event.screenX,
+                                                              screenY:
+                                                                  event.screenY,
+                                                          },
+                                                      )
+                                            }
+                                            onPointerCancel={(event) =>
+                                                isEditing
+                                                    ? undefined
+                                                    : handlePointerUp(
+                                                          event.pointerId,
+                                                          {
+                                                              clientX:
+                                                                  event.clientX,
+                                                              clientY:
+                                                                  event.clientY,
+                                                              screenX:
+                                                                  event.screenX,
+                                                              screenY:
+                                                                  event.screenY,
+                                                          },
+                                                      )
+                                            }
+                                            onLostPointerCapture={(event) =>
+                                                isEditing
+                                                    ? undefined
+                                                    : handleLostPointerCapture(
+                                                          event.pointerId,
+                                                      )
+                                            }
+                                            onClick={() =>
+                                                handleTabClick(tab.id)
+                                            }
+                                            onContextMenu={(event) => {
+                                                if (isEditing) return;
+                                                event.preventDefault();
+                                                setTabContextMenu({
+                                                    x: event.clientX,
+                                                    y: event.clientY,
+                                                    payload: { tabId: tab.id },
+                                                });
+                                            }}
+                                            style={{
+                                                width: tabLayout.tabWidth,
+                                                minWidth: tabLayout.tabWidth,
+                                                boxSizing: "border-box",
+                                                gap: tabLayout.tabGap,
+                                                padding: `0 ${tabLayout.tabPaddingX}px`,
+                                                border: isActive
+                                                    ? "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))"
+                                                    : "1px solid color-mix(in srgb, var(--border) 46%, transparent)",
+                                                background: isActive
+                                                    ? "var(--bg-primary)"
+                                                    : "color-mix(in srgb, var(--bg-primary) 38%, transparent)",
+                                                color: isActive
+                                                    ? "var(--text-primary)"
+                                                    : "var(--text-secondary)",
+                                                boxShadow: isActive
+                                                    ? "0 10px 24px rgba(15, 23, 42, 0.08)"
+                                                    : "none",
+                                                opacity: isDragging ? 0.72 : 1,
+                                                cursor: isDragging
+                                                    ? "grabbing"
+                                                    : "pointer",
+                                            }}
+                                        >
+                                            {renderEditorTabLeadingIcon(tab)}
+                                            {isEditing ? (
+                                                <input
+                                                    ref={inputRef}
+                                                    value={editValue}
+                                                    onChange={(event) =>
+                                                        setEditValue(
+                                                            event.target.value,
+                                                        )
+                                                    }
+                                                    onKeyDown={(event) => {
+                                                        if (
+                                                            event.key ===
+                                                            "Enter"
+                                                        ) {
+                                                            commitEditing(
+                                                                commitChatRename,
+                                                            );
+                                                        } else if (
+                                                            event.key ===
+                                                            "Escape"
+                                                        ) {
+                                                            cancelEditing();
+                                                        }
+                                                    }}
+                                                    onBlur={() =>
+                                                        commitEditing(
+                                                            commitChatRename,
+                                                        )
+                                                    }
+                                                    onPointerDown={(event) =>
+                                                        event.stopPropagation()
+                                                    }
+                                                    onClick={(event) =>
+                                                        event.stopPropagation()
+                                                    }
+                                                    className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none"
+                                                    style={{
+                                                        fontSize:
+                                                            tabLayout.titleFontSize,
+                                                        color: "var(--text-primary)",
+                                                        border: "none",
+                                                        padding: 0,
+                                                        minHeight: 0,
+                                                        boxSizing: "border-box",
+                                                        boxShadow:
+                                                            "inset 0 -1px 0 var(--accent)",
+                                                    }}
+                                                />
+                                            ) : (
+                                                <span
+                                                    className="min-w-0 flex-1 truncate font-medium"
+                                                    onDoubleClick={() => {
+                                                        if (!canRename) return;
+                                                        beginChatRename(tab);
+                                                    }}
+                                                    title={
+                                                        canRename
+                                                            ? "Double-click to rename"
+                                                            : undefined
+                                                    }
+                                                    style={{
+                                                        fontSize:
+                                                            tabLayout.titleFontSize,
+                                                    }}
+                                                >
+                                                    {tabLabel}
+                                                </span>
+                                            )}
+                                            <button
+                                                type="button"
+                                                title={`Close ${tabLabel}`}
+                                                onClick={(event) => {
+                                                    event.stopPropagation();
+                                                    closeTab(tab.id);
+                                                }}
+                                                className="inline-flex shrink-0 items-center justify-center rounded opacity-45 transition group-hover:opacity-100"
+                                                style={{
+                                                    width: tabLayout.closeButtonSize,
+                                                    height: tabLayout.closeButtonSize,
+                                                    color: "inherit",
+                                                }}
+                                            >
+                                                <svg
+                                                    width={
+                                                        tabLayout.closeIconSize
+                                                    }
+                                                    height={
+                                                        tabLayout.closeIconSize
+                                                    }
+                                                    viewBox="0 0 16 16"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.8"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                >
+                                                    <path d="M4 4l8 8M4 12l8-8" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                        {insertionIndicatorIndex ===
+                                            index + 1 && (
+                                            <div
+                                                aria-hidden="true"
+                                                className="shrink-0 rounded-full"
+                                                style={{
+                                                    width: 3,
+                                                    height: 20,
+                                                    backgroundColor:
+                                                        "var(--accent)",
+                                                    boxShadow:
+                                                        "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                                }}
+                                            />
+                                        )}
+                                    </Fragment>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="flex min-w-0 flex-1 items-center">
+                            <div
+                                className="flex h-8 min-w-0 items-center rounded-xl px-3"
+                                style={{
+                                    border: "1px dashed color-mix(in srgb, var(--border) 76%, transparent)",
+                                    background:
+                                        "color-mix(in srgb, var(--bg-primary) 52%, transparent)",
+                                    color: "var(--text-secondary)",
+                                }}
+                            >
+                                <span className="truncate text-sm font-medium">
+                                    No tabs open
+                                </span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div
+                    className="flex shrink-0 items-center"
+                    style={chromeControlsGroupStyle}
+                >
+                    {vaultPath && (
+                        <button
+                            type="button"
+                            data-new-tab-button="true"
+                            onClick={() =>
+                                openBlankDraftTabFromPlusButton(paneId)
+                            }
+                            onContextMenu={(event) => {
+                                event.preventDefault();
+                                setNewTabContextMenu({
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                    payload: undefined,
+                                });
+                            }}
+                            className="inline-flex shrink-0 items-center justify-center"
+                            aria-label="New tab"
+                            title="New tab"
+                            style={getPaneHeaderActionButtonStyle()}
+                        >
+                            <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 16 16"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <path d="M8 3.5v9M3.5 8h9" />
+                            </svg>
+                        </button>
+                    )}
+
                     <button
                         type="button"
-                        data-new-tab-button="true"
-                        onClick={() => openBlankDraftTabFromPlusButton(paneId)}
-                        onContextMenu={(event) => {
-                            event.preventDefault();
-                            setNewTabContextMenu({
+                        onClick={(event) =>
+                            setPaneContextMenu({
                                 x: event.clientX,
                                 y: event.clientY,
-                                payload: undefined,
-                            });
-                        }}
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                        aria-label="New tab"
-                        title="New tab"
-                        style={{
-                            border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
-                            color: "var(--text-secondary)",
-                            background: "transparent",
-                        }}
+                                payload: { paneId },
+                            })
+                        }
+                        className="inline-flex shrink-0 items-center justify-center"
+                        aria-label={`${paneLabel} actions`}
+                        title={`${paneLabel} actions`}
+                        style={getPaneHeaderActionButtonStyle()}
                     >
                         <svg
                             width="12"
                             height="12"
                             viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                            fill="currentColor"
                         >
-                            <path d="M8 3.5v9M3.5 8h9" />
+                            <circle cx="8" cy="3.5" r="1.25" />
+                            <circle cx="8" cy="8" r="1.25" />
+                            <circle cx="8" cy="12.5" r="1.25" />
                         </svg>
                     </button>
-                )}
-
-                <button
-                    type="button"
-                    onClick={(event) =>
-                        setPaneContextMenu({
-                            x: event.clientX,
-                            y: event.clientY,
-                            payload: { paneId },
-                        })
-                    }
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                    aria-label={`Pane ${paneIndex + 1} actions`}
-                    title={`Pane ${paneIndex + 1} actions`}
-                    style={{
-                        border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
-                        color: "var(--text-secondary)",
-                        background: "transparent",
-                    }}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 16 16"
-                        fill="currentColor"
-                    >
-                        <circle cx="8" cy="3.5" r="1.25" />
-                        <circle cx="8" cy="8" r="1.25" />
-                        <circle cx="8" cy="12.5" r="1.25" />
-                    </svg>
-                </button>
+                </div>
             </div>
 
             {tabContextMenu && (
@@ -888,13 +1046,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         const entries: ContextMenuEntry[] = [
                             {
                                 label: "Close",
-                                action: () => {
-                                    if (isChatTab(targetTab)) {
-                                        moveChatToSidebar(targetTab.sessionId);
-                                    } else {
-                                        closeTab(targetTab.id);
-                                    }
-                                },
+                                action: () => closeTab(targetTab.id),
                             },
                         ];
 
@@ -904,9 +1056,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 action: () => beginChatRename(targetTab),
                             });
                             entries.push({
-                                label: "Return to AI Panel",
+                                label: "Show in Sidebar",
                                 action: () =>
-                                    moveChatToSidebar(targetTab.sessionId),
+                                    revealChatInSidebar(targetTab.sessionId),
                             });
                         }
 

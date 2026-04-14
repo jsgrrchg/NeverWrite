@@ -15,7 +15,7 @@ import type {
     AIRuntimeOption,
 } from "../types";
 import type { ChatWorkspaceTab } from "../store/chatTabsStore";
-import { moveChatToWorkspace } from "../chatPaneMovement";
+import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { useInlineRename } from "./useInlineRename";
 
 interface AIChatTabsProps {
@@ -475,9 +475,9 @@ export function AIChatTabs({
                         },
                         { type: "separator" },
                         {
-                            label: "Open in Editor Pane",
+                            label: "Open in Workspace",
                             action: () =>
-                                moveChatToWorkspace(
+                                openChatSessionInWorkspace(
                                     contextMenu.payload.sessionId,
                                 ),
                             disabled: !contextMenu.payload.hasSession,

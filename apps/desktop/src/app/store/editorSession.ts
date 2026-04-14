@@ -19,6 +19,7 @@ import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useLayoutStore } from "./layoutStore";
+import { getEffectivePaneWorkspace } from "./editorWorkspace";
 import {
     createInitialLayout,
     getLayoutPaneIds,
@@ -106,6 +107,7 @@ export interface EditorSessionState {
     panes?: Array<{
         id: string;
         tabs: Tab[];
+        tabIds?: string[];
         activeTabId: string | null;
         activationHistory: string[];
         tabNavigationHistory: string[];
@@ -114,8 +116,12 @@ export interface EditorSessionState {
     focusedPaneId?: string | null;
     layoutTree?: WorkspaceLayoutNode;
     paneSizes?: number[];
+    tabsById?: Record<string, Tab>;
     tabs: Tab[];
     activeTabId: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
 }
 
 export interface RestoredEditorSession {
@@ -192,28 +198,19 @@ function normalizePersistedTabs(tabs: Tab[]) {
 function buildPersistedPanes(
     state: EditorSessionState,
 ): PersistedSessionPane[] | undefined {
-    if (!state.panes?.length) {
-        const tabs = normalizePersistedTabs(state.tabs);
-        const activeTabId =
-            state.activeTabId &&
-            tabs.some((tab) => tab.id === state.activeTabId)
-                ? state.activeTabId
-                : null;
-        return tabs.length > 0 || activeTabId
-            ? [
-                  {
-                      id: "primary",
-                      tabs,
-                      activeTabId,
-                      activationHistory: activeTabId ? [activeTabId] : [],
-                      tabNavigationHistory: activeTabId ? [activeTabId] : [],
-                      tabNavigationIndex: activeTabId ? 0 : -1,
-                  },
-              ]
-            : undefined;
-    }
+    const workspace = getEffectivePaneWorkspace({
+        panes: state.panes ?? [],
+        focusedPaneId: state.focusedPaneId ?? null,
+        layoutTree: state.layoutTree,
+        tabsById: state.tabsById ?? {},
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+        activationHistory: state.activationHistory ?? [],
+        tabNavigationHistory: state.tabNavigationHistory ?? [],
+        tabNavigationIndex: state.tabNavigationIndex ?? -1,
+    });
 
-    const persistedPanes = state.panes
+    const persistedPanes = workspace.panes
         .map((pane) => ({
             id: pane.id,
             tabs: normalizePersistedTabs(pane.tabs),
@@ -234,6 +231,10 @@ function buildPersistedPanes(
 
     if (persistedPanes.some((pane) => pane.tabs.length > 0)) {
         return persistedPanes.filter((pane) => pane.tabs.length > 0);
+    }
+
+    if (!persistedPanes.some((pane) => pane.activeTabId)) {
+        return undefined;
     }
 
     return persistedPanes.length > 0 ? [persistedPanes[0]] : undefined;

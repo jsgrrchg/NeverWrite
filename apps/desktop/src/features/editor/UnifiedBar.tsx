@@ -38,7 +38,7 @@ import {
     selectPaneCount,
 } from "../../app/store/editorStore";
 import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
-import { moveChatToSidebar } from "../ai/chatPaneMovement";
+import { revealChatInSidebar } from "../ai/chatPaneMovement";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -645,15 +645,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         async (tabId: string) => {
             const { tabs: currentTabs, activeTabId } =
                 useEditorStore.getState();
-
-            // ChatTab close returns the session to the sidebar
-            const chatTab = currentTabs.find(
-                (t) => t.id === tabId && isChatTab(t),
-            );
-            if (chatTab && isChatTab(chatTab)) {
-                moveChatToSidebar(chatTab.sessionId);
-                return;
-            }
 
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
@@ -1819,9 +1810,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         if (isChatTab(tab)) {
                             return [
                                 {
-                                    label: "Return to AI Panel",
+                                    label: "Show in Sidebar",
                                     action: () =>
-                                        moveChatToSidebar(tab.sessionId),
+                                        revealChatInSidebar(tab.sessionId),
                                 },
                                 {
                                     label: "Close",

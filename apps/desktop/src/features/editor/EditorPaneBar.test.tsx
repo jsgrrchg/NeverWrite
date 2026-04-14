@@ -127,6 +127,27 @@ describe("EditorPaneBar", () => {
         );
     });
 
+    it("shows compact empty-pane chrome when a pane has no tabs", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.getByText("Pane 1")).toBeInTheDocument();
+        expect(screen.getByText("No tabs open")).toBeInTheDocument();
+        expect(
+            document.querySelector('[data-pane-empty="true"]'),
+        ).not.toBeNull();
+    });
+
     it("moves a tab to another pane from the tab context menu", async () => {
         const user = userEvent.setup();
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);

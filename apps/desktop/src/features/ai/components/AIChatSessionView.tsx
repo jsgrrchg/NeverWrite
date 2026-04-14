@@ -41,7 +41,7 @@ import {
     createEmptyComposerParts,
 } from "../composerParts";
 import { getSessionTitle } from "../sessionPresentation";
-import { moveChatToSidebar } from "../chatPaneMovement";
+import { revealChatInSidebar } from "../chatPaneMovement";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -56,7 +56,7 @@ interface AIChatSessionViewProps {
 
 export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
-    const canReturnToPanel = getWindowMode() === "main";
+    const canRevealSidebar = getWindowMode() === "main";
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -320,7 +320,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
             className="relative flex h-full min-h-0 flex-col"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
-            {/* Compact header with return-to-sidebar action */}
+            {/* Compact local session header for the workspace chat tab */}
             <div
                 className="flex items-center gap-2 px-3 py-1.5 text-xs shrink-0"
                 style={{
@@ -336,7 +336,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 >
                     {session ? getSessionTitle(session) : "Chat"}
                 </span>
-                {canReturnToPanel ? (
+                {canRevealSidebar ? (
                     <button
                         className="shrink-0 rounded px-2 py-0.5 text-[11px] hover:opacity-80"
                         style={{
@@ -344,10 +344,10 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                                 "color-mix(in srgb, var(--accent) 10%, transparent)",
                             color: "var(--accent)",
                         }}
-                        onClick={() => moveChatToSidebar(sessionId)}
-                        title="Return to AI Panel"
+                        onClick={() => revealChatInSidebar(sessionId)}
+                        title="Show in sidebar"
                     >
-                        Return to Panel
+                        Show in Sidebar
                     </button>
                 ) : null}
             </div>

@@ -1,55 +1,85 @@
-import { useChatTabsStore } from "./store/chatTabsStore";
-import { useChatStore } from "./store/chatStore";
+import { useLayoutStore } from "../../app/store/layoutStore";
 import { useEditorStore } from "../../app/store/editorStore";
 import { getSessionTitle } from "./sessionPresentation";
+import { useChatStore } from "./store/chatStore";
+import { useChatTabsStore } from "./store/chatTabsStore";
+import { getPreferredWorkspaceChatSessionId } from "./chatWorkspaceSelectors";
 
-/**
- * Move a chat session from the sidebar into an editor workspace pane.
- * The session tab is marked as "workspace" so the sidebar hides it,
- * and a ChatTab is created in the specified (or focused) editor pane.
- */
-export function moveChatToWorkspace(
+interface OpenChatInWorkspaceOptions {
+    paneId?: string;
+    background?: boolean;
+}
+
+function resolveCreatedSessionId(beforeSessionIds: Set<string>) {
+    const nextState = useChatStore.getState();
+    return (
+        Object.keys(nextState.sessionsById).find(
+            (sessionId) => !beforeSessionIds.has(sessionId),
+        ) ??
+        (nextState.activeSessionId &&
+        !beforeSessionIds.has(nextState.activeSessionId)
+            ? nextState.activeSessionId
+            : null)
+    );
+}
+
+export function openChatSessionInWorkspace(
     sessionId: string,
-    options?: { paneId?: string },
+    options?: OpenChatInWorkspaceOptions,
 ) {
     const session = useChatStore.getState().sessionsById[sessionId];
-    if (!session) return;
-
-    const title = getSessionTitle(session);
-
-    useChatTabsStore.getState().moveToWorkspace(sessionId);
-    useEditorStore.getState().openChat(sessionId, {
-        title,
-        paneId: options?.paneId,
+    useChatTabsStore.getState().openSessionTab(sessionId, {
+        activate: true,
+        historySessionId: session?.historySessionId ?? null,
+        runtimeId: session?.runtimeId ?? null,
     });
+    useEditorStore.getState().openChat(sessionId, {
+        title: session ? getSessionTitle(session) : "Chat",
+        paneId: options?.paneId,
+        background: options?.background,
+    });
+
+    void useChatStore.getState().loadSession(sessionId);
+    return sessionId;
 }
 
-/**
- * Create a new chat session with the given runtime and open it directly
- * in the editor workspace (bypassing the sidebar).
- */
-export async function newChatInWorkspace(runtimeId: string) {
-    const chatState = useChatStore.getState();
-    const beforeIds = new Set(Object.keys(chatState.sessionsById));
+export async function createNewChatInWorkspace(
+    runtimeId?: string,
+    options?: OpenChatInWorkspaceOptions,
+) {
+    const beforeSessionIds = new Set(
+        Object.keys(useChatStore.getState().sessionsById),
+    );
 
-    await chatState.newSession(runtimeId);
-
-    // Find the newly created session by diffing keys
-    const afterIds = Object.keys(useChatStore.getState().sessionsById);
-    const newSessionId = afterIds.find((id) => !beforeIds.has(id));
-    if (newSessionId) {
-        moveChatToWorkspace(newSessionId);
+    await useChatStore.getState().newSession(runtimeId);
+    const createdSessionId = resolveCreatedSessionId(beforeSessionIds);
+    if (!createdSessionId) {
+        return null;
     }
+
+    openChatSessionInWorkspace(createdSessionId, options);
+    return createdSessionId;
 }
 
-/**
- * Move a chat session from the editor workspace back to the sidebar.
- * The ChatTab is closed in the editor, the session tab is unmarked,
- * and the sidebar re-activates it.
- */
-export function moveChatToSidebar(sessionId: string) {
-    useEditorStore.getState().closeChat(sessionId);
-    const chatTabs = useChatTabsStore.getState();
-    chatTabs.moveToSidebar(sessionId);
-    chatTabs.openSessionTab(sessionId, { activate: true });
+export async function ensureWorkspaceChatSession(
+    options?: OpenChatInWorkspaceOptions & { runtimeId?: string },
+) {
+    const visibleSessionId = getPreferredWorkspaceChatSessionId();
+    if (visibleSessionId) {
+        return visibleSessionId;
+    }
+
+    const activeSessionId = useChatStore.getState().activeSessionId;
+    if (activeSessionId) {
+        return openChatSessionInWorkspace(activeSessionId, options);
+    }
+
+    return createNewChatInWorkspace(options?.runtimeId, options);
+}
+
+export function revealChatInSidebar(sessionId?: string | null) {
+    useLayoutStore.getState().activateRightView("chat");
+    if (!sessionId) return;
+
+    void useChatStore.getState().loadSession(sessionId);
 }
