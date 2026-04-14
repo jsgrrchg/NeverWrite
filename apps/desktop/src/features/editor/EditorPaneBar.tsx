@@ -1,16 +1,6 @@
-import {
-    Fragment,
-    useEffect,
-    useLayoutEffect,
-    useCallback,
-    useMemo,
-    useRef,
-    useState,
-} from "react";
+import { Fragment, useEffect, useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
     type Tab,
     isChatTab,
@@ -36,37 +26,25 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
-import {
-    ATTACH_EXTERNAL_TAB_EVENT,
-    type AttachExternalTabPayload,
-    createDetachedWindowPayload,
-    createGhostWindow,
-    destroyGhostWindow,
-    findWindowTabDropTarget,
-    getCurrentWindowLabel,
-    getDetachedWindowPosition,
-    getWindowMode,
-    isPointerOutsideCurrentWindow,
-    moveGhostWindow,
-    openDetachedNoteWindow,
-} from "../../app/detachedWindows";
-import { emitFileTreeNoteDrag } from "../ai/dragEvents";
+import { getWindowMode } from "../../app/detachedWindows";
 import {
     buildNewTabContextMenuEntries,
     openBlankDraftTabFromPlusButton,
 } from "./newTabMenuActions";
-import { useTabDragReorder } from "./useTabDragReorder";
 import {
     buildTabFileDragDetail,
-    isPointOverAiComposerDropZone,
+    resolveComposerDropTarget,
 } from "./tabDragAttachments";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
+import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
+import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
 import {
     chromeControlsGroupStyle,
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
 } from "./workspaceChromeControls";
+import type { CrossPaneTabDropPreview } from "./workspaceTabDropPreview";
 
 function getTabLabel(
     tab: Tab,
@@ -88,10 +66,7 @@ function getTabLabel(
 interface EditorPaneBarProps {
     paneId: string;
     isFocused: boolean;
-}
-
-function getAppWindow() {
-    return getCurrentWindow();
+    crossPaneDropPreview?: CrossPaneTabDropPreview | null;
 }
 
 function getPaneHeaderActionButtonStyle(active = false) {
@@ -105,7 +80,11 @@ function getPaneHeaderActionButtonStyle(active = false) {
     };
 }
 
-export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
+export function EditorPaneBar({
+    paneId,
+    isFocused,
+    crossPaneDropPreview = null,
+}: EditorPaneBarProps) {
     const pane = useEditorStore((state) =>
         selectEditorPaneState(state, paneId),
     );
@@ -133,6 +112,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         (state) => state.moveTabToNewSplit,
     );
     const moveTabToPane = useEditorStore((state) => state.moveTabToPane);
+    const moveTabToPaneDropTarget = useEditorStore(
+        (state) => state.moveTabToPaneDropTarget,
+    );
     const fileTreeShowExtensions = useSettingsStore(
         (state) => state.fileTreeShowExtensions,
     );
@@ -149,14 +131,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     }> | null>(null);
     const [newTabContextMenu, setNewTabContextMenu] =
         useState<ContextMenuState<void> | null>(null);
-    const [dragPreviewTabId, setDragPreviewTabId] = useState<string | null>(
-        null,
-    );
-    const dragPreviewNodeRef = useRef<HTMLDivElement | null>(null);
-    const dragPreviewPosRef = useRef({ clientX: 0, clientY: 0 });
-    const dragPreviewFrameRef = useRef<number | null>(null);
-    const ghostRef = useRef<WebviewWindow | null>(null);
-    const ghostCancelledRef = useRef(false);
     const windowMode = getWindowMode();
     const {
         editingKey,
@@ -214,209 +188,21 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 .filter((candidate) => candidate.id !== paneId),
         [paneId, paneIds],
     );
-    const emitTabDragDetail = useCallback(
-        (
-            tabId: string,
-            phase: "start" | "move" | "end" | "cancel" | "attach",
-            coords?: { clientX: number; clientY: number },
-        ) => {
-            if (phase === "cancel") {
-                emitFileTreeNoteDrag({
-                    phase: "cancel",
-                    x: 0,
-                    y: 0,
-                    notes: [],
-                });
-                return;
-            }
-
-            if (!coords) {
-                return;
-            }
-
-            const tab =
-                pane.tabs.find((candidate) => candidate.id === tabId) ?? null;
-            if (!tab) {
-                return;
-            }
-
-            const detail = buildTabFileDragDetail(tab, phase, coords, {
-                resolveNotePath: (noteId) =>
-                    useVaultStore
-                        .getState()
-                        .notes.find((note) => note.id === noteId)?.path ?? null,
-            });
-            if (!detail) {
-                return;
-            }
-
-            emitFileTreeNoteDrag({
-                ...detail,
-                origin: {
-                    kind: "unified-bar-tab",
-                    tabId,
-                },
-            });
-        },
-        [pane.tabs],
-    );
-    const handleDetachStart = useCallback(
-        async (tabId: string, coords: { screenX: number; screenY: number }) => {
-            const currentTabs = selectEditorWorkspaceTabs(
-                useEditorStore.getState(),
-            );
-            const tab = currentTabs.find((candidate) => candidate.id === tabId);
-            if (!tab) {
-                return;
-            }
-
-            ghostCancelledRef.current = false;
-
-            try {
-                const ghost = await createGhostWindow(
-                    tab.title,
-                    coords.screenX,
-                    coords.screenY,
-                );
-                if (ghostCancelledRef.current) {
-                    void destroyGhostWindow(ghost);
-                    return;
-                }
-                ghostRef.current = ghost;
-            } catch (error) {
-                console.error("Failed to create ghost window:", error);
-            }
-        },
-        [],
-    );
-    const handleDetachMove = useCallback(
-        (coords: { screenX: number; screenY: number }) => {
-            const ghost = ghostRef.current;
-            if (!ghost) {
-                return;
-            }
-
-            void moveGhostWindow(ghost, coords.screenX, coords.screenY);
-        },
-        [],
-    );
-    const handleDetachCancel = useCallback(() => {
-        ghostCancelledRef.current = true;
-        if (ghostRef.current) {
-            void destroyGhostWindow(ghostRef.current);
-            ghostRef.current = null;
-        }
-    }, []);
-    const handleDetachEnd = useCallback(
-        async (tabId: string, coords: { screenX: number; screenY: number }) => {
-            ghostCancelledRef.current = true;
-            if (ghostRef.current) {
-                await destroyGhostWindow(ghostRef.current);
-                ghostRef.current = null;
-            }
-
-            const state = useEditorStore.getState();
-            const currentTabs = selectEditorWorkspaceTabs(state);
-            const tab = currentTabs.find((candidate) => candidate.id === tabId);
-            if (!tab) {
-                return;
-            }
-
-            const targetWindowLabel = await findWindowTabDropTarget(
-                coords.screenX,
-                coords.screenY,
-                getCurrentWindowLabel(),
-                vaultPath,
-            );
-
-            if (targetWindowLabel) {
-                const appWindow = getAppWindow();
-                await appWindow.emitTo(
-                    targetWindowLabel,
-                    ATTACH_EXTERNAL_TAB_EVENT,
-                    { tab } satisfies AttachExternalTabPayload,
-                );
-
-                if (windowMode === "note" && currentTabs.length === 1) {
-                    await appWindow.close();
-                    return;
-                }
-
-                closeTab(tabId, { reason: "detach" });
-                return;
-            }
-
-            await openDetachedNoteWindow(
-                createDetachedWindowPayload(tab, vaultPath),
-                {
-                    title: tab.title,
-                    position: getDetachedWindowPosition(
-                        coords.screenX,
-                        coords.screenY,
-                    ),
-                },
-            );
-
-            if (windowMode === "note" && currentTabs.length === 1) {
-                const appWindow = getAppWindow();
-                await appWindow.close();
-                return;
-            }
-
-            closeTab(tabId, { reason: "detach" });
-        },
-        [closeTab, vaultPath, windowMode],
-    );
-    const applyDragPreviewPosition = useCallback(() => {
-        dragPreviewFrameRef.current = null;
-        const node = dragPreviewNodeRef.current;
-        if (!node) {
-            return;
-        }
-
-        const { clientX, clientY } = dragPreviewPosRef.current;
-        node.style.transform = `translate3d(${clientX + 12}px, ${clientY + 12}px, 0) scale(1.02)`;
-    }, []);
-    const scheduleDragPreviewPosition = useCallback(() => {
-        if (dragPreviewFrameRef.current !== null) {
-            return;
-        }
-
-        dragPreviewFrameRef.current = window.requestAnimationFrame(
-            applyDragPreviewPosition,
-        );
-    }, [applyDragPreviewPosition]);
-    const updateTabDragPreview = useCallback(
-        (tabId: string, clientX: number, clientY: number) => {
-            dragPreviewPosRef.current = { clientX, clientY };
-            setDragPreviewTabId((current) =>
-                current === tabId ? current : tabId,
-            );
-            scheduleDragPreviewPosition();
-        },
-        [scheduleDragPreviewPosition],
-    );
-
-    useLayoutEffect(() => {
-        if (dragPreviewTabId !== null) {
-            applyDragPreviewPosition();
-        }
-    }, [applyDragPreviewPosition, dragPreviewTabId]);
-
-    useEffect(() => {
-        return () => {
-            if (dragPreviewFrameRef.current !== null) {
-                window.cancelAnimationFrame(dragPreviewFrameRef.current);
-                dragPreviewFrameRef.current = null;
-            }
-            if (ghostRef.current) {
-                void destroyGhostWindow(ghostRef.current);
-                ghostRef.current = null;
-            }
-        };
-    }, []);
+    const detachedTabWindowDrop = useDetachedTabWindowDrop({
+        vaultPath,
+        windowMode,
+        getTabById: (tabId) =>
+            selectEditorWorkspaceTabs(useEditorStore.getState()).find(
+                (candidate) => candidate.id === tabId,
+            ) ?? null,
+        getWorkspaceTabCount: () =>
+            selectEditorWorkspaceTabs(useEditorStore.getState()).length,
+        closeTab,
+    });
 
     const {
+        dragPreviewNodeRef,
+        dragPreviewTabId,
         draggingTabId,
         projectedDropIndex,
         tabStripRef,
@@ -427,74 +213,62 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         handlePointerUp,
         handleLostPointerCapture,
         consumeSuppressedClick,
-    } = useTabDragReorder({
+    } = useWorkspaceTabDrag({
         tabs: pane.tabs,
+        sourcePaneId: paneId,
         onCommitReorder: (fromIndex, toIndex) =>
             reorderPaneTabs(paneId, fromIndex, toIndex),
+        onCommitWorkspaceDrop: (tabId, target) => {
+            if (target.type === "strip") {
+                moveTabToPane(tabId, target.paneId, target.index);
+                return;
+            }
+
+            if (target.type === "pane-center") {
+                if (target.paneId !== paneId) {
+                    moveTabToPane(tabId, target.paneId);
+                }
+                return;
+            }
+
+            moveTabToPaneDropTarget(tabId, target.paneId, target.direction);
+        },
         onActivate: switchTab,
         liveReorder: false,
-        shouldDetach: isPointerOutsideCurrentWindow,
-        shouldCommitDrag: (tabId, coords) => {
-            const tab =
-                pane.tabs.find((candidate) => candidate.id === tabId) ?? null;
-            if (!tab) {
-                return true;
-            }
-
-            const canAttachToComposer =
-                buildTabFileDragDetail(
-                    tab,
-                    "end",
-                    {
-                        clientX: coords.clientX,
-                        clientY: coords.clientY,
-                    },
-                    {
-                        resolveNotePath: (noteId) =>
-                            useVaultStore
-                                .getState()
-                                .notes.find((note) => note.id === noteId)
-                                ?.path ?? null,
-                    },
-                ) !== null;
-
-            if (!canAttachToComposer) {
-                return true;
-            }
-
-            return !isPointOverAiComposerDropZone(
+        resolveExternalDropTarget: (tabId, coords) => {
+            const composerTarget = resolveComposerDropTarget(
                 coords.clientX,
                 coords.clientY,
             );
+            if (composerTarget.type !== "none") {
+                return composerTarget;
+            }
+
+            return detachedTabWindowDrop.resolveDetachDropTarget(tabId, coords);
         },
-        onDetachStart: handleDetachStart,
-        onDetachMove: handleDetachMove,
-        onDetachEnd: handleDetachEnd,
-        onDetachCancel: handleDetachCancel,
-        onDragStart: (tabId, coords) => {
-            updateTabDragPreview(tabId, coords.clientX, coords.clientY);
-            emitTabDragDetail(tabId, "start", {
-                clientX: coords.clientX,
-                clientY: coords.clientY,
+        onCommitExternalDrop: (tabId, target, coords) => {
+            if (target.type !== "detach-window") {
+                return;
+            }
+
+            return detachedTabWindowDrop.commitDetachDrop(tabId, coords);
+        },
+        onDetachStart: detachedTabWindowDrop.handleDetachStart,
+        onDetachMove: detachedTabWindowDrop.handleDetachMove,
+        onDetachCancel: detachedTabWindowDrop.handleDetachCancel,
+        buildAttachmentDetail: (tabId, phase, coords) => {
+            const tab =
+                pane.tabs.find((candidate) => candidate.id === tabId) ?? null;
+            if (!tab) {
+                return null;
+            }
+
+            return buildTabFileDragDetail(tab, phase, coords, {
+                resolveNotePath: (noteId) =>
+                    useVaultStore
+                        .getState()
+                        .notes.find((note) => note.id === noteId)?.path ?? null,
             });
-        },
-        onDragMove: (tabId, coords) => {
-            updateTabDragPreview(tabId, coords.clientX, coords.clientY);
-            emitTabDragDetail(tabId, "move", {
-                clientX: coords.clientX,
-                clientY: coords.clientY,
-            });
-        },
-        onDragEnd: (tabId, coords) => {
-            emitTabDragDetail(tabId, "end", {
-                clientX: coords.clientX,
-                clientY: coords.clientY,
-            });
-            setDragPreviewTabId(null);
-        },
-        onDragCancel: (tabId) => {
-            emitTabDragDetail(tabId, "cancel");
-            setDragPreviewTabId(null);
         },
     });
     const tabLayout = useResponsiveEditorTabLayout({
@@ -509,12 +283,20 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const draggingOriginalIndex = draggingTabId
         ? pane.tabs.findIndex((tab) => tab.id === draggingTabId)
         : -1;
-    const insertionIndicatorIndex =
+    const localInsertionIndicatorIndex =
         draggingOriginalIndex === -1 || projectedDropIndex == null
             ? null
             : projectedDropIndex > draggingOriginalIndex
               ? projectedDropIndex + 1
               : projectedDropIndex;
+    const crossPaneInsertionIndicatorIndex =
+        crossPaneDropPreview?.targetPaneId === paneId &&
+        crossPaneDropPreview.position === "center" &&
+        crossPaneDropPreview.insertIndex !== null
+            ? crossPaneDropPreview.insertIndex
+            : null;
+    const insertionIndicatorIndex =
+        localInsertionIndicatorIndex ?? crossPaneInsertionIndicatorIndex;
     const handleTabPointerDownCapture = useCallback(
         (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
             if (event.button !== 0) return;

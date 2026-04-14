@@ -334,7 +334,7 @@ describe("MultiPaneWorkspace", () => {
                         sourcePaneId: "primary",
                         targetPaneId: "secondary",
                         position: "center",
-                        insertIndex: 0,
+                        insertIndex: null,
                         tabId: "tab-a",
                     },
                 }),

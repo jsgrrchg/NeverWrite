@@ -56,6 +56,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 
 vi.mock("../../app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
+    commitDetachedTabDrop: vi.fn(),
     createDetachedWindowPayload: vi.fn(),
     createGhostWindow: vi.fn(),
     destroyGhostWindow: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock("../../app/detachedWindows", () => ({
     moveGhostWindow: vi.fn(),
     openDetachedNoteWindow: vi.fn(),
     publishWindowTabDropZone: vi.fn(),
+    resolveDetachWindowDropTarget: vi.fn(() => ({ type: "none" })),
 }));
 
 function rect({
@@ -472,7 +474,7 @@ describe("UnifiedBar tab strip drop", () => {
                             },
                         ],
                         origin: {
-                            kind: "unified-bar-tab",
+                            kind: "workspace-tab",
                             tabId: "tab-a",
                         },
                     },

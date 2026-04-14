@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildTabFileDragDetail } from "./tabDragAttachments";
+import {
+    buildTabFileDragDetail,
+    resolveComposerDropTarget,
+} from "./tabDragAttachments";
 import type {
+    ChatTab,
     FileTab,
     MapTab,
     NoteTab,
@@ -163,5 +167,70 @@ describe("buildTabFileDragDetail", () => {
         expect(
             buildTabFileDragDetail(tab, "move", { clientX: 5, clientY: 6 }),
         ).toBeNull();
+    });
+
+    it("ignores chat tabs", () => {
+        const tab: ChatTab = {
+            id: "chat-1",
+            kind: "ai-chat",
+            sessionId: "session-1",
+            title: "Chat",
+        };
+
+        expect(
+            buildTabFileDragDetail(tab, "move", { clientX: 5, clientY: 6 }),
+        ).toBeNull();
+    });
+});
+
+describe("resolveComposerDropTarget", () => {
+    it("returns composer when the pointer is over a composer drop zone", () => {
+        document.body.innerHTML =
+            '<div data-ai-composer-drop-zone="true"></div>';
+        const dropZone = document.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        ) as HTMLElement;
+
+        dropZone.getBoundingClientRect = () =>
+            ({
+                left: 100,
+                top: 200,
+                right: 340,
+                bottom: 320,
+                width: 240,
+                height: 120,
+                x: 100,
+                y: 200,
+                toJSON: () => ({}),
+            }) as DOMRect;
+
+        expect(resolveComposerDropTarget(180, 240)).toEqual({
+            type: "composer",
+        });
+    });
+
+    it("returns none when the pointer is outside composer drop zones", () => {
+        document.body.innerHTML =
+            '<div data-ai-composer-drop-zone="true"></div>';
+        const dropZone = document.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        ) as HTMLElement;
+
+        dropZone.getBoundingClientRect = () =>
+            ({
+                left: 100,
+                top: 200,
+                right: 340,
+                bottom: 320,
+                width: 240,
+                height: 120,
+                x: 100,
+                y: 200,
+                toJSON: () => ({}),
+            }) as DOMRect;
+
+        expect(resolveComposerDropTarget(24, 48)).toEqual({
+            type: "none",
+        });
     });
 });

@@ -435,8 +435,22 @@ describe("editorStore session persistence", () => {
 
         const session = readPersistedSession("/vaults/geo-2026");
         expect(session).not.toBeNull();
-        expect(session!.noteIds[0].noteId).toBe("notes/uk");
-        expect(session!.activeNoteId).toBe("notes/uk");
+        expect(session).toMatchObject({
+            version: 2,
+            panes: [
+                {
+                    id: "primary",
+                    tabIds: ["tab-1"],
+                    activeTabId: "tab-1",
+                },
+            ],
+        });
+        expect(
+            session?.version === 2 && session.tabsById["tab-1"],
+        ).toMatchObject({
+            kind: "note",
+            noteId: "notes/uk",
+        });
     });
 
     it("persists pdf view mode per vault path", async () => {
@@ -460,11 +474,13 @@ describe("editorStore session persistence", () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
 
         const session = readPersistedSession("/vaults/pdfs-2026");
-        expect(session?.pdfTabs?.[0]).toMatchObject({
+        expect(session?.version).toBe(2);
+        expect(
+            session?.version === 2 && session.tabsById["pdf-tab-1"],
+        ).toMatchObject({
             entryId: "reports/q1",
             viewMode: "continuous",
         });
-        expect(session?.activePdfEntryId).toBe("reports/q1");
     });
 
     it("persists file viewer mode per vault path", async () => {
@@ -489,13 +505,13 @@ describe("editorStore session persistence", () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
 
         const session = readPersistedSession("/vaults/assets-2026");
-        expect(session?.fileTabs?.[0]).toMatchObject({
+        expect(session?.version).toBe(2);
+        expect(
+            session?.version === 2 && session.tabsById["file-tab-1"],
+        ).toMatchObject({
             relativePath: "assets/cover.avif",
             viewer: "image",
         });
-        expect(session?.activeFilePath).toBe("assets/cover.avif");
-        expect(session?.tabs).toBeUndefined();
-        expect(session?.fileTabs?.[0]).not.toHaveProperty("content");
     });
 
     it("persists csv file viewer mode per vault path", async () => {
@@ -520,14 +536,14 @@ describe("editorStore session persistence", () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
 
         const session = readPersistedSession("/vaults/data-2026");
-        expect(session?.fileTabs?.[0]).toMatchObject({
+        expect(session?.version).toBe(2);
+        expect(
+            session?.version === 2 && session.tabsById["file-tab-csv"],
+        ).toMatchObject({
             relativePath: "data/report.csv",
             viewer: "csv",
             mimeType: "text/csv",
         });
-        expect(session?.activeFilePath).toBe("data/report.csv");
-        expect(session?.tabs).toBeUndefined();
-        expect(session?.fileTabs?.[0]).not.toHaveProperty("content");
     });
 
     it("persists map tabs by relative path", async () => {
@@ -548,14 +564,13 @@ describe("editorStore session persistence", () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
 
         const session = readPersistedSession("/vaults/maps-2026");
-        expect(session?.mapTabs?.[0]).toMatchObject({
+        expect(session?.version).toBe(2);
+        expect(
+            session?.version === 2 && session.tabsById["map-tab-1"],
+        ).toMatchObject({
             relativePath: "Excalidraw/Architecture.excalidraw",
             title: "Architecture",
         });
-        expect(session?.activeMapRelativePath).toBe(
-            "Excalidraw/Architecture.excalidraw",
-        );
-        expect(session?.mapTabs?.[0]).not.toHaveProperty("filePath");
     });
 
     it("does not persist note contents in the top-level session payload", async () => {
@@ -577,8 +592,10 @@ describe("editorStore session persistence", () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
 
         const session = readPersistedSession("/vaults/lean-2026");
-        expect(session?.tabs).toBeUndefined();
-        expect(session?.noteIds?.[0]).toMatchObject({
+        expect(session?.version).toBe(2);
+        expect(
+            session?.version === 2 && session.tabsById["tab-1"],
+        ).toMatchObject({
             noteId: "notes/large",
             title: "Large",
         });
@@ -625,15 +642,22 @@ describe("editorStore session persistence", () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
 
         const session = readPersistedSession("/vaults/history-rename-2026");
-        expect(session?.noteIds?.[0]).toEqual({
-            noteId: "notes/current",
-            title: "Current",
-            history: [
-                { noteId: "notes/renamed", title: "Renamed" },
-                { noteId: "notes/current", title: "Current" },
-            ],
-            historyIndex: 1,
-        });
+        expect(session?.version).toBe(2);
+        expect(
+            session?.version === 2
+                ? session.tabsById["note-history-tab"]
+                : null,
+        ).toEqual(
+            expect.objectContaining({
+                noteId: "notes/current",
+                title: "Current",
+                history: [
+                    { noteId: "notes/renamed", title: "Renamed" },
+                    { noteId: "notes/current", title: "Current" },
+                ],
+                historyIndex: 1,
+            }),
+        );
     });
 
     it("swallows storage quota errors while persisting", async () => {

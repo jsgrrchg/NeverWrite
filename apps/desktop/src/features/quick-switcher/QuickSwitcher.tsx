@@ -15,10 +15,12 @@ import {
 } from "../../app/store/vaultStore";
 import {
     useEditorStore,
+    isChatTab,
     isFileTab,
     isPdfTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
+    type ChatTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
@@ -28,6 +30,8 @@ import {
     openVaultFileEntry,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useChatStore } from "../ai/store/chatStore";
+import { getSessionTitle } from "../ai/sessionPresentation";
 
 const QUICK_SWITCHER_ROW_HEIGHT = 48;
 
@@ -75,6 +79,13 @@ type QuickSwitcherItem =
           title: string;
           subtitle: string;
           entry: VaultEntryDto;
+      }
+    | {
+          key: string;
+          kind: "chat";
+          title: string;
+          subtitle: string;
+          tab: ChatTab;
       };
 
 function QuickSwitcherDialog() {
@@ -97,7 +108,11 @@ function QuickSwitcherDialog() {
         () => new Map(entries.map((entry) => [entry.path, entry])),
         [entries],
     );
-    const tabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
+    const orderedTabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
+    const tabsById = useEditorStore((state) => state.tabsById);
+    const switchTab = useEditorStore((state) => state.switchTab);
+    const chatSessionsById = useChatStore((state) => state.sessionsById);
+    const openTabs = useMemo(() => Object.values(tabsById), [tabsById]);
 
     const buildNoteItem = useCallback(
         (note: NoteDto): QuickSwitcherItem => ({
@@ -121,14 +136,31 @@ function QuickSwitcherDialog() {
         [showExtensions],
     );
 
+    const buildChatItem = useCallback(
+        (tab: ChatTab): QuickSwitcherItem => {
+            const session = chatSessionsById[tab.sessionId];
+            return {
+                key: `chat:${tab.id}`,
+                kind: "chat",
+                title: session ? getSessionTitle(session) : tab.title,
+                subtitle: tab.sessionId,
+                tab,
+            };
+        },
+        [chatSessionsById],
+    );
+
     const results = useMemo(() => {
         const searchableEntries = entries.filter(
             (entry) => entry.kind !== "note" && entry.kind !== "folder",
         );
 
         if (!deferredQuery.trim()) {
-            const ordered = tabs
+            const ordered = orderedTabs
                 .map((tab) => {
+                    if (isChatTab(tab)) {
+                        return buildChatItem(tab);
+                    }
                     if (isPdfTab(tab)) {
                         const entry = entryMap.get(tab.path);
                         return entry ? buildEntryItem(entry) : null;
@@ -186,6 +218,18 @@ function QuickSwitcherDialog() {
         }
 
         return [
+            ...openTabs
+                .filter((tab): tab is ChatTab => isChatTab(tab))
+                .map((tab) => {
+                    const item = buildChatItem(tab);
+                    return {
+                        item,
+                        score: Math.max(
+                            fuzzyScore(deferredQuery, item.title),
+                            fuzzyScore(deferredQuery, tab.sessionId),
+                        ),
+                    };
+                }),
             ...notes.map((note) => ({
                 item: buildNoteItem(note),
                 score: Math.max(
@@ -209,13 +253,15 @@ function QuickSwitcherDialog() {
             .map(({ item }) => item);
     }, [
         buildEntryItem,
+        buildChatItem,
         buildNoteItem,
         deferredQuery,
         entries,
         entryMap,
         noteMap,
         notes,
-        tabs,
+        openTabs,
+        orderedTabs,
     ]);
     const virtual = useVirtualList(
         listRef,
@@ -261,11 +307,31 @@ function QuickSwitcherDialog() {
     const openItemAndClose = useCallback(
         async (item: QuickSwitcherItem) => {
             closeModal();
+            if (item.kind === "chat") {
+                switchTab(item.tab.id);
+                return;
+            }
             if (item.kind === "pdf") {
+                const existing = openTabs.find(
+                    (tab) => isPdfTab(tab) && tab.entryId === item.entry.id,
+                );
+                if (existing) {
+                    switchTab(existing.id);
+                    return;
+                }
                 openPdf(item.entry.id, item.entry.title, item.entry.path);
                 return;
             }
             if (item.kind === "file") {
+                const existing = openTabs.find(
+                    (tab) =>
+                        isFileTab(tab) &&
+                        tab.relativePath === item.entry.relative_path,
+                );
+                if (existing) {
+                    switchTab(existing.id);
+                    return;
+                }
                 try {
                     await openVaultFileEntry(item.entry);
                 } catch (error) {
@@ -276,11 +342,11 @@ function QuickSwitcherDialog() {
 
             if (item.kind !== "note") return;
             const note = item.note;
-            const existing = selectEditorWorkspaceTabs(
-                useEditorStore.getState(),
-            ).find((t): t is NoteTab => isNoteTab(t) && t.noteId === note.id);
+            const existing = openTabs.find(
+                (t): t is NoteTab => isNoteTab(t) && t.noteId === note.id,
+            );
             if (existing) {
-                openNote(note.id, note.title, existing.content);
+                switchTab(existing.id);
                 return;
             }
             try {
@@ -295,7 +361,7 @@ function QuickSwitcherDialog() {
                 console.error("Error reading note:", e);
             }
         },
-        [closeModal, openNote, openPdf],
+        [closeModal, openNote, openPdf, openTabs, switchTab],
     );
 
     const handleKeyDown = useCallback(

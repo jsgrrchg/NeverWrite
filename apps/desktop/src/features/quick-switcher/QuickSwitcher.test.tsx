@@ -10,6 +10,7 @@ import {
     setVaultNotes,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useChatStore } from "../ai/store/chatStore";
 
 describe("QuickSwitcher", () => {
     it("shows open tabs first when the query is empty", async () => {
@@ -154,5 +155,80 @@ describe("QuickSwitcher", () => {
         }
 
         expect((list as HTMLDivElement).scrollTop).toBeGreaterThan(0);
+    });
+
+    it("includes open chat tabs in results and activates them without creating duplicates", async () => {
+        vi.useFakeTimers();
+
+        useChatStore.setState({
+            sessionsById: {
+                "session-chat-1": {
+                    sessionId: "session-chat-1",
+                    historySessionId: "session-chat-1",
+                    runtimeId: "codex-acp",
+                    modelId: "gpt-5.4",
+                    modeId: "default",
+                    status: "idle",
+                    messages: [
+                        {
+                            id: "msg-1",
+                            role: "user",
+                            kind: "text",
+                            content: "Research thread",
+                            timestamp: 1,
+                        },
+                    ],
+                    attachments: [],
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            } as never,
+        });
+
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "left",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "right",
+                    tabs: [
+                        {
+                            id: "chat-tab-1",
+                            kind: "ai-chat",
+                            sessionId: "session-chat-1",
+                            title: "Fallback Chat",
+                        },
+                    ],
+                    activeTabId: "chat-tab-1",
+                },
+            ],
+            "left",
+        );
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("Research thread")).toBeInTheDocument();
+
+        const input = screen.getByPlaceholderText("Search files and notes...");
+        fireEvent.change(input, { target: { value: "Research" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: /Research thread/i }),
+        );
+
+        const state = useEditorStore.getState();
+        expect(state.activeTabId).toBe("chat-tab-1");
+        expect(state.focusedPaneId).toBe("right");
+        expect(state.panes.flatMap((pane) => pane.tabs)).toHaveLength(1);
     });
 });

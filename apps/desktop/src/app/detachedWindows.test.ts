@@ -7,6 +7,7 @@ import {
     getDetachedNoteWindowUrl,
     openSettingsWindow,
     publishWindowTabDropZone,
+    resolveDetachWindowDropTarget,
 } from "./detachedWindows";
 
 function createMockWindow(
@@ -85,6 +86,15 @@ describe("detachedWindows", () => {
         await expect(
             findWindowTabDropTarget(420, 36, "main", "/vaults/main"),
         ).resolves.toBe("note-1");
+    });
+
+    it("maps leaving the current window to the detach-window target", () => {
+        expect(resolveDetachWindowDropTarget(40, 40)).toEqual({
+            type: "none",
+        });
+        expect(resolveDetachWindowDropTarget(-64, 40)).toEqual({
+            type: "detach-window",
+        });
     });
 
     it("ignores ghost windows and windows from a different vault", async () => {

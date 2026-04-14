@@ -170,6 +170,12 @@ function WorkspacePane({
 }) {
     const activeDropPreview =
         dropPreview?.targetPaneId === paneId ? dropPreview : null;
+    const showPaneDropOverlay =
+        activeDropPreview !== null &&
+        !(
+            activeDropPreview.position === "center" &&
+            activeDropPreview.insertIndex !== null
+        );
 
     return (
         <div
@@ -189,7 +195,7 @@ function WorkspacePane({
             data-editor-pane-id={paneId}
             data-editor-pane-focused={isFocused || undefined}
         >
-            {activeDropPreview ? (
+            {showPaneDropOverlay ? (
                 <div
                     aria-hidden="true"
                     data-pane-drop-overlay-position={activeDropPreview.position}
@@ -214,7 +220,11 @@ function WorkspacePane({
                     </div>
                 </div>
             ) : null}
-            <EditorPaneBar paneId={paneId} isFocused={isFocused} />
+            <EditorPaneBar
+                paneId={paneId}
+                isFocused={isFocused}
+                crossPaneDropPreview={activeDropPreview}
+            />
             <EditorPaneContent
                 paneId={paneId}
                 emptyStateMessage="This pane is empty. Open a note here or close the pane from its menu."

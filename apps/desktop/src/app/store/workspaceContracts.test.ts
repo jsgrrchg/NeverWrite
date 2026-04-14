@@ -17,6 +17,11 @@ describe("workspaceContracts Phase 0 inventory", () => {
         ).toBe(true);
         expect(inventoryIds.has("unified-bar-global-tab-strip")).toBe(true);
         expect(inventoryIds.has("editor-pane-bar-pane-tab-strip")).toBe(true);
+        expect(inventoryIds.has("workspace-tab-drag-hook")).toBe(true);
+        expect(inventoryIds.has("composer-drop-zone-attachments")).toBe(true);
+        expect(inventoryIds.has("detached-window-drop-infrastructure")).toBe(
+            true,
+        );
         expect(inventoryIds.has("ai-chat-panel-sidebar-primary-surface")).toBe(
             true,
         );

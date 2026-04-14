@@ -223,25 +223,66 @@ export const WORKSPACE_PHASE0_INVENTORY = [
             "CrossPaneTabDropPreview",
             "dispatchCrossPaneTabDropPreview",
             "resolvePaneDropPosition",
+            "resolveWorkspaceTabDropTarget",
+            "toCrossPaneTabDropPreview",
         ],
         reads: [],
         writes: [],
         summary:
-            "Pane-edge and pane-center drop previews already exist as a dedicated workspace concern, but they are not yet resolved through a single canonical drag contract.",
+            "Workspace tab drop hit-testing now resolves pane centers, edges and target strip insertion points through a single pane-centric target resolver.",
         migrationIntent:
-            "Phase 3 keeps the hit-testing idea but routes it through a shared workspace drag payload and drop target resolver.",
+            "Phase 3 is the canonical home for pane hit-testing; later phases should layer composer and detach targets on top of this resolver instead of bypassing it.",
+    },
+    {
+        id: "workspace-tab-drag-hook",
+        role: "drag-drop",
+        file: "apps/desktop/src/features/editor/useWorkspaceTabDrag.ts",
+        symbols: [
+            "useWorkspaceTabDrag",
+            "resolveCurrentWorkspaceDropTarget",
+            "publishWorkspaceDropPreview",
+            "onCommitWorkspaceDrop",
+        ],
+        reads: [],
+        writes: [],
+        summary:
+            "Pointer-based tab dragging now flows through a shared hook that owns drag previews, drop-target resolution, commit routing and cancellation semantics for workspace tabs.",
+        migrationIntent:
+            "Keep both pane bars and any future workspace tab surfaces on this hook so drag rules do not fork again.",
     },
     {
         id: "composer-drop-zone-attachments",
         role: "drag-drop",
         file: "apps/desktop/src/features/editor/tabDragAttachments.ts",
-        symbols: ["buildTabFileDragDetail", "isPointOverAiComposerDropZone"],
+        symbols: [
+            "buildTabFileDragDetail",
+            "isPointOverAiComposerDropZone",
+            "resolveComposerDropTarget",
+        ],
         reads: [],
         writes: [],
         summary:
-            "Composer attachment drag is already modeled as an external drop-zone concern, which is compatible with pane-centric ownership.",
+            "Composer attachment drag is modeled as an external drop-zone concern, and the shared workspace drag resolver can now return `composer` without routing that intent through layout ownership.",
         migrationIntent:
             "Phase 4 preserves this as a specialized drop target instead of letting it compete with structural workspace ownership.",
+    },
+    {
+        id: "detached-window-drop-infrastructure",
+        role: "drag-drop",
+        file: "apps/desktop/src/app/detachedWindows.ts",
+        symbols: [
+            "resolveDetachWindowDropTarget",
+            "findWindowTabDropTarget",
+            "commitDetachedTabDrop",
+            "createGhostWindow",
+            "publishWindowTabDropZone",
+        ],
+        reads: [],
+        writes: [],
+        summary:
+            "Detached-window routing is now modeled as infrastructure behind the shared drag contract, so workspace tab surfaces can resolve `detach-window` without owning cross-window attach logic.",
+        migrationIntent:
+            "Phase 5 keeps ghost previews and multi-window routing here, while the workspace drag hook stays responsible only for target resolution and commit intent.",
     },
     {
         id: "app-global-shortcuts-and-sidebar-chat-host",

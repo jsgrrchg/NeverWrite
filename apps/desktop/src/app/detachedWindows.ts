@@ -6,6 +6,7 @@ import {
 } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { Tab, TabInput } from "./store/editorStore";
+import type { WorkspaceDropTarget } from "./store/workspaceContracts";
 import { getPathBaseName } from "./utils/path";
 import { getManagedWindowChromeOptions } from "./utils/platform";
 import { readSearchParam } from "./utils/safeBrowser";
@@ -278,6 +279,15 @@ export function isPointerOutsideCurrentWindow(
     );
 }
 
+export function resolveDetachWindowDropTarget(
+    clientX: number,
+    clientY: number,
+): Extract<WorkspaceDropTarget, { type: "detach-window" | "none" }> {
+    return isPointerOutsideCurrentWindow(clientX, clientY)
+        ? { type: "detach-window" }
+        : { type: "none" };
+}
+
 export async function findWindowTabDropTarget(
     screenX: number,
     screenY: number,
@@ -349,6 +359,66 @@ export async function findWindowTabDropTarget(
         })[0];
 
     return match?.label ?? null;
+}
+
+interface CommitDetachedTabDropOptions {
+    tab: Tab;
+    screenX: number;
+    screenY: number;
+    vaultPath: string | null;
+    windowMode: ReturnType<typeof getWindowMode>;
+    currentWorkspaceTabCount: number;
+    closeTab: (tabId: string, options?: { reason?: "detach" }) => void;
+}
+
+/**
+ * Commit the canonical `detach-window` drop target.
+ *
+ * This keeps multi-window routing in the detached-window infrastructure layer
+ * so workspace tab surfaces only need to decide intent, not re-implement the
+ * window attach/detach workflow.
+ */
+export async function commitDetachedTabDrop({
+    tab,
+    screenX,
+    screenY,
+    vaultPath,
+    windowMode,
+    currentWorkspaceTabCount,
+    closeTab,
+}: CommitDetachedTabDropOptions) {
+    const targetWindowLabel = await findWindowTabDropTarget(
+        screenX,
+        screenY,
+        getCurrentWindowLabel(),
+        vaultPath,
+    );
+
+    if (targetWindowLabel) {
+        await emitTo(targetWindowLabel, ATTACH_EXTERNAL_TAB_EVENT, {
+            tab,
+        } satisfies AttachExternalTabPayload);
+
+        if (windowMode === "note" && currentWorkspaceTabCount <= 1) {
+            await getCurrentWebviewWindow().close();
+            return;
+        }
+
+        closeTab(tab.id, { reason: "detach" });
+        return;
+    }
+
+    await openDetachedNoteWindow(createDetachedWindowPayload(tab, vaultPath), {
+        title: tab.title,
+        position: getDetachedWindowPosition(screenX, screenY),
+    });
+
+    if (windowMode === "note" && currentWorkspaceTabCount <= 1) {
+        await getCurrentWebviewWindow().close();
+        return;
+    }
+
+    closeTab(tab.id, { reason: "detach" });
 }
 
 function settingsWindowLabel(vaultPath: string | null): string {

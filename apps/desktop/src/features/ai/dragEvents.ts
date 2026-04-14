@@ -24,7 +24,7 @@ export interface FileTreeNoteDragDetail {
     files?: FileTreeDraggedFile[];
     folder?: { path: string; name: string };
     origin?: {
-        kind: "unified-bar-tab";
+        kind: "workspace-tab";
         tabId: string;
     };
 }
