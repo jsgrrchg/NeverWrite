@@ -52,17 +52,17 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
         case "Read": {
             const input = toolUse.input;
             let limit = "";
-            if (input.limit && input.limit > 0) {
+            if (input?.limit && input.limit > 0) {
                 limit = " (" + (input.offset ?? 1) + " - " + ((input.offset ?? 1) + input.limit - 1) + ")";
             }
-            else if (input.offset) {
+            else if (input?.offset) {
                 limit = " (from line " + input.offset + ")";
             }
-            const displayPath = input.file_path ? toDisplayPath(input.file_path, cwd) : "File";
+            const displayPath = input?.file_path ? toDisplayPath(input.file_path, cwd) : "File";
             return {
                 title: "Read " + displayPath + limit,
                 kind: "read",
-                locations: input.file_path
+                locations: input?.file_path
                     ? [
                         {
                             path: input.file_path,
@@ -126,38 +126,38 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
         case "Glob": {
             const input = toolUse.input;
             let label = "Find";
-            if (input.path) {
+            if (input?.path) {
                 label += ` \`${input.path}\``;
             }
-            if (input.pattern) {
+            if (input?.pattern) {
                 label += ` \`${input.pattern}\``;
             }
             return {
                 title: label,
                 kind: "search",
                 content: [],
-                locations: input.path ? [{ path: input.path }] : [],
+                locations: input?.path ? [{ path: input.path }] : [],
             };
         }
         case "Grep": {
             const input = toolUse.input;
             let label = "grep";
-            if (input["-i"]) {
+            if (input?.["-i"]) {
                 label += " -i";
             }
-            if (input["-n"]) {
+            if (input?.["-n"]) {
                 label += " -n";
             }
-            if (input["-A"] !== undefined) {
+            if (input?.["-A"] !== undefined) {
                 label += ` -A ${input["-A"]}`;
             }
-            if (input["-B"] !== undefined) {
+            if (input?.["-B"] !== undefined) {
                 label += ` -B ${input["-B"]}`;
             }
-            if (input["-C"] !== undefined) {
+            if (input?.["-C"] !== undefined) {
                 label += ` -C ${input["-C"]}`;
             }
-            if (input.output_mode) {
+            if (input?.output_mode) {
                 switch (input.output_mode) {
                     case "files_with_matches":
                         label += " -l";
@@ -170,22 +170,22 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
                         break;
                 }
             }
-            if (input.head_limit !== undefined) {
+            if (input?.head_limit !== undefined) {
                 label += ` | head -${input.head_limit}`;
             }
-            if (input.glob) {
+            if (input?.glob) {
                 label += ` --include="${input.glob}"`;
             }
-            if (input.type) {
+            if (input?.type) {
                 label += ` --type=${input.type}`;
             }
-            if (input.multiline) {
+            if (input?.multiline) {
                 label += " -P";
             }
-            if (input.pattern) {
+            if (input?.pattern) {
                 label += ` "${input.pattern}"`;
             }
-            if (input.path) {
+            if (input?.path) {
                 label += ` ${input.path}`;
             }
             return {
@@ -211,11 +211,11 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
         }
         case "WebSearch": {
             const input = toolUse.input;
-            let label = `"${input.query}"`;
-            if (input.allowed_domains && input.allowed_domains.length > 0) {
+            let label = input?.query ? `"${input.query}"` : "Web search";
+            if (input?.allowed_domains && input.allowed_domains.length > 0) {
                 label += ` (allowed: ${input.allowed_domains.join(", ")})`;
             }
-            if (input.blocked_domains && input.blocked_domains.length > 0) {
+            if (input?.blocked_domains && input.blocked_domains.length > 0) {
                 label += ` (blocked: ${input.blocked_domains.join(", ")})`;
             }
             return {
@@ -477,9 +477,9 @@ function toAcpContentBlock(content, isError) {
     }
 }
 export function planEntries(input) {
-    return input.todos.map((input) => ({
-        content: input.content,
-        status: input.status,
+    return (input?.todos ?? []).map((todo) => ({
+        content: todo.content,
+        status: todo.status,
         priority: "medium",
     }));
 }

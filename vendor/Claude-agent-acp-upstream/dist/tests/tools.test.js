@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toAcpNotifications } from "../acp-agent.js";
-import { toolUpdateFromToolResult, createPostToolUseHook, toolInfoFromToolUse } from "../tools.js";
+import { toolUpdateFromToolResult, createPostToolUseHook, toolInfoFromToolUse, planEntries, } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
     const mockClient = {};
     const mockLogger = { log: () => { }, error: () => { } };
@@ -925,5 +925,85 @@ describe("toolInfoFromToolUse - ExitPlanMode", () => {
         const info = toolInfoFromToolUse(toolUse, false);
         expect(info.kind).toBe("switch_mode");
         expect(info.content).toEqual([]);
+    });
+});
+describe("toolInfoFromToolUse - undefined input regression", () => {
+    it("Read with undefined input should not throw", () => {
+        const toolUse = { name: "Read", id: "toolu_read_undef", input: undefined };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.title).toBe("Read File");
+        expect(info.locations).toEqual([]);
+    });
+    it("Grep with undefined input should not throw", () => {
+        const toolUse = { name: "Grep", id: "toolu_grep_undef", input: undefined };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.title).toBe("grep");
+    });
+    it("Glob with undefined input should not throw", () => {
+        const toolUse = { name: "Glob", id: "toolu_glob_undef", input: undefined };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.title).toBe("Find");
+        expect(info.locations).toEqual([]);
+    });
+    it("WebSearch with undefined input should not throw", () => {
+        const toolUse = { name: "WebSearch", id: "toolu_ws_undef", input: undefined };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.title).toBe("Web search");
+    });
+    it("TodoWrite with undefined input should not throw", () => {
+        const toolUse = { name: "TodoWrite", id: "toolu_todo_undef", input: undefined };
+        const info = toolInfoFromToolUse(toolUse, false);
+        expect(info.title).toBe("Update TODOs");
+    });
+});
+describe("planEntries - undefined input regression", () => {
+    it("should return empty array when input is undefined", () => {
+        expect(planEntries(undefined)).toEqual([]);
+    });
+    it("should return empty array when input has no todos", () => {
+        expect(planEntries({})).toEqual([]);
+    });
+    it("should still map valid todos correctly", () => {
+        const result = planEntries({
+            todos: [
+                { content: "Task 1", status: "pending", activeForm: "" },
+                { content: "Task 2", status: "completed", activeForm: "" },
+            ],
+        });
+        expect(result).toEqual([
+            { content: "Task 1", status: "pending", priority: "medium" },
+            { content: "Task 2", status: "completed", priority: "medium" },
+        ]);
+    });
+});
+describe("toAcpNotifications - TodoWrite with undefined input regression", () => {
+    const mockClient = {};
+    const mockLogger = { log: () => { }, error: () => { } };
+    it("should not throw when TodoWrite tool_use has undefined input", () => {
+        const toolUseCache = {};
+        const notifications = toAcpNotifications([
+            {
+                type: "tool_use",
+                id: "toolu_todo_undef",
+                name: "TodoWrite",
+                input: undefined,
+            },
+        ], "assistant", "test-session", toolUseCache, mockClient, mockLogger);
+        // TodoWrite with undefined input should not crash, and should not emit plan update
+        const planUpdates = notifications.filter((n) => n.update.sessionUpdate === "plan");
+        expect(planUpdates).toHaveLength(0);
+    });
+    it("should still emit plan update when TodoWrite has valid input", () => {
+        const toolUseCache = {};
+        const notifications = toAcpNotifications([
+            {
+                type: "tool_use",
+                id: "toolu_todo_valid",
+                name: "TodoWrite",
+                input: { todos: [{ content: "Do X", status: "pending" }] },
+            },
+        ], "assistant", "test-session", toolUseCache, mockClient, mockLogger);
+        const planUpdates = notifications.filter((n) => n.update.sessionUpdate === "plan");
+        expect(planUpdates).toHaveLength(1);
     });
 });

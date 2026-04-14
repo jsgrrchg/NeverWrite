@@ -33,6 +33,13 @@ const GATEWAY_URL_REQUIRED_MESSAGE: &str =
 const CLAUDE_AI_LOGIN_METHOD_ID: &str = "claude-ai-login";
 const CLAUDE_LOGIN_LEGACY_METHOD_ID: &str = "claude-login";
 const CONSOLE_LOGIN_METHOD_ID: &str = "console-login";
+const REMOTE_CLAUDE_AUTH_ENV_VARS: [&str; 5] = [
+    "NO_BROWSER",
+    "SSH_CONNECTION",
+    "SSH_CLIENT",
+    "SSH_TTY",
+    "CLAUDE_CODE_REMOTE",
+];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeSetupConfig {
@@ -485,44 +492,55 @@ fn detect_auth_method(config: &ClaudeSetupConfig) -> Option<String> {
         .and_then(normalize_claude_auth_method_id)
         .filter(|_| claude_login_available(config))
     {
-        return Some(method_id.to_string());
+        return Some(project_terminal_auth_method_id(method_id).to_string());
     }
 
     if claude_login_available(config) {
-        return Some(CLAUDE_AI_LOGIN_METHOD_ID.to_string());
+        return Some(default_claude_login_method_id().to_string());
     }
 
     None
 }
 
 fn available_auth_methods() -> Vec<AiAuthMethod> {
-    vec![
-        AiAuthMethod {
-            id: CLAUDE_AI_LOGIN_METHOD_ID.to_string(),
-            name: "Claude subscription".to_string(),
-            description: "Open a terminal-based Claude subscription login flow.".to_string(),
-        },
-        AiAuthMethod {
-            id: CONSOLE_LOGIN_METHOD_ID.to_string(),
-            name: "Anthropic Console".to_string(),
-            description: "Open a terminal-based Anthropic Console login flow.".to_string(),
-        },
-        AiAuthMethod {
-            id: "gateway".to_string(),
-            name: "Custom gateway".to_string(),
-            description: format!(
-                "Use a custom Anthropic-compatible gateway just for {}.",
-                APP_BRAND_NAME
-            ),
-        },
-    ]
+    let mut methods = if is_remote_claude_auth_environment() {
+        vec![AiAuthMethod {
+            id: CLAUDE_LOGIN_LEGACY_METHOD_ID.to_string(),
+            name: "Log in with Claude".to_string(),
+            description: "Open a Claude terminal session and complete sign-in with `/login`."
+                .to_string(),
+        }]
+    } else {
+        vec![
+            AiAuthMethod {
+                id: CLAUDE_AI_LOGIN_METHOD_ID.to_string(),
+                name: "Claude subscription".to_string(),
+                description: "Open a terminal-based Claude subscription login flow.".to_string(),
+            },
+            AiAuthMethod {
+                id: CONSOLE_LOGIN_METHOD_ID.to_string(),
+                name: "Anthropic Console".to_string(),
+                description: "Open a terminal-based Anthropic Console login flow.".to_string(),
+            },
+        ]
+    };
+
+    methods.push(AiAuthMethod {
+        id: "gateway".to_string(),
+        name: "Custom gateway".to_string(),
+        description: format!(
+            "Use a custom Anthropic-compatible gateway just for {}.",
+            APP_BRAND_NAME
+        ),
+    });
+
+    methods
 }
 
 fn normalize_claude_auth_method_id(method_id: &str) -> Option<&'static str> {
     match method_id {
-        CLAUDE_LOGIN_LEGACY_METHOD_ID | CLAUDE_AI_LOGIN_METHOD_ID => {
-            Some(CLAUDE_AI_LOGIN_METHOD_ID)
-        }
+        CLAUDE_LOGIN_LEGACY_METHOD_ID => Some(CLAUDE_LOGIN_LEGACY_METHOD_ID),
+        CLAUDE_AI_LOGIN_METHOD_ID => Some(CLAUDE_AI_LOGIN_METHOD_ID),
         CONSOLE_LOGIN_METHOD_ID => Some(CONSOLE_LOGIN_METHOD_ID),
         _ => None,
     }
@@ -530,10 +548,36 @@ fn normalize_claude_auth_method_id(method_id: &str) -> Option<&'static str> {
 
 fn claude_login_args(method_id: &str) -> Result<&'static [&'static str], String> {
     match normalize_claude_auth_method_id(method_id) {
+        Some(CLAUDE_LOGIN_LEGACY_METHOD_ID) => Ok(&["--cli"]),
         Some(CLAUDE_AI_LOGIN_METHOD_ID) => Ok(&["--cli", "auth", "login", "--claudeai"]),
         Some(CONSOLE_LOGIN_METHOD_ID) => Ok(&["--cli", "auth", "login", "--console"]),
         _ => Err(format!("Unsupported Claude auth method: {method_id}")),
     }
+}
+
+fn default_claude_login_method_id() -> &'static str {
+    if is_remote_claude_auth_environment() {
+        CLAUDE_LOGIN_LEGACY_METHOD_ID
+    } else {
+        CLAUDE_AI_LOGIN_METHOD_ID
+    }
+}
+
+fn project_terminal_auth_method_id(method_id: &str) -> &'static str {
+    if is_remote_claude_auth_environment() {
+        CLAUDE_LOGIN_LEGACY_METHOD_ID
+    } else {
+        match method_id {
+            CONSOLE_LOGIN_METHOD_ID => CONSOLE_LOGIN_METHOD_ID,
+            _ => CLAUDE_AI_LOGIN_METHOD_ID,
+        }
+    }
+}
+
+fn is_remote_claude_auth_environment() -> bool {
+    REMOTE_CLAUDE_AUTH_ENV_VARS
+        .iter()
+        .any(|key| env::var_os(key).is_some())
 }
 
 fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> ResolvedBinary {
@@ -853,7 +897,39 @@ fn gateway_env_policy(
 mod tests {
     use super::*;
     use crate::ai::secret_store::test_lock;
-    use std::{env, sync::Arc};
+    use std::{env, ffi::OsString, sync::Arc};
+
+    struct EnvVarGuard {
+        values: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvVarGuard {
+        fn set(entries: &[(&'static str, Option<&str>)]) -> Self {
+            let values = entries
+                .iter()
+                .map(|(key, value)| {
+                    let previous = env::var_os(key);
+                    match value {
+                        Some(value) => env::set_var(key, value),
+                        None => env::remove_var(key),
+                    }
+                    (*key, previous)
+                })
+                .collect();
+            Self { values }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.values.drain(..).rev() {
+                match value {
+                    Some(value) => env::set_var(key, value),
+                    None => env::remove_var(key),
+                }
+            }
+        }
+    }
 
     fn temp_setup_path(name: &str) -> PathBuf {
         let dir = env::temp_dir().join(format!(
@@ -961,7 +1037,7 @@ mod tests {
     fn normalize_claude_auth_method_maps_legacy_id() {
         assert_eq!(
             normalize_claude_auth_method_id("claude-login"),
-            Some(CLAUDE_AI_LOGIN_METHOD_ID)
+            Some(CLAUDE_LOGIN_LEGACY_METHOD_ID)
         );
         assert_eq!(
             normalize_claude_auth_method_id(CLAUDE_AI_LOGIN_METHOD_ID),
@@ -977,11 +1053,105 @@ mod tests {
     fn claude_login_args_match_selected_terminal_auth() {
         assert_eq!(
             claude_login_args(CLAUDE_LOGIN_LEGACY_METHOD_ID).unwrap(),
+            ["--cli"]
+        );
+        assert_eq!(
+            claude_login_args(CLAUDE_AI_LOGIN_METHOD_ID).unwrap(),
             ["--cli", "auth", "login", "--claudeai"]
         );
         assert_eq!(
             claude_login_args(CONSOLE_LOGIN_METHOD_ID).unwrap(),
             ["--cli", "auth", "login", "--console"]
+        );
+    }
+
+    #[test]
+    fn remote_environment_uses_legacy_claude_login_method() {
+        let _guard = test_lock().lock().unwrap();
+        let _env = EnvVarGuard::set(&[
+            ("SSH_TTY", Some("/dev/pts/0")),
+            ("NO_BROWSER", None),
+            ("SSH_CONNECTION", None),
+            ("SSH_CLIENT", None),
+            ("CLAUDE_CODE_REMOTE", None),
+        ]);
+
+        let methods = available_auth_methods();
+        assert_eq!(
+            default_claude_login_method_id(),
+            CLAUDE_LOGIN_LEGACY_METHOD_ID
+        );
+        assert!(methods
+            .iter()
+            .any(|method| method.id == CLAUDE_LOGIN_LEGACY_METHOD_ID));
+        assert!(!methods
+            .iter()
+            .any(|method| method.id == CLAUDE_AI_LOGIN_METHOD_ID));
+        assert!(!methods
+            .iter()
+            .any(|method| method.id == CONSOLE_LOGIN_METHOD_ID));
+    }
+
+    #[test]
+    fn remote_environment_relabels_saved_subscription_login() {
+        let _guard = test_lock().lock().unwrap();
+        let _env = EnvVarGuard::set(&[
+            ("CLAUDE_CODE_REMOTE", Some("1")),
+            ("NO_BROWSER", None),
+            ("SSH_CONNECTION", None),
+            ("SSH_CLIENT", None),
+            ("SSH_TTY", None),
+        ]);
+        let config = ClaudeSetupConfig {
+            auth_method: Some(CLAUDE_AI_LOGIN_METHOD_ID.to_string()),
+            ..ClaudeSetupConfig::default()
+        };
+
+        assert_eq!(
+            detect_auth_method(&config).as_deref(),
+            Some(CLAUDE_LOGIN_LEGACY_METHOD_ID)
+        );
+    }
+
+    #[test]
+    fn remote_environment_relabels_saved_console_login() {
+        let _guard = test_lock().lock().unwrap();
+        let _env = EnvVarGuard::set(&[
+            ("SSH_CONNECTION", Some("1 2 3 4")),
+            ("NO_BROWSER", None),
+            ("SSH_CLIENT", None),
+            ("SSH_TTY", None),
+            ("CLAUDE_CODE_REMOTE", None),
+        ]);
+        let config = ClaudeSetupConfig {
+            auth_method: Some(CONSOLE_LOGIN_METHOD_ID.to_string()),
+            ..ClaudeSetupConfig::default()
+        };
+
+        assert_eq!(
+            detect_auth_method(&config).as_deref(),
+            Some(CLAUDE_LOGIN_LEGACY_METHOD_ID)
+        );
+    }
+
+    #[test]
+    fn local_environment_relabels_saved_legacy_remote_login() {
+        let _guard = test_lock().lock().unwrap();
+        let _env = EnvVarGuard::set(&[
+            ("NO_BROWSER", None),
+            ("SSH_CONNECTION", None),
+            ("SSH_CLIENT", None),
+            ("SSH_TTY", None),
+            ("CLAUDE_CODE_REMOTE", None),
+        ]);
+        let config = ClaudeSetupConfig {
+            auth_method: Some(CLAUDE_LOGIN_LEGACY_METHOD_ID.to_string()),
+            ..ClaudeSetupConfig::default()
+        };
+
+        assert_eq!(
+            detect_auth_method(&config).as_deref(),
+            Some(CLAUDE_AI_LOGIN_METHOD_ID)
         );
     }
 

@@ -42,7 +42,7 @@ export type ClaudePlanEntry = {
 };
 export declare function planEntries(input: {
     todos: ClaudePlanEntry[];
-}): PlanEntry[];
+} | undefined): PlanEntry[];
 export declare function markdownEscape(text: string): string;
 /**
  * Builds diff ToolUpdate content from the structured Edit toolResponse provided

@@ -38,11 +38,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
 - `codex-acp/`
   - upstream baseline: `zed-industries/codex-acp` `0.11.1`
   - synced against upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`
-  - local NeverWrite delta remains intentionally bounded and lives mainly in:
+  - local NeverWrite delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/src/thread.rs`
-    - `vendor/codex-acp/src/codex_agent.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot remains based on `@agentclientprotocol/claude-agent-acp` `0.25.3`
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.27.0`
 
 ## Current Codex Delta
 

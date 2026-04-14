@@ -14,13 +14,13 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.25.3) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.27.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
-| **Auth methods** | `claude-ai-login`, `console-login`, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
+| **Auth methods** | `claude-ai-login` + `console-login` locally, `claude-login` remotely, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
 | **NeverWrite adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
 | **Session RPC used by NeverWrite** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
-| **ACP SDK version** | `@agentclientprotocol/sdk` 0.17.0 | `agent-client-protocol` 0.10.4 | Gemini CLI ACP implementation |
+| **ACP SDK version** | `@agentclientprotocol/sdk` 0.18.2 | `agent-client-protocol` 0.10.4 | Gemini CLI ACP implementation |
 | **Vendor dir** | `vendor/Claude-agent-acp-upstream/` | `vendor/codex-acp/` | N/A |
 
 Notes:
@@ -28,7 +28,7 @@ Notes:
 - `Gemini` is fully wired into `AiManager`, Tauri commands, setup, process, client and adapter layers.
 - Gemini emits plans and available-command updates from the ACP stream, but NeverWrite currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
-- The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.91`.
+- The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.104`.
 - Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, with a small local delta to preserve NeverWrite review, diff, mode and user-input behavior.
 
 ---
@@ -193,13 +193,16 @@ Auth invalidation:
 - on explicit config changes affecting gateway/auth
 - when the runtime returns auth-style failures such as `auth_required` or “you were signed out”
 
-Current Claude vendor notes (`0.23.1`):
+Current Claude vendor notes (`0.27.0`):
 
 - prompt end-of-turn now also follows Claude SDK `session_state_changed -> idle`
 - local-only slash commands such as `/context` are handled more explicitly upstream
 - Bash tool result output now joins `stdout` + `stderr`
 - `ExitPlanMode` restores plan content into the tool payload
 - upstream now disposes `SettingsManager` on session close / process death
+- upstream now exits cleanly when the ACP connection closes and tears down live queries
+- upstream can emit filtered raw Claude SDK messages for clients that opt in
+- remote environments now prefer the generic `claude-login` terminal flow over OAuth-style login prompts
 
 ### Codex
 
@@ -417,7 +420,7 @@ apps/desktop/src-tauri/
 │       └── adapter.rs
 │
 vendor/
-├── Claude-agent-acp-upstream/        # @agentclientprotocol/claude-agent-acp v0.25.3
+├── Claude-agent-acp-upstream/        # @agentclientprotocol/claude-agent-acp v0.27.0
 │   ├── dist/index.js
 │   ├── node_modules/
 │   └── package.json

@@ -23,7 +23,8 @@ type Session = {
     input: Pushable<SDKUserMessage>;
     cancelled: boolean;
     cwd: string;
-    /** Stable snapshot of session-defining params used to decide when a session must be recreated. */
+    /** Serialized snapshot of session-defining params (cwd, mcpServers) used to
+     *  detect when loadSession/resumeSession is called with changed values. */
     sessionFingerprint: string;
     settingsManager: SettingsManager;
     accumulatedUsage: AccumulatedUsage;
@@ -37,6 +38,7 @@ type Session = {
     }>;
     nextPendingOrder: number;
     abortController: AbortController;
+    emitRawSDKMessages: boolean | SDKMessageFilter[];
 };
 type BackgroundTerminal = {
     handle: TerminalHandle;
@@ -45,6 +47,10 @@ type BackgroundTerminal = {
 } | {
     status: "aborted" | "exited" | "killed" | "timedOut";
     pendingOutput: TerminalOutputResponse;
+};
+export type SDKMessageFilter = {
+    type: string;
+    subtype?: string;
 };
 /**
  * Extra metadata that can be given when creating a new session.
@@ -67,6 +73,14 @@ export type NewSessionMeta = {
          *   - tools (passed through; defaults to claude_code preset if not provided)
          */
         options?: Options;
+        /**
+         * When set, raw SDK messages are emitted as extNotification("_claude/sdkMessage", message)
+         * in addition to normal processing.
+         * - true: emit all messages
+         * - false/undefined: emit nothing (default)
+         * - SDKMessageFilter[]: emit only messages matching at least one filter
+         */
+        emitRawSDKMessages?: boolean | SDKMessageFilter[];
     };
     additionalRoots?: string[];
 };
@@ -138,7 +152,11 @@ export declare class ClaudeAcpAgent implements Agent {
     authenticate(_params: AuthenticateRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
     cancel(params: CancelNotification): Promise<void>;
+    /** Cleanly tear down a session: cancel in-flight work, dispose resources,
+     *  and remove it from the session map. */
     private teardownSession;
+    /** Tear down all active sessions. Called when the ACP connection closes. */
+    dispose(): Promise<void>;
     unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse>;
     unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse | void>;
     setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse>;
@@ -169,6 +187,9 @@ export declare function streamEventToAcpNotifications(message: SDKPartialAssista
     clientCapabilities?: ClientCapabilities;
     cwd?: string;
 }): SessionNotification[];
-export declare function runAcp(): void;
+export declare function runAcp(): {
+    connection: AgentSideConnection;
+    agent: ClaudeAcpAgent;
+};
 export {};
 //# sourceMappingURL=acp-agent.d.ts.map

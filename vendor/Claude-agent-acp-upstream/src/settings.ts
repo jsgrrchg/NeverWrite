@@ -26,7 +26,8 @@ export interface ClaudeCodeSettings {
 
 /**
  * Reads and parses a JSON settings file, returning an empty object if not found or invalid.
- * Missing files are ignored silently, but malformed or unreadable files are logged.
+ * Silently ignores missing files (ENOENT) but logs warnings for other errors
+ * (malformed JSON, permission errors, etc.) to aid debugging.
  */
 async function loadSettingsFile(
   filePath: string | null,
