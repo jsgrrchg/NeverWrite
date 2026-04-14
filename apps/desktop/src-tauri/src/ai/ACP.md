@@ -15,7 +15,7 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 | | Claude | Codex | Gemini |
 |---|---|---|---|
 | **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.27.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
-| **Release packaging** | Embedded Node runtime + embedded vendor JS | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
+| **Release packaging** | Embedded Node runtime + embedded vendor JS. The legacy `claude-agent-acp` sidecar path still exists as a runtime fallback, but it is not staged by default. | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-ai-login` + `console-login` locally, `claude-login` remotely, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
 | **NeverWrite adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
@@ -43,7 +43,7 @@ When NeverWrite needs to spawn a runtime process, it resolves the executable/com
 2. Custom path from setup config
 3. **Debug builds only:** vendor JS at `vendor/Claude-agent-acp-upstream/dist/index.js`
 4. Embedded Node runtime + embedded vendor JS at `{resource_dir}/embedded/node/bin/node {resource_dir}/embedded/claude-agent-acp/dist/index.js`
-5. Bundled binary at `{resource_dir}/binaries/claude-agent-acp` (legacy fallback)
+5. Bundled binary at `{resource_dir}/binaries/claude-agent-acp` (legacy fallback only if present)
 6. Vendor JS fallback
 7. `claude-agent-acp` in PATH
 
@@ -89,6 +89,8 @@ Bun-compiled Claude binaries proved unreliable when spawned as child processes b
 
 This keeps Claude on the same stable execution path without requiring Node on the user's machine.
 
+The standalone Claude sidecar path still exists in runtime resolution, but the current build path does not stage it automatically and removes any stale fallback before rebuilding the embedded runtime.
+
 On Windows, command lookup is `PATHEXT`-aware.
 
 ---
@@ -105,13 +107,21 @@ On Windows, command lookup is `PATHEXT`-aware.
 
 ### Candidate sources for staged binaries
 
-For staged binaries, `build.rs` checks in this order:
+This differs by runtime today:
 
-1. `NEVERWRITE_*_ACP_BUNDLE_BIN`
-2. `NEVERWRITE_*_ACP_BIN`
-3. `vendor/{runtime}/target/release/{binary}`
-4. `vendor/{runtime}/target/debug/{binary}`
-5. System PATH
+1. **Codex staged sidecar**
+   - `NEVERWRITE_CODEX_ACP_BUNDLE_BIN`
+   - `NEVERWRITE_CODEX_ACP_BIN`
+   - `vendor/codex-acp/target/release/{binary}`
+   - `vendor/codex-acp/target/debug/{binary}`
+   - workspace `target/{release,debug}/binaries/`
+   - workspace `target/{release,debug}/`
+   - `PATH`
+2. **Claude embedded runtime**
+   - no `NEVERWRITE_CLAUDE_ACP_BUNDLE_BIN` path is currently used by `build.rs`
+   - `build.rs` stages the vendored JS runtime from `vendor/Claude-agent-acp-upstream/`
+   - `build.rs` stages the Node runtime from `PATH` or `NEVERWRITE_EMBEDDED_NODE_BIN`
+   - if a legacy `src-tauri/binaries/claude-agent-acp` exists, it is removed before the embedded runtime is staged
 
 ### Embedded Claude runtime staging
 
@@ -133,6 +143,8 @@ Staging is target-aware:
 - the staged Claude tree is validated after copy so missing runtime dependencies fail fast
 
 For Windows targets, the build rejects reuse of a non-Windows Node binary. Windows bundles should therefore be built on Windows or with an explicit `NEVERWRITE_EMBEDDED_NODE_BIN` override pointing to a real Windows `node.exe`.
+
+There is currently no automatic build step in NeverWrite that produces a fresh standalone `claude-agent-acp` sidecar binary during normal desktop builds.
 
 ### Tauri resource bundling
 
@@ -165,12 +177,19 @@ Secrets are stored in the OS secure secret store, not in the JSON config file.
 
 Supported methods:
 
+- **`claude-login`**
+  - Used as the exposed Claude auth method in remote / no-browser environments
+  - Opens a terminal and runs the resolved Claude runtime with `--cli`
+  - The login flow then continues inside the Claude terminal via `/login`
+
 - **`claude-ai-login`**
+  - Used in local environments where the subscription login flow is exposed directly
   - Opens a terminal and runs the resolved Claude runtime with `--cli auth login --claudeai`
   - Intended for Claude subscription sign-in
   - Auth is detected from `~/.claude.json`, checked against any invalidation timestamp
 
 - **`console-login`**
+  - Used in local environments where Anthropic Console login is exposed separately
   - Opens a terminal and runs the resolved Claude runtime with `--cli auth login --console`
   - Intended for Anthropic Console / API-billed sign-in
   - Auth is detected from `~/.claude.json`, checked against any invalidation timestamp
@@ -192,6 +211,11 @@ Auth invalidation:
 
 - on explicit config changes affecting gateway/auth
 - when the runtime returns auth-style failures such as `auth_required` or “you were signed out”
+
+When NeverWrite restores a previously-saved Claude terminal auth method, it projects that stored method back onto the auth surface that is valid for the current environment:
+
+- remote / no-browser environments expose `claude-login`
+- local environments expose `claude-ai-login` and `console-login`
 
 Current Claude vendor notes (`0.27.0`):
 
@@ -339,6 +363,7 @@ Permission approval is resolved through ACP permission request handling inside t
   - available command updates
   - current mode updates
 - permission requests
+- runtime-specific user-input requests where supported
 
 ### Protocol version
 
@@ -387,10 +412,11 @@ Notes:
 
 ```text
 apps/desktop/src-tauri/
-├── build.rs                          # Codex staging + embedded Claude staging
+├── build.rs                          # Codex sidecar staging + embedded Claude staging
 ├── tauri.conf.json                   # resources: ["binaries/*", "embedded/**/*"]
 ├── binaries/
-│   └── codex-acp                     # Rust-compiled sidecar (gitignored)
+│   ├── codex-acp                     # Rust-compiled sidecar (gitignored)
+│   └── claude-agent-acp              # Optional legacy Claude fallback binary; not staged by default
 ├── embedded/
 │   ├── node/                         # Embedded Node runtime (auto-generated, gitignored)
 │   └── claude-agent-acp/             # Embedded Claude runtime (auto-generated, gitignored)
@@ -458,8 +484,7 @@ External auth state also used:
 
 | Variable | Used by | Purpose |
 |----------|---------|---------|
-| `NEVERWRITE_CLAUDE_ACP_BIN` | Claude build/runtime | Override Claude binary / command path |
-| `NEVERWRITE_CLAUDE_ACP_BUNDLE_BIN` | Claude build | Override Claude bundle binary |
+| `NEVERWRITE_CLAUDE_ACP_BIN` | Claude runtime | Override Claude binary / command path |
 | `NEVERWRITE_EMBEDDED_NODE_BIN` | Claude build | Override embedded Node runtime source |
 | `NEVERWRITE_CODEX_ACP_BIN` | Codex build/runtime | Override Codex binary path |
 | `NEVERWRITE_CODEX_ACP_BUNDLE_BIN` | Codex build | Override Codex bundle binary |
@@ -469,7 +494,7 @@ External auth state also used:
 | `ANTHROPIC_CUSTOM_HEADERS` | Claude process | Gateway custom headers |
 | `CODEX_API_KEY` | Codex process | Codex API key |
 | `OPENAI_API_KEY` | Codex process | OpenAI API key |
-| `NO_BROWSER` | Codex setup | Hide ChatGPT OAuth auth method |
+| `NO_BROWSER` | Claude, Codex setup | Hide browser-based auth and force remote-style terminal auth behavior where supported |
 | `GEMINI_API_KEY` | Gemini process | Gemini Developer API key |
 | `GOOGLE_API_KEY` | Gemini process | Alternate Gemini developer key source |
 | `GOOGLE_CLOUD_PROJECT` | Gemini process | Google Cloud project hint |
@@ -485,5 +510,6 @@ External auth state also used:
 - Codex `user_input` is supported in NeverWrite; Gemini `user_input` is not.
 - NeverWrite does **not** yet surface Claude `usage_update` in the app, even though newer Claude ACP upstream emits it.
 - NeverWrite currently consumes Claude terminal metadata and session config/mode updates, but does **not** yet expose richer Claude tool metadata such as `_meta.claudeCode.toolName`, `toolResponse` or `parentToolUseId`.
-- NeverWrite keeps a small local patch on Claude vendor labels so model display text maps `"Default (recommended)"` to `"Opus"` in the exposed model list.
+- Claude runtime resolution still includes a legacy bundled `claude-agent-acp` sidecar fallback, but the normal build path now prefers and stages the embedded Node+JS runtime instead.
+- The standalone Claude sidecar binary path in upstream is not currently part of NeverWrite's default build pipeline.
 - The document should be kept aligned with `apps/desktop/src-tauri/src/ai/{claude,codex,gemini}/` whenever runtime behavior changes, because the app now has runtime-specific differences that matter operationally.

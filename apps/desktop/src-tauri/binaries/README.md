@@ -1,9 +1,12 @@
-Place precompiled ACP runtime binaries in this directory for release builds.
+Place precompiled ACP runtime sidecars in this directory for release builds when a
+runtime still uses a bundled binary, or when you intentionally provide a legacy
+fallback during development.
 
-NeverWrite only bundles these two ACP runtimes:
+NeverWrite currently bundles these runtime resources:
 
-- Codex
-- Claude
+- Codex as a staged sidecar binary in `src-tauri/binaries/`
+- Claude as an embedded Node runtime plus embedded vendored JS in
+  `src-tauri/embedded/`
 
 Any other runtime must be downloaded and installed separately by the user.
 
@@ -11,8 +14,8 @@ Expected filenames:
 
 - `codex-acp` on macOS/Linux
 - `codex-acp.exe` on Windows
-- `claude-agent-acp` on macOS/Linux
-- `claude-agent-acp.exe` on Windows
+- `claude-agent-acp` on macOS/Linux (legacy Claude fallback only)
+- `claude-agent-acp.exe` on Windows (legacy Claude fallback only)
 
 Tauri bundles everything under `src-tauri/binaries/` as application resources.
 
@@ -27,16 +30,16 @@ Build-time staging priority for Codex:
 7. workspace `target/{release,debug}/`
 8. `PATH`
 
-Build-time staging priority for Claude:
+Build-time behavior for Claude:
 
-1. `NEVERWRITE_CLAUDE_ACP_BUNDLE_BIN`
-2. `NEVERWRITE_CLAUDE_ACP_BIN`
-3. `vendor/Claude-agent-acp-upstream/target/release/`
-4. `vendor/Claude-agent-acp-upstream/target/debug/`
-5. `PATH`
+- `build.rs` does not currently stage a standalone `claude-agent-acp` binary
+- Claude release packaging is the embedded runtime under `src-tauri/embedded/`
+- the vendored Claude ACP project is copied from `vendor/Claude-agent-acp-upstream/`
+- the embedded Node runtime is resolved from `PATH` or `NEVERWRITE_EMBEDDED_NODE_BIN`
+- any existing `src-tauri/binaries/claude-agent-acp{,.exe}` legacy fallback is
+  removed before the embedded runtime is staged
 
-If one of those binaries exists, `src-tauri/build.rs` copies it here automatically
-before Tauri bundles the app. Codex now tries to rebuild from `vendor/codex-acp`
-before falling back to older artifacts. If no fresh source is found but a file is
-already present in `src-tauri/binaries/`, that staged binary is reused with a warning
-that it may be stale.
+Codex is the only ACP runtime that `src-tauri/build.rs` stages into this directory
+as part of the normal build. Claude's sidecar filename is documented here only
+because the runtime resolver still supports it as a legacy fallback if such a file
+is present in app resources.
