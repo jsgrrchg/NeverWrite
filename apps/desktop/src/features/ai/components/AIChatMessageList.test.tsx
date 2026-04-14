@@ -1,9 +1,10 @@
-import { act, screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
 import { resetChatMessageListViewState } from "./chatMessageListViewState";
+import { resetChatRowUiStore } from "../store/chatRowUiStore";
 
 function createMessages(): AIChatMessage[] {
     return [
@@ -88,6 +89,7 @@ describe("AIChatMessageList streaming run indicator", () => {
     afterEach(() => {
         vi.useRealTimers();
         resetChatMessageListViewState();
+        resetChatRowUiStore();
     });
 
     it("renders the elapsed timer during streaming and hides it when the run ends", () => {
@@ -493,5 +495,68 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
             "Edited oldest.ts",
         );
+    });
+
+    it("lets the user dismiss the pinned plan banner and keeps the plan in the timeline", () => {
+        const now = Date.now();
+        const messages: AIChatMessage[] = [
+            {
+                id: "user:plan",
+                role: "user",
+                kind: "text",
+                content: "Please make a plan",
+                timestamp: now - 2_000,
+            },
+            {
+                id: "plan:active",
+                role: "assistant",
+                kind: "plan",
+                title: "Plan",
+                content: "Inspect\nImplement",
+                timestamp: now - 1_000,
+                planEntries: [
+                    {
+                        content: "Inspect",
+                        priority: "medium",
+                        status: "completed",
+                    },
+                    {
+                        content: "Implement",
+                        priority: "medium",
+                        status: "in_progress",
+                    },
+                ],
+            },
+            {
+                id: "assistant:done",
+                role: "assistant",
+                kind: "text",
+                content: "Started implementation",
+                timestamp: now,
+            },
+        ];
+
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-dismiss-plan"
+                messages={messages}
+                status="idle"
+            />,
+        );
+
+        expect(screen.getAllByText("Implement")).toHaveLength(1);
+        expect(
+            view.container.querySelector('[aria-label="Dismiss plan banner"]'),
+        ).not.toBeNull();
+
+        act(() => {
+            fireEvent.click(screen.getByLabelText("Dismiss plan banner"));
+        });
+
+        expect(
+            screen.queryByLabelText("Dismiss plan banner"),
+        ).not.toBeInTheDocument();
+        expect(screen.getAllByText("Implement")).toHaveLength(1);
+        expect(screen.getByText("Started implementation")).toBeInTheDocument();
     });
 });

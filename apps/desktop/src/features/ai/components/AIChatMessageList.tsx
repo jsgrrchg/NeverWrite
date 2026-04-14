@@ -25,6 +25,10 @@ import {
     restoreChatMessageListViewState,
     type PersistedChatViewState,
 } from "./chatMessageListViewState";
+import {
+    resolveChatRowUiSessionId,
+    useChatRowUiStore,
+} from "../store/chatRowUiStore";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -337,6 +341,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     const pendingRestoreRef = useRef<PersistedChatViewState | null>(
         readPersistedChatMessageListViewState(viewStateScope),
     );
+    const rowUiSessionId = resolveChatRowUiSessionId(sessionId);
 
     const scrollToBottom = useCallback(() => {
         const container = containerRef.current;
@@ -408,6 +413,18 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                   ),
         [messages, readOnly, status],
     );
+    const pinnedPlanDismissed = useChatRowUiStore(
+        useCallback(
+            (state) =>
+                pinnedPlan
+                    ? !!state.rowsBySessionId[rowUiSessionId]?.[pinnedPlan.id]
+                          ?.pinnedPlanDismissed
+                    : false,
+            [pinnedPlan, rowUiSessionId],
+        ),
+    );
+    const dismissPinnedPlan = useChatRowUiStore((state) => state.patchRow);
+    const visiblePinnedPlan = pinnedPlanDismissed ? null : pinnedPlan;
     const recentDiffWorkCycleIds = useMemo(
         () =>
             deriveRecentHistoricalDiffWorkCycleIds(
@@ -420,7 +437,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         const rows: TimelineRow[] = [];
 
         for (const message of messages) {
-            if (message.kind === "plan" && message.id === pinnedPlan?.id) {
+            if (
+                message.kind === "plan" &&
+                message.id === visiblePinnedPlan?.id
+            ) {
                 continue;
             }
 
@@ -444,7 +464,13 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         }
 
         return rows;
-    }, [messages, pinnedPlan?.id, runIndicatorAnchor, sessionId, status]);
+    }, [
+        messages,
+        runIndicatorAnchor,
+        sessionId,
+        status,
+        visiblePinnedPlan?.id,
+    ]);
 
     const rowRenderOptions = useMemo(
         () => ({
@@ -654,7 +680,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">
-            {pinnedPlan && (
+            {visiblePinnedPlan && (
                 <div
                     className="shrink-0 px-3 pt-2 pb-1"
                     style={{
@@ -664,8 +690,17 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 >
                     <PlanMessage
                         sessionId={sessionId}
-                        message={pinnedPlan}
+                        message={visiblePinnedPlan}
                         pillMetrics={pillMetrics}
+                        onDismiss={() =>
+                            dismissPinnedPlan(
+                                rowUiSessionId,
+                                visiblePinnedPlan.id,
+                                {
+                                    pinnedPlanDismissed: true,
+                                },
+                            )
+                        }
                     />
                 </div>
             )}

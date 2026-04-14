@@ -1102,11 +1102,13 @@ export function PlanMessage({
     sessionId,
     pillMetrics,
     chatFontSize = 14,
+    onDismiss,
 }: {
     message: AIChatMessage;
     sessionId?: string | null;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
+    onDismiss?: () => void;
 }) {
     const [expanded, setExpanded] = useStoredRowExpanded(
         sessionId,
@@ -1138,49 +1140,73 @@ export function PlanMessage({
                     "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
             }}
         >
-            <button
-                type="button"
-                onClick={() => {
-                    if (canExpand) setExpanded((value) => !value);
-                }}
-                className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left"
-                aria-expanded={expanded}
-                style={{
-                    backgroundColor: "transparent",
-                    border: "none",
-                    cursor: canExpand ? "pointer" : "default",
-                }}
-            >
-                <span
-                    className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
+            <div className="flex items-center gap-1 px-1 py-1">
+                <button
+                    type="button"
+                    onClick={() => {
+                        if (canExpand) setExpanded((value) => !value);
+                    }}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-0.5 text-left"
+                    aria-expanded={expanded}
                     style={{
-                        color: "var(--text-secondary)",
-                        backgroundColor:
-                            "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
-                        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                        fontWeight: 500,
+                        backgroundColor: "transparent",
+                        border: "none",
+                        cursor: canExpand ? "pointer" : "default",
                     }}
                 >
-                    {canExpand ? (expanded ? "▾" : "▸") : "•"}
-                </span>
-                <span
-                    className="min-w-0 flex-1 font-medium"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: "0.875rem",
-                    }}
-                >
-                    {message.title ?? "Plan"}
-                </span>
-                <span
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: "0.76em",
-                    }}
-                >
-                    {statusLabel}
-                </span>
-            </button>
+                    <span
+                        className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
+                        style={{
+                            color: "var(--text-secondary)",
+                            backgroundColor:
+                                "color-mix(in srgb, var(--bg-secondary) 74%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                            fontWeight: 500,
+                        }}
+                    >
+                        {canExpand ? (expanded ? "▾" : "▸") : "•"}
+                    </span>
+                    <span
+                        className="min-w-0 flex-1 font-medium"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.875rem",
+                        }}
+                    >
+                        {message.title ?? "Plan"}
+                    </span>
+                    <span
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.76em",
+                        }}
+                    >
+                        {statusLabel}
+                    </span>
+                </button>
+                {onDismiss ? (
+                    <button
+                        type="button"
+                        aria-label="Dismiss plan banner"
+                        title="Dismiss plan banner"
+                        onClick={onDismiss}
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                        style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--text-secondary)",
+                            cursor: "pointer",
+                            opacity: 0.72,
+                            transition:
+                                "opacity 140ms ease, background-color 140ms ease",
+                            fontSize: 14,
+                            lineHeight: 1,
+                        }}
+                    >
+                        <span aria-hidden="true">×</span>
+                    </button>
+                ) : null}
+            </div>
 
             {expanded && detail ? (
                 <div
