@@ -38,6 +38,13 @@ export interface LinkInfo {
     isEmail: boolean;
 }
 
+export interface HighlightRange {
+    from: number;
+    to: number;
+    contentFrom: number;
+    contentTo: number;
+}
+
 // ---------------------------------------------------------------------------
 // Shared decorations
 // ---------------------------------------------------------------------------
@@ -231,6 +238,89 @@ export function resolveLinkHref(
         return `mailto:${resolved}`;
     }
     return resolved;
+}
+
+function isEscapedAt(text: string, index: number) {
+    let backslashCount = 0;
+    let cursor = index - 1;
+
+    while (cursor >= 0 && text[cursor] === "\\") {
+        backslashCount++;
+        cursor--;
+    }
+
+    return backslashCount % 2 === 1;
+}
+
+function isHighlightLineBreak(char: string) {
+    return char === "\n" || char === "\r";
+}
+
+function isHighlightTrailingWhitespace(char: string) {
+    return char === " " || char === "\t";
+}
+
+export function findHighlightRanges(text: string): HighlightRange[] {
+    const ranges: HighlightRange[] = [];
+    let index = 0;
+
+    while (index < text.length - 1) {
+        if (
+            text[index] !== "=" ||
+            text[index + 1] !== "=" ||
+            isEscapedAt(text, index)
+        ) {
+            index++;
+            continue;
+        }
+
+        const contentFrom = index + 2;
+        const firstContentChar = text[contentFrom];
+        if (!firstContentChar || /\s/u.test(firstContentChar)) {
+            index += 2;
+            continue;
+        }
+
+        let search = contentFrom;
+        let lastNonWhitespace = -1;
+        let matched = false;
+
+        while (search < text.length - 1) {
+            const char = text[search];
+            if (isHighlightLineBreak(char)) {
+                break;
+            }
+
+            if (
+                char === "=" &&
+                text[search + 1] === "=" &&
+                !isEscapedAt(text, search)
+            ) {
+                if (lastNonWhitespace >= contentFrom) {
+                    ranges.push({
+                        from: index,
+                        to: search + 2,
+                        contentFrom,
+                        contentTo: lastNonWhitespace + 1,
+                    });
+                    index = search + 2;
+                    matched = true;
+                }
+                break;
+            }
+
+            if (!isHighlightTrailingWhitespace(char)) {
+                lastNonWhitespace = search;
+            }
+            search++;
+        }
+
+        if (!matched) {
+            index += 2;
+        }
+    }
+
+    return ranges;
 }
 
 export function buildLinkReferenceIndex(state: EditorState) {

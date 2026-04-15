@@ -30,6 +30,7 @@ import {
     measureIndent,
     measureLineLeadingIndent,
     addLineDecoration,
+    findHighlightRanges,
 } from "./livePreviewHelpers";
 import {
     selectionHasMultilineRangeTouchingLine,
@@ -77,7 +78,6 @@ const superscriptMark = Decoration.mark({ class: "cm-lp-superscript" });
 const quoteContentMark = Decoration.mark({ class: "cm-lp-blockquote" });
 
 const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
-const HIGHLIGHT_RE = /==(?=\S)([^\n]*?\S)==/g;
 const LOOSE_UNORDERED_LIST_RE = /^([ \t]*)([-+*]|[•◦▪‣–—−])([ \t]+)/;
 const FOOTNOTE_REF_RE = /\[\^([^\]\s]+)\]/g;
 const INLINE_HTML_RE = /<(sub|sup|kbd)>([^<\n]+)<\/\1>/gi;
@@ -1020,28 +1020,6 @@ const regexRules: Array<{
             );
         },
     },
-    {
-        pattern: HIGHLIGHT_RE,
-        apply(_match, absFrom, absTo, context) {
-            hideRangeUnlessTokenActive(
-                context,
-                absFrom,
-                absFrom + 2,
-                absFrom,
-                absTo,
-                hideInlineMark,
-            );
-            pushDeco(context, absFrom + 2, absTo - 2, highlightMark);
-            hideRangeUnlessTokenActive(
-                context,
-                absTo - 2,
-                absTo,
-                absFrom,
-                absTo,
-                hideInlineMark,
-            );
-        },
-    },
 ];
 
 function applyNodeRules(context: BuildContext) {
@@ -1092,6 +1070,40 @@ function applyRegexRules(context: BuildContext) {
             }
             apply(match, absFrom, absTo, context);
         }
+    }
+}
+
+function applyHighlightRules(context: BuildContext) {
+    for (const range of findHighlightRanges(context.vpText)) {
+        const absFrom = context.vpFrom + range.from;
+        const absTo = context.vpFrom + range.to;
+        const contentTo = context.vpFrom + range.contentTo;
+        if (rangeOverlapsBlock(context, absFrom, absTo)) {
+            continue;
+        }
+
+        hideRangeUnlessTokenActive(
+            context,
+            absFrom,
+            absFrom + 2,
+            absFrom,
+            absTo,
+            hideInlineMark,
+        );
+        pushDeco(
+            context,
+            context.vpFrom + range.contentFrom,
+            contentTo,
+            highlightMark,
+        );
+        hideRangeUnlessTokenActive(
+            context,
+            contentTo,
+            absTo,
+            absFrom,
+            absTo,
+            hideInlineMark,
+        );
     }
 }
 
@@ -1598,6 +1610,7 @@ function buildInlineDecorations(
     applyNodeRules(context);
     applyLooseListFallback(context);
     applyExtendedTaskFallback(context);
+    applyHighlightRules(context);
     applyRegexRules(context);
     applyRichRegexRules(context);
     applyFootnoteDefinitionDecorations(context);
