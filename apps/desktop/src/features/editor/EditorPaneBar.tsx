@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useCallback, useMemo, useState } from "react";
+import { Fragment, useEffect, useCallback, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import {
@@ -14,7 +14,6 @@ import {
     selectPaneNeighbor,
     useEditorStore,
 } from "../../app/store/editorStore";
-import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
 import { useInlineRename } from "../ai/components/useInlineRename";
@@ -136,7 +135,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     } = useInlineRename<string>();
 
     const paneIndex = paneIds.indexOf(paneId);
-    const canCreateSplit = paneCount < MAX_EDITOR_PANES;
+    const canCreateSplit = true;
     const hasTabs = pane.tabs.length > 0;
     const paneLabel = `Pane ${paneIndex + 1}`;
     const activePaneTab =
@@ -170,16 +169,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     );
     const downNeighborPaneId = useEditorStore((state) =>
         selectPaneNeighbor(state, paneId, "down"),
-    );
-    const movableTargets = useMemo(
-        () =>
-            paneIds
-                .map((candidate, index) => ({
-                    id: candidate,
-                    index,
-                }))
-                .filter((candidate) => candidate.id !== paneId),
-        [paneId, paneIds],
     );
     const detachedTabWindowDrop = useDetachedTabWindowDrop({
         vaultPath,
@@ -350,12 +339,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             )}
                         >
                             <svg
-                                width="14"
-                                height="14"
+                                width="11"
+                                height="11"
                                 viewBox="0 0 16 16"
                                 fill="none"
                                 stroke="currentColor"
-                                strokeWidth="1.8"
+                                strokeWidth="2"
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                             >
@@ -374,12 +363,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             )}
                         >
                             <svg
-                                width="14"
-                                height="14"
+                                width="11"
+                                height="11"
                                 viewBox="0 0 16 16"
                                 fill="none"
                                 stroke="currentColor"
-                                strokeWidth="1.8"
+                                strokeWidth="2"
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                             >
@@ -782,16 +771,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 moveTabToNewSplit(targetTab.id, "column");
                             },
                         });
-
-                        if (movableTargets.length > 0) {
-                            entries.push(
-                                ...movableTargets.map((target) => ({
-                                    label: `Move to Pane ${target.index + 1}`,
-                                    action: () =>
-                                        moveTabToPane(targetTab.id, target.id),
-                                })),
-                            );
-                        }
 
                         return entries;
                     })()}
