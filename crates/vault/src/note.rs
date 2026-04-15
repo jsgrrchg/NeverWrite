@@ -1,9 +1,9 @@
 use std::fs;
 
-use neverwrite_types::NoteDocument;
+use neverwrite_types::{NoteDocument, VaultEntryDto};
 
 use crate::error::VaultError;
-use crate::vault::Vault;
+use crate::vault::{is_markdown_path, path_is_ignored, ScopedPathIntent, Vault};
 
 impl Vault {
     /// Reads a note by ID, parses it, and returns the NoteDocument.
@@ -74,5 +74,34 @@ impl Vault {
         fs::rename(&old_path, &new_path)?;
 
         self.read_note_from_path(&new_path)
+    }
+
+    /// Converts a markdown note into a generic vault file by moving it to a
+    /// non-markdown relative path.
+    pub fn convert_note_to_file(
+        &self,
+        note_id: &str,
+        new_relative_path: &str,
+    ) -> Result<VaultEntryDto, VaultError> {
+        let old_path = self.resolve_note_id_path(note_id)?;
+        if !old_path.exists() {
+            return Err(VaultError::NoteNotFound(note_id.to_string()));
+        }
+
+        let new_path =
+            self.resolve_scoped_path(new_relative_path, ScopedPathIntent::CreateTarget)?;
+        if is_markdown_path(&new_path) || path_is_ignored(&self.root, &new_path) {
+            return Err(VaultError::InvalidVaultPath(new_relative_path.to_string()));
+        }
+        if new_path.exists() {
+            return Err(VaultError::EntryAlreadyExists(new_path));
+        }
+
+        if let Some(parent) = new_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&old_path, &new_path)?;
+
+        self.read_vault_entry_from_path(&new_path)
     }
 }

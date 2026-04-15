@@ -356,6 +356,22 @@ function getNoteRenameValue(note: NoteDto, showExtensions: boolean) {
     return getNoteDisplayName(note, showExtensions);
 }
 
+function isMarkdownLeafName(name: string) {
+    return name.toLowerCase().endsWith(".md");
+}
+
+function shouldConvertRenamedNoteToFile(name: string) {
+    const leafName = getBaseName(name.trim());
+    if (!leafName) return false;
+    if (leafName.startsWith(".") && leafName.length > 1) {
+        return !isMarkdownLeafName(leafName);
+    }
+    if (!leafName.includes(".")) {
+        return false;
+    }
+    return !isMarkdownLeafName(leafName);
+}
+
 // --- Icons ---
 
 function ChevronIcon({ open, size = 13 }: { open: boolean; size?: number }) {
@@ -1549,6 +1565,7 @@ export function FileTree() {
     const deleteNote = useVaultStore((s) => s.deleteNote);
     const deleteFolder = useVaultStore((s) => s.deleteFolder);
     const renameNote = useVaultStore((s) => s.renameNote);
+    const renameNoteAsFile = useVaultStore((s) => s.renameNoteAsFile);
     const refreshStructure = useVaultStore((s) => s.refreshStructure);
     const updateNoteMetadata = useVaultStore((s) => s.updateNoteMetadata);
     const touchContent = useVaultStore((s) => s.touchContent);
@@ -3288,6 +3305,13 @@ export function FileTree() {
             const nextNotePath = parentPath
                 ? `${parentPath}/${newName}`
                 : newName;
+            const shouldConvertToFile =
+                fileTreeContentMode === "all_files" &&
+                shouldConvertRenamedNoteToFile(newName);
+            if (shouldConvertToFile) {
+                await renameNoteAsFile(note.id, nextNotePath);
+                return;
+            }
             await renameNote(note.id, nextNotePath);
         } finally {
             renameGuardRef.current = false;

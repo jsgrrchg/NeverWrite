@@ -256,6 +256,25 @@ fn rename_note_preserves_nested_valid_paths() {
 }
 
 #[test]
+fn convert_note_to_file_moves_markdown_note_into_generic_file() {
+    let (_dir, vault) = setup_vault();
+    let entry = vault.convert_note_to_file("nota1", "src/nota1.ts").unwrap();
+
+    assert_eq!(entry.kind, "file");
+    assert_eq!(entry.relative_path, "src/nota1.ts");
+    assert_eq!(entry.file_name, "nota1.ts");
+    assert!(vault.read_note("nota1").is_err());
+
+    let notes = vault.scan().unwrap();
+    assert!(!notes.iter().any(|note| note.id.0 == "nota1"));
+
+    let entries = vault.discover_vault_entries().unwrap();
+    assert!(entries
+        .iter()
+        .any(|candidate| candidate.relative_path == "src/nota1.ts"));
+}
+
+#[test]
 fn save_binary_file_accepts_leaf_name_in_valid_directory() {
     let (_dir, vault) = setup_vault();
     let bytes = b"image";

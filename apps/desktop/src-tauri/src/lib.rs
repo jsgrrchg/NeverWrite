@@ -3379,6 +3379,84 @@ fn rename_note(
 }
 
 #[tauri::command]
+fn convert_note_to_file(
+    vault_path: String,
+    note_id: String,
+    new_relative_path: String,
+    app: AppHandle,
+    state: tauri::State<Mutex<AppState>>,
+) -> Result<VaultEntryDto, String> {
+    let mut state = lock!(state)?;
+    let write_tracker = state.write_tracker.clone();
+    let op_id = next_change_op_id(&mut state, VAULT_CHANGE_ORIGIN_USER);
+    let instance = state
+        .vaults
+        .get_mut(&vault_path)
+        .ok_or("No hay vault abierto")?;
+    let removed_relative_path = format!("{note_id}.md");
+    let entry = {
+        let vault = instance.vault.as_ref().ok_or("No hay vault abierto")?;
+        let old_path = resolve_vault_note_id_path(vault, &note_id)?;
+        let new_abs_path =
+            resolve_vault_scoped_path(vault, &new_relative_path, ScopedPathIntent::CreateTarget)?;
+        write_tracker.track_any(old_path);
+        write_tracker.track_any(new_abs_path);
+
+        vault
+            .convert_note_to_file(&note_id, &new_relative_path)
+            .map_err(|error| error.to_string())?
+    };
+
+    if let Some(index) = instance.index.as_mut() {
+        index.remove_note(&NoteId(note_id.clone()));
+    }
+    invalidate_graph_query_cache(instance);
+    invalidate_graph_cache(instance);
+    mutate_entries_cache(instance, |vault, entries| {
+        remove_entry_from_cache(entries, &removed_relative_path);
+        ensure_parent_folders_in_cache(entries, vault, &entry.relative_path)?;
+        upsert_entry_in_cache(entries, entry.clone());
+        Ok(())
+    })?;
+
+    let delete_revision = advance_note_revision(&mut instance.note_revisions, &note_id, None);
+    let upsert_revision =
+        advance_file_revision(&mut instance.file_revisions, &entry.relative_path, None);
+    let graph_revision = instance.graph_revision.max(1);
+    let delete_change = build_vault_note_change(
+        &vault_path,
+        "delete",
+        None,
+        Some(note_id.clone()),
+        None,
+        Some(removed_relative_path),
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id.clone()),
+        delete_revision,
+        None,
+        graph_revision,
+    );
+    let upsert_change = build_vault_note_change(
+        &vault_path,
+        "upsert",
+        None,
+        None,
+        Some(entry.clone()),
+        Some(entry.relative_path.clone()),
+        VAULT_CHANGE_ORIGIN_USER,
+        Some(op_id),
+        upsert_revision,
+        None,
+        graph_revision,
+    );
+
+    drop(state);
+    emit_vault_note_change(&app, "convert_note_to_file.delete", delete_change);
+    emit_vault_note_change(&app, "convert_note_to_file.upsert", upsert_change);
+    Ok(entry)
+}
+
+#[tauri::command]
 fn move_vault_entry(
     vault_path: String,
     relative_path: String,
@@ -6164,6 +6242,7 @@ pub fn run() {
             move_folder,
             copy_folder,
             rename_note,
+            convert_note_to_file,
             move_vault_entry,
             move_vault_entry_to_trash,
             ai_get_text_file_hash,

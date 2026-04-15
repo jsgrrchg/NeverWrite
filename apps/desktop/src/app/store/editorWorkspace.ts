@@ -3,6 +3,7 @@ import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import {
     buildTabFromHistory,
     createChatTab,
+    createFileHistoryEntry,
     createGraphTab,
     createMapTab,
     ensureFileTabDefaults,
@@ -250,6 +251,14 @@ export interface EditorWorkspaceActions {
         oldNoteId: string,
         newNoteId: string,
         newTitle: string,
+    ) => void;
+    handleNoteConvertedToFile: (
+        oldNoteId: string,
+        newRelativePath: string,
+        newTitle: string,
+        newPath: string,
+        mimeType: string | null,
+        viewer: FileViewerMode,
     ) => void;
 }
 
@@ -1615,6 +1624,83 @@ function renameNoteAcrossWorkspace<
         didChange:
             nextPanes.length !== workspace.panes.length ||
             nextPanes.some((pane, index) => pane !== workspace.panes[index]),
+    };
+}
+
+function convertNoteToFileAcrossWorkspace<
+    TState extends Pick<
+        EditorWorkspaceState,
+        | "panes"
+        | "focusedPaneId"
+        | "layoutTree"
+        | "_pendingForceReloads"
+        | "_noteReloadVersions"
+        | "_noteReloadMetadata"
+        | "noteExternalConflicts"
+    >,
+>(
+    state: TState,
+    oldNoteId: string,
+    newRelativePath: string,
+    newTitle: string,
+    newPath: string,
+    mimeType: string | null,
+    viewer: FileViewerMode,
+) {
+    const workspace = getEffectivePaneWorkspace(state);
+    const nextPanes = workspace.panes.map((pane) => {
+        let didChange = false;
+        const tabs = pane.tabs.map((tab) => {
+            if (!isNoteTab(tab) || tab.noteId !== oldNoteId) {
+                return tab;
+            }
+
+            didChange = true;
+            const history = tab.history.map((entry) => {
+                if (entry.kind !== "note" || entry.noteId !== oldNoteId) {
+                    return entry;
+                }
+
+                return createFileHistoryEntry(
+                    newRelativePath,
+                    newTitle,
+                    newPath,
+                    entry.content,
+                    mimeType,
+                    viewer,
+                );
+            });
+            return buildTabFromHistory(tab.id, history, tab.historyIndex);
+        });
+
+        return didChange ? updatePaneWithTabs(pane, tabs) : pane;
+    });
+
+    return {
+        projection: buildWorkspaceSnapshot({
+            panes: nextPanes,
+            focusedPaneId: workspace.focusedPaneId,
+            layoutTree: workspace.layoutTree,
+        }),
+        didChange:
+            nextPanes.length !== workspace.panes.length ||
+            nextPanes.some((pane, index) => pane !== workspace.panes[index]),
+        pendingForceReloads: new Set(
+            [...state._pendingForceReloads].filter((key) => key !== oldNoteId),
+        ),
+        reloadVersions: Object.fromEntries(
+            Object.entries(state._noteReloadVersions).filter(
+                ([key]) => key !== oldNoteId,
+            ),
+        ),
+        reloadMetadata: Object.fromEntries(
+            Object.entries(state._noteReloadMetadata).filter(
+                ([key]) => key !== oldNoteId,
+            ),
+        ),
+        noteExternalConflicts: new Set(
+            [...state.noteExternalConflicts].filter((key) => key !== oldNoteId),
+        ),
     };
 }
 
@@ -3603,6 +3689,44 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     newTitle,
                 );
                 return next.didChange ? next.projection : state;
+            });
+        },
+
+        handleNoteConvertedToFile: (
+            oldNoteId,
+            newRelativePath,
+            newTitle,
+            newPath,
+            mimeType,
+            viewer,
+        ) => {
+            set((state) => {
+                const next = convertNoteToFileAcrossWorkspace(
+                    state,
+                    oldNoteId,
+                    newRelativePath,
+                    newTitle,
+                    newPath,
+                    mimeType,
+                    viewer,
+                );
+                if (!next.didChange) {
+                    return {
+                        ...state,
+                        _pendingForceReloads: next.pendingForceReloads,
+                        _noteReloadVersions: next.reloadVersions,
+                        _noteReloadMetadata: next.reloadMetadata,
+                        noteExternalConflicts: next.noteExternalConflicts,
+                    };
+                }
+
+                return {
+                    ...next.projection,
+                    _pendingForceReloads: next.pendingForceReloads,
+                    _noteReloadVersions: next.reloadVersions,
+                    _noteReloadMetadata: next.reloadMetadata,
+                    noteExternalConflicts: next.noteExternalConflicts,
+                };
             });
         },
     };
