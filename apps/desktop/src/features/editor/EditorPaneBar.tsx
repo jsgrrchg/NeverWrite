@@ -323,19 +323,17 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     return (
         <>
             <div
-                className="flex items-center gap-2 px-2.5 py-1 shrink-0"
+                className="flex items-center shrink-0"
                 style={{
-                    height: 44,
-                    minHeight: 44,
+                    height: 31,
+                    minHeight: 31,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
-                    background: isFocused
-                        ? "color-mix(in srgb, var(--bg-secondary) 94%, var(--accent) 6%)"
-                        : "color-mix(in srgb, var(--bg-secondary) 98%, transparent)",
+                    background: "var(--bg-secondary)",
                 }}
                 data-pane-empty={hasTabs ? undefined : "true"}
             >
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 items-center px-1.5">
                     <div
                         className="flex shrink-0 items-center"
                         style={chromeControlsGroupStyle}
@@ -391,7 +389,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     </div>
                 </div>
 
-                <div className="relative flex min-w-0 flex-1 overflow-hidden">
+                <div className="relative flex min-w-0 flex-1 self-stretch overflow-hidden">
                     {hasTabs ? (
                         <div
                             ref={tabStripRef}
@@ -400,7 +398,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             data-pane-tab-overflowing={
                                 tabLayout.overflow || undefined
                             }
-                            className="flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
+                            className="flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-end"
                             style={{
                                 gap: tabLayout.stripGap,
                                 padding: `0 ${tabLayout.stripPaddingX}px`,
@@ -446,7 +444,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                             role="tab"
                                             tabIndex={0}
                                             aria-selected={isActive}
-                                            className="group inline-flex h-8 shrink-0 items-center rounded-lg text-left"
+                                            className="group inline-flex shrink-0 items-center text-left"
                                             onPointerDownCapture={(event) =>
                                                 isEditing
                                                     ? undefined
@@ -526,27 +524,29 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 });
                                             }}
                                             style={{
-                                                width: tabLayout.tabWidth,
-                                                minWidth: tabLayout.tabWidth,
+                                                maxWidth: 240,
+                                                height: 31,
                                                 boxSizing: "border-box",
                                                 gap: tabLayout.tabGap,
                                                 padding: `0 ${tabLayout.tabPaddingX}px`,
-                                                border: isActive
-                                                    ? "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))"
-                                                    : "1px solid color-mix(in srgb, var(--border) 46%, transparent)",
+                                                borderRight:
+                                                    "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
                                                 background: isActive
                                                     ? "var(--bg-primary)"
-                                                    : "color-mix(in srgb, var(--bg-primary) 38%, transparent)",
+                                                    : "transparent",
                                                 color: isActive
                                                     ? "var(--text-primary)"
                                                     : "var(--text-secondary)",
                                                 boxShadow: isActive
-                                                    ? "0 10px 24px rgba(15, 23, 42, 0.08)"
+                                                    ? "inset 0 -2px 0 0 var(--accent)"
                                                     : "none",
-                                                opacity: isDragging ? 0.72 : 1,
+                                                zIndex: isActive ? 10 : 0,
+                                                opacity: isDragging ? 0.35 : 1,
                                                 cursor: isDragging
                                                     ? "grabbing"
                                                     : "pointer",
+                                                transition:
+                                                    "background 150ms, color 150ms",
                                             }}
                                         >
                                             {renderEditorTabLeadingIcon(tab)}
@@ -625,29 +625,16 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                     event.stopPropagation();
                                                     closeTab(tab.id);
                                                 }}
-                                                className="inline-flex shrink-0 items-center justify-center rounded opacity-45 transition group-hover:opacity-100"
+                                                className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded px-0.5 text-[10px] transition ${
+                                                    isActive
+                                                        ? "opacity-70 hover:opacity-100"
+                                                        : "opacity-0 group-hover:opacity-70 hover:opacity-100"
+                                                }`}
                                                 style={{
-                                                    width: tabLayout.closeButtonSize,
-                                                    height: tabLayout.closeButtonSize,
-                                                    color: "inherit",
+                                                    color: "var(--text-secondary)",
                                                 }}
                                             >
-                                                <svg
-                                                    width={
-                                                        tabLayout.closeIconSize
-                                                    }
-                                                    height={
-                                                        tabLayout.closeIconSize
-                                                    }
-                                                    viewBox="0 0 16 16"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    strokeWidth="1.8"
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                >
-                                                    <path d="M4 4l8 8M4 12l8-8" />
-                                                </svg>
+                                                ×
                                             </button>
                                         </div>
                                         {insertionIndicatorIndex ===
@@ -670,26 +657,22 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             })}
                         </div>
                     ) : (
-                        <div className="flex min-w-0 flex-1 items-center">
-                            <div
-                                className="flex h-8 min-w-0 items-center rounded-xl px-3"
+                        <div className="flex min-w-0 flex-1 items-center px-3">
+                            <span
+                                className="truncate text-xs font-medium"
                                 style={{
-                                    border: "1px dashed color-mix(in srgb, var(--border) 76%, transparent)",
-                                    background:
-                                        "color-mix(in srgb, var(--bg-primary) 52%, transparent)",
                                     color: "var(--text-secondary)",
+                                    opacity: 0.6,
                                 }}
                             >
-                                <span className="truncate text-sm font-medium">
-                                    No tabs open
-                                </span>
-                            </div>
+                                No tabs open
+                            </span>
                         </div>
                     )}
                 </div>
 
                 <div
-                    className="flex shrink-0 items-center"
+                    className="flex shrink-0 items-center px-1.5"
                     style={chromeControlsGroupStyle}
                 >
                     {vaultPath && (
@@ -895,16 +878,15 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               display: "flex",
                               alignItems: "center",
                               gap: tabLayout.tabGap,
-                              width: tabLayout.tabWidth,
-                              minWidth: tabLayout.tabWidth,
-                              height: 34,
+                              maxWidth: 288,
+                              height: 31,
                               padding: `0 ${tabLayout.tabPaddingX}px`,
-                              borderRadius: 10,
-                              border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
-                              background:
-                                  "color-mix(in srgb, var(--bg-primary) 94%, white 6%)",
+                              borderRadius: 4,
+                              border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
+                              background: "var(--bg-primary)",
                               color: "var(--text-primary)",
-                              boxShadow: "0 14px 32px rgba(15, 23, 42, 0.18)",
+                              boxShadow:
+                                  "inset 0 -2px 0 0 var(--accent), 0 10px 24px rgba(15, 23, 42, 0.15)",
                               pointerEvents: "none",
                               zIndex: 9999,
                               willChange: "transform",

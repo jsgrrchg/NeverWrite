@@ -17,8 +17,8 @@ export interface EditorTabLayout {
 
 export const EDITOR_TAB_MAX_WIDTH = 160;
 export const EDITOR_TAB_MIN_WIDTH = 96;
-export const EDITOR_TAB_STRIP_GAP = 4;
-export const EDITOR_TAB_STRIP_PADDING_X = 4;
+export const EDITOR_TAB_STRIP_GAP = 0;
+export const EDITOR_TAB_STRIP_PADDING_X = 0;
 
 const COMFORTABLE_WIDTH = 144;
 const COMPACT_WIDTH = 118;
@@ -127,9 +127,9 @@ export function resolveEditorTabLayout({
         return {
             density: "comfortable",
             tabWidth: EDITOR_TAB_MAX_WIDTH,
-            tabGap: 8,
+            tabGap: 6,
             tabPaddingX: 12,
-            titleFontSize: 12.5,
+            titleFontSize: 12,
             closeButtonSize: 16,
             closeIconSize: 10,
             stripGap: EDITOR_TAB_STRIP_GAP,
@@ -153,11 +153,11 @@ export function resolveEditorTabLayout({
     return {
         density: resolveDensity(tabWidth, overflow, previousDensity),
         tabWidth,
-        tabGap: roundTo(interpolate(6, 8, ratio), 2),
-        tabPaddingX: roundTo(interpolate(8, 12, ratio), 2),
-        titleFontSize: roundTo(interpolate(12, 12.5, ratio), 2),
-        closeButtonSize: Math.round(interpolate(14, 16, ratio)),
-        closeIconSize: roundTo(interpolate(9, 10, ratio), 2),
+        tabGap: 6,
+        tabPaddingX: roundTo(interpolate(10, 12, ratio), 2),
+        titleFontSize: 12,
+        closeButtonSize: 16,
+        closeIconSize: 10,
         stripGap: EDITOR_TAB_STRIP_GAP,
         stripPaddingX: EDITOR_TAB_STRIP_PADDING_X,
         overflow,
