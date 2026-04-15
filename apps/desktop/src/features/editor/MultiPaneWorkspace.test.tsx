@@ -163,6 +163,7 @@ describe("MultiPaneWorkspace", () => {
                 {
                     id: "primary",
                     tabs: [],
+                    tabIds: [],
                     activeTabId: null,
                     activationHistory: [],
                     tabNavigationHistory: [],
@@ -171,6 +172,7 @@ describe("MultiPaneWorkspace", () => {
                 {
                     id: "secondary",
                     tabs: [],
+                    tabIds: [],
                     activeTabId: null,
                     activationHistory: [],
                     tabNavigationHistory: [],
@@ -179,6 +181,7 @@ describe("MultiPaneWorkspace", () => {
                 {
                     id: "tertiary",
                     tabs: [],
+                    tabIds: [],
                     activeTabId: null,
                     activationHistory: [],
                     tabNavigationHistory: [],

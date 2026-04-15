@@ -92,7 +92,6 @@ impl<'a> TokenSource for JsSplitLines<'a> {
 }
 
 /// Computes a line diff using Histogram plus line postprocessing.
-///
 /// The tokenization intentionally follows the frontend's existing `split("\n")`
 /// behavior rather than `imara-diff`'s default line source so that integration can
 /// preserve current line-number semantics.

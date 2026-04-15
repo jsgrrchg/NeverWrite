@@ -267,9 +267,10 @@ export type EditorWorkspaceStore = EditorWorkspaceState &
 
 type EditorWorkspaceReadableState = Pick<
     EditorWorkspaceState,
-    "panes" | "focusedPaneId" | "layoutTree" | "tabsById"
-> &
-    Partial<PaneWorkspaceState>;
+    "panes" | "focusedPaneId" | "layoutTree"
+> & {
+    tabsById?: Record<string, Tab>;
+} & Partial<PaneWorkspaceState>;
 
 type EditorPaneWorkspaceInput = Partial<PaneWorkspaceState> & {
     tabIds?: readonly string[];
@@ -1302,11 +1303,11 @@ function updateTabHistoryTitle(tab: HistoryTab, title: string): Tab {
     );
 }
 
-function loadHistoryEntryContentIfNeeded<TState extends EditorWorkspaceStore>(
+function loadHistoryEntryContentIfNeeded(
     tabId: string,
     historyIndex: number,
     entry: TabHistoryEntry,
-    api: Pick<StoreApi<TState>, "setState">,
+    setState: (updater: (state: { tabs: Tab[] }) => { tabs: Tab[] }) => void,
 ) {
     if (entry.kind === "note" && !entry.content) {
         void loadResourceHistoryEntryContent(
@@ -1314,7 +1315,7 @@ function loadHistoryEntryContentIfNeeded<TState extends EditorWorkspaceStore>(
             tabId,
             historyIndex,
             entry.noteId,
-            api.setState,
+            setState,
         );
     }
 
@@ -1324,7 +1325,7 @@ function loadHistoryEntryContentIfNeeded<TState extends EditorWorkspaceStore>(
             tabId,
             historyIndex,
             entry.relativePath,
-            api.setState,
+            setState,
         );
     }
 }
@@ -1864,10 +1865,17 @@ function mutateFocusedPaneWorkspace(
 }
 
 export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
-    set: WorkspaceSetState<TState>,
-    get: WorkspaceGetState<TState>,
-    api: Pick<StoreApi<TState>, "setState">,
+    _set: WorkspaceSetState<TState>,
+    _get: WorkspaceGetState<TState>,
+    _api: Pick<StoreApi<TState>, "setState">,
 ): EditorWorkspaceStore {
+    // Narrow to the base interface — safe because TState extends EditorWorkspaceStore
+    const set = _set as unknown as WorkspaceSetState<EditorWorkspaceStore>;
+    const get = _get as unknown as WorkspaceGetState<EditorWorkspaceStore>;
+    const api = _api as unknown as Pick<
+        StoreApi<EditorWorkspaceStore>,
+        "setState"
+    >;
     return {
         layoutTree: createInitialLayout(INITIAL_EDITOR_PANE_ID),
         panes: [createEditorPaneState(INITIAL_EDITOR_PANE_ID)],
@@ -2410,7 +2418,12 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     })) ?? currentState,
             );
 
-            loadHistoryEntryContentIfNeeded(tab.id, targetIndex, entry, api);
+            loadHistoryEntryContentIfNeeded(
+                tab.id,
+                targetIndex,
+                entry,
+                (updater) => api.setState((state) => updater(state)),
+            );
         },
 
         closeTab: (tabId, options) => {
@@ -3330,7 +3343,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 }),
                 recentlyClosedTabs: [],
                 dirtyTabIds: new Set<string>(),
-            } as Partial<TState>);
+            } as Partial<EditorWorkspaceStore>);
         },
 
         hydrateTabs: (tabs, activeTabId) => {
@@ -3376,7 +3389,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 ...projection,
                 recentlyClosedTabs: [],
                 dirtyTabIds: new Set<string>(),
-            } as Partial<TState>);
+            } as Partial<EditorWorkspaceStore>);
         },
 
         insertExternalTab: (tab, index) => {

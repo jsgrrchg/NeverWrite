@@ -11,7 +11,6 @@ import {
     selectEditorWorkspaceTabs,
     selectLeafPaneIds,
     selectPaneCount,
-    selectPaneNeighbor,
     useEditorStore,
 } from "../../app/store/editorStore";
 import { getSessionTitle } from "../ai/sessionPresentation";
@@ -91,16 +90,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const goBack = useEditorStore((state) => state.goBack);
     const goForward = useEditorStore((state) => state.goForward);
     const closePane = useEditorStore((state) => state.closePane);
-    const splitEditorPane = useEditorStore((state) => state.splitEditorPane);
-    const balancePaneLayout = useEditorStore(
-        (state) => state.balancePaneLayout,
-    );
-    const unifyAllPanesInto = useEditorStore(
-        (state) => state.unifyAllPanesInto,
-    );
-    const focusPaneNeighbor = useEditorStore(
-        (state) => state.focusPaneNeighbor,
-    );
     const moveTabToNewSplit = useEditorStore(
         (state) => state.moveTabToNewSplit,
     );
@@ -159,18 +148,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 ? activePaneTab.historyIndex < activePaneTab.history.length - 1
                 : false
             : pane.tabNavigationIndex < pane.tabNavigationHistory.length - 1;
-    const leftNeighborPaneId = useEditorStore((state) =>
-        selectPaneNeighbor(state, paneId, "left"),
-    );
-    const rightNeighborPaneId = useEditorStore((state) =>
-        selectPaneNeighbor(state, paneId, "right"),
-    );
-    const upNeighborPaneId = useEditorStore((state) =>
-        selectPaneNeighbor(state, paneId, "up"),
-    );
-    const downNeighborPaneId = useEditorStore((state) =>
-        selectPaneNeighbor(state, paneId, "down"),
-    );
     const detachedTabWindowDrop = useDetachedTabWindowDrop({
         vaultPath,
         windowMode,
@@ -768,49 +745,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     menu={paneContextMenu}
                     onClose={() => setPaneContextMenu(null)}
                     entries={[
-                        {
-                            label: "Split Right",
-                            action: () => splitEditorPane("row", paneId),
-                            disabled: !canCreateSplit,
-                        },
-                        {
-                            label: "Split Down",
-                            action: () => splitEditorPane("column", paneId),
-                            disabled: !canCreateSplit,
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Focus Pane Left",
-                            action: () => focusPaneNeighbor("left", paneId),
-                            disabled: !leftNeighborPaneId,
-                        },
-                        {
-                            label: "Focus Pane Right",
-                            action: () => focusPaneNeighbor("right", paneId),
-                            disabled: !rightNeighborPaneId,
-                        },
-                        {
-                            label: "Focus Pane Up",
-                            action: () => focusPaneNeighbor("up", paneId),
-                            disabled: !upNeighborPaneId,
-                        },
-                        {
-                            label: "Focus Pane Down",
-                            action: () => focusPaneNeighbor("down", paneId),
-                            disabled: !downNeighborPaneId,
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Balance Layout",
-                            action: () => balancePaneLayout(),
-                            disabled: paneCount <= 1,
-                        },
-                        {
-                            label: "Unify All Tabs",
-                            action: () => unifyAllPanesInto(paneId),
-                            disabled: paneCount <= 1,
-                        },
-                        { type: "separator" },
                         {
                             label: `Close Pane ${paneIndex + 1}`,
                             action: () => closePane(paneId),

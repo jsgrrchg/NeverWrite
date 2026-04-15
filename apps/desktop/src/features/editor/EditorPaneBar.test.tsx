@@ -567,68 +567,39 @@ describe("EditorPaneBar", () => {
         ).toBeEnabled();
     });
 
-    it("splits the current pane down from the pane actions menu", async () => {
+    it("does not show split view actions in the pane actions menu", async () => {
         const user = userEvent.setup();
         renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
 
         await user.click(
             screen.getByRole("button", { name: "Pane 2 actions" }),
         );
-        await user.click(
-            await screen.findByRole("button", { name: "Split Down" }),
-        );
 
-        await waitFor(() => {
-            expect(useEditorStore.getState().panes).toHaveLength(3);
-        });
-
-        const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("pane-3");
-        expect(state.panes.map((pane) => pane.id)).toEqual([
-            "primary",
-            "secondary",
-            "pane-3",
-        ]);
-    });
-
-    it("unifies all tabs into the current pane from the pane actions menu", async () => {
-        const user = userEvent.setup();
-        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
-
-        await user.click(
-            screen.getByRole("button", { name: "Pane 2 actions" }),
-        );
-        await user.click(
-            await screen.findByRole("button", { name: "Unify All Tabs" }),
-        );
-
-        await waitFor(() => {
-            expect(useEditorStore.getState().panes).toHaveLength(1);
-        });
-
-        const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("secondary");
-        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
-        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
-            "tab-b",
-            "tab-a",
-        ]);
-    });
-
-    it("focuses a neighbor pane from the pane actions menu", async () => {
-        const user = userEvent.setup();
-        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
-
-        await user.click(
-            screen.getByRole("button", { name: "Pane 2 actions" }),
-        );
-        await user.click(
-            await screen.findByRole("button", { name: "Focus Pane Left" }),
-        );
-
-        await waitFor(() => {
-            expect(useEditorStore.getState().focusedPaneId).toBe("primary");
-        });
+        expect(
+            screen.queryByRole("button", { name: "Split Right" }),
+        ).toBeNull();
+        expect(screen.queryByRole("button", { name: "Split Down" })).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Left" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Right" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Up" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Down" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Balance Layout" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Unify All Tabs" }),
+        ).toBeNull();
+        expect(
+            await screen.findByRole("button", { name: "Close Pane 2" }),
+        ).toBeVisible();
     });
 
     it("closes a pane explicitly from the pane actions menu", async () => {
