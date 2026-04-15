@@ -11334,6 +11334,109 @@ describe("chatStore", () => {
         });
     });
 
+    it("attachSelectionFromEditor prefers the last focused visible workspace chat", async () => {
+        useEditorStore.setState({
+            currentSelection: {
+                noteId: null,
+                path: "/vault/src/config.toml",
+                text: 'name = "NeverWrite"',
+                from: 0,
+                to: 19,
+                startLine: 1,
+                endLine: 1,
+            },
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "session-fallback": createSessionWithTrackedFiles(
+                    "session-fallback",
+                    [],
+                ),
+                "session-last-focused": createSessionWithTrackedFiles(
+                    "session-last-focused",
+                    [],
+                ),
+            },
+            sessionOrder: ["session-fallback", "session-last-focused"],
+            activeSessionId: "session-fallback",
+            lastFocusedSessionId: "session-last-focused",
+        }));
+
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "file-tab",
+                            kind: "file" as const,
+                            relativePath: "src/config.toml",
+                            title: "config.toml",
+                            path: "/vault/src/config.toml",
+                            mimeType: "application/toml",
+                            viewer: "text" as const,
+                            content: 'name = "NeverWrite"',
+                            history: [
+                                {
+                                    kind: "file" as const,
+                                    relativePath: "src/config.toml",
+                                    title: "config.toml",
+                                    path: "/vault/src/config.toml",
+                                    mimeType: "application/toml",
+                                    viewer: "text" as const,
+                                    content: 'name = "NeverWrite"',
+                                },
+                            ],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "file-tab",
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "tertiary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+        useEditorStore.getState().openChat("session-fallback", {
+            title: "Fallback",
+            paneId: "secondary",
+            background: true,
+        });
+        useEditorStore.getState().openChat("session-last-focused", {
+            title: "Last focused",
+            paneId: "tertiary",
+            background: true,
+        });
+
+        useChatStore.getState().attachSelectionFromEditor();
+
+        const targetParts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-last-focused"
+            ] ?? [];
+        const fallbackParts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-fallback"
+            ] ?? [];
+
+        expect(
+            targetParts.some((part) => part.type === "selection_mention"),
+        ).toBe(true);
+        expect(
+            fallbackParts.some((part) => part.type === "selection_mention"),
+        ).toBe(false);
+    });
+
     it("resolveReviewHunks ignores stale trackedVersion and leaves the tracked file untouched", async () => {
         const file = createTrackedFile(
             "notes/stale.md",

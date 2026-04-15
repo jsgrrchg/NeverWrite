@@ -60,12 +60,12 @@ interface UseWorkspaceTabDragOptions<TTab extends DragTabLike> {
     shouldCommitDrag?: (tabId: string, coords: DragCoordinates) => boolean;
     onDetachStart?: (
         tabId: string,
-        coords: { screenX: number; screenY: number },
+        coords: DragCoordinates,
     ) => Promise<void> | void;
-    onDetachMove?: (coords: { screenX: number; screenY: number }) => void;
+    onDetachMove?: (coords: DragCoordinates) => void;
     onDetachEnd?: (
         tabId: string,
-        coords: { screenX: number; screenY: number },
+        coords: DragCoordinates,
     ) => Promise<void> | void;
     onDetachCancel?: () => void;
     buildAttachmentDetail?: (
@@ -151,6 +151,7 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
         type: "none",
     });
     const workspacePreviewSignatureRef = useRef<string>("none");
+    const pendingDetachCommitTokenRef = useRef(0);
 
     const applyDragPreviewPosition = useCallback(() => {
         dragPreviewFrameRef.current = null;
@@ -213,6 +214,30 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
         workspacePreviewSignatureRef.current = "none";
         dispatchCrossPaneTabDropPreview(null);
     }, []);
+
+    const clearPendingDetachDrop = useCallback(() => {
+        pendingDetachCommitTokenRef.current += 1;
+        pendingDetachDropTargetRef.current = null;
+    }, []);
+
+    const commitPendingDetachDrop = useCallback(
+        (
+            tabId: string,
+            target: ExternalWorkspaceDropTarget,
+            coords: DragCoordinates,
+        ) => {
+            clearPendingDetachDrop();
+            dragDropHandledRef.current = false;
+            activeDragTabIdRef.current = null;
+            clearWorkspaceDropPreview();
+            void onCommitExternalDrop?.(tabId, target, coords);
+        },
+        [
+            clearPendingDetachDrop,
+            clearWorkspaceDropPreview,
+            onCommitExternalDrop,
+        ],
+    );
 
     const resolveCurrentWorkspaceDropTarget = useCallback(
         (
@@ -367,8 +392,26 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
 
             return shouldCommitDrag?.(tabId, coords) ?? true;
         },
-        onDetachStart,
-        onDetachMove,
+        onDetachStart: onDetachStart
+            ? (tabId, coords) => {
+                  const latestCoords = latestDragCoordsRef.current;
+                  return onDetachStart(tabId, {
+                      ...latestCoords,
+                      screenX: coords.screenX,
+                      screenY: coords.screenY,
+                  });
+              }
+            : undefined,
+        onDetachMove: onDetachMove
+            ? (coords) => {
+                  const latestCoords = latestDragCoordsRef.current;
+                  onDetachMove({
+                      ...latestCoords,
+                      screenX: coords.screenX,
+                      screenY: coords.screenY,
+                  });
+              }
+            : undefined,
         onDetachEnd: (tabId, coords) => {
             const latestCoords = latestDragCoordsRef.current;
             const detachCoords = {
@@ -386,18 +429,18 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             detachEndHandledByDragEndRef.current = false;
 
             if (target.type === "detach-window") {
-                void onCommitExternalDrop?.(tabId, target, detachCoords);
+                commitPendingDetachDrop(tabId, target, detachCoords);
             } else {
-                void onDetachEnd?.(tabId, coords);
+                void onDetachEnd?.(tabId, detachCoords);
             }
 
-            pendingDetachDropTargetRef.current = null;
+            clearPendingDetachDrop();
             activeDragTabIdRef.current = null;
             dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
         },
         onDetachCancel: () => {
-            pendingDetachDropTargetRef.current = null;
+            clearPendingDetachDrop();
             detachEndHandledByDragEndRef.current = false;
             dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
@@ -442,6 +485,21 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
                 dragDropHandledRef.current = true;
                 pendingDetachDropTargetRef.current = workspaceTarget;
                 detachEndHandledByDragEndRef.current = true;
+                const commitToken = pendingDetachCommitTokenRef.current + 1;
+                pendingDetachCommitTokenRef.current = commitToken;
+
+                queueMicrotask(() => {
+                    if (pendingDetachCommitTokenRef.current !== commitToken) {
+                        return;
+                    }
+
+                    const pendingTarget = pendingDetachDropTargetRef.current;
+                    if (pendingTarget?.type !== "detach-window") {
+                        return;
+                    }
+
+                    commitPendingDetachDrop(tabId, pendingTarget, coords);
+                });
                 return;
             }
 
@@ -451,7 +509,7 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             }
 
             activeDragTabIdRef.current = null;
-            pendingDetachDropTargetRef.current = null;
+            clearPendingDetachDrop();
             dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();
         },
@@ -460,7 +518,7 @@ export function useWorkspaceTabDrag<TTab extends DragTabLike>({
             emitAttachmentDragDetail(tabId, "cancel");
             setDragPreviewTabId(null);
             activeDragTabIdRef.current = null;
-            pendingDetachDropTargetRef.current = null;
+            clearPendingDetachDrop();
             detachEndHandledByDragEndRef.current = false;
             dragDropHandledRef.current = false;
             clearWorkspaceDropPreview();

@@ -71,7 +71,6 @@ import {
     selectPaneCount,
     selectPaneState,
 } from "./app/store/editorStore";
-import { MAX_EDITOR_PANES } from "./app/store/workspaceLayoutTree";
 import {
     buildPersistedSession,
     isSessionReady,
@@ -412,8 +411,7 @@ function useRegisterCommands(
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             selectFocusedEditorTab(useEditorStore.getState()) !== null;
-        const canSplitPane = () =>
-            selectPaneCount(useEditorStore.getState()) < MAX_EDITOR_PANES;
+        const canSplitPane = () => true;
         const canClosePane = () =>
             selectPaneCount(useEditorStore.getState()) > 1;
         const hasRecentlyClosedTab = () =>
@@ -1153,7 +1151,6 @@ export default function App() {
     const developerTerminalEnabled = useSettingsStore(
         (s) => s.developerTerminalEnabled,
     );
-    const paneCount = useEditorStore(selectPaneCount);
     const windowMode = getWindowMode();
     const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(

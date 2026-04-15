@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    createEditorPaneState,
     isChatTab,
     type FileViewerMode,
     isFileTab,
@@ -18,15 +19,13 @@ import {
     useEditorStore,
     type MapTab,
     type MapTabInput,
+    type Tab,
 } from "./editorStore";
 import { useSettingsStore } from "./settingsStore";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useVaultStore } from "./vaultStore";
-import {
-    MAX_EDITOR_PANES,
-    createInitialLayout,
-    splitPane,
-} from "./workspaceLayoutTree";
+import type { PersistedSession, PersistedSessionV2 } from "./editorSession";
+import { createInitialLayout, splitPane } from "./workspaceLayoutTree";
 
 function makeTab(overrides: {
     id: string;
@@ -123,20 +122,76 @@ function makeMapTab(overrides: {
     };
 }
 
+function makePane(
+    id: string,
+    tabs: Tab[] = [],
+    overrides: Partial<
+        Pick<
+            ReturnType<typeof createEditorPaneState>,
+            | "activeTabId"
+            | "activationHistory"
+            | "tabNavigationHistory"
+            | "tabNavigationIndex"
+        >
+    > = {},
+) {
+    return createEditorPaneState(id, {
+        tabs,
+        activeTabId: overrides.activeTabId ?? tabs[0]?.id ?? null,
+        activationHistory: overrides.activationHistory,
+        tabNavigationHistory: overrides.tabNavigationHistory,
+        tabNavigationIndex: overrides.tabNavigationIndex,
+    });
+}
+
+function makeReadableWorkspaceState(args: {
+    panes: Array<ReturnType<typeof createEditorPaneState>>;
+    focusedPaneId: string | null;
+    layoutTree?: ReturnType<typeof createInitialLayout>;
+    tabs?: Tab[];
+    activeTabId?: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
+}) {
+    const tabsById = Object.fromEntries(
+        [...args.panes.flatMap((pane) => pane.tabs), ...(args.tabs ?? [])].map(
+            (tab) => [tab.id, tab],
+        ),
+    );
+
+    return {
+        layoutTree:
+            args.layoutTree ??
+            createInitialLayout(args.panes[0]?.id ?? "primary"),
+        panes: args.panes,
+        focusedPaneId: args.focusedPaneId,
+        tabsById,
+        tabs: args.tabs ?? [],
+        activeTabId: args.activeTabId ?? null,
+        activationHistory: args.activationHistory ?? [],
+        tabNavigationHistory: args.tabNavigationHistory ?? [],
+        tabNavigationIndex: args.tabNavigationIndex ?? -1,
+    };
+}
+
+function asPersistedSessionV2(
+    session: PersistedSession | null,
+): PersistedSessionV2 {
+    expect(session && "version" in session ? session.version : undefined).toBe(
+        2,
+    );
+    if (!session || !("version" in session) || session.version !== 2) {
+        throw new Error("Expected a version 2 persisted editor session");
+    }
+    return session;
+}
+
 beforeEach(() => {
     safeStorageClear();
     localStorage.clear();
     useEditorStore.setState({
-        panes: [
-            {
-                id: "primary",
-                tabs: [],
-                activeTabId: null,
-                activationHistory: [],
-                tabNavigationHistory: [],
-                tabNavigationIndex: -1,
-            },
-        ],
+        panes: [makePane("primary")],
         focusedPaneId: "primary",
         tabs: [],
         activeTabId: null,
@@ -171,30 +226,9 @@ describe("editorStore pane selector contract", () => {
     it("derives pane ids, pane count, focused pane and neighbors from the flat workspace", () => {
         useEditorStore.setState({
             panes: [
-                {
-                    id: "primary",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-                {
-                    id: "pane-2",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-                {
-                    id: "pane-3",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
+                makePane("primary"),
+                makePane("pane-2"),
+                makePane("pane-3"),
             ],
             focusedPaneId: "pane-2",
         });
@@ -221,24 +255,15 @@ describe("editorStore pane selector contract", () => {
             content: "legacy content",
         });
 
-        const state = {
-            panes: [
-                {
-                    id: "primary",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-            ],
+        const state = makeReadableWorkspaceState({
+            panes: [makePane("primary")],
             focusedPaneId: null,
             tabs: [legacyTab],
             activeTabId: legacyTab.id,
             activationHistory: [legacyTab.id],
             tabNavigationHistory: [legacyTab.id],
             tabNavigationIndex: 0,
-        };
+        });
 
         expect(selectLeafPaneIds(state)).toEqual(["primary"]);
         expect(selectFocusedPaneId(state)).toBe("primary");
@@ -261,41 +286,15 @@ describe("editorStore pane selector contract", () => {
             "pane-3",
         );
 
-        const state = {
+        const state = makeReadableWorkspaceState({
             layoutTree,
             panes: [
-                {
-                    id: "primary",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-                {
-                    id: "pane-2",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-                {
-                    id: "pane-3",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
+                makePane("primary"),
+                makePane("pane-2"),
+                makePane("pane-3"),
             ],
             focusedPaneId: "pane-3",
-            tabs: [],
-            activeTabId: null,
-            activationHistory: [],
-            tabNavigationHistory: [],
-            tabNavigationIndex: -1,
-        };
+        });
 
         expect(selectLeafPaneIds(state)).toEqual([
             "primary",
@@ -319,41 +318,15 @@ describe("editorStore pane selector contract", () => {
             "pane-3",
         );
 
-        const state = {
+        const state = makeReadableWorkspaceState({
             layoutTree,
             panes: [
-                {
-                    id: "primary",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-                {
-                    id: "pane-2",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
-                {
-                    id: "pane-3",
-                    tabs: [],
-                    activeTabId: null,
-                    activationHistory: [],
-                    tabNavigationHistory: [],
-                    tabNavigationIndex: -1,
-                },
+                makePane("primary"),
+                makePane("pane-2"),
+                makePane("pane-3"),
             ],
             focusedPaneId: "pane-3",
-            tabs: [],
-            activeTabId: null,
-            activationHistory: [],
-            tabNavigationHistory: [],
-            tabNavigationIndex: -1,
-        };
+        });
 
         expect(selectPaneNeighbor(state, "pane-3", "up")).toBe("pane-2");
         expect(selectPaneNeighbor(state, "pane-2", "down")).toBe("pane-3");
@@ -445,9 +418,7 @@ describe("editorStore session persistence", () => {
                 },
             ],
         });
-        expect(
-            session?.version === 2 && session.tabsById["tab-1"],
-        ).toMatchObject({
+        expect(asPersistedSessionV2(session).tabsById["tab-1"]).toMatchObject({
             kind: "note",
             noteId: "notes/uk",
         });
@@ -473,11 +444,10 @@ describe("editorStore session persistence", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 600));
 
-        const session = readPersistedSession("/vaults/pdfs-2026");
-        expect(session?.version).toBe(2);
-        expect(
-            session?.version === 2 && session.tabsById["pdf-tab-1"],
-        ).toMatchObject({
+        const session = asPersistedSessionV2(
+            readPersistedSession("/vaults/pdfs-2026"),
+        );
+        expect(session.tabsById["pdf-tab-1"]).toMatchObject({
             entryId: "reports/q1",
             viewMode: "continuous",
         });
@@ -504,11 +474,10 @@ describe("editorStore session persistence", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 600));
 
-        const session = readPersistedSession("/vaults/assets-2026");
-        expect(session?.version).toBe(2);
-        expect(
-            session?.version === 2 && session.tabsById["file-tab-1"],
-        ).toMatchObject({
+        const session = asPersistedSessionV2(
+            readPersistedSession("/vaults/assets-2026"),
+        );
+        expect(session.tabsById["file-tab-1"]).toMatchObject({
             relativePath: "assets/cover.avif",
             viewer: "image",
         });
@@ -535,11 +504,10 @@ describe("editorStore session persistence", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 600));
 
-        const session = readPersistedSession("/vaults/data-2026");
-        expect(session?.version).toBe(2);
-        expect(
-            session?.version === 2 && session.tabsById["file-tab-csv"],
-        ).toMatchObject({
+        const session = asPersistedSessionV2(
+            readPersistedSession("/vaults/data-2026"),
+        );
+        expect(session.tabsById["file-tab-csv"]).toMatchObject({
             relativePath: "data/report.csv",
             viewer: "csv",
             mimeType: "text/csv",
@@ -563,11 +531,10 @@ describe("editorStore session persistence", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 600));
 
-        const session = readPersistedSession("/vaults/maps-2026");
-        expect(session?.version).toBe(2);
-        expect(
-            session?.version === 2 && session.tabsById["map-tab-1"],
-        ).toMatchObject({
+        const session = asPersistedSessionV2(
+            readPersistedSession("/vaults/maps-2026"),
+        );
+        expect(session.tabsById["map-tab-1"]).toMatchObject({
             relativePath: "Excalidraw/Architecture.excalidraw",
             title: "Architecture",
         });
@@ -591,11 +558,10 @@ describe("editorStore session persistence", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 600));
 
-        const session = readPersistedSession("/vaults/lean-2026");
-        expect(session?.version).toBe(2);
-        expect(
-            session?.version === 2 && session.tabsById["tab-1"],
-        ).toMatchObject({
+        const session = asPersistedSessionV2(
+            readPersistedSession("/vaults/lean-2026"),
+        );
+        expect(session.tabsById["tab-1"]).toMatchObject({
             noteId: "notes/large",
             title: "Large",
         });
@@ -641,13 +607,10 @@ describe("editorStore session persistence", () => {
 
         await new Promise((resolve) => setTimeout(resolve, 600));
 
-        const session = readPersistedSession("/vaults/history-rename-2026");
-        expect(session?.version).toBe(2);
-        expect(
-            session?.version === 2
-                ? session.tabsById["note-history-tab"]
-                : null,
-        ).toEqual(
+        const session = asPersistedSessionV2(
+            readPersistedSession("/vaults/history-rename-2026"),
+        );
+        expect(session.tabsById["note-history-tab"]).toEqual(
             expect.objectContaining({
                 noteId: "notes/current",
                 title: "Current",
@@ -1525,22 +1488,16 @@ describe("editorStore tab history mode", () => {
 
         useEditorStore.setState({
             panes: [
-                {
-                    id: "primary",
-                    tabs: [noteTab],
-                    activeTabId: noteTab.id,
+                makePane("primary", [noteTab], {
                     activationHistory: [noteTab.id],
                     tabNavigationHistory: [noteTab.id],
                     tabNavigationIndex: 0,
-                },
-                {
-                    id: "secondary",
-                    tabs: [mapTab],
-                    activeTabId: mapTab.id,
+                }),
+                makePane("secondary", [mapTab], {
                     activationHistory: [mapTab.id],
                     tabNavigationHistory: [mapTab.id],
                     tabNavigationIndex: 0,
-                },
+                }),
             ],
             focusedPaneId: "primary",
             layoutTree,
@@ -1590,22 +1547,16 @@ describe("editorStore tab history mode", () => {
 
         useEditorStore.setState({
             panes: [
-                {
-                    id: "primary",
-                    tabs: [noteTab],
-                    activeTabId: noteTab.id,
+                makePane("primary", [noteTab], {
                     activationHistory: [noteTab.id],
                     tabNavigationHistory: [noteTab.id],
                     tabNavigationIndex: 0,
-                },
-                {
-                    id: "secondary",
-                    tabs: [mapTab],
-                    activeTabId: mapTab.id,
+                }),
+                makePane("secondary", [mapTab], {
                     activationHistory: [mapTab.id],
                     tabNavigationHistory: [mapTab.id],
                     tabNavigationIndex: 0,
-                },
+                }),
             ],
             focusedPaneId: "primary",
             layoutTree,
@@ -2051,9 +2002,9 @@ describe("editorStore tab management", () => {
     it("reuses and closes review tabs across panes", () => {
         useEditorStore.setState({
             panes: [
-                {
-                    id: "primary",
-                    tabs: [
+                makePane(
+                    "primary",
+                    [
                         makeTab({
                             id: "tab-a",
                             noteId: "notes/a",
@@ -2061,14 +2012,16 @@ describe("editorStore tab management", () => {
                             content: "Alpha",
                         }),
                     ],
-                    activeTabId: "tab-a",
-                    activationHistory: ["tab-a"],
-                    tabNavigationHistory: ["tab-a"],
-                    tabNavigationIndex: 0,
-                },
-                {
-                    id: "secondary",
-                    tabs: [
+                    {
+                        activeTabId: "tab-a",
+                        activationHistory: ["tab-a"],
+                        tabNavigationHistory: ["tab-a"],
+                        tabNavigationIndex: 0,
+                    },
+                ),
+                makePane(
+                    "secondary",
+                    [
                         {
                             id: "review-1",
                             kind: "ai-review",
@@ -2076,11 +2029,13 @@ describe("editorStore tab management", () => {
                             title: "Initial review",
                         },
                     ],
-                    activeTabId: "review-1",
-                    activationHistory: ["review-1"],
-                    tabNavigationHistory: ["review-1"],
-                    tabNavigationIndex: 0,
-                },
+                    {
+                        activeTabId: "review-1",
+                        activationHistory: ["review-1"],
+                        tabNavigationHistory: ["review-1"],
+                        tabNavigationIndex: 0,
+                    },
+                ),
             ],
             focusedPaneId: "primary",
             tabs: [
@@ -2939,9 +2894,8 @@ describe("editorStore tab management", () => {
             "tab-a",
         );
 
-        const createdPaneIds = Array.from(
-            { length: MAX_EDITOR_PANES - 1 },
-            () => useEditorStore.getState().createEmptyPane(),
+        const createdPaneIds = Array.from({ length: 6 }, () =>
+            useEditorStore.getState().createEmptyPane(),
         );
 
         expect(createdPaneIds).toEqual([
@@ -2950,8 +2904,8 @@ describe("editorStore tab management", () => {
             "pane-4",
             "pane-5",
             "pane-6",
+            "pane-7",
         ]);
-        expect(useEditorStore.getState().createEmptyPane()).toBeNull();
         expect(useEditorStore.getState().panes.map((pane) => pane.id)).toEqual([
             "primary",
             "pane-2",
@@ -2959,6 +2913,7 @@ describe("editorStore tab management", () => {
             "pane-4",
             "pane-5",
             "pane-6",
+            "pane-7",
         ]);
     });
 

@@ -71,10 +71,10 @@ export function AIChatPanel() {
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
             <div
-                className="flex items-center justify-between gap-2 px-3 py-2"
+                className="flex items-center justify-between gap-2 px-3 py-0.5"
                 style={{
                     borderBottom: "1px solid var(--border)",
-                    minHeight: 40,
+                    minHeight: 28,
                 }}
             >
                 <div
@@ -89,7 +89,7 @@ export function AIChatPanel() {
                         <button
                             type="button"
                             onClick={() => setNewMenuOpen((open) => !open)}
-                            className="rounded px-2 py-1 text-[11px]"
+                            className="rounded px-2 py-0.5 text-[11px]"
                             style={{
                                 color: "var(--text-secondary)",
                                 border: "1px solid var(--border)",
@@ -169,7 +169,7 @@ export function AIChatPanel() {
                     <button
                         type="button"
                         onClick={() => chatActions.openHistoryView()}
-                        className="rounded px-2 py-1 text-[11px]"
+                        className="rounded px-2 py-0.5 text-[11px]"
                         style={{
                             color: "var(--text-secondary)",
                             border: "1px solid var(--border)",
@@ -182,7 +182,7 @@ export function AIChatPanel() {
                     <button
                         type="button"
                         onClick={toggleRightPanelExpanded}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded"
+                        className="inline-flex h-4 w-4 items-center justify-center rounded"
                         style={{
                             color: panelExpanded
                                 ? "var(--accent)"

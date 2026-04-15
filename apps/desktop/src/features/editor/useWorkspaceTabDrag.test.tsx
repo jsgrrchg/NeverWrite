@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { CROSS_PANE_TAB_DROP_PREVIEW_EVENT } from "./workspaceTabDropPreview";
@@ -163,5 +163,49 @@ describe("useWorkspaceTabDrag", () => {
             CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
             handlePreview,
         );
+    });
+
+    it("commits a detach drop even when ghost mode never starts", async () => {
+        const onCommitExternalDrop = vi.fn();
+
+        renderHook(() =>
+            useWorkspaceTabDrag({
+                tabs: [{ id: "tab-a" }],
+                onCommitReorder: vi.fn(),
+                onCommitExternalDrop,
+                resolveExternalDropTarget: () => ({ type: "detach-window" }),
+            }),
+        );
+
+        const options = mockUseTabDragReorder.mock.calls.at(-1)?.[0];
+        expect(options).toBeTruthy();
+
+        act(() => {
+            options.onDragStart?.("tab-a", {
+                clientX: 40,
+                clientY: 20,
+                screenX: 400,
+                screenY: 200,
+            });
+            options.onDragEnd?.("tab-a", {
+                clientX: -48,
+                clientY: 20,
+                screenX: 312,
+                screenY: 200,
+            });
+        });
+
+        await waitFor(() => {
+            expect(onCommitExternalDrop).toHaveBeenCalledWith(
+                "tab-a",
+                { type: "detach-window" },
+                {
+                    clientX: -48,
+                    clientY: 20,
+                    screenX: 312,
+                    screenY: 200,
+                },
+            );
+        });
     });
 });

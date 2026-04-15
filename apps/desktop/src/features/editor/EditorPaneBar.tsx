@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useCallback, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import {
@@ -68,15 +68,16 @@ interface EditorPaneBarProps {
 function getPaneHeaderActionButtonStyle(active = false) {
     return {
         ...getChromeIconButtonStyle(active),
-        width: 28,
-        height: 28,
-        borderRadius: 8,
+        width: 22,
+        height: 22,
+        borderRadius: 6,
         opacity: 1,
         boxShadow: "none",
     };
 }
 
 export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
+    void isFocused;
     const pane = useEditorStore((state) =>
         selectEditorPaneState(state, paneId),
     );
@@ -272,14 +273,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
               ? projectedDropIndex + 1
               : projectedDropIndex;
     const insertionIndicatorIndex = localInsertionIndicatorIndex;
-    const handleTabPointerDownCapture = useCallback(
-        (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0) return;
-            if ((event.target as HTMLElement).closest("button")) return;
-            switchTab(tabId);
-        },
-        [switchTab],
-    );
     const handleTabClick = useCallback(
         (tabId: string) => {
             if (editingKey === tabId) return;
@@ -314,8 +307,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             <div
                 className="flex items-center shrink-0"
                 style={{
-                    height: 31,
-                    minHeight: 31,
+                    height: 33,
+                    minHeight: 33,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     background: "var(--bg-secondary)",
@@ -434,14 +427,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                             tabIndex={0}
                                             aria-selected={isActive}
                                             className="group inline-flex shrink-0 items-center text-left"
-                                            onPointerDownCapture={(event) =>
-                                                isEditing
-                                                    ? undefined
-                                                    : handleTabPointerDownCapture(
-                                                          tab.id,
-                                                          event,
-                                                      )
-                                            }
                                             onPointerDown={(event) =>
                                                 isEditing
                                                     ? undefined
@@ -514,7 +499,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                             }}
                                             style={{
                                                 maxWidth: 240,
-                                                height: 31,
+                                                height: 33,
                                                 boxSizing: "border-box",
                                                 gap: tabLayout.tabGap,
                                                 padding: `0 ${tabLayout.tabPaddingX}px`,
@@ -685,12 +670,12 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             style={getPaneHeaderActionButtonStyle()}
                         >
                             <svg
-                                width="12"
-                                height="12"
+                                width="10"
+                                height="10"
                                 viewBox="0 0 16 16"
                                 fill="none"
                                 stroke="currentColor"
-                                strokeWidth="1.8"
+                                strokeWidth="2"
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                             >
@@ -714,8 +699,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         style={getPaneHeaderActionButtonStyle()}
                     >
                         <svg
-                            width="12"
-                            height="12"
+                            width="10"
+                            height="10"
                             viewBox="0 0 16 16"
                             fill="currentColor"
                         >
@@ -858,7 +843,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               alignItems: "center",
                               gap: tabLayout.tabGap,
                               maxWidth: 288,
-                              height: 31,
+                              height: 33,
                               padding: `0 ${tabLayout.tabPaddingX}px`,
                               borderRadius: 4,
                               border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",

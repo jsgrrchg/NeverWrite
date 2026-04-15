@@ -11,7 +11,6 @@ import { createPortal } from "react-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
     getCurrentWindowLabel,
@@ -28,9 +27,7 @@ import {
     selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
     selectFocusedPaneId,
-    selectPaneCount,
 } from "../../app/store/editorStore";
-import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -46,6 +43,7 @@ import {
 } from "../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
+    emitFileTreeNoteDrag,
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
@@ -196,7 +194,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     const activateRightView = useLayoutStore((s) => s.activateRightView);
-    const paneCount = useEditorStore(selectPaneCount);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
@@ -210,7 +207,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const [tabStripOverflowState, setTabStripOverflowState] = useState(
         EMPTY_TAB_STRIP_OVERFLOW_STATE,
     );
-    const canCreateSplit = paneCount < MAX_EDITOR_PANES;
+    const canCreateSplit = true;
 
     const handleMoveTabFileToTrash = useCallback(
         async (path: string, title: string) => {
@@ -421,15 +418,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
               ? projectedDropIndex + 1
               : projectedDropIndex;
 
-    const handleTabPointerDownCapture = useCallback(
-        (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0) return;
-            if ((event.target as HTMLElement).closest("button")) return;
-            switchTab(tabId);
-        },
-        [switchTab],
-    );
-
     const handleCloseTab = useCallback(
         async (tabId: string) => {
             const state = useEditorStore.getState();
@@ -604,6 +592,42 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
         }
     }, []);
+
+    const emitTabDragDetail = useCallback(
+        (tabId: string, phase: "attach" | "start" | "move" | "end") => {
+            const tab = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((item) => item.id === tabId);
+            if (!tab) {
+                return;
+            }
+
+            const detail = buildTabFileDragDetail(
+                tab,
+                phase,
+                { clientX: 0, clientY: 0 },
+                {
+                    resolveNotePath: (noteId) =>
+                        useVaultStore
+                            .getState()
+                            .notes.find((note) => note.id === noteId)?.path ??
+                        null,
+                },
+            );
+            if (!detail) {
+                return;
+            }
+
+            emitFileTreeNoteDrag({
+                ...detail,
+                origin: {
+                    kind: "workspace-tab",
+                    tabId,
+                },
+            });
+        },
+        [],
+    );
 
     const draggedPreviewTab =
         draggingTabId && dragPreviewTabId === draggingTabId
@@ -885,7 +909,12 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleTreeDrag,
             );
-    }, [getExternalFileDropTarget, handleOpenDroppedTreeItems, tabs.length]);
+    }, [
+        getExternalFileDropTarget,
+        handleOpenDroppedTreeItems,
+        internalDragActiveRef,
+        tabs.length,
+    ]);
 
     const hasTabs = visualTabs.length > 0;
 
@@ -1130,14 +1159,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         )
                                                     }
                                                     title={tabTooltip}
-                                                    onPointerDownCapture={(
-                                                        event,
-                                                    ) =>
-                                                        handleTabPointerDownCapture(
-                                                            tab.id,
-                                                            event,
-                                                        )
-                                                    }
                                                     onClick={() =>
                                                         handleTabClick(tab.id)
                                                     }
@@ -1705,10 +1726,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                               emitTabDragDetail(
                                                   tab.id,
                                                   "attach",
-                                                  {
-                                                      clientX: 0,
-                                                      clientY: 0,
-                                                  },
                                               ),
                                       },
                                   ]

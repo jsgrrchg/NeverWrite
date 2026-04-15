@@ -2,7 +2,7 @@ import { useEditorStore } from "../../app/store/editorStore";
 import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
-import { getPreferredWorkspaceChatSessionId } from "./chatWorkspaceSelectors";
+import { getPreferredWorkspaceChatSessionIdForSession } from "./chatWorkspaceSelectors";
 
 interface OpenChatInWorkspaceOptions {
     paneId?: string;
@@ -37,6 +37,9 @@ export function openChatSessionInWorkspace(
         paneId: options?.paneId,
         background: options?.background,
     });
+    if (!options?.background) {
+        useChatStore.getState().markSessionFocused(sessionId);
+    }
 
     void useChatStore.getState().loadSession(sessionId);
     return sessionId;
@@ -63,7 +66,9 @@ export async function createNewChatInWorkspace(
 export async function ensureWorkspaceChatSession(
     options?: OpenChatInWorkspaceOptions & { runtimeId?: string },
 ) {
-    const visibleSessionId = getPreferredWorkspaceChatSessionId();
+    const visibleSessionId = getPreferredWorkspaceChatSessionIdForSession(
+        useChatStore.getState().lastFocusedSessionId,
+    );
     if (visibleSessionId) {
         return visibleSessionId;
     }

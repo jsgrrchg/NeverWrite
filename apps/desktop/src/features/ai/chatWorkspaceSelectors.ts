@@ -23,9 +23,16 @@ export function getVisibleWorkspaceChatSessionIds() {
 }
 
 export function getPreferredWorkspaceChatSessionId() {
-    return (
-        getFocusedWorkspaceChatSessionId() ??
-        getVisibleWorkspaceChatSessionIds()[0] ??
-        null
-    );
+    return getPreferredWorkspaceChatSessionIdForSession(null);
+}
+
+export function getPreferredWorkspaceChatSessionIdForSession(
+    preferredSessionId: string | null,
+) {
+    const visibleSessionIds = getVisibleWorkspaceChatSessionIds();
+    if (preferredSessionId && visibleSessionIds.includes(preferredSessionId)) {
+        return preferredSessionId;
+    }
+
+    return getFocusedWorkspaceChatSessionId() ?? visibleSessionIds[0] ?? null;
 }

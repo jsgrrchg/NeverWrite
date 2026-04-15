@@ -56,6 +56,14 @@ export function AIChatWorkspaceHost() {
     }, [chatActions, hasChatTabs, vaultPath]);
 
     useEffect(() => {
+        if (!activeChatSessionId) {
+            return;
+        }
+
+        chatActions.markSessionFocused(activeChatSessionId);
+    }, [activeChatSessionId, chatActions]);
+
+    useEffect(() => {
         if (
             recoveringSessionIdRef.current &&
             recoveringSessionIdRef.current !== activeChatSessionId

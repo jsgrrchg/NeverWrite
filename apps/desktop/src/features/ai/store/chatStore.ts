@@ -38,7 +38,7 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
-import { getPreferredWorkspaceChatSessionId } from "../chatWorkspaceSelectors";
+import { getPreferredWorkspaceChatSessionIdForSession } from "../chatWorkspaceSelectors";
 import {
     useVaultStore,
     type VaultNoteChange,
@@ -1060,6 +1060,7 @@ interface ChatStore {
     sessionsById: Record<string, AIChatSession>;
     sessionOrder: string[];
     activeSessionId: string | null;
+    lastFocusedSessionId: string | null;
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     notePickerOpen: boolean;
@@ -1163,6 +1164,7 @@ interface ChatStore {
         change: VaultNoteChange,
     ) => Promise<void>;
     setActiveSession: (sessionId: string) => void;
+    markSessionFocused: (sessionId: string) => void;
     ensureSessionTranscriptLoaded: (
         sessionId: string,
         mode?: "latest" | "full",
@@ -5727,6 +5729,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sessionsById: {},
         sessionOrder: [],
         activeSessionId: null,
+        lastFocusedSessionId: null,
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,
@@ -7329,10 +7332,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 state.sessionsById[sessionId]
                     ? {
                           activeSessionId: sessionId,
+                          lastFocusedSessionId: sessionId,
                           selectedRuntimeId:
                               state.sessionsById[sessionId]?.runtimeId ??
                               state.selectedRuntimeId,
                       }
+                    : state,
+            ),
+
+        markSessionFocused: (sessionId) =>
+            set((state) =>
+                state.sessionsById[sessionId]
+                    ? { lastFocusedSessionId: sessionId }
                     : state,
             ),
 
@@ -9269,6 +9280,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 state.activeSessionId === sessionId
                     ? (remainingIds[0] ?? null)
                     : state.activeSessionId;
+            const nextLastFocusedSessionId =
+                state.lastFocusedSessionId === sessionId
+                    ? (nextActiveId ?? remainingIds[0] ?? null)
+                    : state.lastFocusedSessionId;
             const nextSelectedRuntimeId =
                 (nextActiveId
                     ? nextSessionsById[nextActiveId]?.runtimeId
@@ -9277,6 +9292,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionsById: nextSessionsById,
                 sessionOrder: remainingIds,
                 activeSessionId: nextActiveId,
+                lastFocusedSessionId: nextLastFocusedSessionId,
                 selectedRuntimeId: nextSelectedRuntimeId,
                 composerPartsBySessionId: nextComposerPartsBySessionId,
                 queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
@@ -9333,6 +9349,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionsById: {},
                 sessionOrder: [],
                 activeSessionId: null,
+                lastFocusedSessionId: null,
                 selectedRuntimeId: getDefaultRuntimeId(get().runtimes),
                 composerPartsBySessionId: {},
                 queuedMessagesBySessionId: {},
@@ -9477,7 +9494,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             };
 
             const preferredWorkspaceSessionId =
-                getPreferredWorkspaceChatSessionId();
+                getPreferredWorkspaceChatSessionIdForSession(
+                    get().lastFocusedSessionId,
+                );
             if (preferredWorkspaceSessionId) {
                 appendSelectionToSession(preferredWorkspaceSessionId);
                 return;
@@ -9886,6 +9905,7 @@ export function resetChatStore() {
         sessionsById: {},
         sessionOrder: [],
         activeSessionId: null,
+        lastFocusedSessionId: null,
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,

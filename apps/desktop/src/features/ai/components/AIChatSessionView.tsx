@@ -495,6 +495,10 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }}
                     onAttachFile={handleAttachFile}
                     onPasteImage={handlePasteImage}
+                    onFocus={() => {
+                        if (!sessionId) return;
+                        chatActions.markSessionFocused(sessionId);
+                    }}
                     onMentionAttach={(note) => {
                         chatActions.attachNote(note, sessionId);
                     }}

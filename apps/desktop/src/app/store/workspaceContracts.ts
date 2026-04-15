@@ -2,7 +2,7 @@ import type { FileTreeNoteDragDetail } from "../../features/ai/dragEvents";
 import type { Tab } from "./editorTabs";
 import type {
     WorkspaceLayoutNode,
-    WorkspaceSplitDirection,
+    WorkspaceMovePosition,
 } from "./workspaceLayoutTree";
 
 export const WORKSPACE_PHASE0_STATE_FIELDS = [
@@ -58,7 +58,7 @@ export type WorkspaceDropTarget =
     | {
           type: "split";
           paneId: string;
-          direction: WorkspaceSplitDirection;
+          direction: WorkspaceMovePosition;
       }
     | { type: "composer" }
     | { type: "detach-window" }

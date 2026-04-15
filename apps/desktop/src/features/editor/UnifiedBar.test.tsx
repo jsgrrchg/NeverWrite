@@ -243,6 +243,61 @@ describe("UnifiedBar tab strip drop", () => {
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
     });
 
+    it("waits until pointer release before switching tabs", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+            ],
+            "tab-a",
+        );
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const targetTab = document.querySelector(
+            '[data-tab-id="tab-b"]',
+        ) as HTMLElement | null;
+        expect(targetTab).not.toBeNull();
+
+        fireEvent.pointerDown(targetTab!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 1,
+            clientX: 148,
+            clientY: 24,
+            screenX: 148,
+            screenY: 24,
+        });
+
+        expect(useEditorStore.getState().activeTabId).toBe("tab-a");
+
+        fireEvent.pointerUp(targetTab!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 0,
+            clientX: 148,
+            clientY: 24,
+            screenX: 148,
+            screenY: 24,
+        });
+
+        expect(useEditorStore.getState().activeTabId).toBe("tab-b");
+    });
+
     it("opens a tab in a new left pane from the context menu when split view is inactive", async () => {
         const user = userEvent.setup();
         setEditorTabs(

@@ -107,14 +107,6 @@ export function AIChatTabs({
         },
         [tabStripRef],
     );
-    const handleTabPointerDownCapture = useCallback(
-        (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0) return;
-            if ((event.target as HTMLElement).closest("button")) return;
-            onSelectTab(tabId);
-        },
-        [onSelectTab],
-    );
     const handleTabClick = useCallback(
         (tabId: string) => {
             if (editingKey === tabId) return;
@@ -201,11 +193,6 @@ export function AIChatTabs({
                             className={`group flex min-w-0 shrink items-center rounded-md border transition-colors ${
                                 isCompact ? "gap-0.5 pr-0.5" : "gap-1 pr-1"
                             }`}
-                            onPointerDownCapture={(event) =>
-                                isEditing
-                                    ? undefined
-                                    : handleTabPointerDownCapture(tab.id, event)
-                            }
                             onPointerDown={(event) =>
                                 isEditing
                                     ? undefined
