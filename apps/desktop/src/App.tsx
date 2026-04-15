@@ -22,7 +22,6 @@ import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost
 import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
-import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
 import { EditorPaneContent } from "./features/editor/EditorPaneContent";
 import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
 import { WorkspaceChromeBar } from "./features/editor/WorkspaceChromeBar";
@@ -1340,8 +1339,6 @@ export default function App() {
     useAppWebviewZoom();
     useNativeMenuActions(windowMode);
     useDynamicScrollbars();
-    useAutoOpenReviewTab();
-
     const restoreSessionForCurrentVault = useCallback(async () => {
         const vaultPath = useVaultStore.getState().vaultPath;
         const restored = await restorePersistedSession(vaultPath, {

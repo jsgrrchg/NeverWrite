@@ -144,10 +144,6 @@ vi.mock("./features/devtools/DeveloperPanel", () => ({
     DeveloperPanel: () => <div data-testid="developer-panel" />,
 }));
 
-vi.mock("./features/ai/hooks/useAutoOpenReviewTab", () => ({
-    useAutoOpenReviewTab: () => {},
-}));
-
 vi.mock("./app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
     getCurrentWindowLabel: () => "main",

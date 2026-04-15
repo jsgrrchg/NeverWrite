@@ -75,10 +75,6 @@ vi.mock("./features/settings", () => ({
     SettingsPanel: () => <div data-testid="settings-panel" />,
 }));
 
-vi.mock("./features/ai/hooks/useAutoOpenReviewTab", () => ({
-    useAutoOpenReviewTab: () => {},
-}));
-
 vi.mock("./features/ai/AIChatDetachedWindowHost", () => ({
     AIChatDetachedWindowHost: () => (
         <div data-testid="ai-chat-detached-window-host" />

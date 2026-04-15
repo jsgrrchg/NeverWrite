@@ -6,12 +6,12 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent, setVaultEntries } from "../../../test/test-utils";
 import { AIReviewView } from "./AIReviewView";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
-import { useAutoOpenReviewTab } from "../hooks/useAutoOpenReviewTab";
 import type { AIRuntimeDescriptor, AIChatSession } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { selectVisibleTrackedFiles } from "../store/editedFilesBufferModel";
+import { getReviewTabTitle } from "../sessionPresentation";
 
 const WORK_CYCLE_ID = "default-cycle";
 
@@ -41,7 +41,6 @@ const runtimes: AIRuntimeDescriptor[] = [
 ];
 
 function MultiSessionReviewHarness() {
-    useAutoOpenReviewTab();
     return (
         <>
             <AIReviewView />
@@ -109,6 +108,15 @@ function setReviewTabActive(sessionId: string) {
     useEditorStore.getState().switchTab(reviewTab!.id);
 }
 
+function openReviewTab(
+    session: AIChatSession,
+    runtimeDescriptors: AIRuntimeDescriptor[],
+) {
+    useEditorStore.getState().openReview(session.sessionId, {
+        title: getReviewTabTitle(session, runtimeDescriptors),
+    });
+}
+
 function replaceSessionFile(
     session: AIChatSession,
     nextFile: TrackedFile,
@@ -146,7 +154,7 @@ describe("multi-session review integration", () => {
         useSettingsStore.setState({ lineWrapping: true });
     });
 
-    it("mounts review, panel and auto-open with two active sessions while switching between review tabs", async () => {
+    it("mounts review and panel with two active sessions while switching between review tabs", async () => {
         setVaultEntries([
             {
                 id: "notes/a.md",
@@ -198,6 +206,8 @@ describe("multi-session review integration", () => {
                     [sessionB.sessionId]: sessionB,
                 },
             }));
+            openReviewTab(sessionA, runtimes);
+            openReviewTab(sessionB, runtimes);
         });
 
         const reviewTabs = useEditorStore
@@ -321,6 +331,7 @@ describe("multi-session review integration", () => {
                     [sessionA.sessionId]: sessionA,
                 },
             }));
+            openReviewTab(sessionA, runtimes);
         });
 
         await act(async () => {
@@ -388,6 +399,8 @@ describe("multi-session review integration", () => {
                     [sessionB.sessionId]: sessionB,
                 },
             }));
+            openReviewTab(sessionA, runtimes);
+            openReviewTab(sessionB, runtimes);
         });
 
         const reviewTabs = useEditorStore

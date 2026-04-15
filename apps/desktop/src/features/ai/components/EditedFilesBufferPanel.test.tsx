@@ -138,6 +138,27 @@ describe("EditedFilesBufferPanel", () => {
         expect(screen.getByText("legacy.ts")).toBeInTheDocument();
     });
 
+    it("does not open a review tab automatically when edits appear", () => {
+        const session = createSession("session-no-auto-review", [
+            createTrackedFile("/vault/src/no-auto-review.ts"),
+        ]);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        expect(screen.getByRole("button", { name: "Review" })).toBeVisible();
+        expect(
+            useEditorStore.getState().tabs.some((tab) => isReviewTab(tab)),
+        ).toBe(false);
+    });
+
     it("auto-hides the undo-only banner after five seconds", () => {
         vi.useFakeTimers();
 
