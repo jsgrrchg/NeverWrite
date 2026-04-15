@@ -410,7 +410,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 const isActive = tab.id === pane.activeTabId;
                                 const isDragging = tab.id === draggingTabId;
                                 const isEditing = editingKey === tab.id;
-                                const canRename = isChatTab(tab);
                                 const tabLabel = getTabLabel(
                                     tab,
                                     fileTreeShowExtensions,
@@ -575,15 +574,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                             ) : (
                                                 <span
                                                     className="min-w-0 flex-1 truncate font-medium"
-                                                    onDoubleClick={() => {
-                                                        if (!canRename) return;
-                                                        beginChatRename(tab);
-                                                    }}
-                                                    title={
-                                                        canRename
-                                                            ? "Double-click to rename"
-                                                            : undefined
-                                                    }
                                                     style={{
                                                         fontSize:
                                                             tabLayout.titleFontSize,

@@ -34,6 +34,7 @@ import { AIChatAgentControls } from "./AIChatAgentControls";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
+import { useInlineRename } from "./useInlineRename";
 import {
     appendFileAttachmentPart,
     appendScreenshotPart,
@@ -133,6 +134,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const composerFontFamily = useChatStore((s) => s.composerFontFamily);
     const chatFontSize = useChatStore((s) => s.chatFontSize);
     const chatFontFamily = useChatStore((s) => s.chatFontFamily);
+    const {
+        editingKey,
+        editValue,
+        inputRef,
+        setEditValue,
+        startEditing,
+        cancelEditing,
+        commitEditing,
+    } = useInlineRename<string>();
 
     // Notes/files for mentions
     const notes = useVaultStore((s) => s.notes);
@@ -301,6 +311,17 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         }
     }, [session, sessionId]);
 
+    const sessionTitle = session ? getSessionTitle(session) : "Chat";
+
+    const startTitleEdit = useCallback(() => {
+        if (!session || !sessionId) return;
+        startEditing(sessionId, getSessionTitle(session));
+    }, [session, sessionId, startEditing]);
+
+    const commitTitleEdit = useCallback(() => {
+        commitEditing(chatActions.renameSession);
+    }, [chatActions, commitEditing]);
+
     if (!sessionId) {
         return (
             <div
@@ -327,12 +348,39 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     color: "var(--text-secondary)",
                 }}
             >
-                <span
-                    className="flex-1 truncate font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                >
-                    {session ? getSessionTitle(session) : "Chat"}
-                </span>
+                {editingKey === sessionId ? (
+                    <input
+                        ref={inputRef}
+                        className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none"
+                        style={{
+                            color: "var(--text-primary)",
+                            border: "none",
+                            padding: 0,
+                            minHeight: 0,
+                            boxSizing: "border-box",
+                            boxShadow: "inset 0 -1px 0 var(--accent)",
+                        }}
+                        value={editValue}
+                        onChange={(event) => setEditValue(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                                commitTitleEdit();
+                            } else if (event.key === "Escape") {
+                                cancelEditing();
+                            }
+                        }}
+                        onBlur={commitTitleEdit}
+                    />
+                ) : (
+                    <span
+                        className="flex-1 truncate font-medium"
+                        onDoubleClick={startTitleEdit}
+                        title="Double-click to rename"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        {sessionTitle}
+                    </span>
+                )}
             </div>
 
             <AIChatRuntimeBanner

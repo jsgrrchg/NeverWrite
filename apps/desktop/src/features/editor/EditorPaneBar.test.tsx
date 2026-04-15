@@ -648,7 +648,7 @@ describe("EditorPaneBar", () => {
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 
-    it("renames workspace chat tabs with a double click on the title", async () => {
+    it("does not start renaming workspace chat tabs from a double click on the tab title", async () => {
         useChatStore.setState({
             sessionsById: {
                 "session-a": createChatSession("session-a", "Workspace chat"),
@@ -663,19 +663,11 @@ describe("EditorPaneBar", () => {
 
         fireEvent.doubleClick(screen.getByText("Workspace chat"));
 
-        const input = screen.getByDisplayValue("Workspace chat");
-        fireEvent.change(input, {
-            target: { value: "Renamed workspace chat" },
-        });
-        fireEvent.keyDown(input, { key: "Enter" });
-
-        await waitFor(() => {
-            expect(
-                useChatStore.getState().sessionsById["session-a"]?.customTitle,
-            ).toBe("Renamed workspace chat");
-        });
-
-        expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
+        expect(screen.queryByDisplayValue("Workspace chat")).toBeNull();
+        expect(
+            useChatStore.getState().sessionsById["session-a"]?.customTitle ??
+                null,
+        ).toBeNull();
     });
 
     it("creates a new note from the pane plus-button context menu in the current pane", async () => {
