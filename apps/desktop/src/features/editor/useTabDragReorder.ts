@@ -135,6 +135,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
     const edgeScrollFrameRef = useRef<number | null>(null);
     const runEdgeScrollRef = useRef<() => void>(() => {});
     const domShiftRef = useRef(0);
+    const globalPointerTrackingRef = useRef(false);
 
     const [previewOrder, setPreviewOrder] = useState<string[] | null>(null);
     const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
@@ -143,6 +144,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
     const [projectedDropIndex, setProjectedDropIndex] = useState<number | null>(
         null,
     );
+    const [activePointerId, setActivePointerId] = useState<number | null>(null);
 
     const tabsById = useMemo(
         () => Object.fromEntries(tabs.map((tab) => [tab.id, tab])),
@@ -356,9 +358,12 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             if (
                 draggedNode &&
                 pointerId !== undefined &&
+                typeof draggedNode.hasPointerCapture === "function" &&
                 draggedNode.hasPointerCapture(pointerId)
             ) {
-                draggedNode.releasePointerCapture(pointerId);
+                if (typeof draggedNode.releasePointerCapture === "function") {
+                    draggedNode.releasePointerCapture(pointerId);
+                }
             }
 
             stopEdgeScroll();
@@ -396,6 +401,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             setDraggingTabId(null);
             setDragOffsetX(0);
             setProjectedDropIndex(null);
+            setActivePointerId(null);
         },
         [computeDropIndex, liveReorder, onCommitReorder, stopEdgeScroll],
     );
@@ -429,15 +435,14 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             if (tab.id === draggingTabId) {
                 const session = sessionRef.current;
                 if (session) {
-                    // Re-capture pointer if lost during DOM reorder
+                    // Best-effort pointer capture keeps element-local pointer
+                    // events alive, but window listeners remain the source of
+                    // truth for the gesture if capture cannot be restored.
                     if (!node.hasPointerCapture(session.pointerId)) {
                         try {
                             node.setPointerCapture(session.pointerId);
                         } catch {
-                            // Pointer was released — end drag
-                            onDragCancel?.(session.tabId);
-                            finishDrag(session.pointerId);
-                            return;
+                            // Ignore capture failures and keep the drag alive.
                         }
                     }
                     domShiftRef.current = nextLeft - session.startOffsetLeft;
@@ -521,20 +526,32 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 dragging: false,
                 detachArmedAt: null,
             };
+            setActivePointerId(event.pointerId);
         },
         [tabs],
     );
 
-    const handlePointerMove = useCallback(
-        (tabId: string, event: ReactPointerEvent<HTMLDivElement>) => {
+    const processPointerMove = useCallback(
+        (
+            tabId: string,
+            pointerId: number,
+            coords: {
+                clientX: number;
+                clientY: number;
+                screenX: number;
+                screenY: number;
+                buttons?: number;
+            },
+            captureTarget?: HTMLDivElement | null,
+        ) => {
             const session = sessionRef.current;
-            if (!session || session.pointerId !== event.pointerId) return;
+            if (!session || session.pointerId !== pointerId) return;
             if (session.tabId !== tabId) return;
 
-            latestPointerXRef.current = event.clientX;
+            latestPointerXRef.current = coords.clientX;
 
-            const deltaX = event.clientX - session.startX;
-            const deltaY = event.clientY - session.startY;
+            const deltaX = coords.clientX - session.startX;
+            const deltaY = coords.clientY - session.startY;
 
             if (
                 !session.dragging &&
@@ -545,8 +562,9 @@ export function useTabDragReorder<TTab extends DragTabLike>({
 
             if (!session.dragging) {
                 session.dragging = true;
+                const captureNode = captureTarget ?? tabRefs.current[tabId];
                 try {
-                    event.currentTarget.setPointerCapture(event.pointerId);
+                    captureNode?.setPointerCapture(pointerId);
                 } catch {
                     // Ignore capture failures and continue with best-effort drag.
                 }
@@ -561,40 +579,41 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 setDraggingTabId(tabId);
                 document.body.classList.add("dragging-tab");
                 onDragStart?.(tabId, {
-                    clientX: event.clientX,
-                    clientY: event.clientY,
-                    screenX: event.screenX,
-                    screenY: event.screenY,
+                    clientX: coords.clientX,
+                    clientY: coords.clientY,
+                    screenX: coords.screenX,
+                    screenY: coords.screenY,
                 });
             }
 
             onDragMove?.(tabId, {
-                clientX: event.clientX,
-                clientY: event.clientY,
-                screenX: event.screenX,
-                screenY: event.screenY,
+                clientX: coords.clientX,
+                clientY: coords.clientY,
+                screenX: coords.screenX,
+                screenY: coords.screenY,
             });
 
-            const wantsDetach = shouldDetach?.(event.clientX, event.clientY);
+            const wantsDetach = shouldDetach?.(coords.clientX, coords.clientY);
+            const pointerButtons = coords.buttons ?? 1;
 
             // Already in ghost mode — check if button was released (missed pointerup)
             if (wantsDetach && detachActiveRef.current) {
-                if (event.buttons === 0) {
+                if (pointerButtons === 0) {
                     const tid = session.tabId;
-                    const coords = {
-                        screenX: event.screenX,
-                        screenY: event.screenY,
+                    const detachCoords = {
+                        screenX: coords.screenX,
+                        screenY: coords.screenY,
                     };
-                    finishDrag(event.pointerId, {
+                    finishDrag(pointerId, {
                         commit: false,
                         suppressClick: true,
                     });
-                    void onDetachEnd?.(tid, coords);
+                    void onDetachEnd?.(tid, detachCoords);
                     return;
                 }
                 onDetachMove?.({
-                    screenX: event.screenX,
-                    screenY: event.screenY,
+                    screenX: coords.screenX,
+                    screenY: coords.screenY,
                 });
                 return;
             }
@@ -602,14 +621,14 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             // Pointer wants to detach — arm hysteresis
             if (wantsDetach && onDetachStart) {
                 latestScreenCoordsRef.current = {
-                    screenX: event.screenX,
-                    screenY: event.screenY,
+                    screenX: coords.screenX,
+                    screenY: coords.screenY,
                 };
 
                 setDetachPreviewActive(true);
                 stopEdgeScroll();
                 setDragOffsetX(
-                    computeDragOffset(event.clientX) - domShiftRef.current,
+                    computeDragOffset(coords.clientX) - domShiftRef.current,
                 );
 
                 // Enter ghost mode once the hysteresis threshold is met.
@@ -681,14 +700,14 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 // Button was already released outside the window (missed
                 // pointerup — common on macOS/WebKit). Complete the detach
                 // using the last known screen coordinates.
-                if (event.buttons === 0) {
+                if (pointerButtons === 0) {
                     const tid = session.tabId;
-                    const coords = { ...latestScreenCoordsRef.current };
-                    finishDrag(event.pointerId, {
+                    const detachCoords = { ...latestScreenCoordsRef.current };
+                    finishDrag(pointerId, {
                         commit: false,
                         suppressClick: true,
                     });
-                    void onDetachEnd?.(tid, coords);
+                    void onDetachEnd?.(tid, detachCoords);
                     return;
                 }
 
@@ -698,8 +717,8 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 onDetachCancel?.();
                 setDetachPreviewActive(false);
                 session.detachArmedAt = null;
-                syncDraggedTab(event.clientX);
-                updateEdgeScroll(event.clientX);
+                syncDraggedTab(coords.clientX);
+                updateEdgeScroll(coords.clientX);
                 return;
             }
 
@@ -715,13 +734,13 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             }
 
             if (liveReorder) {
-                updateEdgeScroll(event.clientX);
-                syncDraggedTab(event.clientX);
+                updateEdgeScroll(coords.clientX);
+                syncDraggedTab(coords.clientX);
                 return;
             }
 
-            updateEdgeScroll(event.clientX);
-            setProjectedDropIndex(computeDropIndex(event.clientX));
+            updateEdgeScroll(coords.clientX);
+            setProjectedDropIndex(computeDropIndex(coords.clientX));
         },
         [
             computeDropIndex,
@@ -743,7 +762,29 @@ export function useTabDragReorder<TTab extends DragTabLike>({
         ],
     );
 
-    const handlePointerUp = useCallback(
+    const handlePointerMove = useCallback(
+        (tabId: string, event: ReactPointerEvent<HTMLDivElement>) => {
+            if (globalPointerTrackingRef.current) {
+                return;
+            }
+
+            processPointerMove(
+                tabId,
+                event.pointerId,
+                {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                    buttons: event.buttons,
+                },
+                event.currentTarget,
+            );
+        },
+        [processPointerMove],
+    );
+
+    const processPointerUp = useCallback(
         (
             pointerId?: number,
             coords?: {
@@ -752,16 +793,31 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 screenX: number;
                 screenY: number;
             },
+            options?: {
+                fromElement?: boolean;
+            },
         ) => {
             detachCleanupRef.current?.();
 
             const session = sessionRef.current;
 
             if (session && !session.dragging) {
-                onActivate?.(session.tabId);
+                const tabNode = tabRefs.current[session.tabId];
+                const shouldActivate =
+                    options?.fromElement === true ||
+                    (tabNode !== undefined &&
+                        tabNode !== null &&
+                        coords !== undefined &&
+                        isPointInsideRect(
+                            coords,
+                            tabNode.getBoundingClientRect(),
+                        ));
+                if (shouldActivate) {
+                    onActivate?.(session.tabId);
+                }
                 finishDrag(pointerId, {
                     commit: false,
-                    suppressClick: true,
+                    suppressClick: shouldActivate,
                 });
                 return;
             }
@@ -797,6 +853,75 @@ export function useTabDragReorder<TTab extends DragTabLike>({
         },
         [finishDrag, onActivate, onDetachEnd, onDragEnd, shouldCommitDrag],
     );
+
+    const handlePointerUp = useCallback(
+        (
+            pointerId?: number,
+            coords?: {
+                clientX: number;
+                clientY: number;
+                screenX: number;
+                screenY: number;
+            },
+        ) => {
+            processPointerUp(pointerId, coords, { fromElement: true });
+        },
+        [processPointerUp],
+    );
+
+    useEffect(() => {
+        if (activePointerId === null) {
+            globalPointerTrackingRef.current = false;
+            return;
+        }
+
+        globalPointerTrackingRef.current = true;
+
+        const handleWindowPointerMove = (event: PointerEvent) => {
+            const session = sessionRef.current;
+            if (!session) {
+                return;
+            }
+
+            processPointerMove(session.tabId, event.pointerId, {
+                clientX: event.clientX,
+                clientY: event.clientY,
+                screenX: event.screenX,
+                screenY: event.screenY,
+                buttons: event.buttons,
+            });
+        };
+        const handleWindowPointerUp = (event: PointerEvent) => {
+            processPointerUp(event.pointerId, {
+                clientX: event.clientX,
+                clientY: event.clientY,
+                screenX: event.screenX,
+                screenY: event.screenY,
+            });
+        };
+        const handleWindowPointerCancel = (event: PointerEvent) => {
+            processPointerUp(event.pointerId, {
+                clientX: event.clientX,
+                clientY: event.clientY,
+                screenX: event.screenX,
+                screenY: event.screenY,
+            });
+        };
+
+        window.addEventListener("pointermove", handleWindowPointerMove);
+        window.addEventListener("pointerup", handleWindowPointerUp);
+        window.addEventListener("pointercancel", handleWindowPointerCancel);
+
+        return () => {
+            globalPointerTrackingRef.current = false;
+            window.removeEventListener("pointermove", handleWindowPointerMove);
+            window.removeEventListener("pointerup", handleWindowPointerUp);
+            window.removeEventListener(
+                "pointercancel",
+                handleWindowPointerCancel,
+            );
+        };
+    }, [activePointerId, processPointerMove, processPointerUp]);
 
     useEffect(() => {
         handlePointerUpRef.current = handlePointerUp;
@@ -840,4 +965,16 @@ export function useTabDragReorder<TTab extends DragTabLike>({
         handleLostPointerCapture,
         consumeSuppressedClick,
     };
+}
+
+function isPointInsideRect(
+    point: { clientX: number; clientY: number },
+    rect: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+) {
+    return (
+        point.clientX >= rect.left &&
+        point.clientX <= rect.right &&
+        point.clientY >= rect.top &&
+        point.clientY <= rect.bottom
+    );
 }

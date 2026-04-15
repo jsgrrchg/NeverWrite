@@ -34,6 +34,7 @@ interface NodeConstraints {
 interface WorkspaceSplitContainerProps {
     node: WorkspaceLayoutNode;
     focusedPaneId: string | null;
+    externalFileDropPaneId: string | null;
     onPaneFocus: (paneId: string) => void;
     onResizeSplit: (splitId: string, sizes: readonly number[]) => void;
 }
@@ -91,10 +92,12 @@ function clampSplitResize(
 function WorkspacePane({
     paneId,
     isFocused,
+    isExternalFileDropActive,
     onPaneFocus,
 }: {
     paneId: string;
     isFocused: boolean;
+    isExternalFileDropActive: boolean;
     onPaneFocus: (paneId: string) => void;
 }) {
     return (
@@ -106,15 +109,32 @@ function WorkspacePane({
                 border: "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
                 borderRadius: 0,
                 background: "var(--bg-primary)",
-                boxShadow: isFocused
-                    ? "inset 0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent)"
-                    : "none",
+                boxShadow: isExternalFileDropActive
+                    ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent)"
+                    : isFocused
+                      ? "inset 0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent)"
+                      : "none",
             }}
             onPointerDownCapture={() => onPaneFocus(paneId)}
             onFocusCapture={() => onPaneFocus(paneId)}
             data-editor-pane-id={paneId}
             data-editor-pane-focused={isFocused || undefined}
+            data-editor-pane-file-drop-active={
+                isExternalFileDropActive || undefined
+            }
         >
+            {isExternalFileDropActive ? (
+                <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 z-20"
+                    style={{
+                        background:
+                            "color-mix(in srgb, var(--accent) 7%, transparent)",
+                        boxShadow:
+                            "inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent)",
+                    }}
+                />
+            ) : null}
             <EditorPaneBar paneId={paneId} isFocused={isFocused} />
             <EditorPaneContent
                 paneId={paneId}
@@ -127,6 +147,7 @@ function WorkspacePane({
 export function WorkspaceSplitContainer({
     node,
     focusedPaneId,
+    externalFileDropPaneId,
     onPaneFocus,
     onResizeSplit,
 }: WorkspaceSplitContainerProps) {
@@ -256,6 +277,9 @@ export function WorkspaceSplitContainer({
             <WorkspacePane
                 paneId={node.paneId}
                 isFocused={node.paneId === focusedPaneId}
+                isExternalFileDropActive={
+                    node.paneId === externalFileDropPaneId
+                }
                 onPaneFocus={onPaneFocus}
             />
         );
@@ -294,6 +318,7 @@ export function WorkspaceSplitContainer({
                             <WorkspaceSplitContainer
                                 node={child}
                                 focusedPaneId={focusedPaneId}
+                                externalFileDropPaneId={externalFileDropPaneId}
                                 onPaneFocus={onPaneFocus}
                                 onResizeSplit={onResizeSplit}
                             />

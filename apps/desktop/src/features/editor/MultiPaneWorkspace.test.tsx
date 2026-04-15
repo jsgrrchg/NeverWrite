@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, screen } from "@testing-library/react";
-import { flushPromises, renderComponent } from "../../test/test-utils";
+import {
+    flushPromises,
+    mockInvoke,
+    renderComponent,
+    setVaultEntries,
+} from "../../test/test-utils";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
 import { useEditorStore } from "../../app/store/editorStore";
 import {
@@ -8,11 +13,13 @@ import {
     splitPane,
 } from "../../app/store/workspaceLayoutTree";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
 import { MultiPaneWorkspace } from "./MultiPaneWorkspace";
 import { CROSS_PANE_TAB_DROP_PREVIEW_EVENT } from "./workspaceTabDropPreview";
 
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
+const onDragDropEventMock = vi.fn();
 
 vi.mock("@tauri-apps/api/window", () => ({
     getCurrentWindow: () => ({
@@ -29,6 +36,12 @@ vi.mock("@tauri-apps/api/window", () => ({
         emitTo: vi.fn(),
         close: vi.fn(),
         label: "main",
+    }),
+}));
+
+vi.mock("@tauri-apps/api/webview", () => ({
+    getCurrentWebview: () => ({
+        onDragDropEvent: onDragDropEventMock,
     }),
 }));
 
@@ -123,6 +136,8 @@ describe("MultiPaneWorkspace", () => {
             configurable: true,
             value: MockResizeObserver,
         });
+        onDragDropEventMock.mockReset();
+        onDragDropEventMock.mockResolvedValue(vi.fn());
         Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
             configurable: true,
             value: vi.fn(),
@@ -207,6 +222,208 @@ describe("MultiPaneWorkspace", () => {
         fireEvent.pointerDown(targetPane!, { pointerId: 1, button: 0 });
 
         expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+    });
+
+    it("opens a dragged vault file in the pane under the pointer", async () => {
+        setVaultEntries([
+            {
+                id: "docs/reference.txt",
+                path: "/vault/docs/reference.txt",
+                relative_path: "docs/reference.txt",
+                title: "Reference",
+                file_name: "reference.txt",
+                extension: "txt",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 32,
+                mime_type: "text/plain",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command, args) => {
+            if (
+                command === "read_vault_file" &&
+                (args as { relativePath?: string }).relativePath ===
+                    "docs/reference.txt"
+            ) {
+                return {
+                    relative_path: "docs/reference.txt",
+                    path: "/vault/docs/reference.txt",
+                    file_name: "reference.txt",
+                    mime_type: "text/plain",
+                    content: "reference",
+                    size_bytes: 32,
+                    content_truncated: false,
+                };
+            }
+
+            return undefined;
+        });
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]') as HTMLElement | null;
+        const secondaryPane = screen
+            .getByTestId("pane-content-secondary")
+            .closest('[data-editor-pane-id="secondary"]') as HTMLElement | null;
+        expect(primaryPane).not.toBeNull();
+        expect(secondaryPane).not.toBeNull();
+
+        vi.spyOn(primaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 300,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+        vi.spyOn(secondaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 320,
+            y: 0,
+            left: 320,
+            top: 0,
+            right: 620,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        const dragDropListener = onDragDropEventMock.mock.calls.at(-1)?.[0] as
+            | ((event: {
+                  payload: {
+                      type: "drop";
+                      position: { x: number; y: number };
+                      paths: string[];
+                  };
+              }) => void)
+            | undefined;
+        expect(dragDropListener).toBeTypeOf("function");
+
+        await act(async () => {
+            dragDropListener?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 460, y: 120 },
+                    paths: ["/vault/docs/reference.txt"],
+                },
+            });
+            await flushPromises();
+        });
+
+        const secondaryWorkspacePane = useEditorStore
+            .getState()
+            .panes.find((pane) => pane.id === "secondary");
+        expect(secondaryWorkspacePane?.tabs).toHaveLength(1);
+        expect(secondaryWorkspacePane?.tabs[0]).toMatchObject({
+            kind: "file",
+            relativePath: "docs/reference.txt",
+            title: "reference.txt",
+        });
+        expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+    });
+
+    it("does not open a pane tab when the drop lands over the composer zone", async () => {
+        setVaultEntries([
+            {
+                id: "docs/reference.txt",
+                path: "/vault/docs/reference.txt",
+                relative_path: "docs/reference.txt",
+                title: "Reference",
+                file_name: "reference.txt",
+                extension: "txt",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 32,
+                mime_type: "text/plain",
+            },
+        ]);
+        mockInvoke().mockResolvedValue({
+            relative_path: "docs/reference.txt",
+            path: "/vault/docs/reference.txt",
+            file_name: "reference.txt",
+            mime_type: "text/plain",
+            content: "reference",
+            size_bytes: 32,
+            content_truncated: false,
+        });
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const secondaryPane = screen
+            .getByTestId("pane-content-secondary")
+            .closest('[data-editor-pane-id="secondary"]') as HTMLElement | null;
+        expect(secondaryPane).not.toBeNull();
+
+        vi.spyOn(secondaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 320,
+            y: 0,
+            left: 320,
+            top: 0,
+            right: 620,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        const composerDropZone = document.createElement("div");
+        composerDropZone.dataset.aiComposerDropZone = "true";
+        Object.defineProperty(composerDropZone, "getBoundingClientRect", {
+            configurable: true,
+            value: () =>
+                ({
+                    x: 400,
+                    y: 80,
+                    left: 400,
+                    top: 80,
+                    right: 560,
+                    bottom: 200,
+                    width: 160,
+                    height: 120,
+                    toJSON: () => ({}),
+                }) as DOMRect,
+        });
+        document.body.appendChild(composerDropZone);
+
+        try {
+            await act(async () => {
+                window.dispatchEvent(
+                    new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                        detail: {
+                            phase: "end",
+                            x: 460,
+                            y: 120,
+                            notes: [],
+                            files: [
+                                {
+                                    filePath: "/vault/docs/reference.txt",
+                                    fileName: "reference.txt",
+                                    mimeType: "text/plain",
+                                },
+                            ],
+                        },
+                    }),
+                );
+                await flushPromises();
+            });
+        } finally {
+            composerDropZone.remove();
+        }
+
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "secondary")?.tabs,
+        ).toHaveLength(0);
     });
 
     it("renders a divider between each adjacent pane", () => {

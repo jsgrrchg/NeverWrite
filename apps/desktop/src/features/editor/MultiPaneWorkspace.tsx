@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
     getCurrentWindowLabel,
@@ -18,7 +19,16 @@ import {
     useEditorStore,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    FILE_TREE_NOTE_DRAG_EVENT,
+    type FileTreeNoteDragDetail,
+} from "../ai/dragEvents";
 import { WorkspaceSplitContainer } from "./WorkspaceSplitContainer";
+import {
+    openDroppedTreeItemsInPane,
+    openDroppedVaultPathsInPane,
+    resolveWorkspacePaneFileDropTarget,
+} from "./workspacePaneFileDrop";
 import {
     CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
     type CrossPaneTabDropPreview,
@@ -181,6 +191,9 @@ export function MultiPaneWorkspace() {
     const focusPane = useEditorStore((state) => state.focusPane);
     const resizePaneSplit = useEditorStore((state) => state.resizePaneSplit);
     const containerRef = useRef<HTMLDivElement | null>(null);
+    const [externalFileDropPaneId, setExternalFileDropPaneId] = useState<
+        string | null
+    >(null);
     const visiblePaneCount = Math.max(1, leafPaneIds.length);
 
     useLayoutEffect(() => {
@@ -322,6 +335,110 @@ export function MultiPaneWorkspace() {
         [resizePaneSplit],
     );
 
+    useEffect(() => {
+        let mounted = true;
+        let unlisten: (() => void) | null = null;
+
+        void getCurrentWebview()
+            .onDragDropEvent((event) => {
+                const { type } = event.payload;
+                const position = (
+                    event.payload as {
+                        position?: { x: number; y: number };
+                        paths?: string[];
+                    }
+                ).position;
+                const target = position
+                    ? resolveWorkspacePaneFileDropTarget(position.x, position.y)
+                    : null;
+
+                if (type === "enter" || type === "over") {
+                    if (mounted) {
+                        setExternalFileDropPaneId(target?.paneId ?? null);
+                    }
+                    return;
+                }
+
+                if (mounted) {
+                    setExternalFileDropPaneId(null);
+                }
+
+                if (type !== "drop" || !target) {
+                    return;
+                }
+
+                const paths =
+                    (event.payload as { paths?: string[] }).paths ?? [];
+                if (paths.length === 0) {
+                    return;
+                }
+
+                void openDroppedVaultPathsInPane(
+                    paths,
+                    target.paneId,
+                    target.insertIndex,
+                );
+            })
+            .then((cleanup) => {
+                if (mounted) {
+                    unlisten = cleanup;
+                    return;
+                }
+                cleanup();
+            });
+
+        return () => {
+            mounted = false;
+            setExternalFileDropPaneId(null);
+            unlisten?.();
+        };
+    }, []);
+
+    useEffect(() => {
+        const handleTreeDrag = (event: Event) => {
+            const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
+                .detail;
+            const hasTabPayload =
+                detail.notes.length > 0 || (detail.files?.length ?? 0) > 0;
+
+            if (
+                !hasTabPayload ||
+                detail.phase === "attach" ||
+                detail.phase === "cancel" ||
+                detail.origin?.kind === "workspace-tab"
+            ) {
+                setExternalFileDropPaneId(null);
+                return;
+            }
+
+            const target = resolveWorkspacePaneFileDropTarget(
+                detail.x,
+                detail.y,
+            );
+            setExternalFileDropPaneId(target?.paneId ?? null);
+
+            if (detail.phase !== "end" || !target) {
+                return;
+            }
+
+            setExternalFileDropPaneId(null);
+            void openDroppedTreeItemsInPane(
+                detail,
+                target.paneId,
+                target.insertIndex,
+            );
+        };
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleTreeDrag);
+        return () => {
+            setExternalFileDropPaneId(null);
+            window.removeEventListener(
+                FILE_TREE_NOTE_DRAG_EVENT,
+                handleTreeDrag,
+            );
+        };
+    }, []);
+
     return (
         <div
             ref={containerRef}
@@ -330,6 +447,7 @@ export function MultiPaneWorkspace() {
             <WorkspaceSplitContainer
                 node={layoutTree}
                 focusedPaneId={focusedPaneId}
+                externalFileDropPaneId={externalFileDropPaneId}
                 onPaneFocus={handlePaneFocus}
                 onResizeSplit={handleResizeSplit}
             />
