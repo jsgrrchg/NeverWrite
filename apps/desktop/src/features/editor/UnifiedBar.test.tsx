@@ -56,6 +56,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 
 vi.mock("../../app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
+    commitDetachedTabDrop: vi.fn(),
     createDetachedWindowPayload: vi.fn(),
     createGhostWindow: vi.fn(),
     destroyGhostWindow: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock("../../app/detachedWindows", () => ({
     moveGhostWindow: vi.fn(),
     openDetachedNoteWindow: vi.fn(),
     publishWindowTabDropZone: vi.fn(),
+    resolveDetachWindowDropTarget: vi.fn(() => ({ type: "none" })),
 }));
 
 function rect({
@@ -238,6 +240,61 @@ describe("UnifiedBar tab strip drop", () => {
         expect(targetTab).not.toBeNull();
 
         fireEvent.click(targetTab!);
+        expect(useEditorStore.getState().activeTabId).toBe("tab-b");
+    });
+
+    it("waits until pointer release before switching tabs", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+            ],
+            "tab-a",
+        );
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const targetTab = document.querySelector(
+            '[data-tab-id="tab-b"]',
+        ) as HTMLElement | null;
+        expect(targetTab).not.toBeNull();
+
+        fireEvent.pointerDown(targetTab!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 1,
+            clientX: 148,
+            clientY: 24,
+            screenX: 148,
+            screenY: 24,
+        });
+
+        expect(useEditorStore.getState().activeTabId).toBe("tab-a");
+
+        fireEvent.pointerUp(targetTab!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 0,
+            clientX: 148,
+            clientY: 24,
+            screenX: 148,
+            screenY: 24,
+        });
+
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
     });
 
@@ -472,7 +529,7 @@ describe("UnifiedBar tab strip drop", () => {
                             },
                         ],
                         origin: {
-                            kind: "unified-bar-tab",
+                            kind: "workspace-tab",
                             tabId: "tab-a",
                         },
                     },

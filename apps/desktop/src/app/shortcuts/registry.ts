@@ -13,6 +13,7 @@ export type ShortcutActionId =
     | "search_in_vault"
     | "open_vault"
     | "new_note"
+    | "new_agent"
     | "new_tab"
     | "close_tab"
     | "reopen_closed_tab"
@@ -20,6 +21,9 @@ export type ShortcutActionId =
     | "previous_tab"
     | "toggle_left_sidebar"
     | "toggle_right_panel"
+    | "zoom_in"
+    | "zoom_out"
+    | "reset_zoom"
     | "open_settings"
     | "toggle_live_preview"
     | "bold_selection"
@@ -89,6 +93,15 @@ const shortcutDefinitions = [
         },
     },
     {
+        id: "new_agent",
+        label: "New Agent",
+        category: "AI",
+        bindings: {
+            macos: [{ key: "n", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "n", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
         id: "new_tab",
         label: "New Tab",
         category: "Editor",
@@ -152,6 +165,41 @@ const shortcutDefinitions = [
         bindings: {
             macos: [{ key: "j", modifiers: ["meta"] }],
             windows: [{ key: "j", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "zoom_in",
+        label: "Zoom In",
+        category: "View",
+        bindings: {
+            macos: [{ key: "=", modifiers: ["meta"] }],
+            windows: [{ key: "=", modifiers: ["ctrl"] }],
+        },
+        aliases: {
+            macos: [{ key: "+", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "+", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "zoom_out",
+        label: "Zoom Out",
+        category: "View",
+        bindings: {
+            macos: [{ key: "-", modifiers: ["meta"] }],
+            windows: [{ key: "-", modifiers: ["ctrl"] }],
+        },
+        aliases: {
+            macos: [{ key: "_", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "_", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "reset_zoom",
+        label: "Actual Size",
+        category: "View",
+        bindings: {
+            macos: [{ key: "0", modifiers: ["meta"] }],
+            windows: [{ key: "0", modifiers: ["ctrl"] }],
         },
     },
     {
@@ -241,6 +289,7 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "previous_tab",
     "open_vault",
     "new_note",
+    "new_agent",
     "new_tab",
     "reopen_closed_tab",
     "bold_selection",
@@ -250,6 +299,9 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "close_tab",
     "toggle_left_sidebar",
     "toggle_right_panel",
+    "zoom_in",
+    "zoom_out",
+    "reset_zoom",
     "open_settings",
 ];
 

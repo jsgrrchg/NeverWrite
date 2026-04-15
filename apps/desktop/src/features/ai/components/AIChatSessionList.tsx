@@ -63,7 +63,7 @@ export function AIChatSessionList({
 
     return (
         <div
-            className="max-h-75 overflow-y-auto p-1"
+            className="min-h-0 flex-1 overflow-y-auto p-1"
             data-scrollbar-active="true"
         >
             {sessions.map((session) => {

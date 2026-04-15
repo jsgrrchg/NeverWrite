@@ -332,6 +332,12 @@ textarea,
     display: none;
 }
 
+/* Workspace tab hover — inline styles block CSS hover, so we use !important. */
+[data-pane-tab-id]:not([aria-selected="true"]):hover {
+    background: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
+}
+
 /* Native WebKit drag region: works at the OS level, not in JS. */
 .drag {
     -webkit-app-region: drag;

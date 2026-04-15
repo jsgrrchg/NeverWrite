@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
-import { MAX_EDITOR_PANES } from "../../app/store/workspaceLayoutTree";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { EditorPaneBar } from "./EditorPaneBar";
@@ -82,6 +81,37 @@ function createChatSession(sessionId: string, title: string) {
 
 describe("EditorPaneBar", () => {
     beforeEach(() => {
+        if (typeof window.PointerEvent === "undefined") {
+            class MockPointerEvent extends MouseEvent {
+                pointerId: number;
+                pointerType: string;
+                isPrimary: boolean;
+
+                constructor(
+                    type: string,
+                    init: MouseEventInit & {
+                        pointerId?: number;
+                        pointerType?: string;
+                        isPrimary?: boolean;
+                    } = {},
+                ) {
+                    super(type, init);
+                    this.pointerId = init.pointerId ?? 1;
+                    this.pointerType = init.pointerType ?? "mouse";
+                    this.isPrimary = init.isPrimary ?? true;
+                }
+            }
+
+            Object.defineProperty(window, "PointerEvent", {
+                configurable: true,
+                value: MockPointerEvent,
+            });
+            Object.defineProperty(globalThis, "PointerEvent", {
+                configurable: true,
+                value: MockPointerEvent,
+            });
+        }
+
         Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
             configurable: true,
             value: () => {},
@@ -127,8 +157,30 @@ describe("EditorPaneBar", () => {
         );
     });
 
-    it("moves a tab to another pane from the tab context menu", async () => {
-        const user = userEvent.setup();
+    it("shows compact empty-pane chrome when a pane has no tabs", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.getByText("No tabs open")).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Pane 1 actions" }),
+        ).toBeInTheDocument();
+        expect(
+            document.querySelector('[data-pane-empty="true"]'),
+        ).not.toBeNull();
+    });
+
+    it("hides direct pane-target entries from the tab context menu", async () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
         const tabButton = document.querySelector(
@@ -136,116 +188,12 @@ describe("EditorPaneBar", () => {
         ) as HTMLElement | null;
         expect(tabButton).not.toBeNull();
         fireEvent.contextMenu(tabButton!);
-        await user.click(
-            await screen.findByRole("button", { name: "Move to Pane 2" }),
-        );
 
-        await waitFor(() => {
-            expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
-        });
-        expect(useEditorStore.getState().panes.map((pane) => pane.id)).toEqual([
-            "secondary",
-        ]);
+        await screen.findByRole("button", { name: "Move to New Right Split" });
+
         expect(
-            useEditorStore.getState().panes[0]?.tabs.map((tab) => tab.id),
-        ).toEqual(["tab-b", "tab-a"]);
-    });
-
-    it("does not move tabs between panes via drag gestures", () => {
-        renderComponent(
-            <div>
-                <div data-editor-pane-id="primary">
-                    <EditorPaneBar paneId="primary" isFocused />
-                </div>
-                <div data-editor-pane-id="secondary">
-                    <EditorPaneBar paneId="secondary" isFocused={false} />
-                </div>
-            </div>,
-        );
-
-        const primaryPane = document.querySelector(
-            '[data-editor-pane-id="primary"]',
-        ) as HTMLElement | null;
-        const secondaryPane = document.querySelector(
-            '[data-editor-pane-id="secondary"]',
-        ) as HTMLElement | null;
-        const secondaryStrip = document.querySelector(
-            '[data-pane-tab-strip="secondary"]',
-        ) as HTMLElement | null;
-        const tabButton = document.querySelector(
-            '[data-pane-tab-id="tab-a"]',
-        ) as HTMLElement | null;
-
-        expect(primaryPane).not.toBeNull();
-        expect(secondaryPane).not.toBeNull();
-        expect(secondaryStrip).not.toBeNull();
-        expect(tabButton).not.toBeNull();
-
-        primaryPane!.getBoundingClientRect = () =>
-            ({
-                left: 0,
-                top: 0,
-                right: 180,
-                bottom: 80,
-                width: 180,
-                height: 80,
-                x: 0,
-                y: 0,
-                toJSON: () => ({}),
-            }) as DOMRect;
-        secondaryPane!.getBoundingClientRect = () =>
-            ({
-                left: 200,
-                top: 0,
-                right: 380,
-                bottom: 80,
-                width: 180,
-                height: 80,
-                x: 200,
-                y: 0,
-                toJSON: () => ({}),
-            }) as DOMRect;
-        secondaryStrip!.getBoundingClientRect = () =>
-            ({
-                left: 200,
-                top: 0,
-                right: 380,
-                bottom: 38,
-                width: 180,
-                height: 38,
-                x: 200,
-                y: 0,
-                toJSON: () => ({}),
-            }) as DOMRect;
-
-        fireEvent.pointerDown(tabButton!, {
-            pointerId: 1,
-            button: 0,
-            clientX: 20,
-            clientY: 20,
-            screenX: 20,
-            screenY: 20,
-        });
-        fireEvent.pointerMove(tabButton!, {
-            pointerId: 1,
-            buttons: 1,
-            clientX: 240,
-            clientY: 20,
-            screenX: 240,
-            screenY: 20,
-        });
-        fireEvent.pointerUp(tabButton!, {
-            pointerId: 1,
-            clientX: 240,
-            clientY: 20,
-            screenX: 240,
-            screenY: 20,
-        });
-
-        const state = useEditorStore.getState();
-        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
-        expect(state.panes[1]?.tabs.map((tab) => tab.id)).toEqual(["tab-b"]);
-        expect(state.focusedPaneId).toBe("primary");
+            screen.queryByRole("button", { name: "Move to Pane 2" }),
+        ).not.toBeInTheDocument();
     });
 
     it("moves a tab into a new right split from the tab context menu", async () => {
@@ -398,6 +346,73 @@ describe("EditorPaneBar", () => {
         expect(scrollLeft).toBe(40);
     });
 
+    it("activates a tab on pointer release instead of pointer press", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-a",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "Alpha",
+                        },
+                        {
+                            id: "tab-c",
+                            kind: "note",
+                            noteId: "notes/c",
+                            title: "Gamma",
+                            content: "Gamma",
+                        },
+                    ],
+                    activeTabId: "tab-a",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+
+        fireEvent.pointerDown(tabButton!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 1,
+            clientX: 120,
+            clientY: 18,
+            screenX: 120,
+            screenY: 18,
+        });
+
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "primary")?.activeTabId,
+        ).toBe("tab-a");
+
+        fireEvent.pointerUp(tabButton!, {
+            pointerId: 1,
+            button: 0,
+            buttons: 0,
+            clientX: 120,
+            clientY: 18,
+            screenX: 120,
+            screenY: 18,
+        });
+
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "primary")?.activeTabId,
+        ).toBe("tab-c");
+    });
+
     it("uses the unified bar responsive tab sizing logic in split view", async () => {
         const resizeCallbacks: ResizeObserverCallback[] = [];
         const originalResizeObserver = globalThis.ResizeObserver;
@@ -529,11 +544,11 @@ describe("EditorPaneBar", () => {
         }
     });
 
-    it("disables creating a new split when the workspace already reached the cap", async () => {
+    it("keeps creating new splits available after many panes already exist", async () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 
         await act(async () => {
-            Array.from({ length: MAX_EDITOR_PANES - 2 }, () =>
+            Array.from({ length: 6 }, () =>
                 useEditorStore.getState().createEmptyPane(),
             );
             await Promise.resolve();
@@ -549,71 +564,42 @@ describe("EditorPaneBar", () => {
             await screen.findByRole("button", {
                 name: "Move to New Right Split",
             }),
-        ).toBeDisabled();
+        ).toBeEnabled();
     });
 
-    it("splits the current pane down from the pane actions menu", async () => {
+    it("does not show split view actions in the pane actions menu", async () => {
         const user = userEvent.setup();
         renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
 
         await user.click(
             screen.getByRole("button", { name: "Pane 2 actions" }),
         );
-        await user.click(
-            await screen.findByRole("button", { name: "Split Down" }),
-        );
 
-        await waitFor(() => {
-            expect(useEditorStore.getState().panes).toHaveLength(3);
-        });
-
-        const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("pane-3");
-        expect(state.panes.map((pane) => pane.id)).toEqual([
-            "primary",
-            "secondary",
-            "pane-3",
-        ]);
-    });
-
-    it("unifies all tabs into the current pane from the pane actions menu", async () => {
-        const user = userEvent.setup();
-        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
-
-        await user.click(
-            screen.getByRole("button", { name: "Pane 2 actions" }),
-        );
-        await user.click(
-            await screen.findByRole("button", { name: "Unify All Tabs" }),
-        );
-
-        await waitFor(() => {
-            expect(useEditorStore.getState().panes).toHaveLength(1);
-        });
-
-        const state = useEditorStore.getState();
-        expect(state.focusedPaneId).toBe("secondary");
-        expect(state.panes.map((pane) => pane.id)).toEqual(["secondary"]);
-        expect(state.panes[0]?.tabs.map((tab) => tab.id)).toEqual([
-            "tab-b",
-            "tab-a",
-        ]);
-    });
-
-    it("focuses a neighbor pane from the pane actions menu", async () => {
-        const user = userEvent.setup();
-        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
-
-        await user.click(
-            screen.getByRole("button", { name: "Pane 2 actions" }),
-        );
-        await user.click(
-            await screen.findByRole("button", { name: "Focus Pane Left" }),
-        );
-
-        await waitFor(() => {
-            expect(useEditorStore.getState().focusedPaneId).toBe("primary");
-        });
+        expect(
+            screen.queryByRole("button", { name: "Split Right" }),
+        ).toBeNull();
+        expect(screen.queryByRole("button", { name: "Split Down" })).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Left" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Right" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Up" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Focus Pane Down" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Balance Layout" }),
+        ).toBeNull();
+        expect(
+            screen.queryByRole("button", { name: "Unify All Tabs" }),
+        ).toBeNull();
+        expect(
+            await screen.findByRole("button", { name: "Close Pane 2" }),
+        ).toBeVisible();
     });
 
     it("closes a pane explicitly from the pane actions menu", async () => {
@@ -633,7 +619,7 @@ describe("EditorPaneBar", () => {
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 
-    it("renames workspace chat tabs with a double click on the title", async () => {
+    it("does not start renaming workspace chat tabs from a double click on the tab title", async () => {
         useChatStore.setState({
             sessionsById: {
                 "session-a": createChatSession("session-a", "Workspace chat"),
@@ -648,19 +634,11 @@ describe("EditorPaneBar", () => {
 
         fireEvent.doubleClick(screen.getByText("Workspace chat"));
 
-        const input = screen.getByDisplayValue("Workspace chat");
-        fireEvent.change(input, {
-            target: { value: "Renamed workspace chat" },
-        });
-        fireEvent.keyDown(input, { key: "Enter" });
-
-        await waitFor(() => {
-            expect(
-                useChatStore.getState().sessionsById["session-a"]?.customTitle,
-            ).toBe("Renamed workspace chat");
-        });
-
-        expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
+        expect(screen.queryByDisplayValue("Workspace chat")).toBeNull();
+        expect(
+            useChatStore.getState().sessionsById["session-a"]?.customTitle ??
+                null,
+        ).toBeNull();
     });
 
     it("creates a new note from the pane plus-button context menu in the current pane", async () => {

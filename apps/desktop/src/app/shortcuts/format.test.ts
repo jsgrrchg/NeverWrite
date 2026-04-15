@@ -15,6 +15,13 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("quick_switcher", "windows")).toBe(
             "Ctrl+O",
         );
+        expect(formatShortcutAction("new_agent", "macos")).toBe("⌘⇧N");
+        expect(formatShortcutAction("new_agent", "windows")).toBe(
+            "Ctrl+Shift+N",
+        );
+        expect(formatShortcutAction("zoom_in", "macos")).toBe("⌘=");
+        expect(formatShortcutAction("zoom_out", "windows")).toBe("Ctrl+-");
+        expect(formatShortcutAction("reset_zoom", "macos")).toBe("⌘0");
         expect(formatShortcutAction("open_settings", "windows")).toBe("Ctrl+,");
         expect(formatShortcutAction("reopen_closed_tab", "macos")).toBe("⌘⇧T");
         expect(formatShortcutAction("reopen_closed_tab", "windows")).toBe(
@@ -37,6 +44,18 @@ describe("shortcut registry formatting", () => {
             label: "Open Settings",
             category: "View",
             shortcut: "Ctrl+,",
+        });
+        expect(entries.find((entry) => entry.id === "new_agent")).toMatchObject(
+            {
+                label: "New Agent",
+                category: "AI",
+                shortcut: "Ctrl+Shift+N",
+            },
+        );
+        expect(entries.find((entry) => entry.id === "zoom_in")).toMatchObject({
+            label: "Zoom In",
+            category: "View",
+            shortcut: "Ctrl+=",
         });
     });
 
@@ -164,6 +183,62 @@ describe("shortcut registry matching", () => {
         ).toBe(true);
         expect(
             matchesShortcutAction(windowsEvent, "reopen_closed_tab", "windows"),
+        ).toBe(true);
+    });
+
+    it("matches new agent on both platforms", () => {
+        const macEvent = new KeyboardEvent("keydown", {
+            key: "N",
+            metaKey: true,
+            shiftKey: true,
+        });
+        const windowsEvent = new KeyboardEvent("keydown", {
+            key: "n",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        expect(matchesShortcutAction(macEvent, "new_agent", "macos")).toBe(
+            true,
+        );
+        expect(
+            matchesShortcutAction(windowsEvent, "new_agent", "windows"),
+        ).toBe(true);
+    });
+
+    it("matches zoom in aliases on both platforms", () => {
+        const macEvent = new KeyboardEvent("keydown", {
+            key: "+",
+            metaKey: true,
+            shiftKey: true,
+        });
+        const windowsEvent = new KeyboardEvent("keydown", {
+            key: "+",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        expect(matchesShortcutAction(macEvent, "zoom_in", "macos")).toBe(true);
+        expect(matchesShortcutAction(windowsEvent, "zoom_in", "windows")).toBe(
+            true,
+        );
+    });
+
+    it("matches reset zoom on both platforms", () => {
+        const macEvent = new KeyboardEvent("keydown", {
+            key: "0",
+            metaKey: true,
+        });
+        const windowsEvent = new KeyboardEvent("keydown", {
+            key: "0",
+            ctrlKey: true,
+        });
+
+        expect(matchesShortcutAction(macEvent, "reset_zoom", "macos")).toBe(
+            true,
+        );
+        expect(
+            matchesShortcutAction(windowsEvent, "reset_zoom", "windows"),
         ).toBe(true);
     });
 });

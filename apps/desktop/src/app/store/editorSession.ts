@@ -19,6 +19,7 @@ import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useLayoutStore } from "./layoutStore";
+import { getEffectivePaneWorkspace } from "./editorWorkspace";
 import {
     createInitialLayout,
     getLayoutPaneIds,
@@ -28,6 +29,7 @@ import {
 
 const SESSION_KEY = "neverwrite.session.tabs";
 const SESSION_KEY_PREFIX = "neverwrite.session.tabs:";
+export const EDITOR_SESSION_VERSION = 2;
 
 export interface PersistedSessionPane {
     id: string;
@@ -38,7 +40,107 @@ export interface PersistedSessionPane {
     tabNavigationIndex?: number;
 }
 
-export interface PersistedSession {
+export interface PersistedWorkspacePane {
+    id: string;
+    tabIds: string[];
+    activeTabId: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
+}
+
+type PersistedNoteWorkspaceTab = {
+    id: string;
+    kind: "note";
+    noteId: string;
+    title: string;
+    content?: string;
+    history?: Array<{ noteId: string; title: string }>;
+    historyIndex?: number;
+};
+
+type PersistedPdfWorkspaceTab = {
+    id: string;
+    kind: "pdf";
+    entryId: string;
+    title: string;
+    path: string;
+    page?: number;
+    zoom?: number;
+    viewMode?: PdfViewMode;
+    history?: Array<{
+        entryId: string;
+        title: string;
+        path: string;
+        page?: number;
+        zoom?: number;
+        viewMode?: PdfViewMode;
+    }>;
+    historyIndex?: number;
+};
+
+type PersistedFileWorkspaceTab = {
+    id: string;
+    kind: "file";
+    relativePath: string;
+    title: string;
+    path: string;
+    mimeType?: string | null;
+    viewer?: FileViewerMode;
+    sizeBytes?: number | null;
+    contentTruncated?: boolean;
+    content?: string;
+    history?: Array<{
+        relativePath: string;
+        title: string;
+        path: string;
+        mimeType?: string | null;
+        viewer?: FileViewerMode;
+        sizeBytes?: number | null;
+        contentTruncated?: boolean;
+    }>;
+    historyIndex?: number;
+};
+
+type PersistedMapWorkspaceTab = {
+    id: string;
+    kind: "map";
+    relativePath: string;
+    title: string;
+    filePath?: string;
+};
+
+type PersistedGraphWorkspaceTab = {
+    id: string;
+    kind: "graph";
+    title: string;
+};
+
+type PersistedChatWorkspaceTab = {
+    id: string;
+    kind: "ai-chat";
+    sessionId: string;
+    title: string;
+};
+
+type PersistedWorkspaceTab =
+    | PersistedNoteWorkspaceTab
+    | PersistedPdfWorkspaceTab
+    | PersistedFileWorkspaceTab
+    | PersistedMapWorkspaceTab
+    | PersistedGraphWorkspaceTab
+    | PersistedChatWorkspaceTab;
+
+export interface PersistedSessionV2 {
+    version: 2;
+    panes: PersistedWorkspacePane[];
+    focusedPaneId: string | null;
+    layoutTree?: WorkspaceLayoutNode;
+    paneSizes?: number[];
+    tabsById: Record<string, PersistedWorkspaceTab>;
+}
+
+export interface PersistedLegacySession {
     panes?: PersistedSessionPane[];
     focusedPaneId?: string | null;
     layoutTree?: WorkspaceLayoutNode;
@@ -102,10 +204,13 @@ export interface PersistedSession {
     activeGraphTab?: boolean;
 }
 
+export type PersistedSession = PersistedSessionV2 | PersistedLegacySession;
+
 export interface EditorSessionState {
     panes?: Array<{
         id: string;
         tabs: Tab[];
+        tabIds?: string[];
         activeTabId: string | null;
         activationHistory: string[];
         tabNavigationHistory: string[];
@@ -114,8 +219,12 @@ export interface EditorSessionState {
     focusedPaneId?: string | null;
     layoutTree?: WorkspaceLayoutNode;
     paneSizes?: number[];
-    tabs: Tab[];
-    activeTabId: string | null;
+    tabsById?: Record<string, Tab>;
+    tabs?: Tab[];
+    activeTabId?: string | null;
+    activationHistory?: string[];
+    tabNavigationHistory?: string[];
+    tabNavigationIndex?: number;
 }
 
 export interface RestoredEditorSession {
@@ -163,9 +272,22 @@ export function writePersistedSession(
     safeStorageSetItem(getEditorSessionKey(vaultPath), JSON.stringify(session));
 }
 
+function isPersistedSessionV2(
+    session: PersistedSession | null | undefined,
+): session is PersistedSessionV2 {
+    return session?.version === EDITOR_SESSION_VERSION;
+}
+
 export function hasPersistedSessionData(
     session: PersistedSession | null | undefined,
 ) {
+    if (isPersistedSessionV2(session)) {
+        return Boolean(
+            session.panes.length > 0 ||
+            Object.keys(session.tabsById).length > 0,
+        );
+    }
+
     return Boolean(
         session &&
         (session.panes?.length ||
@@ -178,62 +300,130 @@ export function hasPersistedSessionData(
     );
 }
 
-function normalizePersistedTabs(tabs: Tab[]) {
-    return tabs.flatMap((tab): TabInput[] => {
-        if (!isHistoryTab(tab)) {
-            return isGraphTab(tab) || isMapTab(tab) ? [tab] : [];
-        }
-
-        const normalized = normalizeHistoryTab(tab);
-        return normalized ? [normalized] : [];
-    });
-}
-
-function buildPersistedPanes(
-    state: EditorSessionState,
-): PersistedSessionPane[] | undefined {
-    if (!state.panes?.length) {
-        const tabs = normalizePersistedTabs(state.tabs);
-        const activeTabId =
-            state.activeTabId &&
-            tabs.some((tab) => tab.id === state.activeTabId)
-                ? state.activeTabId
-                : null;
-        return tabs.length > 0 || activeTabId
-            ? [
-                  {
-                      id: "primary",
-                      tabs,
-                      activeTabId,
-                      activationHistory: activeTabId ? [activeTabId] : [],
-                      tabNavigationHistory: activeTabId ? [activeTabId] : [],
-                      tabNavigationIndex: activeTabId ? 0 : -1,
-                  },
-              ]
-            : undefined;
+function serializeWorkspaceTabForSession(
+    tab: Tab,
+): PersistedWorkspaceTab | null {
+    if (isReviewTab(tab)) {
+        return null;
     }
 
-    const persistedPanes = state.panes
+    if (isHistoryTab(tab)) {
+        const normalized = normalizeHistoryTab(tab);
+        if (!normalized) {
+            return null;
+        }
+
+        const serialized = getHistoryTabHandler(
+            normalized.kind,
+        ).serializeForSession(normalized as never) as Record<string, unknown>;
+
+        if (isNoteTab(normalized)) {
+            return {
+                id: normalized.id,
+                kind: normalized.kind,
+                ...serialized,
+                content: normalized.content,
+            } as PersistedWorkspaceTab;
+        }
+
+        if (isFileTab(normalized)) {
+            return {
+                id: normalized.id,
+                kind: normalized.kind,
+                ...serialized,
+                content: normalized.content,
+            } as PersistedWorkspaceTab;
+        }
+
+        return {
+            id: normalized.id,
+            kind: normalized.kind,
+            ...serialized,
+        } as PersistedWorkspaceTab;
+    }
+
+    if (isChatTab(tab)) {
+        return {
+            id: tab.id,
+            kind: "ai-chat",
+            sessionId: tab.sessionId,
+            title: tab.title,
+        };
+    }
+
+    if (isGraphTab(tab)) {
+        return {
+            id: tab.id,
+            kind: "graph",
+            title: tab.title,
+        };
+    }
+
+    return null;
+}
+
+function buildPersistedWorkspaceTabsById(
+    panes: readonly {
+        tabs: Tab[];
+    }[],
+) {
+    const entries = panes.flatMap((pane) =>
+        pane.tabs.flatMap((tab) => {
+            const serialized = serializeWorkspaceTabForSession(tab);
+            return serialized ? ([[serialized.id, serialized]] as const) : [];
+        }),
+    );
+
+    return Object.fromEntries(entries);
+}
+
+function buildPersistedWorkspacePanes(
+    state: EditorSessionState,
+): PersistedWorkspacePane[] | undefined {
+    const workspace = getEffectivePaneWorkspace({
+        panes: state.panes ?? [],
+        focusedPaneId: state.focusedPaneId ?? null,
+        layoutTree: state.layoutTree,
+        tabsById: state.tabsById ?? {},
+        tabs: state.tabs ?? [],
+        activeTabId: state.activeTabId ?? null,
+        activationHistory: state.activationHistory ?? [],
+        tabNavigationHistory: state.tabNavigationHistory ?? [],
+        tabNavigationIndex: state.tabNavigationIndex ?? -1,
+    });
+    const tabsById = buildPersistedWorkspaceTabsById(workspace.panes);
+
+    const persistedPanes = workspace.panes
         .map((pane) => ({
             id: pane.id,
-            tabs: normalizePersistedTabs(pane.tabs),
+            tabIds: pane.tabs
+                .map((tab) => tab.id)
+                .filter((tabId) => Boolean(tabsById[tabId])),
             activeTabId:
                 pane.activeTabId &&
-                pane.tabs.some((tab) => tab.id === pane.activeTabId)
+                pane.tabs.some(
+                    (tab) =>
+                        tab.id === pane.activeTabId &&
+                        Boolean(tabsById[tab.id]),
+                )
                     ? pane.activeTabId
                     : null,
             activationHistory: pane.activationHistory.filter((tabId) =>
-                pane.tabs.some((tab) => tab.id === tabId),
+                Boolean(tabsById[tabId]),
             ),
             tabNavigationHistory: pane.tabNavigationHistory.filter((tabId) =>
-                pane.tabs.some((tab) => tab.id === tabId),
+                Boolean(tabsById[tabId]),
             ),
             tabNavigationIndex: pane.tabNavigationIndex,
         }))
         .filter((pane) => pane.id.trim().length > 0);
 
-    if (persistedPanes.some((pane) => pane.tabs.length > 0)) {
-        return persistedPanes.filter((pane) => pane.tabs.length > 0);
+    if (persistedPanes.some((pane) => pane.tabIds.length > 0)) {
+        return persistedPanes.filter((pane) => pane.tabIds.length > 0);
+    }
+
+    if (!persistedPanes.some((pane) => pane.activeTabId)) {
+        return undefined;
     }
 
     return persistedPanes.length > 0 ? [persistedPanes[0]] : undefined;
@@ -321,143 +511,53 @@ function getLayoutTreeSignature(tree: WorkspaceLayoutNode): string {
 }
 
 export function getEditorSessionSignature(state: EditorSessionState) {
-    const panes = buildPersistedPanes(state);
-    if (panes?.length) {
-        let signature = state.focusedPaneId ?? "";
-        const layoutTree = normalizeLayoutTreeForPersistence(
-            state.layoutTree,
-            panes.map((pane) => pane.id),
-            state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
-        );
-        signature += `|layout:${getLayoutTreeSignature(layoutTree)}`;
-        for (const pane of panes) {
-            signature += `|pane:${pane.id}:${pane.activeTabId ?? ""}`;
-            for (const tab of pane.tabs) {
-                if (isGraphTab(tab)) {
-                    signature += "|graph";
-                    continue;
-                }
-                if (isHistoryTab(tab)) {
-                    const normalized = normalizeHistoryTab(tab);
-                    if (!normalized) {
-                        continue;
-                    }
-                    signature += getHistoryTabHandler(
-                        normalized.kind,
-                    ).fingerprint(normalized as never);
-                }
-            }
-        }
-        return signature;
-    }
-
-    let signature = state.activeTabId ?? "";
-    for (const tab of state.tabs) {
-        if (isReviewTab(tab) || isChatTab(tab)) {
-            continue;
-        }
-        if (isGraphTab(tab)) {
-            signature += "|graph";
-            continue;
-        }
-        if (isHistoryTab(tab)) {
-            const normalized = normalizeHistoryTab(tab);
-            if (!normalized) {
-                continue;
-            }
-            signature += getHistoryTabHandler(normalized.kind).fingerprint(
-                normalized as never,
-            );
-        }
-    }
-    return signature;
+    return JSON.stringify(buildPersistedSession(state));
 }
 
 export function buildPersistedSession(
     state: EditorSessionState,
 ): PersistedSession {
-    const panes = buildPersistedPanes(state);
-    const persistedPaneIds = panes?.map((pane) => pane.id) ?? [];
-    const allTabs =
-        state.panes?.length && panes?.length
-            ? panes.flatMap((pane) => pane.tabs)
-            : state.tabs;
-    const activeTab =
-        state.tabs.find((tab) => tab.id === state.activeTabId) ?? null;
-    const normalizedTabs = allTabs.flatMap((tab) => {
-        if (!isHistoryTab(tab)) {
-            return [];
-        }
-        const normalized = normalizeHistoryTab(tab);
-        return normalized ? [normalized] : [];
+    const workspace = getEffectivePaneWorkspace({
+        panes: state.panes ?? [],
+        focusedPaneId: state.focusedPaneId ?? null,
+        layoutTree: state.layoutTree,
+        tabsById: state.tabsById ?? {},
+        tabs: state.tabs ?? [],
+        activeTabId: state.activeTabId ?? null,
+        activationHistory: state.activationHistory ?? [],
+        tabNavigationHistory: state.tabNavigationHistory ?? [],
+        tabNavigationIndex: state.tabNavigationIndex ?? -1,
     });
-
-    const noteIds: PersistedSession["noteIds"] = [];
-    const pdfTabs: NonNullable<PersistedSession["pdfTabs"]> = [];
-    const fileTabs: NonNullable<PersistedSession["fileTabs"]> = [];
-    const mapTabs: NonNullable<PersistedSession["mapTabs"]> = [];
-
-    for (const tab of normalizedTabs) {
-        const serialized = getHistoryTabHandler(tab.kind).serializeForSession(
-            tab as never,
-        );
-        if (isNoteTab(tab)) {
-            noteIds.push(serialized as PersistedSession["noteIds"][number]);
-            continue;
-        }
-        if (isPdfTab(tab)) {
-            pdfTabs.push(
-                serialized as NonNullable<PersistedSession["pdfTabs"]>[number],
-            );
-            continue;
-        }
-        if (isMapTab(tab)) {
-            mapTabs.push(
-                serialized as NonNullable<PersistedSession["mapTabs"]>[number],
-            );
-            continue;
-        }
-        fileTabs.push(
-            serialized as NonNullable<PersistedSession["fileTabs"]>[number],
-        );
-    }
-
+    const panes = buildPersistedWorkspacePanes(state) ?? [];
+    const persistedPaneIds = panes.map((pane) => pane.id);
     const paneSizes =
-        panes?.length && persistedPaneIds.length > 1
+        persistedPaneIds.length > 1
             ? normalizePaneSizesForPersistence(
                   persistedPaneIds.length,
                   state.paneSizes ?? useLayoutStore.getState().editorPaneSizes,
               )
             : undefined;
     const layoutTree =
-        panes?.length && persistedPaneIds.length > 0
+        persistedPaneIds.length > 0
             ? normalizeLayoutTreeForPersistence(
                   state.layoutTree,
                   persistedPaneIds,
                   paneSizes,
               )
             : undefined;
+    const tabsById = buildPersistedWorkspaceTabsById(workspace.panes);
+    const focusedPaneId =
+        panes.find((pane) => pane.id === workspace.focusedPaneId)?.id ??
+        panes[0]?.id ??
+        null;
 
     return {
+        version: EDITOR_SESSION_VERSION,
         panes,
-        focusedPaneId: state.focusedPaneId ?? panes?.[0]?.id ?? null,
+        focusedPaneId,
         layoutTree,
         paneSizes,
-        activeTabId: activeTab?.id ?? null,
-        noteIds,
-        pdfTabs,
-        fileTabs,
-        mapTabs,
-        hasGraphTab: allTabs.some((tab) => isGraphTab(tab)),
-        activeNoteId:
-            activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
-        activePdfEntryId:
-            activeTab && isPdfTab(activeTab) ? activeTab.entryId : null,
-        activeFilePath:
-            activeTab && isFileTab(activeTab) ? activeTab.relativePath : null,
-        activeMapRelativePath:
-            activeTab && isMapTab(activeTab) ? activeTab.relativePath : null,
-        activeGraphTab: activeTab ? isGraphTab(activeTab) : false,
+        tabsById,
     };
 }
 
@@ -511,7 +611,7 @@ async function restoreLegacyNoteTabs(session: PersistedSession) {
     return restoredTabs;
 }
 
-function restorePersistedPaneTabs(
+function restoreLegacyPersistedPaneTabs(
     panes: PersistedSessionPane[],
 ): PersistedSessionPane[] {
     const seenGraph = new Set<string>();
@@ -544,6 +644,247 @@ function restorePersistedPaneTabs(
             ),
             tabNavigationHistory: (pane.tabNavigationHistory ?? []).filter(
                 (tabId) => tabs.some((tab) => tab.id === tabId),
+            ),
+            tabNavigationIndex:
+                typeof pane.tabNavigationIndex === "number"
+                    ? pane.tabNavigationIndex
+                    : activeTabId
+                      ? 0
+                      : -1,
+        };
+    });
+}
+
+async function restorePersistedWorkspaceTabsById(
+    tabsById: Record<string, PersistedWorkspaceTab>,
+    vaultPath: string | null,
+) {
+    const restoredTabsById: Record<string, TabInput> = {};
+    const seenGraph = new Set<string>();
+
+    for (const tab of Object.values(tabsById)) {
+        if (tab.kind === "ai-chat") {
+            restoredTabsById[tab.id] = {
+                id: tab.id,
+                kind: "ai-chat",
+                sessionId: tab.sessionId,
+                title: tab.title,
+            };
+            continue;
+        }
+
+        if (tab.kind === "graph") {
+            if (seenGraph.size > 0) {
+                continue;
+            }
+            seenGraph.add(tab.id);
+            restoredTabsById[tab.id] = {
+                id: tab.id,
+                kind: "graph",
+                title: tab.title,
+            };
+            continue;
+        }
+
+        if (tab.kind === "map") {
+            const relativePath =
+                tab.relativePath ||
+                (tab.filePath
+                    ? toVaultRelativePath(tab.filePath, vaultPath)
+                    : null);
+            if (!relativePath) {
+                continue;
+            }
+
+            restoredTabsById[tab.id] = {
+                id: tab.id,
+                kind: "map",
+                relativePath,
+                title: tab.title,
+            };
+            continue;
+        }
+
+        if (tab.kind === "pdf") {
+            restoredTabsById[tab.id] = {
+                id: tab.id,
+                kind: "pdf",
+                entryId: tab.entryId,
+                title: tab.title,
+                path: tab.path,
+                page: tab.page ?? 1,
+                zoom: tab.zoom ?? 1,
+                viewMode: tab.viewMode ?? "continuous",
+                history: tab.history,
+                historyIndex: tab.historyIndex,
+            };
+            continue;
+        }
+
+        if (tab.kind === "note") {
+            let content = tab.content ?? "";
+
+            if (!content) {
+                try {
+                    const detail = await vaultInvoke<{ content: string }>(
+                        "read_note",
+                        {
+                            noteId: tab.noteId,
+                        },
+                    );
+                    content = detail.content;
+                } catch {
+                    content = "";
+                }
+            }
+
+            if (!content) {
+                continue;
+            }
+
+            try {
+                restoredTabsById[tab.id] = {
+                    id: tab.id,
+                    kind: "note",
+                    noteId: tab.noteId,
+                    title: tab.title,
+                    content,
+                    history: (
+                        tab.history ?? [
+                            { noteId: tab.noteId, title: tab.title },
+                        ]
+                    ).map((historyEntry, index, history) => ({
+                        kind: "note" as const,
+                        noteId: historyEntry.noteId,
+                        title: historyEntry.title,
+                        content:
+                            index ===
+                            Math.min(
+                                tab.historyIndex ?? history.length - 1,
+                                history.length - 1,
+                            )
+                                ? content
+                                : "",
+                    })),
+                    historyIndex: Math.min(
+                        tab.historyIndex ??
+                            Math.max(0, (tab.history?.length ?? 1) - 1),
+                        Math.max(0, (tab.history?.length ?? 1) - 1),
+                    ),
+                };
+            } catch {
+                // Malformed payload; skip.
+            }
+            continue;
+        }
+
+        const viewer = normalizeFileViewer(
+            tab.viewer,
+            tab.path,
+            tab.mimeType ?? null,
+        );
+        let content = tab.content ?? "";
+        let sizeBytes =
+            typeof tab.sizeBytes === "number" ? tab.sizeBytes : null;
+        let contentTruncated = Boolean(tab.contentTruncated);
+
+        if (!content && fileViewerNeedsTextContent(viewer)) {
+            try {
+                const detail = await vaultInvoke<{
+                    content: string;
+                    size_bytes?: number | null;
+                    content_truncated?: boolean;
+                }>("read_vault_file", {
+                    relativePath: tab.relativePath,
+                });
+                content = detail.content;
+                sizeBytes = detail.size_bytes ?? null;
+                contentTruncated = Boolean(detail.content_truncated);
+            } catch {
+                content = "";
+            }
+        }
+
+        const history = (
+            tab.history ?? [
+                {
+                    relativePath: tab.relativePath,
+                    title: tab.title,
+                    path: tab.path,
+                    mimeType: tab.mimeType ?? null,
+                    viewer,
+                    sizeBytes,
+                    contentTruncated,
+                },
+            ]
+        ).map((historyEntry) => ({
+            kind: "file" as const,
+            relativePath: historyEntry.relativePath,
+            title: historyEntry.title,
+            path: historyEntry.path,
+            mimeType: historyEntry.mimeType ?? null,
+            viewer: normalizeFileViewer(
+                historyEntry.viewer,
+                historyEntry.path,
+                historyEntry.mimeType ?? null,
+            ),
+            sizeBytes:
+                typeof historyEntry.sizeBytes === "number"
+                    ? historyEntry.sizeBytes
+                    : null,
+            contentTruncated: Boolean(historyEntry.contentTruncated),
+            content: "",
+        }));
+        const historyIndex = Math.min(
+            tab.historyIndex ?? history.length - 1,
+            history.length - 1,
+        );
+        if (history[historyIndex]) {
+            history[historyIndex].content = content;
+        }
+
+        restoredTabsById[tab.id] = {
+            id: tab.id,
+            kind: "file",
+            relativePath: tab.relativePath,
+            title: tab.title,
+            path: tab.path,
+            content,
+            mimeType: tab.mimeType ?? null,
+            viewer,
+            sizeBytes,
+            contentTruncated,
+            history,
+            historyIndex,
+        };
+    }
+
+    return restoredTabsById;
+}
+
+function restorePersistedWorkspacePanes(
+    panes: PersistedWorkspacePane[],
+    tabsById: Record<string, TabInput>,
+): PersistedSessionPane[] {
+    return panes.map((pane, index) => {
+        const tabs = pane.tabIds
+            .map((tabId) => tabsById[tabId] ?? null)
+            .filter((tab): tab is TabInput => tab !== null);
+        const availableTabIds = new Set(tabs.map((tab) => tab.id));
+        const activeTabId =
+            pane.activeTabId && availableTabIds.has(pane.activeTabId)
+                ? pane.activeTabId
+                : (tabs[0]?.id ?? null);
+
+        return {
+            id: pane.id || `pane-${index + 1}`,
+            tabs,
+            activeTabId,
+            activationHistory: (pane.activationHistory ?? []).filter((tabId) =>
+                availableTabIds.has(tabId),
+            ),
+            tabNavigationHistory: (pane.tabNavigationHistory ?? []).filter(
+                (tabId) => availableTabIds.has(tabId),
             ),
             tabNavigationIndex:
                 typeof pane.tabNavigationIndex === "number"
@@ -718,7 +1059,7 @@ function restoreLegacyMapTabs(
 }
 
 function resolveRestoredActiveTabId(
-    session: PersistedSession,
+    session: PersistedLegacySession,
     tabs: TabInput[],
     vaultPath: string | null,
 ) {
@@ -768,18 +1109,185 @@ function resolveRestoredActiveTabId(
     return null;
 }
 
+function buildNormalizedPersistedSessionFromRestored(
+    restored: RestoredEditorSession,
+): PersistedSessionV2 {
+    const panes =
+        restored.panes && restored.panes.length > 0
+            ? restored.panes
+            : [
+                  {
+                      id: "primary",
+                      tabs: restored.tabs,
+                      activeTabId: restored.activeTabId,
+                      activationHistory: restored.activeTabId
+                          ? [restored.activeTabId]
+                          : [],
+                      tabNavigationHistory: restored.activeTabId
+                          ? [restored.activeTabId]
+                          : [],
+                      tabNavigationIndex: restored.activeTabId ? 0 : -1,
+                  },
+              ];
+
+    return buildPersistedSession({
+        panes: panes.map((pane) => ({
+            id: pane.id,
+            tabs: pane.tabs.flatMap((tab) => {
+                const normalized = normalizeHydratedSessionTab(tab);
+                return normalized ? [normalized] : [];
+            }),
+            activeTabId: pane.activeTabId,
+            activationHistory: pane.activationHistory ?? [],
+            tabNavigationHistory: pane.tabNavigationHistory ?? [],
+            tabNavigationIndex: pane.tabNavigationIndex ?? -1,
+        })),
+        focusedPaneId: restored.focusedPaneId ?? panes[0]?.id ?? null,
+        layoutTree: restored.layoutTree,
+        paneSizes: restored.paneSizes,
+        tabs: panes.flatMap((pane) =>
+            pane.tabs.flatMap((tab) => {
+                const normalized = normalizeHydratedSessionTab(tab);
+                return normalized ? [normalized] : [];
+            }),
+        ),
+        activeTabId: restored.activeTabId,
+        tabsById: Object.fromEntries(
+            panes.flatMap((pane) =>
+                pane.tabs.flatMap((tab) => {
+                    const normalized = normalizeHydratedSessionTab(tab);
+                    return normalized
+                        ? ([[normalized.id, normalized]] as const)
+                        : [];
+                }),
+            ),
+        ),
+    }) as PersistedSessionV2;
+}
+
+function normalizeHydratedSessionTab(tab: TabInput): Tab | null {
+    if (isReviewTab(tab)) {
+        return null;
+    }
+    if (isHistoryTab(tab)) {
+        return normalizeHistoryTab(tab);
+    }
+    if (isChatTab(tab) || isGraphTab(tab)) {
+        return tab;
+    }
+    return null;
+}
+
+async function upgradeLegacyPersistedSession(
+    session: PersistedLegacySession,
+    vaultPath: string | null,
+    options?: { includeMaps?: boolean },
+): Promise<PersistedSessionV2 | null> {
+    if (session.panes?.length) {
+        const restoredPanes = compactRestoredPanes(
+            restoreLegacyPersistedPaneTabs(session.panes),
+        );
+        const restoredLayoutTree = normalizeLayoutTreeForPersistence(
+            session.layoutTree,
+            restoredPanes.map((pane) => pane.id),
+            session.paneSizes,
+        );
+        const requestedFocusedPaneId =
+            typeof session.focusedPaneId === "string"
+                ? session.focusedPaneId
+                : (restoredPanes[0]?.id ?? null);
+        const focusedPane =
+            restoredPanes.find((pane) => pane.id === requestedFocusedPaneId) ??
+            restoredPanes[0] ??
+            null;
+
+        if (!focusedPane) {
+            return null;
+        }
+
+        return buildNormalizedPersistedSessionFromRestored({
+            panes: restoredPanes,
+            focusedPaneId: focusedPane.id,
+            layoutTree: restoredLayoutTree,
+            paneSizes: normalizePaneSizesForPersistence(
+                restoredPanes.length,
+                session.paneSizes,
+            ),
+            tabs: focusedPane.tabs,
+            activeTabId: focusedPane.activeTabId,
+        });
+    }
+
+    const restoredTabs: TabInput[] = [];
+    if (session.tabs?.length) {
+        restoredTabs.push(...session.tabs);
+    } else {
+        restoredTabs.push(...(await restoreLegacyNoteTabs(session)));
+        restoredTabs.push(...restoreLegacyPdfTabs(session));
+        restoredTabs.push(...(await restoreLegacyFileTabs(session)));
+    }
+
+    if (options?.includeMaps) {
+        restoredTabs.push(
+            ...restoreLegacyMapTabs(session, vaultPath, restoredTabs),
+        );
+    }
+
+    if (session.hasGraphTab) {
+        restoredTabs.push({
+            id: crypto.randomUUID(),
+            kind: "graph",
+            title: "Graph View",
+        });
+    }
+
+    if (!restoredTabs.length) {
+        return null;
+    }
+
+    return buildNormalizedPersistedSessionFromRestored({
+        paneSizes: normalizePaneSizesForPersistence(1, session.paneSizes),
+        tabs: restoredTabs,
+        activeTabId: resolveRestoredActiveTabId(
+            session,
+            restoredTabs,
+            vaultPath,
+        ),
+    });
+}
+
 export async function restorePersistedSession(
     vaultPath: string | null,
     options?: { includeMaps?: boolean },
 ): Promise<RestoredEditorSession | null> {
-    const session = readPersistedSession(vaultPath);
-    if (!hasPersistedSessionData(session)) {
+    const storedSession = readPersistedSession(vaultPath);
+    if (!hasPersistedSessionData(storedSession)) {
         return null;
     }
 
-    if (session?.panes?.length) {
+    const session = isPersistedSessionV2(storedSession)
+        ? storedSession
+        : await upgradeLegacyPersistedSession(
+              storedSession,
+              vaultPath,
+              options,
+          );
+
+    if (!session) {
+        return null;
+    }
+
+    if (!isPersistedSessionV2(storedSession) && vaultPath) {
+        writePersistedSession(vaultPath, session);
+    }
+
+    if (session.panes.length) {
+        const restoredTabsById = await restorePersistedWorkspaceTabsById(
+            session.tabsById,
+            vaultPath,
+        );
         const restoredPanes = compactRestoredPanes(
-            restorePersistedPaneTabs(session.panes),
+            restorePersistedWorkspacePanes(session.panes, restoredTabsById),
         );
         const restoredLayoutTree = normalizeLayoutTreeForPersistence(
             session.layoutTree,
@@ -812,38 +1320,18 @@ export async function restorePersistedSession(
         };
     }
 
-    const restoredTabs: TabInput[] = [];
-    if (session?.tabs?.length) {
-        restoredTabs.push(...session.tabs);
-    } else if (session) {
-        restoredTabs.push(...(await restoreLegacyNoteTabs(session)));
-        restoredTabs.push(...restoreLegacyPdfTabs(session));
-        restoredTabs.push(...(await restoreLegacyFileTabs(session)));
-    }
-
-    if (session && options?.includeMaps) {
-        restoredTabs.push(
-            ...restoreLegacyMapTabs(session, vaultPath, restoredTabs),
-        );
-    }
-
-    if (session?.hasGraphTab) {
-        restoredTabs.push({
-            id: crypto.randomUUID(),
-            kind: "graph",
-            title: "Graph View",
-        });
-    }
-
+    const restoredTabsById = await restorePersistedWorkspaceTabsById(
+        session.tabsById,
+        vaultPath,
+    );
+    const restoredTabs = Object.values(restoredTabsById);
     if (!restoredTabs.length) {
         return null;
     }
 
     return {
-        paneSizes: normalizePaneSizesForPersistence(1, session?.paneSizes),
+        paneSizes: normalizePaneSizesForPersistence(1, session.paneSizes),
         tabs: restoredTabs,
-        activeTabId: session
-            ? resolveRestoredActiveTabId(session, restoredTabs, vaultPath)
-            : null,
+        activeTabId: restoredTabs[0]?.id ?? null,
     };
 }

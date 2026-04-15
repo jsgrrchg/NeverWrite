@@ -3,7 +3,7 @@ import { inferFileViewer } from "../../app/store/editorTabs";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
-import { moveChatToWorkspace } from "../ai/chatPaneMovement";
+import { createNewChatInWorkspace } from "../ai/chatPaneMovement";
 import { useChatStore } from "../ai/store/chatStore";
 
 interface SavedVaultFileDetail {
@@ -101,24 +101,11 @@ function getRuntimeMenuLabel(name: string) {
 }
 
 async function createNewChat(runtimeId?: string, paneId?: string) {
-    const beforeSessionIds = new Set(
-        Object.keys(useChatStore.getState().sessionsById),
-    );
-
     try {
-        await useChatStore.getState().newSession(runtimeId);
-        const nextState = useChatStore.getState();
-        const createdSessionId =
-            Object.keys(nextState.sessionsById).find(
-                (sessionId) => !beforeSessionIds.has(sessionId),
-            ) ??
-            (nextState.activeSessionId &&
-            !beforeSessionIds.has(nextState.activeSessionId)
-                ? nextState.activeSessionId
-                : null);
-
-        if (!createdSessionId) return;
-        moveChatToWorkspace(createdSessionId, paneId ? { paneId } : undefined);
+        await createNewChatInWorkspace(
+            runtimeId,
+            paneId ? { paneId } : undefined,
+        );
     } catch (error) {
         console.error("Failed to create a new chat from the tab menu:", error);
     }
@@ -240,4 +227,12 @@ export function buildNewTabContextMenuEntries(options?: {
 
 export function openBlankDraftTabFromPlusButton(paneId?: string) {
     insertBlankDraftTab(paneId);
+}
+
+export async function openNewNoteInPane(paneId?: string) {
+    await createNewNote(paneId);
+}
+
+export async function openNewAgentInPane(paneId?: string, runtimeId?: string) {
+    await createNewChat(runtimeId, paneId);
 }

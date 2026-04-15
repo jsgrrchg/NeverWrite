@@ -18,6 +18,7 @@ import { NewTabView } from "./NewTabView";
 import { SearchView } from "../search/SearchView";
 import { PdfTabView } from "../pdf/PdfTabView";
 import { AIReviewView } from "../ai/components/AIReviewView";
+import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 
 type EditorPanelView =
     | "pdf"
@@ -129,8 +130,11 @@ export function EditorPaneContent({
     paneId,
     emptyStateMessage,
 }: EditorPaneContentProps) {
-    const view = useEditorStore((state): EditorPanelView => {
-        const tab = selectEditorPaneActiveTab(state, paneId);
+    const activeTab = useEditorStore((state) =>
+        selectEditorPaneActiveTab(state, paneId),
+    );
+    const view: EditorPanelView = (() => {
+        const tab = activeTab;
         if (!tab) return "editor";
         if (isPdfTab(tab)) return "pdf";
         if (isFileTab(tab)) return "file";
@@ -142,13 +146,19 @@ export function EditorPaneContent({
         if (tab.noteId === "") return "new";
         if (tab.noteId === "__search__") return "search";
         return "editor";
-    });
+    })();
     const paneTabs = useEditorStore(
         (state) => selectEditorPaneState(state, paneId).tabs,
     );
     const hasGraphTab = paneTabs.some((tab) => isGraphTab(tab));
     const isGraphActive = view === "graph";
     const keepGraphMounted = hasGraphTab;
+
+    // Workspace panes own their own empty states so the last empty pane can
+    // offer quick actions without leaking workspace chrome into note windows.
+    if (!activeTab && paneId && paneTabs.length === 0) {
+        return <WorkspacePaneEmptyState paneId={paneId} />;
+    }
 
     return (
         <div className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden">

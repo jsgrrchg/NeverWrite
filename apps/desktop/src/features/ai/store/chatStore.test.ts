@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    isChatTab,
     isFileTab,
     isNoteTab,
     isReviewTab,
@@ -2757,6 +2758,9 @@ describe("chatStore", () => {
             ],
             activeTabId: "tab-detached",
         });
+        useEditorStore.getState().openChat(detachedSessionId, {
+            title: "Detached chat",
+        });
         useChatStore.setState((state) => ({
             composerPartsBySessionId: {
                 ...state.composerPartsBySessionId,
@@ -2909,6 +2913,22 @@ describe("chatStore", () => {
                 runtimeId: "codex-acp",
             },
         ]);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.some(
+                    (tab) =>
+                        isChatTab(tab) && tab.sessionId === resumedSessionId,
+                ),
+        ).toBe(true);
+        expect(
+            useEditorStore
+                .getState()
+                .tabs.some(
+                    (tab) =>
+                        isChatTab(tab) && tab.sessionId === detachedSessionId,
+                ),
+        ).toBe(false);
     });
 
     it("adds the user message and turns the session into error when the runtime fails", async () => {
@@ -11312,6 +11332,109 @@ describe("chatStore", () => {
             startLine: 1,
             endLine: 1,
         });
+    });
+
+    it("attachSelectionFromEditor prefers the last focused visible workspace chat", async () => {
+        useEditorStore.setState({
+            currentSelection: {
+                noteId: null,
+                path: "/vault/src/config.toml",
+                text: 'name = "NeverWrite"',
+                from: 0,
+                to: 19,
+                startLine: 1,
+                endLine: 1,
+            },
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "session-fallback": createSessionWithTrackedFiles(
+                    "session-fallback",
+                    [],
+                ),
+                "session-last-focused": createSessionWithTrackedFiles(
+                    "session-last-focused",
+                    [],
+                ),
+            },
+            sessionOrder: ["session-fallback", "session-last-focused"],
+            activeSessionId: "session-fallback",
+            lastFocusedSessionId: "session-last-focused",
+        }));
+
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "file-tab",
+                            kind: "file" as const,
+                            relativePath: "src/config.toml",
+                            title: "config.toml",
+                            path: "/vault/src/config.toml",
+                            mimeType: "application/toml",
+                            viewer: "text" as const,
+                            content: 'name = "NeverWrite"',
+                            history: [
+                                {
+                                    kind: "file" as const,
+                                    relativePath: "src/config.toml",
+                                    title: "config.toml",
+                                    path: "/vault/src/config.toml",
+                                    mimeType: "application/toml",
+                                    viewer: "text" as const,
+                                    content: 'name = "NeverWrite"',
+                                },
+                            ],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "file-tab",
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "tertiary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+        useEditorStore.getState().openChat("session-fallback", {
+            title: "Fallback",
+            paneId: "secondary",
+            background: true,
+        });
+        useEditorStore.getState().openChat("session-last-focused", {
+            title: "Last focused",
+            paneId: "tertiary",
+            background: true,
+        });
+
+        useChatStore.getState().attachSelectionFromEditor();
+
+        const targetParts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-last-focused"
+            ] ?? [];
+        const fallbackParts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-fallback"
+            ] ?? [];
+
+        expect(
+            targetParts.some((part) => part.type === "selection_mention"),
+        ).toBe(true);
+        expect(
+            fallbackParts.some((part) => part.type === "selection_mention"),
+        ).toBe(false);
     });
 
     it("resolveReviewHunks ignores stale trackedVersion and leaves the tracked file untouched", async () => {

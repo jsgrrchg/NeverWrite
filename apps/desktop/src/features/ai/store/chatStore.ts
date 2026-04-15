@@ -38,6 +38,7 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
+import { getPreferredWorkspaceChatSessionIdForSession } from "../chatWorkspaceSelectors";
 import {
     useVaultStore,
     type VaultNoteChange,
@@ -1059,6 +1060,7 @@ interface ChatStore {
     sessionsById: Record<string, AIChatSession>;
     sessionOrder: string[];
     activeSessionId: string | null;
+    lastFocusedSessionId: string | null;
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     notePickerOpen: boolean;
@@ -1162,6 +1164,7 @@ interface ChatStore {
         change: VaultNoteChange,
     ) => Promise<void>;
     setActiveSession: (sessionId: string) => void;
+    markSessionFocused: (sessionId: string) => void;
     ensureSessionTranscriptLoaded: (
         sessionId: string,
         mode?: "latest" | "full",
@@ -2060,6 +2063,9 @@ function migrateSessionLocalState(
             toSession.historySessionId,
             toSession.runtimeId,
         );
+    useEditorStore
+        .getState()
+        .replaceAiSessionId(fromSessionId, toSession.sessionId);
     registerOpenEditorBaselines(toSession.sessionId);
 
     return true;
@@ -5723,6 +5729,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sessionsById: {},
         sessionOrder: [],
         activeSessionId: null,
+        lastFocusedSessionId: null,
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,
@@ -6334,7 +6341,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let shouldDrainQueue = false;
             set((state) => {
                 const currentVaultPath = useVaultStore.getState().vaultPath;
-                const workspaceTabs = useChatTabsStore.getState().tabs;
+                const workspaceTabs = selectEditorWorkspaceTabs(
+                    useEditorStore.getState(),
+                );
                 const stampedSession = stampSessionVaultPath(
                     session,
                     currentVaultPath,
@@ -6353,7 +6362,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const isWorkspaceSession =
                     state.activeSessionId === scopedSession.sessionId ||
                     workspaceTabs.some(
-                        (tab) => tab.sessionId === scopedSession.sessionId,
+                        (tab) =>
+                            "sessionId" in tab &&
+                            tab.kind === "ai-chat" &&
+                            tab.sessionId === scopedSession.sessionId,
                     );
 
                 if (
@@ -7320,10 +7332,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 state.sessionsById[sessionId]
                     ? {
                           activeSessionId: sessionId,
+                          lastFocusedSessionId: sessionId,
                           selectedRuntimeId:
                               state.sessionsById[sessionId]?.runtimeId ??
                               state.selectedRuntimeId,
                       }
+                    : state,
+            ),
+
+        markSessionFocused: (sessionId) =>
+            set((state) =>
+                state.sessionsById[sessionId]
+                    ? { lastFocusedSessionId: sessionId }
                     : state,
             ),
 
@@ -9260,6 +9280,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 state.activeSessionId === sessionId
                     ? (remainingIds[0] ?? null)
                     : state.activeSessionId;
+            const nextLastFocusedSessionId =
+                state.lastFocusedSessionId === sessionId
+                    ? (nextActiveId ?? remainingIds[0] ?? null)
+                    : state.lastFocusedSessionId;
             const nextSelectedRuntimeId =
                 (nextActiveId
                     ? nextSessionsById[nextActiveId]?.runtimeId
@@ -9268,6 +9292,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionsById: nextSessionsById,
                 sessionOrder: remainingIds,
                 activeSessionId: nextActiveId,
+                lastFocusedSessionId: nextLastFocusedSessionId,
                 selectedRuntimeId: nextSelectedRuntimeId,
                 composerPartsBySessionId: nextComposerPartsBySessionId,
                 queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
@@ -9324,6 +9349,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionsById: {},
                 sessionOrder: [],
                 activeSessionId: null,
+                lastFocusedSessionId: null,
                 selectedRuntimeId: getDefaultRuntimeId(get().runtimes),
                 composerPartsBySessionId: {},
                 queuedMessagesBySessionId: {},
@@ -9430,46 +9456,85 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const selectionPath = currentSelection.path ?? note?.path ?? null;
             if (!selectionPath) return;
 
-            const state = get();
-            const { tabs, activeTabId } = useChatTabsStore.getState();
-            const activeSessionId =
-                tabs.find((t) => t.id === activeTabId)?.sessionId ??
-                state.activeSessionId;
-            if (!activeSessionId) return;
-
             const { startLine, endLine } = currentSelection;
-            const currentParts =
-                state.composerPartsBySessionId[activeSessionId] ??
-                createEmptyComposerParts();
+            const appendSelectionToSession = (sessionId: string) => {
+                const state = get();
+                const currentParts =
+                    state.composerPartsBySessionId[sessionId] ??
+                    createEmptyComposerParts();
 
-            const isDuplicate = currentParts.some(
-                (p) =>
-                    p.type === "selection_mention" &&
-                    p.path === selectionPath &&
-                    p.startLine === startLine &&
-                    p.endLine === endLine,
-            );
-            if (isDuplicate) return;
+                const isDuplicate = currentParts.some(
+                    (p) =>
+                        p.type === "selection_mention" &&
+                        p.path === selectionPath &&
+                        p.startLine === startLine &&
+                        p.endLine === endLine,
+                );
+                if (isDuplicate) return;
 
-            const nextParts = appendSelectionMentionPart(currentParts, {
-                noteId: currentSelection.noteId,
-                label: buildSelectionLabel(
-                    currentSelection.text,
+                const nextParts = appendSelectionMentionPart(currentParts, {
+                    noteId: currentSelection.noteId,
+                    label: buildSelectionLabel(
+                        currentSelection.text,
+                        startLine,
+                        endLine,
+                    ),
+                    path: selectionPath,
+                    selectedText: currentSelection.text,
                     startLine,
                     endLine,
-                ),
-                path: selectionPath,
-                selectedText: currentSelection.text,
-                startLine,
-                endLine,
-            });
+                });
 
-            set({
-                composerPartsBySessionId: {
-                    ...state.composerPartsBySessionId,
-                    [activeSessionId]: nextParts,
-                },
-            });
+                set({
+                    composerPartsBySessionId: {
+                        ...state.composerPartsBySessionId,
+                        [sessionId]: nextParts,
+                    },
+                });
+            };
+
+            const preferredWorkspaceSessionId =
+                getPreferredWorkspaceChatSessionIdForSession(
+                    get().lastFocusedSessionId,
+                );
+            if (preferredWorkspaceSessionId) {
+                appendSelectionToSession(preferredWorkspaceSessionId);
+                return;
+            }
+
+            const activeSessionId = get().activeSessionId;
+            if (activeSessionId) {
+                const activeSession = get().sessionsById[activeSessionId];
+                useEditorStore.getState().openChat(activeSessionId, {
+                    title: activeSession
+                        ? getSessionTitle(activeSession)
+                        : "Chat",
+                });
+                appendSelectionToSession(activeSessionId);
+                return;
+            }
+
+            void (async () => {
+                const beforeSessionIds = new Set(
+                    Object.keys(get().sessionsById),
+                );
+                await get().newSession();
+                const nextState = get();
+                const createdSessionId =
+                    Object.keys(nextState.sessionsById).find(
+                        (sessionId) => !beforeSessionIds.has(sessionId),
+                    ) ?? nextState.activeSessionId;
+                if (!createdSessionId) return;
+
+                const createdSession =
+                    nextState.sessionsById[createdSessionId] ?? null;
+                useEditorStore.getState().openChat(createdSessionId, {
+                    title: createdSession
+                        ? getSessionTitle(createdSession)
+                        : "Chat",
+                });
+                appendSelectionToSession(createdSessionId);
+            })();
         },
 
         attachAudio: (filePath, fileName) => {
@@ -9713,6 +9778,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     historySessionId: newHistoryId,
                     runtimeId: session.runtimeId,
                 });
+                useEditorStore.getState().openChat(forkedSessionId, {
+                    title: forkedTitle,
+                });
             } catch (error) {
                 logError("chat-store", "Failed to fork session", error);
             }
@@ -9837,6 +9905,7 @@ export function resetChatStore() {
         sessionsById: {},
         sessionOrder: [],
         activeSessionId: null,
+        lastFocusedSessionId: null,
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,

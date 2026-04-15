@@ -561,7 +561,7 @@ describe("FileTabView", () => {
         expect(document.querySelector(".cm-panels")).toBeNull();
     });
 
-    it("supports Command plus and minus to adjust font size for text files", async () => {
+    it("does not let text files intercept app zoom shortcuts", async () => {
         setVaultEntries([]);
         setEditorTabs([
             {
@@ -589,7 +589,7 @@ describe("FileTabView", () => {
             );
         });
 
-        expect(useSettingsStore.getState().editorFontSize).toBe(15);
+        expect(useSettingsStore.getState().editorFontSize).toBe(14);
 
         await act(async () => {
             window.dispatchEvent(
@@ -713,6 +713,138 @@ describe("FileTabView", () => {
             path: "/vault/src/config.toml",
             selectedText: 'name = "NeverWrite"',
         });
+    });
+
+    it("routes Cmd+L to the last focused visible chat session", async () => {
+        useChatStore.setState({
+            sessionsById: {
+                "session-fallback": {
+                    sessionId: "session-fallback",
+                    historySessionId: "session-fallback",
+                    status: "idle",
+                    runtimeId: "test-runtime",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                },
+                "session-last-focused": {
+                    sessionId: "session-last-focused",
+                    historySessionId: "session-last-focused",
+                    status: "idle",
+                    runtimeId: "test-runtime",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                },
+            },
+            sessionOrder: ["session-fallback", "session-last-focused"],
+            activeSessionId: "session-fallback",
+            lastFocusedSessionId: "session-last-focused",
+            composerPartsBySessionId: {},
+        });
+
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "text-tab",
+                            kind: "file" as const,
+                            relativePath: "src/config.toml",
+                            title: "config.toml",
+                            path: "/vault/src/config.toml",
+                            mimeType: "application/toml",
+                            viewer: "text" as const,
+                            content: 'name = "NeverWrite"',
+                            history: [
+                                {
+                                    kind: "file" as const,
+                                    relativePath: "src/config.toml",
+                                    title: "config.toml",
+                                    path: "/vault/src/config.toml",
+                                    mimeType: "application/toml",
+                                    viewer: "text" as const,
+                                    content: 'name = "NeverWrite"',
+                                },
+                            ],
+                            historyIndex: 0,
+                        },
+                    ],
+                    activeTabId: "text-tab",
+                },
+                {
+                    id: "secondary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "tertiary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+        useEditorStore.getState().openChat("session-fallback", {
+            title: "Fallback",
+            paneId: "secondary",
+            background: true,
+        });
+        useEditorStore.getState().openChat("session-last-focused", {
+            title: "Last focused",
+            paneId: "tertiary",
+            background: true,
+        });
+
+        renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        await act(async () => {
+            view!.focus();
+            view!.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 19,
+                },
+            });
+        });
+
+        const addToChatBinding = view!.state
+            .facet(keymap)
+            .flat()
+            .find((binding) => binding.key === "Mod-l");
+
+        expect(addToChatBinding?.run?.(view!)).toBe(true);
+
+        const targetParts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-last-focused"
+            ] ?? [];
+        const fallbackParts =
+            useChatStore.getState().composerPartsBySessionId[
+                "session-fallback"
+            ] ?? [];
+
+        expect(
+            targetParts.some((part) => part.type === "selection_mention"),
+        ).toBe(true);
+        expect(
+            fallbackParts.some((part) => part.type === "selection_mention"),
+        ).toBe(false);
     });
 
     it("does not enable markdown autopair handlers for text files", async () => {

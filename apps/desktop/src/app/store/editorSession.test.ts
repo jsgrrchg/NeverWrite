@@ -115,63 +115,46 @@ describe("editorSession", () => {
             activeTabId: "file-1",
         });
 
-        expect(session.noteIds).toEqual([
-            {
-                noteId: "notes/a",
-                title: "Note A",
-                history: [{ noteId: "notes/a", title: "Note A" }],
-                historyIndex: 0,
-            },
-        ]);
-        expect(session.pdfTabs).toEqual([
-            {
-                entryId: "docs/spec",
-                title: "spec.pdf",
-                path: "/vault/docs/spec.pdf",
-                page: 2,
-                zoom: 1.2,
-                viewMode: "single",
-                history: [
-                    {
-                        entryId: "docs/spec",
-                        title: "spec.pdf",
-                        path: "/vault/docs/spec.pdf",
-                        page: 2,
-                        zoom: 1.2,
-                        viewMode: "single",
-                    },
-                ],
-                historyIndex: 0,
-            },
-        ]);
-        expect(session.fileTabs).toEqual([
-            {
-                relativePath: "src/main.ts",
-                title: "main.ts",
-                path: "/vault/src/main.ts",
-                mimeType: "text/typescript",
-                viewer: "text",
-                history: [
-                    {
-                        relativePath: "src/main.ts",
-                        title: "main.ts",
-                        path: "/vault/src/main.ts",
-                        mimeType: "text/typescript",
-                        viewer: "text",
-                    },
-                ],
-                historyIndex: 0,
-            },
-        ]);
-        expect(session.mapTabs).toEqual([
-            {
-                relativePath: "Excalidraw/Board.excalidraw",
-                title: "Board",
-            },
-        ]);
-        expect(session.hasGraphTab).toBe(true);
-        expect(session.activeFilePath).toBe("src/main.ts");
-        expect(session.activeTabId).toBe("file-1");
+        expect(session).toMatchObject({
+            version: 2,
+            panes: [
+                {
+                    id: "primary",
+                    tabIds: ["note-1", "pdf-1", "file-1", "map-1", "graph-1"],
+                    activeTabId: "file-1",
+                },
+            ],
+            focusedPaneId: "primary",
+        });
+        expect(session.tabsById["note-1"]).toMatchObject({
+            id: "note-1",
+            kind: "note",
+            noteId: "notes/a",
+            title: "Note A",
+        });
+        expect(session.tabsById["pdf-1"]).toMatchObject({
+            id: "pdf-1",
+            kind: "pdf",
+            entryId: "docs/spec",
+            viewMode: "single",
+        });
+        expect(session.tabsById["file-1"]).toMatchObject({
+            id: "file-1",
+            kind: "file",
+            relativePath: "src/main.ts",
+            viewer: "text",
+        });
+        expect(session.tabsById["map-1"]).toMatchObject({
+            id: "map-1",
+            kind: "map",
+            relativePath: "Excalidraw/Board.excalidraw",
+        });
+        expect(session.tabsById["graph-1"]).toMatchObject({
+            id: "graph-1",
+            kind: "graph",
+            title: "Graph View",
+        });
+        expect(session.tabsById["review-1"]).toBeUndefined();
     });
 
     it("normalizes csv file tabs with the csv viewer by default", () => {
@@ -232,30 +215,78 @@ describe("editorSession", () => {
             activeTabId: "file-csv",
         });
 
-        expect(session.fileTabs).toEqual([
-            {
-                relativePath: "data/report.csv",
-                title: "report.csv",
-                path: "/vault/data/report.csv",
-                mimeType: "text/csv",
-                viewer: "csv",
-                sizeBytes: 2048,
-                contentTruncated: true,
-                history: [
-                    {
-                        relativePath: "data/report.csv",
-                        title: "report.csv",
-                        path: "/vault/data/report.csv",
-                        mimeType: "text/csv",
-                        viewer: "csv",
-                        sizeBytes: 2048,
-                        contentTruncated: true,
-                    },
+        expect(session.tabsById["file-csv"]).toMatchObject({
+            id: "file-csv",
+            kind: "file",
+            relativePath: "data/report.csv",
+            viewer: "csv",
+            mimeType: "text/csv",
+            sizeBytes: 2048,
+            contentTruncated: true,
+            historyIndex: 0,
+        });
+    });
+
+    it("persists and restores workspace chat tabs as first-class tabs", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "chat-1",
+                            kind: "ai-chat",
+                            sessionId: "session-1",
+                            title: "Research Chat",
+                        },
+                    ],
+                    activeTabId: "chat-1",
+                    activationHistory: ["chat-1"],
+                    tabNavigationHistory: ["chat-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                {
+                    id: "chat-1",
+                    kind: "ai-chat",
+                    sessionId: "session-1",
+                    title: "Research Chat",
+                },
+            ],
+            activeTabId: "chat-1",
+        });
+
+        expect(session.tabsById["chat-1"]).toMatchObject({
+            id: "chat-1",
+            kind: "ai-chat",
+            sessionId: "session-1",
+            title: "Research Chat",
+        });
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.panes).toEqual([
+            expect.objectContaining({
+                id: "primary",
+                activeTabId: "chat-1",
+                tabs: [
+                    expect.objectContaining({
+                        id: "chat-1",
+                        kind: "ai-chat",
+                        sessionId: "session-1",
+                        title: "Research Chat",
+                    }),
                 ],
-                historyIndex: 0,
-            },
+            }),
         ]);
-        expect(session.activeFilePath).toBe("data/report.csv");
+        expect(restored?.activeTabId).toBe("chat-1");
     });
 
     it("serializes and restores pane-aware workspace sessions", async () => {

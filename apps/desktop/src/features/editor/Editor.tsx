@@ -2299,7 +2299,7 @@ export function Editor({
                             run: () => applyHeadingCommand(6),
                         },
                         {
-                            key: "Mod-0",
+                            key: "Mod-Shift-0",
                             run: () => applyHeadingCommand(0),
                         },
                         {
@@ -3403,30 +3403,6 @@ export function Editor({
                     viewRef.current?.state.doc.toString() ?? tab.content;
                 void saveNow(tab, content);
                 return;
-            }
-
-            // Cmd+Plus / Cmd+Minus: adjust editor font size
-            if ((e.metaKey || e.ctrlKey) && !e.altKey) {
-                const { editorFontSize, setSetting } =
-                    useSettingsStore.getState();
-
-                if (e.key === "+" || e.key === "=") {
-                    e.preventDefault();
-                    setSetting(
-                        "editorFontSize",
-                        Math.min(24, editorFontSize + 1),
-                    );
-                    return;
-                }
-
-                if (e.key === "-" || e.key === "_") {
-                    e.preventDefault();
-                    setSetting(
-                        "editorFontSize",
-                        Math.max(10, editorFontSize - 1),
-                    );
-                    return;
-                }
             }
 
             // Cmd+[ / Ctrl+[: go back in history

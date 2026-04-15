@@ -10,6 +10,7 @@ import {
 import { logError, logWarn } from "../utils/runtimeLog";
 import { useEditorStore } from "./editorStore";
 import { useBookmarkStore } from "./bookmarkStore";
+import { inferFileViewer } from "./editorTabs";
 
 export interface NoteDto {
     id: string;
@@ -126,6 +127,10 @@ function didStructureMetadataChange(
         (patch.title !== undefined && patch.title !== previous.title) ||
         (patch.path !== undefined && patch.path !== previous.path)
     );
+}
+
+function hasMarkdownExtension(path: string) {
+    return path.toLowerCase().endsWith(".md");
 }
 
 const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
@@ -311,6 +316,10 @@ interface VaultStore {
     deleteFolder: (relativePath: string) => Promise<void>;
     deleteNote: (noteId: string) => Promise<void>;
     renameNote: (noteId: string, newName: string) => Promise<NoteDto | null>;
+    renameNoteAsFile: (
+        noteId: string,
+        newRelativePath: string,
+    ) => Promise<VaultEntryDto | null>;
     touchContent: () => void;
     updateNoteMetadata: (
         noteId: string,
@@ -558,7 +567,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     },
 
     createNote: async (name) => {
-        const path = name.endsWith(".md") ? name : `${name}.md`;
+        const path = hasMarkdownExtension(name) ? name : `${name}.md`;
         try {
             const vaultPath = get().vaultPath ?? "";
             const detail = await invoke<{
@@ -667,7 +676,9 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     },
 
     renameNote: async (noteId, newName) => {
-        const newPath = newName.endsWith(".md") ? newName : `${newName}.md`;
+        const newPath = hasMarkdownExtension(newName)
+            ? newName
+            : `${newName}.md`;
         try {
             const vaultPath = get().vaultPath ?? "";
             const detail = await invoke<{
@@ -698,6 +709,54 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             return updated;
         } catch (e) {
             logError("vault-store", "Failed to rename note", e);
+            return null;
+        }
+    },
+
+    renameNoteAsFile: async (noteId, newRelativePath) => {
+        try {
+            const vaultPath = get().vaultPath ?? "";
+            const updated = await invoke<VaultEntryDto>(
+                "convert_note_to_file",
+                {
+                    vaultPath,
+                    noteId,
+                    newRelativePath,
+                },
+            );
+            const oldRelativePath = `${noteId}.md`;
+            set((state) => ({
+                notes: state.notes.filter((note) => note.id !== noteId),
+                entries: [
+                    ...state.entries.filter(
+                        (entry) =>
+                            entry.relative_path !== oldRelativePath &&
+                            entry.relative_path !== updated.relative_path,
+                    ),
+                    updated,
+                ],
+                vaultRevision: state.vaultRevision + 1,
+                structureRevision: state.structureRevision + 1,
+                resolverRevision: state.resolverRevision + 1,
+                graphRevision: state.graphRevision + 1,
+                tagsRevision: state.tagsRevision + 1,
+            }));
+            useEditorStore
+                .getState()
+                .handleNoteConvertedToFile(
+                    noteId,
+                    updated.relative_path,
+                    updated.file_name,
+                    updated.path,
+                    updated.mime_type,
+                    inferFileViewer(updated.path, updated.mime_type),
+                );
+            useBookmarkStore
+                .getState()
+                .handleNoteConvertedToFile(noteId, updated.relative_path);
+            return updated;
+        } catch (error) {
+            logError("vault-store", "Failed to convert note to file", error);
             return null;
         }
     },

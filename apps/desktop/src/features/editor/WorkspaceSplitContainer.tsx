@@ -10,7 +10,6 @@ import {
 import type { WorkspaceLayoutNode } from "../../app/store/workspaceLayoutTree";
 import { EditorPaneBar } from "./EditorPaneBar";
 import { EditorPaneContent } from "./EditorPaneContent";
-import type { CrossPaneTabDropPreview } from "./workspaceTabDropPreview";
 
 const RESIZER_HITBOX_SIZE = 10;
 const RESIZER_VISIBLE_SIZE = 1;
@@ -35,76 +34,9 @@ interface NodeConstraints {
 interface WorkspaceSplitContainerProps {
     node: WorkspaceLayoutNode;
     focusedPaneId: string | null;
+    externalFileDropPaneId: string | null;
     onPaneFocus: (paneId: string) => void;
     onResizeSplit: (splitId: string, sizes: readonly number[]) => void;
-    dropPreview: CrossPaneTabDropPreview | null;
-}
-
-function getDropOverlayLabel(position: CrossPaneTabDropPreview["position"]) {
-    switch (position) {
-        case "left":
-            return "Split left";
-        case "right":
-            return "Split right";
-        case "up":
-            return "Split up";
-        case "down":
-            return "Split down";
-        default:
-            return "Add as tab";
-    }
-}
-
-function getDropOverlayStyle(position: CrossPaneTabDropPreview["position"]) {
-    const base = {
-        position: "absolute" as const,
-        pointerEvents: "none" as const,
-        borderRadius: 12,
-        background: "color-mix(in srgb, var(--accent) 14%, transparent)",
-        border: "1px solid color-mix(in srgb, var(--accent) 28%, transparent)",
-        boxShadow:
-            "0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent)",
-    };
-
-    switch (position) {
-        case "left":
-            return {
-                ...base,
-                left: 8,
-                top: 8,
-                bottom: 8,
-                width: "34%",
-            };
-        case "right":
-            return {
-                ...base,
-                right: 8,
-                top: 8,
-                bottom: 8,
-                width: "34%",
-            };
-        case "up":
-            return {
-                ...base,
-                left: 8,
-                right: 8,
-                top: 8,
-                height: "34%",
-            };
-        case "down":
-            return {
-                ...base,
-                left: 8,
-                right: 8,
-                bottom: 8,
-                height: "34%",
-            };
-        default:
-            return {
-                ...base,
-                inset: 8,
-            };
-    }
 }
 
 function getNodeConstraints(node: WorkspaceLayoutNode): NodeConstraints {
@@ -160,61 +92,48 @@ function clampSplitResize(
 function WorkspacePane({
     paneId,
     isFocused,
+    isExternalFileDropActive,
     onPaneFocus,
-    dropPreview,
 }: {
     paneId: string;
     isFocused: boolean;
+    isExternalFileDropActive: boolean;
     onPaneFocus: (paneId: string) => void;
-    dropPreview: CrossPaneTabDropPreview | null;
 }) {
-    const activeDropPreview =
-        dropPreview?.targetPaneId === paneId ? dropPreview : null;
-
     return (
         <div
             className="relative flex h-full min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden"
             style={{
                 minWidth: MIN_PANE_WIDTH,
                 minHeight: MIN_PANE_HEIGHT,
-                border: isFocused
-                    ? "1px solid color-mix(in srgb, var(--accent) 26%, var(--border))"
-                    : "1px solid transparent",
+                border: "1px solid color-mix(in srgb, var(--border) 76%, transparent)",
                 borderRadius: 0,
                 background: "var(--bg-primary)",
-                boxShadow: isFocused
-                    ? "0 14px 32px rgba(15, 23, 42, 0.08)"
-                    : "none",
+                boxShadow: isExternalFileDropActive
+                    ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent)"
+                    : isFocused
+                      ? "inset 0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent)"
+                      : "none",
             }}
             onPointerDownCapture={() => onPaneFocus(paneId)}
             onFocusCapture={() => onPaneFocus(paneId)}
             data-editor-pane-id={paneId}
             data-editor-pane-focused={isFocused || undefined}
+            data-editor-pane-file-drop-active={
+                isExternalFileDropActive || undefined
+            }
         >
-            {activeDropPreview ? (
+            {isExternalFileDropActive ? (
                 <div
                     aria-hidden="true"
-                    data-pane-drop-overlay-position={activeDropPreview.position}
-                    style={getDropOverlayStyle(activeDropPreview.position)}
-                >
-                    <div
-                        style={{
-                            position: "absolute",
-                            left: 10,
-                            top: 10,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            background:
-                                "color-mix(in srgb, var(--bg-primary) 90%, white 10%)",
-                            color: "var(--text-primary)",
-                            fontSize: 11,
-                            fontWeight: 600,
-                            letterSpacing: "0.01em",
-                        }}
-                    >
-                        {getDropOverlayLabel(activeDropPreview.position)}
-                    </div>
-                </div>
+                    className="pointer-events-none absolute inset-0 z-20"
+                    style={{
+                        background:
+                            "color-mix(in srgb, var(--accent) 7%, transparent)",
+                        boxShadow:
+                            "inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, transparent)",
+                    }}
+                />
             ) : null}
             <EditorPaneBar paneId={paneId} isFocused={isFocused} />
             <EditorPaneContent
@@ -228,9 +147,9 @@ function WorkspacePane({
 export function WorkspaceSplitContainer({
     node,
     focusedPaneId,
+    externalFileDropPaneId,
     onPaneFocus,
     onResizeSplit,
-    dropPreview,
 }: WorkspaceSplitContainerProps) {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const resizeSessionRef = useRef<ResizeSession | null>(null);
@@ -358,8 +277,10 @@ export function WorkspaceSplitContainer({
             <WorkspacePane
                 paneId={node.paneId}
                 isFocused={node.paneId === focusedPaneId}
+                isExternalFileDropActive={
+                    node.paneId === externalFileDropPaneId
+                }
                 onPaneFocus={onPaneFocus}
-                dropPreview={dropPreview}
             />
         );
     }
@@ -397,9 +318,9 @@ export function WorkspaceSplitContainer({
                             <WorkspaceSplitContainer
                                 node={child}
                                 focusedPaneId={focusedPaneId}
+                                externalFileDropPaneId={externalFileDropPaneId}
                                 onPaneFocus={onPaneFocus}
                                 onResizeSplit={onResizeSplit}
-                                dropPreview={dropPreview}
                             />
                         </div>
                         {index < node.children.length - 1 ? (

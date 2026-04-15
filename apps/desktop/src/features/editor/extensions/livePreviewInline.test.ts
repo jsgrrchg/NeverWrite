@@ -636,6 +636,131 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("keeps highlight formatting when the token ends with a period", () => {
+        const doc = "==Actualización 09:44 CLT.==";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 2 &&
+                    deco.to === doc.length - 2 &&
+                    deco.className.split(" ").includes("cm-lp-highlight"),
+            ),
+        ).toBe(true);
+        expect(hasHiddenRange(decorations, 0, 2, "cm-lp-hidden-inline")).toBe(
+            true,
+        );
+        expect(
+            hasHiddenRange(
+                decorations,
+                doc.length - 2,
+                doc.length,
+                "cm-lp-hidden-inline",
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("keeps highlight formatting when the token includes a spaced period before closing", () => {
+        const doc = "==Actualización 09:44 CLT .==";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 2 &&
+                    deco.to === doc.length - 2 &&
+                    deco.className.split(" ").includes("cm-lp-highlight"),
+            ),
+        ).toBe(true);
+        expect(hasHiddenRange(decorations, 0, 2, "cm-lp-hidden-inline")).toBe(
+            true,
+        );
+        expect(
+            hasHiddenRange(
+                decorations,
+                doc.length - 2,
+                doc.length,
+                "cm-lp-hidden-inline",
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("keeps highlight formatting when trailing prose follows the closing delimiter", () => {
+        const doc = "==Actualización 09:44 CLT .== El cuerpo sigue.";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 2 &&
+                    deco.to === 27 &&
+                    deco.className.split(" ").includes("cm-lp-highlight"),
+            ),
+        ).toBe(true);
+        expect(hasHiddenRange(decorations, 0, 2, "cm-lp-hidden-inline")).toBe(
+            true,
+        );
+        expect(hasHiddenRange(decorations, 27, 29, "cm-lp-hidden-inline")).toBe(
+            true,
+        );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("keeps highlight formatting when whitespace appears before the closing delimiter", () => {
+        const doc = "==Actualización 09:44 CLT . == El cuerpo sigue.";
+        const closingFrom = doc.lastIndexOf("==");
+        const highlightTo = closingFrom - 1;
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+        expect(
+            decorations.some(
+                (deco) =>
+                    deco.from === 2 &&
+                    deco.to === highlightTo &&
+                    deco.className.split(" ").includes("cm-lp-highlight"),
+            ),
+        ).toBe(true);
+        expect(hasHiddenRange(decorations, 0, 2, "cm-lp-hidden-inline")).toBe(
+            true,
+        );
+        expect(
+            hasHiddenRange(
+                decorations,
+                highlightTo,
+                closingFrom + 2,
+                "cm-lp-hidden-inline",
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("reveals wikilink delimiters only while the token is active", () => {
         const doc = "[[target|alias]]";
         const { plugin, parent, view } = createView(

@@ -48,6 +48,10 @@ export interface BookmarkStore extends BookmarkState {
     // Vault sync
     handleNoteDeleted: (noteId: string) => void;
     handleNoteRenamed: (oldNoteId: string, newNoteId: string) => void;
+    handleNoteConvertedToFile: (
+        oldNoteId: string,
+        newRelativePath: string,
+    ) => void;
     handleEntryDeleted: (relativePath: string) => void;
 
     // Lifecycle
@@ -210,6 +214,21 @@ export const useBookmarkStore = create<BookmarkStore>((set, get) => ({
         set((s) => ({
             items: s.items.map((i) =>
                 i.noteId === oldNoteId ? { ...i, noteId: newNoteId } : i,
+            ),
+        }));
+    },
+
+    handleNoteConvertedToFile: (oldNoteId, newRelativePath) => {
+        set((s) => ({
+            items: s.items.map((item) =>
+                item.noteId === oldNoteId
+                    ? {
+                          ...item,
+                          kind: "file",
+                          noteId: null,
+                          entryPath: newRelativePath,
+                      }
+                    : item,
             ),
         }));
     },

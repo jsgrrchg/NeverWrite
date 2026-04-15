@@ -5,7 +5,9 @@ import {
     useRef,
     useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
     getCurrentWindowLabel,
@@ -17,7 +19,16 @@ import {
     useEditorStore,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import {
+    FILE_TREE_NOTE_DRAG_EVENT,
+    type FileTreeNoteDragDetail,
+} from "../ai/dragEvents";
 import { WorkspaceSplitContainer } from "./WorkspaceSplitContainer";
+import {
+    openDroppedTreeItemsInPane,
+    openDroppedVaultPathsInPane,
+    resolveWorkspacePaneFileDropTarget,
+} from "./workspacePaneFileDrop";
 import {
     CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
     type CrossPaneTabDropPreview,
@@ -58,23 +69,102 @@ async function getWindowContentScreenOrigin() {
     }
 }
 
-export function MultiPaneWorkspace() {
-    const leafPaneIds = useEditorStore(useShallow(selectLeafPaneIds));
-    const layoutTree = useEditorStore((state) => state.layoutTree);
-    const focusedPaneId = useEditorStore(selectFocusedPaneId);
-    const focusPane = useEditorStore((state) => state.focusPane);
-    const resizePaneSplit = useEditorStore((state) => state.resizePaneSplit);
-    const containerRef = useRef<HTMLDivElement | null>(null);
-    const [crossPaneDropPreview, setCrossPaneDropPreview] =
-        useState<CrossPaneTabDropPreview | null>(null);
-    const visiblePaneCount = Math.max(1, leafPaneIds.length);
+function WorkspaceTabDropOverlay({
+    preview,
+}: {
+    preview: CrossPaneTabDropPreview | null;
+}) {
+    if (!preview || typeof document === "undefined") {
+        return null;
+    }
+
+    return createPortal(
+        <>
+            {preview.lineRect ? (
+                <div
+                    aria-hidden="true"
+                    data-workspace-drop-line="true"
+                    className="pointer-events-none fixed rounded-full"
+                    style={{
+                        left: preview.lineRect.left,
+                        top: preview.lineRect.top,
+                        width: preview.lineRect.width,
+                        height: preview.lineRect.height,
+                        background: "var(--accent)",
+                        boxShadow:
+                            "0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent)",
+                        zIndex: 10030,
+                    }}
+                />
+            ) : null}
+
+            {preview.overlayRect ? (
+                <div
+                    aria-hidden="true"
+                    data-workspace-drop-overlay-position={preview.position}
+                    className="pointer-events-none fixed"
+                    style={{
+                        left: preview.overlayRect.left,
+                        top: preview.overlayRect.top,
+                        width: preview.overlayRect.width,
+                        height: preview.overlayRect.height,
+                        borderRadius: 12,
+                        border:
+                            preview.position === "center"
+                                ? "2px solid color-mix(in srgb, var(--accent) 90%, white 6%)"
+                                : "1px solid color-mix(in srgb, var(--accent) 88%, white 4%)",
+                        background:
+                            preview.position === "center"
+                                ? "color-mix(in srgb, var(--accent) 8%, transparent)"
+                                : "color-mix(in srgb, var(--accent) 12%, transparent)",
+                        boxShadow:
+                            "inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent)",
+                        zIndex: 10029,
+                    }}
+                />
+            ) : null}
+        </>,
+        document.body,
+    );
+}
+
+function WorkspaceTabDropOverlayHost() {
+    const [preview, setPreview] = useState<CrossPaneTabDropPreview | null>(
+        null,
+    );
+    const pendingClearFrameRef = useRef<number | null>(null);
 
     useEffect(() => {
+        const cancelPendingClear = () => {
+            if (pendingClearFrameRef.current === null) {
+                return;
+            }
+
+            window.cancelAnimationFrame(pendingClearFrameRef.current);
+            pendingClearFrameRef.current = null;
+        };
+
         const handleCrossPaneDropPreview = (event: Event) => {
             const detail = (
                 event as CustomEvent<CrossPaneTabDropPreview | null>
             ).detail;
-            setCrossPaneDropPreview(detail);
+
+            if (detail) {
+                cancelPendingClear();
+                setPreview(detail);
+                return;
+            }
+
+            if (pendingClearFrameRef.current !== null) {
+                return;
+            }
+
+            // Keep the last preview alive for one frame so tiny target gaps
+            // near pane edges do not cause visible blink.
+            pendingClearFrameRef.current = window.requestAnimationFrame(() => {
+                pendingClearFrameRef.current = null;
+                setPreview(null);
+            });
         };
 
         window.addEventListener(
@@ -83,12 +173,28 @@ export function MultiPaneWorkspace() {
         );
 
         return () => {
+            cancelPendingClear();
             window.removeEventListener(
                 CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
                 handleCrossPaneDropPreview,
             );
         };
     }, []);
+
+    return <WorkspaceTabDropOverlay preview={preview} />;
+}
+
+export function MultiPaneWorkspace() {
+    const leafPaneIds = useEditorStore(useShallow(selectLeafPaneIds));
+    const layoutTree = useEditorStore((state) => state.layoutTree);
+    const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const focusPane = useEditorStore((state) => state.focusPane);
+    const resizePaneSplit = useEditorStore((state) => state.resizePaneSplit);
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const [externalFileDropPaneId, setExternalFileDropPaneId] = useState<
+        string | null
+    >(null);
+    const visiblePaneCount = Math.max(1, leafPaneIds.length);
 
     useLayoutEffect(() => {
         const label = getCurrentWindowLabel();
@@ -229,6 +335,110 @@ export function MultiPaneWorkspace() {
         [resizePaneSplit],
     );
 
+    useEffect(() => {
+        let mounted = true;
+        let unlisten: (() => void) | null = null;
+
+        void getCurrentWebview()
+            .onDragDropEvent((event) => {
+                const { type } = event.payload;
+                const position = (
+                    event.payload as {
+                        position?: { x: number; y: number };
+                        paths?: string[];
+                    }
+                ).position;
+                const target = position
+                    ? resolveWorkspacePaneFileDropTarget(position.x, position.y)
+                    : null;
+
+                if (type === "enter" || type === "over") {
+                    if (mounted) {
+                        setExternalFileDropPaneId(target?.paneId ?? null);
+                    }
+                    return;
+                }
+
+                if (mounted) {
+                    setExternalFileDropPaneId(null);
+                }
+
+                if (type !== "drop" || !target) {
+                    return;
+                }
+
+                const paths =
+                    (event.payload as { paths?: string[] }).paths ?? [];
+                if (paths.length === 0) {
+                    return;
+                }
+
+                void openDroppedVaultPathsInPane(
+                    paths,
+                    target.paneId,
+                    target.insertIndex,
+                );
+            })
+            .then((cleanup) => {
+                if (mounted) {
+                    unlisten = cleanup;
+                    return;
+                }
+                cleanup();
+            });
+
+        return () => {
+            mounted = false;
+            setExternalFileDropPaneId(null);
+            unlisten?.();
+        };
+    }, []);
+
+    useEffect(() => {
+        const handleTreeDrag = (event: Event) => {
+            const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
+                .detail;
+            const hasTabPayload =
+                detail.notes.length > 0 || (detail.files?.length ?? 0) > 0;
+
+            if (
+                !hasTabPayload ||
+                detail.phase === "attach" ||
+                detail.phase === "cancel" ||
+                detail.origin?.kind === "workspace-tab"
+            ) {
+                setExternalFileDropPaneId(null);
+                return;
+            }
+
+            const target = resolveWorkspacePaneFileDropTarget(
+                detail.x,
+                detail.y,
+            );
+            setExternalFileDropPaneId(target?.paneId ?? null);
+
+            if (detail.phase !== "end" || !target) {
+                return;
+            }
+
+            setExternalFileDropPaneId(null);
+            void openDroppedTreeItemsInPane(
+                detail,
+                target.paneId,
+                target.insertIndex,
+            );
+        };
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleTreeDrag);
+        return () => {
+            setExternalFileDropPaneId(null);
+            window.removeEventListener(
+                FILE_TREE_NOTE_DRAG_EVENT,
+                handleTreeDrag,
+            );
+        };
+    }, []);
+
     return (
         <div
             ref={containerRef}
@@ -237,10 +447,11 @@ export function MultiPaneWorkspace() {
             <WorkspaceSplitContainer
                 node={layoutTree}
                 focusedPaneId={focusedPaneId}
+                externalFileDropPaneId={externalFileDropPaneId}
                 onPaneFocus={handlePaneFocus}
                 onResizeSplit={handleResizeSplit}
-                dropPreview={crossPaneDropPreview}
             />
+            <WorkspaceTabDropOverlayHost />
         </div>
     );
 }

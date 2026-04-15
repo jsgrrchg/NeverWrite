@@ -5,6 +5,58 @@ import type { AIChatSession, AIRuntimeOption } from "../types";
 import type { ChatWorkspaceTab } from "../store/chatTabsStore";
 import { AIChatTabs } from "./AIChatTabs";
 
+if (typeof window.PointerEvent === "undefined") {
+    class MockPointerEvent extends MouseEvent {
+        pointerId: number;
+        pointerType: string;
+        isPrimary: boolean;
+
+        constructor(
+            type: string,
+            init: MouseEventInit & {
+                pointerId?: number;
+                pointerType?: string;
+                isPrimary?: boolean;
+            } = {},
+        ) {
+            super(type, init);
+            this.pointerId = init.pointerId ?? 1;
+            this.pointerType = init.pointerType ?? "mouse";
+            this.isPrimary = init.isPrimary ?? true;
+        }
+    }
+
+    Object.defineProperty(window, "PointerEvent", {
+        configurable: true,
+        value: MockPointerEvent,
+    });
+    Object.defineProperty(globalThis, "PointerEvent", {
+        configurable: true,
+        value: MockPointerEvent,
+    });
+}
+
+if (typeof HTMLElement.prototype.setPointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+        configurable: true,
+        value: () => {},
+    });
+}
+
+if (typeof HTMLElement.prototype.releasePointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+        configurable: true,
+        value: () => {},
+    });
+}
+
+if (typeof HTMLElement.prototype.hasPointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+        configurable: true,
+        value: () => false,
+    });
+}
+
 function createSession(
     sessionId: string,
     title: string,
@@ -112,6 +164,57 @@ describe("AIChatTabs", () => {
 
         expect(onSelectTab).toHaveBeenCalledWith("tab-b");
         expect(onCloseTab).toHaveBeenCalledWith("tab-a");
+    });
+
+    it("waits until pointer release before selecting a tab", () => {
+        const onSelectTab = vi.fn();
+
+        renderComponent(
+            <AIChatTabs
+                tabs={[
+                    { id: "tab-a", sessionId: "session-a" },
+                    { id: "tab-b", sessionId: "session-b" },
+                ]}
+                activeTabId="tab-a"
+                sessionsById={{
+                    "session-a": createSession("session-a", "First tab"),
+                    "session-b": createSession("session-b", "Second tab"),
+                }}
+                runtimes={runtimes}
+                onSelectTab={onSelectTab}
+                onReorderTabs={() => {}}
+                onCloseTab={() => {}}
+                onExportSession={() => {}}
+                onRenameSession={() => {}}
+            />,
+        );
+
+        const targetTab = screen.getByRole("tab", { name: /Second tab/ });
+
+        fireEvent.pointerDown(targetTab, {
+            pointerId: 1,
+            button: 0,
+            buttons: 1,
+            clientX: 120,
+            clientY: 18,
+            screenX: 120,
+            screenY: 18,
+        });
+
+        expect(onSelectTab).not.toHaveBeenCalled();
+
+        fireEvent.pointerUp(targetTab, {
+            pointerId: 1,
+            button: 0,
+            buttons: 0,
+            clientX: 120,
+            clientY: 18,
+            screenX: 120,
+            screenY: 18,
+        });
+
+        expect(onSelectTab).toHaveBeenCalledTimes(1);
+        expect(onSelectTab).toHaveBeenCalledWith("tab-b");
     });
 
     it("hides secondary tab metadata in compact densities", () => {

@@ -18,7 +18,6 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../../app/store/editorStore";
-import { getWindowMode } from "../../../app/detachedWindows";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
@@ -35,13 +34,13 @@ import { AIChatAgentControls } from "./AIChatAgentControls";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
+import { useInlineRename } from "./useInlineRename";
 import {
     appendFileAttachmentPart,
     appendScreenshotPart,
     createEmptyComposerParts,
 } from "../composerParts";
 import { getSessionTitle } from "../sessionPresentation";
-import { moveChatToSidebar } from "../chatPaneMovement";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -56,7 +55,6 @@ interface AIChatSessionViewProps {
 
 export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
-    const canReturnToPanel = getWindowMode() === "main";
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -136,6 +134,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const composerFontFamily = useChatStore((s) => s.composerFontFamily);
     const chatFontSize = useChatStore((s) => s.chatFontSize);
     const chatFontFamily = useChatStore((s) => s.chatFontFamily);
+    const {
+        editingKey,
+        editValue,
+        inputRef,
+        setEditValue,
+        startEditing,
+        cancelEditing,
+        commitEditing,
+    } = useInlineRename<string>();
 
     // Notes/files for mentions
     const notes = useVaultStore((s) => s.notes);
@@ -304,6 +311,17 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         }
     }, [session, sessionId]);
 
+    const sessionTitle = session ? getSessionTitle(session) : "Chat";
+
+    const startTitleEdit = useCallback(() => {
+        if (!session || !sessionId) return;
+        startEditing(sessionId, getSessionTitle(session));
+    }, [session, sessionId, startEditing]);
+
+    const commitTitleEdit = useCallback(() => {
+        commitEditing(chatActions.renameSession);
+    }, [chatActions, commitEditing]);
+
     if (!sessionId) {
         return (
             <div
@@ -320,7 +338,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
             className="relative flex h-full min-h-0 flex-col"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
-            {/* Compact header with return-to-sidebar action */}
+            {/* Compact local session header for the workspace chat tab */}
             <div
                 className="flex items-center gap-2 px-3 py-1.5 text-xs shrink-0"
                 style={{
@@ -330,26 +348,39 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     color: "var(--text-secondary)",
                 }}
             >
-                <span
-                    className="flex-1 truncate font-medium"
-                    style={{ color: "var(--text-primary)" }}
-                >
-                    {session ? getSessionTitle(session) : "Chat"}
-                </span>
-                {canReturnToPanel ? (
-                    <button
-                        className="shrink-0 rounded px-2 py-0.5 text-[11px] hover:opacity-80"
+                {editingKey === sessionId ? (
+                    <input
+                        ref={inputRef}
+                        className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none"
                         style={{
-                            background:
-                                "color-mix(in srgb, var(--accent) 10%, transparent)",
-                            color: "var(--accent)",
+                            color: "var(--text-primary)",
+                            border: "none",
+                            padding: 0,
+                            minHeight: 0,
+                            boxSizing: "border-box",
+                            boxShadow: "inset 0 -1px 0 var(--accent)",
                         }}
-                        onClick={() => moveChatToSidebar(sessionId)}
-                        title="Return to AI Panel"
+                        value={editValue}
+                        onChange={(event) => setEditValue(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                                commitTitleEdit();
+                            } else if (event.key === "Escape") {
+                                cancelEditing();
+                            }
+                        }}
+                        onBlur={commitTitleEdit}
+                    />
+                ) : (
+                    <span
+                        className="flex-1 truncate font-medium"
+                        onDoubleClick={startTitleEdit}
+                        title="Double-click to rename"
+                        style={{ color: "var(--text-primary)" }}
                     >
-                        Return to Panel
-                    </button>
-                ) : null}
+                        {sessionTitle}
+                    </span>
+                )}
             </div>
 
             <AIChatRuntimeBanner
@@ -512,6 +543,10 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }}
                     onAttachFile={handleAttachFile}
                     onPasteImage={handlePasteImage}
+                    onFocus={() => {
+                        if (!sessionId) return;
+                        chatActions.markSessionFocused(sessionId);
+                    }}
                     onMentionAttach={(note) => {
                         chatActions.attachNote(note, sessionId);
                     }}

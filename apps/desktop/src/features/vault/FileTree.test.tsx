@@ -14,6 +14,7 @@ import {
     isFileTab,
     isNoteTab,
 } from "../../app/store/editorStore";
+import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -648,6 +649,125 @@ describe("FileTree", () => {
             await user.click(await screen.findByText("Rename"));
 
             expect(screen.getByDisplayValue("main.ts")).toBeInTheDocument();
+        } finally {
+            act(() => {
+                useSettingsStore.getState().reset();
+            });
+        }
+    });
+
+    it("converts a renamed note into a generic file in all-files mode", async () => {
+        const user = userEvent.setup();
+
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({
+                developerModeEnabled: true,
+                fileTreeContentMode: "all_files",
+                fileTreeShowExtensions: true,
+            });
+        });
+
+        vi.mocked(invoke).mockImplementation(async (command, args) => {
+            if (command === "convert_note_to_file") {
+                expect(args).toEqual({
+                    noteId: "plans/alpha",
+                    newRelativePath: "plans/beta.ts",
+                    vaultPath: "/vault",
+                });
+                return {
+                    id: "plans/beta.ts",
+                    path: "/vault/plans/beta.ts",
+                    relative_path: "plans/beta.ts",
+                    title: "beta",
+                    file_name: "beta.ts",
+                    extension: "ts",
+                    kind: "file",
+                    modified_at: 2,
+                    created_at: 1,
+                    size: 32,
+                    mime_type: "text/typescript",
+                };
+            }
+
+            return undefined;
+        });
+
+        setVaultNotes([
+            {
+                id: "plans/alpha",
+                path: "/vault/plans/alpha.md",
+                title: "alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "note-tab",
+                noteId: "plans/alpha",
+                title: "alpha",
+                content: "const alpha = true;\n",
+            },
+        ]);
+        useBookmarkStore.setState({
+            folders: [],
+            items: [
+                {
+                    id: "bookmark-alpha",
+                    folderId: null,
+                    kind: "note",
+                    noteId: "plans/alpha",
+                    entryPath: null,
+                    sortOrder: 0,
+                },
+            ],
+        });
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "plans");
+
+            fireEvent.contextMenu(getNoteRow("alpha.md"));
+            await user.click(await screen.findByText("Rename"));
+
+            const input = screen.getByDisplayValue("alpha.md");
+            fireEvent.change(input, { target: { value: "beta.ts" } });
+            fireEvent.blur(input);
+
+            await waitFor(() => {
+                expect(invoke).toHaveBeenCalledWith("convert_note_to_file", {
+                    noteId: "plans/alpha",
+                    newRelativePath: "plans/beta.ts",
+                    vaultPath: "/vault",
+                });
+            });
+
+            expect(useVaultStore.getState().notes).toEqual([]);
+            expect(useVaultStore.getState().entries).toEqual([
+                expect.objectContaining({
+                    relative_path: "plans/beta.ts",
+                    file_name: "beta.ts",
+                    kind: "file",
+                }),
+            ]);
+            expect(useEditorStore.getState().tabs).toEqual([
+                expect.objectContaining({
+                    id: "note-tab",
+                    kind: "file",
+                    relativePath: "plans/beta.ts",
+                    title: "beta.ts",
+                    content: "const alpha = true;\n",
+                }),
+            ]);
+            expect(useBookmarkStore.getState().items).toEqual([
+                expect.objectContaining({
+                    id: "bookmark-alpha",
+                    kind: "file",
+                    noteId: null,
+                    entryPath: "plans/beta.ts",
+                }),
+            ]);
         } finally {
             act(() => {
                 useSettingsStore.getState().reset();

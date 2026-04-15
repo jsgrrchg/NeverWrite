@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -15,10 +17,11 @@ import { SearchPanel } from "./features/search/SearchPanel";
 import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatPanel } from "./features/ai/AIChatPanel";
+import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
+import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
-import { useAutoOpenReviewTab } from "./features/ai/hooks/useAutoOpenReviewTab";
 import { EditorPaneContent } from "./features/editor/EditorPaneContent";
 import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
 import { WorkspaceChromeBar } from "./features/editor/WorkspaceChromeBar";
@@ -56,6 +59,7 @@ import {
 import {
     fileViewerNeedsTextContent,
     useEditorStore,
+    isChatTab,
     isFileTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
@@ -66,7 +70,6 @@ import {
     selectPaneCount,
     selectPaneState,
 } from "./app/store/editorStore";
-import { MAX_EDITOR_PANES } from "./app/store/workspaceLayoutTree";
 import {
     buildPersistedSession,
     isSessionReady,
@@ -83,6 +86,13 @@ import {
     getShortcutDefinition,
 } from "./app/shortcuts/registry";
 import { getDesktopPlatform } from "./app/utils/platform";
+import {
+    decreaseAppZoom,
+    increaseAppZoom,
+    readAppZoom,
+    resetAppZoom,
+    subscribeAppZoom,
+} from "./app/utils/appZoom";
 import { invalidateLivePreviewNoteCache } from "./features/editor/extensions/livePreviewBlocks";
 import {
     canUseExcalidrawRuntime,
@@ -159,12 +169,13 @@ function SidebarPanel({ view }: { view: SidebarView }) {
 }
 
 function cycleEditorTabs(backward: boolean) {
-    const { tabs, activeTabId, switchTab } = useEditorStore.getState();
-    const idx = tabs.findIndex((tab) => tab.id === activeTabId);
-    if (idx === -1 || tabs.length <= 1) return;
+    const state = useEditorStore.getState();
+    const pane = selectPaneState(state);
+    const idx = pane.tabs.findIndex((tab) => tab.id === pane.activeTabId);
+    if (idx === -1 || pane.tabs.length <= 1) return;
 
-    const offset = backward ? tabs.length - 1 : 1;
-    switchTab(tabs[(idx + offset) % tabs.length].id);
+    const offset = backward ? pane.tabs.length - 1 : 1;
+    state.switchTab(pane.tabs[(idx + offset) % pane.tabs.length].id);
 }
 
 function openEmptyTab() {
@@ -183,28 +194,23 @@ function toggleLivePreviewSetting() {
     setSetting("livePreviewEnabled", !livePreviewEnabled);
 }
 
-function adjustEditorFontSize(delta: number) {
-    const { editorFontSize, setSetting } = useSettingsStore.getState();
-    setSetting(
-        "editorFontSize",
-        Math.max(10, Math.min(24, editorFontSize + delta)),
-    );
+function zoomInApp() {
+    increaseAppZoom();
+}
+
+function zoomOutApp() {
+    decreaseAppZoom();
+}
+
+function resetAppToActualSize() {
+    resetAppZoom();
 }
 
 function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     return (
         <>
-            {/* Always mount AIChatPanel so its Tauri event listeners stay
-                bound even when a ChatTab lives in the editor workspace and
-                the sidebar is switched to outline/links. */}
-            <div
-                style={{
-                    display: rightPanelView === "chat" ? "contents" : "none",
-                }}
-            >
-                <AIChatPanel />
-            </div>
+            {rightPanelView === "chat" && <AIChatPanel />}
             {rightPanelView === "outline" && <OutlineRightPanel />}
             {rightPanelView === "links" && <LinksPanel />}
         </>
@@ -381,6 +387,7 @@ function useRegisterCommands(
         const quickSwitcherShortcut = getShortcutDefinition("quick_switcher");
         const openVaultShortcut = getShortcutDefinition("open_vault");
         const newNoteShortcut = getShortcutDefinition("new_note");
+        const newAgentShortcut = getShortcutDefinition("new_agent");
         const closeTabShortcut = getShortcutDefinition("close_tab");
         const newTabShortcut = getShortcutDefinition("new_tab");
         const reopenClosedTabShortcut =
@@ -390,6 +397,9 @@ function useRegisterCommands(
         );
         const toggleRightPanelShortcut =
             getShortcutDefinition("toggle_right_panel");
+        const zoomInShortcut = getShortcutDefinition("zoom_in");
+        const zoomOutShortcut = getShortcutDefinition("zoom_out");
+        const resetZoomShortcut = getShortcutDefinition("reset_zoom");
         const searchInVaultShortcut = getShortcutDefinition("search_in_vault");
         const openSettingsShortcut = getShortcutDefinition("open_settings");
         const toggleLivePreviewShortcut = getShortcutDefinition(
@@ -399,9 +409,8 @@ function useRegisterCommands(
         const previousTabShortcut = getShortcutDefinition("previous_tab");
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
-            useEditorStore.getState().activeTabId !== null;
-        const canSplitPane = () =>
-            selectPaneCount(useEditorStore.getState()) < MAX_EDITOR_PANES;
+            selectFocusedEditorTab(useEditorStore.getState()) !== null;
+        const canSplitPane = () => true;
         const canClosePane = () =>
             selectPaneCount(useEditorStore.getState()) > 1;
         const hasRecentlyClosedTab = () =>
@@ -515,6 +524,17 @@ function useRegisterCommands(
         });
 
         register({
+            id: "ai:new-agent",
+            label: newAgentShortcut.label,
+            shortcut: formatShortcutAction(newAgentShortcut.id, platform),
+            category: newAgentShortcut.category,
+            when: hasVault,
+            execute: () => {
+                void createNewChatInWorkspace();
+            },
+        });
+
+        register({
             id: "vault:new-concept-map",
             label: "New Concept Map",
             category: "Vault",
@@ -543,23 +563,18 @@ function useRegisterCommands(
             category: closeTabShortcut.category,
             when: hasActiveTab,
             execute: () => {
-                const { activeTabId, tabs, closeTab } =
-                    useEditorStore.getState();
-                if (!activeTabId) return;
+                const state = useEditorStore.getState();
+                const activeTab = selectFocusedEditorTab(state);
+                if (!activeTab) return;
 
-                const activeTab = tabs.find((tab) => tab.id === activeTabId);
-                if (
-                    activeTab &&
-                    isNoteTab(activeTab) &&
-                    activeTab.noteId !== ""
-                ) {
+                if (isNoteTab(activeTab) && activeTab.noteId !== "") {
                     window.dispatchEvent(
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );
                     return;
                 }
 
-                closeTab(activeTabId);
+                state.closeTab(activeTab.id);
             },
         });
 
@@ -596,19 +611,27 @@ function useRegisterCommands(
         });
 
         register({
-            id: "editor:font-size-up",
-            label: "Increase Font Size",
-            shortcut: platform === "macos" ? "⌘=" : "Ctrl+=",
-            category: "Editor",
-            execute: () => adjustEditorFontSize(1),
+            id: "app:zoom-in",
+            label: zoomInShortcut.label,
+            shortcut: formatShortcutAction(zoomInShortcut.id, platform),
+            category: zoomInShortcut.category,
+            execute: zoomInApp,
         });
 
         register({
-            id: "editor:font-size-down",
-            label: "Decrease Font Size",
-            shortcut: platform === "macos" ? "⌘-" : "Ctrl-",
-            category: "Editor",
-            execute: () => adjustEditorFontSize(-1),
+            id: "app:zoom-out",
+            label: zoomOutShortcut.label,
+            shortcut: formatShortcutAction(zoomOutShortcut.id, platform),
+            category: zoomOutShortcut.category,
+            execute: zoomOutApp,
+        });
+
+        register({
+            id: "app:zoom-reset",
+            label: resetZoomShortcut.label,
+            shortcut: formatShortcutAction(resetZoomShortcut.id, platform),
+            category: resetZoomShortcut.category,
+            execute: resetAppToActualSize,
         });
 
         register({
@@ -852,6 +875,24 @@ function useGlobalShortcuts(openSettings: () => void) {
                 return;
             }
 
+            if (matchesShortcutAction(e, "zoom_in", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("app:zoom-in");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "zoom_out", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("app:zoom-out");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "reset_zoom", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("app:zoom-reset");
+                return;
+            }
+
             if (matchesShortcutAction(e, "search_in_vault", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("vault:search");
@@ -861,6 +902,12 @@ function useGlobalShortcuts(openSettings: () => void) {
             if (matchesShortcutAction(e, "new_note", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("vault:new-note");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "new_agent", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("ai:new-agent");
                 return;
             }
 
@@ -906,6 +953,28 @@ function useGlobalShortcuts(openSettings: () => void) {
         window.addEventListener("keydown", handler, true);
         return () => window.removeEventListener("keydown", handler, true);
     }, [activeModal, closeModal, openCommandPalette, openSettings]);
+}
+
+function useAppWebviewZoom() {
+    const [appZoom, setAppZoom] = useState(() => readAppZoom());
+
+    useEffect(() => {
+        return subscribeAppZoom((nextZoom) => {
+            setAppZoom(nextZoom);
+        });
+    }, []);
+
+    useEffect(() => {
+        const applyZoom = async () => {
+            try {
+                await getCurrentWebview().setZoom(appZoom);
+            } catch {
+                // Ignore unsupported environments such as tests.
+            }
+        };
+
+        void applyZoom();
+    }, [appZoom]);
 }
 
 function useNativeMenuActions(windowMode: ReturnType<typeof getWindowMode>) {
@@ -1070,8 +1139,10 @@ export default function App() {
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
-    const tabs = useEditorStore((s) => s.tabs);
-    const activeTabId = useEditorStore((s) => s.activeTabId);
+    const workspaceTabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
+    const focusedWorkspaceTabId = useEditorStore(
+        (state) => selectFocusedEditorTab(state)?.id ?? null,
+    );
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const developerModeEnabled = useSettingsStore(
         (s) => s.developerModeEnabled,
@@ -1079,7 +1150,6 @@ export default function App() {
     const developerTerminalEnabled = useSettingsStore(
         (s) => s.developerTerminalEnabled,
     );
-    const paneCount = useEditorStore(selectPaneCount);
     const windowMode = getWindowMode();
     const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
@@ -1138,7 +1208,7 @@ export default function App() {
                     label,
                     windowMode,
                     vaultPath,
-                    tabs: editor.tabs,
+                    tabs: selectEditorWorkspaceTabs(editor),
                     dirtyTabIds: editor.dirtyTabIds,
                     sessionsById: chat.sessionsById,
                 }),
@@ -1266,10 +1336,9 @@ export default function App() {
 
     useRegisterCommands(openSearchPanel, openSettings, windowMode === "main");
     useGlobalShortcuts(openSettings);
+    useAppWebviewZoom();
     useNativeMenuActions(windowMode);
     useDynamicScrollbars();
-    useAutoOpenReviewTab();
-
     const restoreSessionForCurrentVault = useCallback(async () => {
         const vaultPath = useVaultStore.getState().vaultPath;
         const restored = await restorePersistedSession(vaultPath, {
@@ -1279,18 +1348,31 @@ export default function App() {
             setEditorPaneSizes(1, []);
             return;
         }
-        const paneCount = restored.panes?.length ?? 1;
+        const restoredPanes =
+            restored.panes?.length && restored.panes.length > 0
+                ? restored.panes
+                : [
+                      {
+                          id: "primary",
+                          tabs: restored.tabs,
+                          activeTabId: restored.activeTabId,
+                          activationHistory: restored.activeTabId
+                              ? [restored.activeTabId]
+                              : [],
+                          tabNavigationHistory: restored.activeTabId
+                              ? [restored.activeTabId]
+                              : [],
+                          tabNavigationIndex: restored.activeTabId ? 0 : -1,
+                      },
+                  ];
+        const paneCount = restoredPanes.length;
         setEditorPaneSizes(paneCount, restored.paneSizes ?? []);
-        if (restored.panes?.length) {
-            hydrateWorkspace(
-                restored.panes,
-                restored.focusedPaneId,
-                restored.layoutTree,
-            );
-            return;
-        }
-        hydrateTabs(restored.tabs, restored.activeTabId);
-    }, [hydrateTabs, hydrateWorkspace, setEditorPaneSizes]);
+        hydrateWorkspace(
+            restoredPanes,
+            restored.focusedPaneId ?? restoredPanes[0]?.id ?? null,
+            restored.layoutTree,
+        );
+    }, [hydrateWorkspace, setEditorPaneSizes]);
 
     useEffect(() => {
         const blockNativeContextMenu = (event: MouseEvent) => {
@@ -1320,8 +1402,8 @@ export default function App() {
             label,
             windowMode,
             vaultPath,
-            tabs,
-            activeTabId,
+            tabs: workspaceTabs,
+            activeTabId: focusedWorkspaceTabId,
         });
 
         writeWindowSessionEntry(label, entry);
@@ -1338,7 +1420,13 @@ export default function App() {
             window.removeEventListener("focus", refresh);
             window.clearInterval(interval);
         };
-    }, [activeTabId, tabs, vaultPath, windowMode, windowSessionReady]);
+    }, [
+        focusedWorkspaceTabId,
+        vaultPath,
+        windowMode,
+        windowSessionReady,
+        workspaceTabs,
+    ]);
 
     useEffect(() => {
         if (!isSessionReady()) return;
@@ -1357,8 +1445,6 @@ export default function App() {
                     focusedPaneId,
                     layoutTree: editor.layoutTree,
                     paneSizes: useLayoutStore.getState().editorPaneSizes,
-                    tabs: editor.tabs,
-                    activeTabId: editor.activeTabId,
                 }),
             );
         }, 250);
@@ -1476,14 +1562,27 @@ export default function App() {
                 chatState.activeSessionId,
             );
             const restoredChatWorkspace = useChatTabsStore.getState();
+            const restoredChatMetadataBySessionId = new Map(
+                restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
+            );
+            const editorState = useEditorStore.getState();
+            const focusedEditorTab = selectFocusedEditorTab(editorState);
             await useChatStore.getState().reconcileRestoredWorkspaceTabs(
-                restoredChatWorkspace.tabs.map((tab) => ({
-                    id: tab.id,
-                    sessionId: tab.sessionId,
-                    historySessionId: tab.historySessionId ?? null,
-                    runtimeId: tab.runtimeId ?? null,
-                })),
-                restoredChatWorkspace.activeTabId,
+                selectEditorWorkspaceTabs(editorState)
+                    .filter((tab) => isChatTab(tab))
+                    .map((tab) => {
+                        const metadata = restoredChatMetadataBySessionId.get(
+                            tab.sessionId,
+                        );
+                        return {
+                            id: tab.id,
+                            sessionId: tab.sessionId,
+                            historySessionId:
+                                metadata?.historySessionId ?? null,
+                            runtimeId: metadata?.runtimeId ?? null,
+                        };
+                    }),
+                isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,
             );
             markChatTabsReady();
         })();
@@ -1832,11 +1931,8 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            {paneCount > 1 ? (
-                <WorkspaceChromeBar />
-            ) : (
-                <UnifiedBar windowMode="main" />
-            )}
+            <AIChatWorkspaceHost />
+            <WorkspaceChromeBar />
 
             <div className="relative flex-1 flex overflow-hidden">
                 <ActivityBar
@@ -1850,13 +1946,7 @@ export default function App() {
                 <div className="min-w-0 flex-1 overflow-hidden">
                     <AppLayout
                         left={<SidebarPanel view={sidebarView} />}
-                        center={
-                            paneCount > 1 ? (
-                                <MultiPaneWorkspace />
-                            ) : (
-                                <EditorPaneContent />
-                            )
-                        }
+                        center={<MultiPaneWorkspace />}
                         right={<RightPanel />}
                         bottom={
                             developerModeEnabled &&

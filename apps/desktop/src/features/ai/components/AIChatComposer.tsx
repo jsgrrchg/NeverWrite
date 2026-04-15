@@ -78,6 +78,7 @@ interface AIChatComposerProps {
     onToggleExpanded?: () => void;
     onAttachFile?: () => void;
     onPasteImage?: (file: File) => void;
+    onFocus?: () => void;
     onSubmit: () => void;
     onStop: () => void;
 }
@@ -933,6 +934,7 @@ export function AIChatComposer({
     onToggleExpanded,
     onAttachFile,
     onPasteImage,
+    onFocus,
     onSubmit,
     onStop,
 }: AIChatComposerProps) {
@@ -1941,6 +1943,9 @@ export function AIChatComposer({
                             closeMentionPicker();
                             closeSlashPicker();
                         }, 0);
+                    }}
+                    onFocus={() => {
+                        onFocus?.();
                     }}
                     className={`w-full whitespace-pre-wrap break-words${expanded || customHeight != null ? " min-h-0 flex-1" : ""}`}
                     style={{

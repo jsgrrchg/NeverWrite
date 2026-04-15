@@ -1,4 +1,3 @@
-export const MAX_EDITOR_PANES = 6;
 export const DEFAULT_EDITOR_PANE_ID = "primary";
 
 const LAYOUT_SIZE_EPSILON = 1e-6;
@@ -330,8 +329,8 @@ export function getNextGeneratedPaneId(
     existingPaneIds: readonly string[],
     options?: { maxPaneCount?: number },
 ) {
-    const maxPaneCount = options?.maxPaneCount ?? MAX_EDITOR_PANES;
-    if (existingPaneIds.length >= maxPaneCount) {
+    const maxPaneCount = options?.maxPaneCount;
+    if (maxPaneCount !== undefined && existingPaneIds.length >= maxPaneCount) {
         return null;
     }
 
@@ -349,7 +348,11 @@ export function getNextGeneratedPaneId(
         }
     });
 
-    for (let candidate = 1; candidate <= maxPaneCount; candidate += 1) {
+    for (
+        let candidate = 1;
+        maxPaneCount === undefined || candidate <= maxPaneCount;
+        candidate += 1
+    ) {
         if (occupiedSlots.has(candidate)) {
             continue;
         }

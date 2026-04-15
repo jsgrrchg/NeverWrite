@@ -292,6 +292,27 @@ describe("Editor", () => {
         );
     });
 
+    it("renders highlights when whitespace appears before the closing delimiter in live preview", async () => {
+        vi.useFakeTimers();
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "==Actualización 09:44 CLT . == El cuerpo sigue.",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        await flushEditorViewUpdates();
+
+        const highlight = document.querySelector(
+            ".cm-lp-highlight",
+        ) as HTMLElement | null;
+        expect(highlight).not.toBeNull();
+        expect(highlight?.textContent).toBe("Actualización 09:44 CLT .");
+    });
+
     it("uses a left-aligned content inset when line wrapping is disabled in both preview modes", async () => {
         setEditorTabs([
             {

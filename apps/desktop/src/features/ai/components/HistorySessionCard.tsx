@@ -75,7 +75,7 @@ export function HistorySessionCard({
     const contextMenuEntries = useMemo<ContextMenuEntry[]>(
         () => [
             {
-                label: "Open",
+                label: "Restore in chat",
                 action: onOpen,
             },
             {

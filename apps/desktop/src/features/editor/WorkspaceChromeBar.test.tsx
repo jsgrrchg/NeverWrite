@@ -5,7 +5,7 @@ import { renderComponent, setEditorTabs } from "../../test/test-utils";
 import { WorkspaceChromeBar } from "./WorkspaceChromeBar";
 
 describe("WorkspaceChromeBar", () => {
-    it("preserves the unified navigation chrome when split view is active", () => {
+    it("keeps the top chrome free of pane-local navigation", () => {
         setEditorTabs(
             [
                 {
@@ -21,26 +21,9 @@ describe("WorkspaceChromeBar", () => {
 
         renderComponent(<WorkspaceChromeBar />);
 
-        const backButton = screen.getByTitle("Go back");
-        const forwardButton = screen.getByTitle("Go forward");
-
-        expect(backButton).toHaveStyle({
-            border: "1px solid var(--border)",
-            borderRight: "none",
-            backgroundColor: "var(--bg-secondary)",
-            cursor: "default",
-        });
-        expect(backButton).toHaveStyle({
-            boxShadow: "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
-        });
-        expect(forwardButton).toHaveStyle({
-            border: "1px solid var(--border)",
-            backgroundColor: "var(--bg-secondary)",
-            cursor: "default",
-        });
-        expect(forwardButton).toHaveStyle({
-            boxShadow: "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
-        });
+        expect(screen.queryByTitle("Go back")).not.toBeInTheDocument();
+        expect(screen.queryByTitle("Go forward")).not.toBeInTheDocument();
+        expect(screen.getByTitle("Hide sidebar")).toBeInTheDocument();
     });
 
     it("uses the shared trailing panel controls chrome in split view", () => {

@@ -8,7 +8,6 @@ import {
     findPanePath,
     getLayoutPaneIds,
     getNextGeneratedPaneId,
-    MAX_EDITOR_PANES,
     movePane,
     normalizeLayoutTree,
     resizeSplit,
@@ -62,8 +61,20 @@ describe("workspaceLayoutTree", () => {
                 "pane-5",
                 "pane-6",
             ]),
+        ).toBe("pane-7");
+        expect(
+            getNextGeneratedPaneId(
+                [
+                    "primary",
+                    "secondary",
+                    "tertiary",
+                    "pane-4",
+                    "pane-5",
+                    "pane-6",
+                ],
+                { maxPaneCount: 6 },
+            ),
         ).toBeNull();
-        expect(MAX_EDITOR_PANES).toBe(6);
     });
 
     it("finds a pane path as child indexes from the root", () => {

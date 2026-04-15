@@ -36,6 +36,7 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { emitFileTreeNoteDrag } from "../../ai/dragEvents";
 import {
     type DecoEntry,
+    findHighlightRanges,
     linkReferenceField,
     findAncestor,
     normalizeReferenceLabel,
@@ -50,7 +51,6 @@ const MAX_REMOTE_IMAGE_URL_LENGTH = 4096;
 const TABLE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const TABLE_BOLD_RE = /\*\*(?=\S)(.+?\S)\*\*/g;
-const TABLE_HIGHLIGHT_RE = /==(?=\S)(.+?\S)==/g;
 const STANDALONE_URL_RE = /^https?:\/\/[^\s<>()"\]]+$/i;
 const NOTE_PREVIEW_CACHE_LIMIT = 64;
 type TableAlignment = "left" | "center" | "right";
@@ -1602,38 +1602,68 @@ function appendInteractiveTableContent(
 
 function appendInlineTableFormatting(parent: HTMLElement, content: string) {
     let index = 0;
+    const highlightRanges = findHighlightRanges(content);
+    let highlightIndex = 0;
 
     while (index < content.length) {
         TABLE_BOLD_RE.lastIndex = index;
-        TABLE_HIGHLIGHT_RE.lastIndex = index;
 
         const boldMatch = TABLE_BOLD_RE.exec(content);
-        const highlightMatch = TABLE_HIGHLIGHT_RE.exec(content);
-        const nextMatch = [boldMatch, highlightMatch]
-            .filter((match): match is RegExpExecArray => match !== null)
-            .sort((left, right) => left.index - right.index)[0];
+        const highlightRange = highlightRanges[highlightIndex] ?? null;
 
-        if (!nextMatch) {
+        const nextHighlightIndex =
+            highlightRange && highlightRange.from >= index
+                ? highlightRange.from
+                : Number.POSITIVE_INFINITY;
+        const nextBoldIndex = boldMatch?.index ?? Number.POSITIVE_INFINITY;
+
+        if (
+            nextBoldIndex === Number.POSITIVE_INFINITY &&
+            nextHighlightIndex === Number.POSITIVE_INFINITY
+        ) {
             parent.appendChild(document.createTextNode(content.slice(index)));
             break;
         }
 
-        if (nextMatch.index > index) {
+        if (nextHighlightIndex < nextBoldIndex) {
+            if (nextHighlightIndex > index) {
+                parent.appendChild(
+                    document.createTextNode(
+                        content.slice(index, nextHighlightIndex),
+                    ),
+                );
+            }
+
+            const span = document.createElement("span");
+            span.className = "cm-lp-table-highlight";
+            span.textContent = content.slice(
+                highlightRange!.contentFrom,
+                highlightRange!.contentTo,
+            );
+            parent.appendChild(span);
+
+            index = highlightRange!.to;
+            highlightIndex++;
+            continue;
+        }
+
+        if (!boldMatch) {
+            parent.appendChild(document.createTextNode(content.slice(index)));
+            break;
+        }
+
+        if (boldMatch.index > index) {
             parent.appendChild(
-                document.createTextNode(content.slice(index, nextMatch.index)),
+                document.createTextNode(content.slice(index, boldMatch.index)),
             );
         }
 
         const span = document.createElement("span");
-        if (nextMatch === boldMatch) {
-            span.className = "cm-lp-table-bold";
-        } else {
-            span.className = "cm-lp-table-highlight";
-        }
-        span.textContent = nextMatch[1];
+        span.className = "cm-lp-table-bold";
+        span.textContent = boldMatch[1];
         parent.appendChild(span);
 
-        index = nextMatch.index + nextMatch[0].length;
+        index = boldMatch.index + boldMatch[0].length;
     }
 }
 

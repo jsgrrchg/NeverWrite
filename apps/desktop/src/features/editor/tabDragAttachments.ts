@@ -5,6 +5,7 @@ import {
     isPdfTab,
     type Tab,
 } from "../../app/store/editorStore";
+import type { WorkspaceDropTarget } from "../../app/store/workspaceContracts";
 import { getPathBaseName } from "../../app/utils/path";
 import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -119,4 +120,15 @@ export function isPointOverAiComposerDropZone(
     }
 
     return false;
+}
+
+export function resolveComposerDropTarget(
+    clientX: number,
+    clientY: number,
+): Extract<WorkspaceDropTarget, { type: "composer" | "none" }> {
+    if (isPointOverAiComposerDropZone(clientX, clientY)) {
+        return { type: "composer" };
+    }
+
+    return { type: "none" };
 }

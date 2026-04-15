@@ -15,7 +15,7 @@ import type {
     AIRuntimeOption,
 } from "../types";
 import type { ChatWorkspaceTab } from "../store/chatTabsStore";
-import { moveChatToWorkspace } from "../chatPaneMovement";
+import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { useInlineRename } from "./useInlineRename";
 
 interface AIChatTabsProps {
@@ -107,14 +107,6 @@ export function AIChatTabs({
         },
         [tabStripRef],
     );
-    const handleTabPointerDownCapture = useCallback(
-        (tabId: string, event: React.PointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0) return;
-            if ((event.target as HTMLElement).closest("button")) return;
-            onSelectTab(tabId);
-        },
-        [onSelectTab],
-    );
     const handleTabClick = useCallback(
         (tabId: string) => {
             if (editingKey === tabId) return;
@@ -201,11 +193,6 @@ export function AIChatTabs({
                             className={`group flex min-w-0 shrink items-center rounded-md border transition-colors ${
                                 isCompact ? "gap-0.5 pr-0.5" : "gap-1 pr-1"
                             }`}
-                            onPointerDownCapture={(event) =>
-                                isEditing
-                                    ? undefined
-                                    : handleTabPointerDownCapture(tab.id, event)
-                            }
                             onPointerDown={(event) =>
                                 isEditing
                                     ? undefined
@@ -475,9 +462,9 @@ export function AIChatTabs({
                         },
                         { type: "separator" },
                         {
-                            label: "Open in Editor Pane",
+                            label: "Open in Workspace",
                             action: () =>
-                                moveChatToWorkspace(
+                                openChatSessionInWorkspace(
                                     contextMenu.payload.sessionId,
                                 ),
                             disabled: !contextMenu.payload.hasSession,

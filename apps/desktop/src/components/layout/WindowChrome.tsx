@@ -278,7 +278,7 @@ export function WindowChrome({
             <div
                 className="flex items-stretch select-none"
                 style={{
-                    height: 38,
+                    height: 34,
                     cursor: "default",
                     ...barStyle,
                 }}

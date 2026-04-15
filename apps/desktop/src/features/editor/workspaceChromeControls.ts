@@ -3,9 +3,9 @@ import type { CSSProperties } from "react";
 export const chromeControlsGroupStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
-    gap: 4,
-    padding: "0 3px",
-    borderRadius: 12,
+    gap: 2,
+    padding: "0 2px",
+    borderRadius: 8,
     border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
     background: "color-mix(in srgb, var(--bg-primary) 52%, var(--bg-tertiary))",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
@@ -33,15 +33,16 @@ export function getChromeNavigationButtonStyle(
     enabled: boolean,
 ): CSSProperties {
     return {
-        width: 30,
-        height: 30,
-        borderRadius: side === "leading" ? "9px 0 0 9px" : "0 9px 9px 0",
-        border: "1px solid var(--border)",
+        width: 22,
+        height: 22,
+        borderRadius: side === "leading" ? "6px 0 0 6px" : "0 6px 6px 0",
+        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
         borderRight: side === "leading" ? "none" : undefined,
-        backgroundColor: "var(--bg-secondary)",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+        backgroundColor:
+            "color-mix(in srgb, var(--bg-primary) 66%, var(--bg-secondary))",
+        boxShadow: "none",
         color: "var(--text-secondary)",
-        opacity: enabled ? 0.85 : 0.35,
+        opacity: enabled ? 0.92 : 0.38,
         cursor: enabled ? "pointer" : "default",
     };
 }
