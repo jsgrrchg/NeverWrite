@@ -2,7 +2,10 @@ import "@testing-library/jest-dom/vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createInitialLayout, splitPane } from "../../app/store/workspaceLayoutTree";
+import {
+    createInitialLayout,
+    splitPane,
+} from "../../app/store/workspaceLayoutTree";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
@@ -44,9 +47,7 @@ describe("WorkspacePaneEmptyState", () => {
 
         expect(screen.getByText("Empty Pane")).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "New Note" })).toBeVisible();
-        expect(
-            screen.getByRole("button", { name: "New Agent" }),
-        ).toBeVisible();
+        expect(screen.getByRole("button", { name: "New Agent" })).toBeVisible();
         expect(
             screen.queryByRole("button", { name: "Close Pane" }),
         ).not.toBeInTheDocument();
@@ -59,6 +60,7 @@ describe("WorkspacePaneEmptyState", () => {
                 {
                     id: "primary",
                     tabs: [],
+                    tabIds: [],
                     activeTabId: null,
                     activationHistory: [],
                     tabNavigationHistory: [],
@@ -67,6 +69,7 @@ describe("WorkspacePaneEmptyState", () => {
                 {
                     id: "secondary",
                     tabs: [],
+                    tabIds: [],
                     activeTabId: null,
                     activationHistory: [],
                     tabNavigationHistory: [],

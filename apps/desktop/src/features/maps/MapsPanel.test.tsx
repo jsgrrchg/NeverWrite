@@ -76,6 +76,7 @@ function setFocusedPrimaryWorkspaceWithMapInSecondary() {
             {
                 id: "primary",
                 tabs: [homeTab],
+                tabIds: [homeTab.id],
                 activeTabId: homeTab.id,
                 activationHistory: [homeTab.id],
                 tabNavigationHistory: [homeTab.id],
@@ -84,6 +85,7 @@ function setFocusedPrimaryWorkspaceWithMapInSecondary() {
             {
                 id: "secondary",
                 tabs: [mapTab],
+                tabIds: [mapTab.id],
                 activeTabId: mapTab.id,
                 activationHistory: [mapTab.id],
                 tabNavigationHistory: [mapTab.id],

@@ -275,7 +275,11 @@ export function writePersistedSession(
 function isPersistedSessionV2(
     session: PersistedSession | null | undefined,
 ): session is PersistedSessionV2 {
-    return session?.version === EDITOR_SESSION_VERSION;
+    return (
+        !!session &&
+        "version" in session &&
+        session.version === EDITOR_SESSION_VERSION
+    );
 }
 
 export function hasPersistedSessionData(
@@ -380,17 +384,9 @@ function buildPersistedWorkspaceTabsById(
 function buildPersistedWorkspacePanes(
     state: EditorSessionState,
 ): PersistedWorkspacePane[] | undefined {
-    const workspace = getEffectivePaneWorkspace({
-        panes: state.panes ?? [],
-        focusedPaneId: state.focusedPaneId ?? null,
-        layoutTree: state.layoutTree,
-        tabsById: state.tabsById ?? {},
-        tabs: state.tabs ?? [],
-        activeTabId: state.activeTabId ?? null,
-        activationHistory: state.activationHistory ?? [],
-        tabNavigationHistory: state.tabNavigationHistory ?? [],
-        tabNavigationIndex: state.tabNavigationIndex ?? -1,
-    });
+    const workspace = getEffectivePaneWorkspace(
+        normalizeEditorSessionStateForWorkspace(state),
+    );
     const tabsById = buildPersistedWorkspaceTabsById(workspace.panes);
 
     const persistedPanes = workspace.panes
@@ -498,36 +494,16 @@ function normalizeLayoutTreeForPersistence(
     return buildLegacyRowLayoutTree(paneIds, paneSizes);
 }
 
-function getLayoutTreeSignature(tree: WorkspaceLayoutNode): string {
-    if (tree.type === "pane") {
-        return `pane:${tree.paneId}`;
-    }
-
-    return `split:${tree.id}:${tree.direction}:${tree.sizes
-        .map((size) => size.toFixed(6))
-        .join(
-            ",",
-        )}[${tree.children.map((child) => getLayoutTreeSignature(child)).join("|")}]`;
-}
-
 export function getEditorSessionSignature(state: EditorSessionState) {
     return JSON.stringify(buildPersistedSession(state));
 }
 
 export function buildPersistedSession(
     state: EditorSessionState,
-): PersistedSession {
-    const workspace = getEffectivePaneWorkspace({
-        panes: state.panes ?? [],
-        focusedPaneId: state.focusedPaneId ?? null,
-        layoutTree: state.layoutTree,
-        tabsById: state.tabsById ?? {},
-        tabs: state.tabs ?? [],
-        activeTabId: state.activeTabId ?? null,
-        activationHistory: state.activationHistory ?? [],
-        tabNavigationHistory: state.tabNavigationHistory ?? [],
-        tabNavigationIndex: state.tabNavigationIndex ?? -1,
-    });
+): PersistedSessionV2 {
+    const workspace = getEffectivePaneWorkspace(
+        normalizeEditorSessionStateForWorkspace(state),
+    );
     const panes = buildPersistedWorkspacePanes(state) ?? [];
     const persistedPaneIds = panes.map((pane) => pane.id);
     const paneSizes =
@@ -574,7 +550,7 @@ function normalizeRestoredTabInput(tab: TabInput): TabInput | null {
     return null;
 }
 
-async function restoreLegacyNoteTabs(session: PersistedSession) {
+async function restoreLegacyNoteTabs(session: PersistedLegacySession) {
     const restoredTabs: TabInput[] = [];
     for (const entry of session.noteIds ?? []) {
         try {
@@ -583,7 +559,7 @@ async function restoreLegacyNoteTabs(session: PersistedSession) {
             });
             const history = (
                 entry.history ?? [{ noteId: entry.noteId, title: entry.title }]
-            ).map((historyEntry) => ({
+            ).map((historyEntry: { noteId: string; title: string }) => ({
                 noteId: historyEntry.noteId,
                 title: historyEntry.title,
                 content: "",
@@ -896,7 +872,7 @@ function restorePersistedWorkspacePanes(
     });
 }
 
-function restoreLegacyPdfTabs(session: PersistedSession) {
+function restoreLegacyPdfTabs(session: PersistedLegacySession) {
     return (session.pdfTabs ?? []).map((entry) => {
         const history = (
             entry.history ?? [
@@ -937,7 +913,7 @@ function restoreLegacyPdfTabs(session: PersistedSession) {
     });
 }
 
-async function restoreLegacyFileTabs(session: PersistedSession) {
+async function restoreLegacyFileTabs(session: PersistedLegacySession) {
     const restoredTabs: TabInput[] = [];
     for (const entry of session.fileTabs ?? []) {
         let content = entry.content ?? "";
@@ -1024,7 +1000,7 @@ async function restoreLegacyFileTabs(session: PersistedSession) {
 }
 
 function restoreLegacyMapTabs(
-    session: PersistedSession,
+    session: PersistedLegacySession,
     vaultPath: string | null,
     existingTabs: TabInput[],
 ) {
@@ -1256,6 +1232,27 @@ async function upgradeLegacyPersistedSession(
     });
 }
 
+function normalizeEditorSessionStateForWorkspace(state: EditorSessionState) {
+    const panes = (state.panes ?? []).map((pane) => ({
+        ...pane,
+        tabIds: pane.tabIds ?? pane.tabs.map((tab) => tab.id),
+    }));
+    const paneIds = panes.map((pane) => pane.id);
+
+    return {
+        panes,
+        focusedPaneId: state.focusedPaneId ?? null,
+        layoutTree:
+            state.layoutTree ?? createInitialLayout(paneIds[0] ?? "primary"),
+        tabsById: state.tabsById ?? {},
+        tabs: state.tabs ?? [],
+        activeTabId: state.activeTabId ?? null,
+        activationHistory: state.activationHistory ?? [],
+        tabNavigationHistory: state.tabNavigationHistory ?? [],
+        tabNavigationIndex: state.tabNavigationIndex ?? -1,
+    };
+}
+
 export async function restorePersistedSession(
     vaultPath: string | null,
     options?: { includeMaps?: boolean },
@@ -1267,11 +1264,13 @@ export async function restorePersistedSession(
 
     const session = isPersistedSessionV2(storedSession)
         ? storedSession
-        : await upgradeLegacyPersistedSession(
-              storedSession,
-              vaultPath,
-              options,
-          );
+        : storedSession
+          ? await upgradeLegacyPersistedSession(
+                storedSession,
+                vaultPath,
+                options,
+            )
+          : null;
 
     if (!session) {
         return null;
