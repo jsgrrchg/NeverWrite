@@ -1143,6 +1143,7 @@ export default function App() {
     const focusedWorkspaceTabId = useEditorStore(
         (state) => selectFocusedEditorTab(state)?.id ?? null,
     );
+    const hydrateChatWorkspace = useChatTabsStore((s) => s.hydrateForVault);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const developerModeEnabled = useSettingsStore(
         (s) => s.developerModeEnabled,
@@ -1547,50 +1548,77 @@ export default function App() {
         let cancelled = false;
 
         void (async () => {
-            await useChatStore.getState().initialize();
-            if (cancelled) return;
-
-            const chatState = useChatStore.getState();
             const workspace = readPersistedChatWorkspace(vaultPath);
-            restoreChatWorkspace(
-                workspace,
-                Object.values(chatState.sessionsById).map((session) => ({
-                    sessionId: session.sessionId,
-                    historySessionId: session.historySessionId,
-                    runtimeId: session.runtimeId,
-                })),
-                chatState.activeSessionId,
-            );
-            const restoredChatWorkspace = useChatTabsStore.getState();
-            const restoredChatMetadataBySessionId = new Map(
-                restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
-            );
-            const editorState = useEditorStore.getState();
-            const focusedEditorTab = selectFocusedEditorTab(editorState);
-            await useChatStore.getState().reconcileRestoredWorkspaceTabs(
-                selectEditorWorkspaceTabs(editorState)
-                    .filter((tab) => isChatTab(tab))
-                    .map((tab) => {
-                        const metadata = restoredChatMetadataBySessionId.get(
-                            tab.sessionId,
-                        );
-                        return {
-                            id: tab.id,
-                            sessionId: tab.sessionId,
-                            historySessionId:
-                                metadata?.historySessionId ?? null,
-                            runtimeId: metadata?.runtimeId ?? null,
-                        };
-                    }),
-                isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,
-            );
-            markChatTabsReady();
+            let restoredWorkspace = false;
+
+            try {
+                const initialization =
+                    await useChatStore.getState().initialize();
+                if (cancelled) return;
+
+                if (!initialization.sessionInventoryLoaded) {
+                    // Keep the persisted tab layout intact when session
+                    // discovery fails so we do not overwrite it with an empty
+                    // workspace on the next persistence flush.
+                    hydrateChatWorkspace(workspace);
+                    restoredWorkspace = true;
+                    return;
+                }
+
+                const chatState = useChatStore.getState();
+                restoreChatWorkspace(
+                    workspace,
+                    Object.values(chatState.sessionsById).map((session) => ({
+                        sessionId: session.sessionId,
+                        historySessionId: session.historySessionId,
+                        runtimeId: session.runtimeId,
+                    })),
+                    chatState.activeSessionId,
+                );
+                restoredWorkspace = true;
+
+                const restoredChatWorkspace = useChatTabsStore.getState();
+                const restoredChatMetadataBySessionId = new Map(
+                    restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
+                );
+                const editorState = useEditorStore.getState();
+                const focusedEditorTab = selectFocusedEditorTab(editorState);
+                await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+                    selectEditorWorkspaceTabs(editorState)
+                        .filter((tab) => isChatTab(tab))
+                        .map((tab) => {
+                            const metadata = restoredChatMetadataBySessionId.get(
+                                tab.sessionId,
+                            );
+                            return {
+                                id: tab.id,
+                                sessionId: tab.sessionId,
+                                historySessionId:
+                                    metadata?.historySessionId ?? null,
+                                runtimeId: metadata?.runtimeId ?? null,
+                            };
+                        }),
+                    isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,
+                );
+            } catch (error) {
+                if (!restoredWorkspace) {
+                    hydrateChatWorkspace(workspace);
+                }
+                console.error(
+                    "[chat] Failed to restore chat workspace on startup:",
+                    error,
+                );
+            } finally {
+                if (!cancelled) {
+                    markChatTabsReady();
+                }
+            }
         })();
 
         return () => {
             cancelled = true;
         };
-    }, [restoreChatWorkspace, vaultPath, windowMode]);
+    }, [hydrateChatWorkspace, restoreChatWorkspace, vaultPath, windowMode]);
 
     // Load bookmarks when vault changes
     useEffect(() => {

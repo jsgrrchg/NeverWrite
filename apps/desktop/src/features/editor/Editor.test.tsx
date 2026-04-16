@@ -1794,6 +1794,76 @@ describe("Editor", () => {
         ).toBeInTheDocument();
     });
 
+    it("uses the configured autosave delay for note edits", async () => {
+        vi.useFakeTimers();
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
+
+        mockInvoke().mockImplementation(async (command, args) => {
+            if (command === "save_note") {
+                return {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    content: (args as { content: string }).content,
+                };
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Original",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: " local",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(749);
+            await flushPromises();
+        });
+
+        expect(
+            mockInvoke().mock.calls.filter(([command]) => command === "save_note"),
+        ).toHaveLength(0);
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
+            await flushPromises();
+        });
+
+        expect(
+            mockInvoke().mock.calls.filter(([command]) => command === "save_note"),
+        ).toHaveLength(1);
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "save_note",
+            expect.objectContaining({
+                noteId: "notes/current",
+                content: "Original local",
+                opId: expect.any(String),
+            }),
+        );
+
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 300);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
     it("does not treat local tab-content sync as an external conflict while typing", async () => {
         vi.useFakeTimers();
 
@@ -1889,6 +1959,18 @@ describe("Editor", () => {
                 },
             });
         });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await flushPromises();
+        });
+
+        const saveCalls = mockInvoke().mock.calls.filter(
+            ([command]) => command === "save_note",
+        );
+        expect(saveCalls).toHaveLength(2);
+        expect(saveCalls[0]?.[1]).toMatchObject({ content: "OriginalA" });
+        expect(saveCalls[1]?.[1]).toMatchObject({ content: "OriginalAB" });
 
         await act(async () => {
             useEditorStore.getState().reloadNoteContent("notes/current", {

@@ -22,6 +22,7 @@ import {
     useEditorStore,
     type FileTab,
 } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useEditableFileResource } from "./useEditableFileResource";
 
 type CsvFormat = {
@@ -94,6 +95,9 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
     const gridViewportRef = useRef<HTMLDivElement>(null);
     const [editorState, setEditorState] =
         useState<CsvEditorState>(initialEditorState);
+    const editorAutosaveDelayMs = useSettingsStore(
+        (s) => s.editorAutosaveDelayMs,
+    );
     const [viewMode, setViewMode] = useState<CsvViewMode>("table");
     const [gridHeight, setGridHeight] = useState(420);
 
@@ -126,6 +130,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
         getCurrentContent,
         applyIncomingContent,
         acceptTab: (candidate) => candidate.viewer === "csv",
+        autosaveDelayMs: editorAutosaveDelayMs,
     });
 
     const isDirty = useEditorStore((state) =>

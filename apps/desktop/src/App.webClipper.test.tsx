@@ -13,7 +13,10 @@ import { useLayoutStore } from "./app/store/layoutStore";
 import { useVaultStore } from "./app/store/vaultStore";
 import { readWindowSessionSnapshot } from "./app/windowSession";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
-import { useChatTabsStore } from "./features/ai/store/chatTabsStore";
+import {
+    getChatTabsStorageKey,
+    useChatTabsStore,
+} from "./features/ai/store/chatTabsStore";
 import { useChatStore } from "./features/ai/store/chatStore";
 import { flushPromises, renderComponent } from "./test/test-utils";
 
@@ -184,6 +187,7 @@ describe("App web clipper routing", () => {
         window.history.replaceState({}, "", "/?vault=%2Fvaults%2Fa");
         eventHandlers.clear();
         windowEventHandlers.clear();
+        localStorage.clear();
         vi.clearAllMocks();
 
         vi.mocked(listen).mockImplementation(async (eventName, handler) => {
@@ -226,14 +230,68 @@ describe("App web clipper routing", () => {
         });
 
         useChatStore.setState({
-            initialize: vi.fn(async () => {}),
+            initialize: vi.fn(async () => ({ sessionInventoryLoaded: true })),
             sessionsById: {},
             activeSessionId: null,
+            reconcileRestoredWorkspaceTabs: vi.fn(async () => {}),
         });
 
         useChatTabsStore.setState({
             restoreWorkspace: vi.fn(),
+            hydrateForVault: vi.fn(),
+            isReady: false,
+            tabs: [],
+            activeTabId: null,
         });
+    });
+
+    it("keeps the persisted chat workspace when chat initialization fails during cold start", async () => {
+        const persistedWorkspace = {
+            version: 1 as const,
+            tabs: [
+                {
+                    id: "chat-tab-1",
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            activeTabId: "chat-tab-1",
+        };
+        localStorage.setItem(
+            getChatTabsStorageKey("/vaults/a"),
+            JSON.stringify(persistedWorkspace),
+        );
+
+        const initialize = vi.fn(async () => ({
+            sessionInventoryLoaded: false,
+        }));
+        const reconcileRestoredWorkspaceTabs = vi.fn(async () => {});
+        const restoreWorkspace = vi.fn();
+        const hydrateForVault = vi.fn();
+
+        useChatStore.setState({
+            initialize,
+            sessionsById: {},
+            activeSessionId: null,
+            reconcileRestoredWorkspaceTabs,
+        });
+        useChatTabsStore.setState({
+            restoreWorkspace,
+            hydrateForVault,
+            isReady: false,
+            tabs: [],
+            activeTabId: null,
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        expect(initialize).toHaveBeenCalled();
+        expect(restoreWorkspace).not.toHaveBeenCalled();
+        expect(reconcileRestoredWorkspaceTabs).not.toHaveBeenCalled();
+        expect(hydrateForVault).toHaveBeenCalledWith(persistedWorkspace);
+        expect(useChatTabsStore.getState().isReady).toBe(true);
     });
 
     it("registers and unregisters the current main window route", async () => {

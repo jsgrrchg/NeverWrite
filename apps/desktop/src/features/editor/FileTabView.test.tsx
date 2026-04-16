@@ -206,6 +206,7 @@ describe("FileTabView", () => {
 
     it("renders text files in an editable editor without preview", async () => {
         vi.useFakeTimers();
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
         setVaultEntries([]);
         setEditorTabs([
             {
@@ -250,7 +251,18 @@ describe("FileTabView", () => {
         });
 
         await act(async () => {
-            vi.advanceTimersByTime(300);
+            vi.advanceTimersByTime(749);
+            await Promise.resolve();
+        });
+
+        expect(
+            mockInvoke().mock.calls.filter(
+                ([command]) => command === "save_vault_file",
+            ),
+        ).toHaveLength(0);
+
+        await act(async () => {
+            vi.advanceTimersByTime(1);
             await Promise.resolve();
         });
 
@@ -260,6 +272,8 @@ describe("FileTabView", () => {
             content: 'name = "NeverWrite"\nversion = "1.0.0"',
             opId: expect.any(String),
         });
+
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 300);
     });
 
     it("renders csv files in the dedicated table viewer", async () => {

@@ -320,9 +320,9 @@ export function Editor({
     const lastSavedContentByTabId = useRef<Map<string, string>>(new Map());
     const lastAckRevisionByTabId = useRef<Map<string, number>>(new Map());
     const pendingLocalOpIdByTabId = useRef<Map<string, string>>(new Map());
-    const pendingLocalSerializedContentByTabId = useRef<Map<string, string>>(
-        new Map(),
-    );
+    const pendingLocalSerializedContentByTabId = useRef<
+        Map<string, Set<string>>
+    >(new Map());
     // Frontmatter: stores the raw ---...--- block per note so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
     const [activeFrontmatter, setActiveFrontmatter] = useState<string | null>(
@@ -441,6 +441,9 @@ export function Editor({
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
+    const editorAutosaveDelayMs = useSettingsStore(
+        (s) => s.editorAutosaveDelayMs,
+    );
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
     const justifyText = useSettingsStore((s) => s.justifyText);
@@ -614,6 +617,69 @@ export function Editor({
         [],
     );
 
+    const addPendingLocalBaseline = useCallback(
+        (noteId: string, serializedContent: string) => {
+            const current =
+                pendingLocalSerializedContentByTabId.current.get(noteId) ??
+                new Set<string>();
+            const next = new Set(current);
+            next.add(serializedContent);
+            pendingLocalSerializedContentByTabId.current.set(noteId, next);
+        },
+        [],
+    );
+
+    const removePendingLocalBaseline = useCallback(
+        (noteId: string, serializedContent: string) => {
+            const current =
+                pendingLocalSerializedContentByTabId.current.get(noteId) ?? null;
+            if (!current) return;
+            const next = new Set(current);
+            next.delete(serializedContent);
+            if (next.size === 0) {
+                pendingLocalSerializedContentByTabId.current.delete(noteId);
+                return;
+            }
+            pendingLocalSerializedContentByTabId.current.set(noteId, next);
+        },
+        [],
+    );
+
+    const clearPendingLocalOpIfCurrent = useCallback(
+        (noteId: string, opId: string) => {
+            if (pendingLocalOpIdByTabId.current.get(noteId) !== opId) {
+                return;
+            }
+            pendingLocalOpIdByTabId.current.delete(noteId);
+        },
+        [],
+    );
+
+    const getLatestSerializedContentForTab = useCallback(
+        (
+            tab: Pick<NoteTab, "id" | "noteId">,
+            fallbackSerializedContent: string,
+        ) => {
+            const liveView = viewRef.current;
+            if (activeTabRef.current?.id === tab.id && liveView) {
+                return serializePersistedContent(
+                    tab.noteId,
+                    liveView.state.doc.toString(),
+                );
+            }
+
+            const latestTab = useEditorStore
+                .getState()
+                .tabs.find((candidate) => candidate.id === tab.id);
+            if (latestTab && isNoteTab(latestTab)) {
+                return serializePersistedContent(tab.noteId, latestTab.content);
+            }
+
+            return fallbackSerializedContent;
+        },
+        [serializePersistedContent],
+    );
+
     const isTabDirty = useCallback(
         (tabId: string, body: string) =>
             serializePersistedContent(tabId, body) !==
@@ -647,10 +713,7 @@ export function Editor({
                     ? crypto.randomUUID()
                     : `local-save-${Date.now()}-${Math.random()}`;
             pendingLocalOpIdByTabId.current.set(tab.noteId, localOpId);
-            pendingLocalSerializedContentByTabId.current.set(
-                tab.noteId,
-                serializedContent,
-            );
+            addPendingLocalBaseline(tab.noteId, serializedContent);
             try {
                 const detail = await vaultInvoke<SavedNoteDetail>("save_note", {
                     noteId: tab.noteId,
@@ -658,7 +721,13 @@ export function Editor({
                     opId: localOpId,
                 });
                 stripFrontmatter(tab.noteId, detail.content);
-                markTabSaved(tab.noteId, detail.content);
+                removePendingLocalBaseline(tab.noteId, serializedContent);
+                clearPendingLocalOpIfCurrent(tab.noteId, localOpId);
+                syncSavedBaselineForTab(
+                    { id: tab.id, noteId: tab.noteId },
+                    detail.content,
+                    getLatestSerializedContentForTab(tab, serializedContent),
+                );
                 updateTabTitle(tab.id, detail.title);
                 updateNoteMetadata(tab.noteId, {
                     title: detail.title,
@@ -674,21 +743,25 @@ export function Editor({
                 clearNoteExternalConflict(tab.noteId);
                 touchContent();
             } catch (e) {
-                pendingLocalOpIdByTabId.current.delete(tab.noteId);
-                pendingLocalSerializedContentByTabId.current.delete(tab.noteId);
+                clearPendingLocalOpIfCurrent(tab.noteId, localOpId);
+                removePendingLocalBaseline(tab.noteId, serializedContent);
                 logError("editor", "Failed to save note", e);
                 return false;
             }
             return true;
         },
         [
-            markTabSaved,
+            addPendingLocalBaseline,
+            clearNoteExternalConflict,
+            clearPendingLocalOpIfCurrent,
+            getLatestSerializedContentForTab,
+            removePendingLocalBaseline,
             serializePersistedContent,
             stripFrontmatter,
+            syncSavedBaselineForTab,
             touchContent,
             updateNoteMetadata,
             updateTabTitle,
-            clearNoteExternalConflict,
         ],
     );
 
@@ -760,9 +833,9 @@ export function Editor({
                         freshTab,
                         typeof doc === "string" ? doc : doc.toString(),
                     );
-            }, 300);
+            }, editorAutosaveDelayMs);
         },
-        [saveNow],
+        [editorAutosaveDelayMs, saveNow],
     );
     useEffect(() => {
         scheduleSaveRef.current = scheduleSave;
@@ -3176,8 +3249,7 @@ export function Editor({
                 incomingOpId === pendingLocalOpId;
             const isPendingLocalBaselineAck =
                 !isForced &&
-                pendingLocalSerializedContent !== null &&
-                incomingSerialized === pendingLocalSerializedContent;
+                pendingLocalSerializedContent?.has(incomingSerialized) === true;
             const matchesKnownSavedBaseline =
                 !isForced &&
                 lastSaved !== null &&
@@ -3205,11 +3277,11 @@ export function Editor({
                 );
             };
             const clearPendingLocalAck = () => {
-                if (isPendingLocalSaveAck || isPendingLocalBaselineAck) {
-                    pendingLocalOpIdByTabId.current.delete(tab.noteId);
-                    pendingLocalSerializedContentByTabId.current.delete(
-                        tab.noteId,
-                    );
+                if (isPendingLocalSaveAck) {
+                    clearPendingLocalOpIfCurrent(tab.noteId, pendingLocalOpId);
+                }
+                if (isPendingLocalBaselineAck) {
+                    removePendingLocalBaseline(tab.noteId, incomingSerialized);
                 }
             };
 
@@ -3361,10 +3433,12 @@ export function Editor({
         });
         return unsub;
     }, [
+        clearPendingLocalOpIfCurrent,
         createEditorState,
         getPaneSnapshot,
         markTabSaved,
         paneId,
+        removePendingLocalBaseline,
         replaceEditorView,
         scheduleMergeViewSync,
         serializePersistedContent,

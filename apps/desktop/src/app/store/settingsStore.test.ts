@@ -31,6 +31,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
+        expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(300);
     });
 
     it("persists developerModeEnabled per vault", () => {
@@ -41,12 +42,14 @@ describe("settingsStore developer mode", () => {
             .getState()
             .setSetting("developerTerminalEnabled", false);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
 
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(
             false,
         );
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(750);
         expect(
             JSON.parse(
                 localStorage.getItem("neverwrite:settings:/vaults/devtools") ?? "",
@@ -56,6 +59,7 @@ describe("settingsStore developer mode", () => {
                 developerModeEnabled: true,
                 developerTerminalEnabled: false,
                 inlineReviewEnabled: false,
+                editorAutosaveDelayMs: 750,
             },
         });
     });

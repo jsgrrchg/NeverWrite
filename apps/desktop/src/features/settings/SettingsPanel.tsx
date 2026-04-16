@@ -824,6 +824,7 @@ function EditorSettings() {
         editorFontSize,
         editorFontFamily,
         editorLineHeight,
+        editorAutosaveDelayMs,
         editorContentWidth,
         lineWrapping,
         justifyText,
@@ -873,6 +874,20 @@ function EditorSettings() {
                         step={5}
                         onChange={(v) => setSetting("editorLineHeight", v)}
                         formatValue={(value) => `${value}%`}
+                    />
+                }
+            />
+            <Row
+                label="Autosave delay"
+                description="Delay before saving note and text-file edits automatically, in milliseconds."
+                control={
+                    <NumberStepper
+                        value={editorAutosaveDelayMs}
+                        min={50}
+                        max={5000}
+                        onChange={(v) =>
+                            setSetting("editorAutosaveDelayMs", v)
+                        }
                     />
                 }
             />

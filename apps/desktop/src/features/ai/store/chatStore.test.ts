@@ -743,6 +743,27 @@ describe("chatStore", () => {
         );
     });
 
+    it("reports session inventory load failures without pretending restoration succeeded", async () => {
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_sessions") {
+                throw new Error("session discovery failed");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const result = await useChatStore.getState().initialize();
+
+        expect(result).toEqual({ sessionInventoryLoaded: false });
+        expect(useChatStore.getState().sessionsById).toEqual({});
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId["codex-acp"],
+        ).toMatchObject({
+            status: "error",
+            message: "session discovery failed",
+        });
+    });
+
     it("starts a new local work cycle when sending a message", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command, args) => {

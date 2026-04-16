@@ -179,6 +179,28 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Kilo")).toBeInTheDocument();
     });
 
+    it("lets users type a custom editor autosave delay", async () => {
+        useSettingsStore.setState({ editorAutosaveDelayMs: 300 });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+
+        expect(screen.getByText("Autosave delay")).toBeInTheDocument();
+
+        const input = screen.getByDisplayValue("300");
+
+        fireEvent.focus(input);
+        fireEvent.change(input, { target: { value: "750" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        await waitFor(() => {
+            expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(750);
+        });
+
+        expect(screen.getByDisplayValue("750")).toBeInTheDocument();
+    });
+
     it("filters recent vaults in a scrollable list", () => {
         localStorage.setItem(
             "neverwrite:recentVaults",

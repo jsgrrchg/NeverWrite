@@ -75,6 +75,9 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
+    const editorAutosaveDelayMs = useSettingsStore(
+        (s) => s.editorAutosaveDelayMs,
+    );
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
@@ -124,6 +127,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         paneId,
         getCurrentContent,
         applyIncomingContent: replaceEditorDocument,
+        autosaveDelayMs: editorAutosaveDelayMs,
     });
     const languagePath = tab?.path ?? null;
     const languageMimeType = tab?.mimeType ?? null;

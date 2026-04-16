@@ -15,6 +15,7 @@ export interface Settings {
     editorFontSize: number; // 10–24
     editorFontFamily: EditorFontFamily;
     editorLineHeight: number; // 120–220 (percentage)
+    editorAutosaveDelayMs: number; // 50–5000
     editorContentWidth: number; // 600–1200
     lineWrapping: boolean;
     justifyText: boolean;
@@ -142,6 +143,7 @@ const defaults: Settings = {
     editorFontSize: 14,
     editorFontFamily: "system",
     editorLineHeight: 175,
+    editorAutosaveDelayMs: 300,
     editorContentWidth: 940,
     lineWrapping: true,
     justifyText: false,
@@ -312,6 +314,12 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 120,
                 220,
             ),
+            editorAutosaveDelayMs: normalizeIntInRange(
+                parsed.state.editorAutosaveDelayMs,
+                defaults.editorAutosaveDelayMs,
+                50,
+                5000,
+            ),
             editorContentWidth: normalizeIntInRange(
                 parsed.state.editorContentWidth,
                 defaults.editorContentWidth,
@@ -404,6 +412,7 @@ function pickSettings(state: SettingsStore): Settings {
         editorFontSize: state.editorFontSize,
         editorFontFamily: state.editorFontFamily,
         editorLineHeight: state.editorLineHeight,
+        editorAutosaveDelayMs: state.editorAutosaveDelayMs,
         editorContentWidth: state.editorContentWidth,
         lineWrapping: state.lineWrapping,
         justifyText: state.justifyText,

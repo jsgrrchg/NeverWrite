@@ -1081,7 +1081,9 @@ interface ChatStore {
     activeQueuedMessageBySessionId: Record<string, DeferredQueuedMessage>;
     pausedQueueBySessionId: Record<string, PausedQueueState>;
     interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
-    initialize: (options?: { createDefaultSession?: boolean }) => Promise<void>;
+    initialize: (
+        options?: { createDefaultSession?: boolean },
+    ) => Promise<ChatInitializationResult>;
     reconcileRestoredWorkspaceTabs: (
         tabs: Array<{
             id: string;
@@ -1263,6 +1265,10 @@ interface ChatStore {
     openHistoryView: () => void;
     closeHistoryView: () => void;
     setHistorySelectedSessionId: (sessionId: string | null) => void;
+}
+
+export interface ChatInitializationResult {
+    sessionInventoryLoaded: boolean;
 }
 
 const INITIAL_RUNTIME_CONNECTION: AIRuntimeConnectionState = {
@@ -5766,7 +5772,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         initialize: async (options) => {
-            if (get().isInitializing) return;
+            if (get().isInitializing) {
+                return { sessionInventoryLoaded: false };
+            }
 
             const shouldCreateDefaultSession =
                 options?.createDefaultSession ?? true;
@@ -5976,7 +5984,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             hydratedActiveSessionId,
                         );
                     }
-                    return;
+                    return { sessionInventoryLoaded: true };
                 }
 
                 if (!get().activeSessionId && shouldCreateDefaultSession) {
@@ -5987,7 +5995,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (runtimeId) {
                         if (setupStatus?.onboardingRequired) {
-                            return;
+                            return { sessionInventoryLoaded: true };
                         }
                         await get().newSession(runtimeId);
                     }
@@ -6011,9 +6019,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         ),
                     }));
                 }
+                return { sessionInventoryLoaded: false };
             } finally {
                 set({ isInitializing: false });
             }
+
+            return { sessionInventoryLoaded: true };
         },
 
         reconcileRestoredWorkspaceTabs: async (tabs, activeTabId = null) => {
