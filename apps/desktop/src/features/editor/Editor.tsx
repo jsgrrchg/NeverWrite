@@ -320,6 +320,9 @@ export function Editor({
     const lastSavedContentByTabId = useRef<Map<string, string>>(new Map());
     const lastAckRevisionByTabId = useRef<Map<string, number>>(new Map());
     const pendingLocalOpIdByTabId = useRef<Map<string, string>>(new Map());
+    const pendingLocalSerializedContentByTabId = useRef<Map<string, string>>(
+        new Map(),
+    );
     // Frontmatter: stores the raw ---...--- block per note so we can restore it on save
     const frontmatterByTabId = useRef<Map<string, string>>(new Map());
     const [activeFrontmatter, setActiveFrontmatter] = useState<string | null>(
@@ -561,6 +564,8 @@ export function Editor({
             lastSavedContentByTabId: lastSavedContentByTabId.current,
             lastAckRevisionByTabId: lastAckRevisionByTabId.current,
             pendingLocalOpIdByTabId: pendingLocalOpIdByTabId.current,
+            pendingLocalSerializedContentByTabId:
+                pendingLocalSerializedContentByTabId.current,
             frontmatterByTabId: frontmatterByTabId.current,
         }),
         [],
@@ -591,6 +596,20 @@ export function Editor({
         (tabId: string, serializedContent: string) => {
             lastSavedContentByTabId.current.set(tabId, serializedContent);
             useEditorStore.getState().setTabDirty(tabId, false);
+        },
+        [],
+    );
+
+    const syncSavedBaselineForTab = useCallback(
+        (
+            tab: Pick<NoteTab, "id" | "noteId">,
+            serializedContent: string,
+            currentSerialized: string,
+        ) => {
+            lastSavedContentByTabId.current.set(tab.noteId, serializedContent);
+            useEditorStore
+                .getState()
+                .setTabDirty(tab.id, currentSerialized !== serializedContent);
         },
         [],
     );
@@ -628,6 +647,10 @@ export function Editor({
                     ? crypto.randomUUID()
                     : `local-save-${Date.now()}-${Math.random()}`;
             pendingLocalOpIdByTabId.current.set(tab.noteId, localOpId);
+            pendingLocalSerializedContentByTabId.current.set(
+                tab.noteId,
+                serializedContent,
+            );
             try {
                 const detail = await vaultInvoke<SavedNoteDetail>("save_note", {
                     noteId: tab.noteId,
@@ -652,6 +675,7 @@ export function Editor({
                 touchContent();
             } catch (e) {
                 pendingLocalOpIdByTabId.current.delete(tab.noteId);
+                pendingLocalSerializedContentByTabId.current.delete(tab.noteId);
                 logError("editor", "Failed to save note", e);
                 return false;
             }
@@ -3142,11 +3166,22 @@ export function Editor({
                 lastAckRevisionByTabId.current.get(tab.noteId) ?? 0;
             const pendingLocalOpId =
                 pendingLocalOpIdByTabId.current.get(tab.noteId) ?? null;
+            const pendingLocalSerializedContent =
+                pendingLocalSerializedContentByTabId.current.get(tab.noteId) ??
+                null;
             const isPendingLocalSaveAck =
                 !isForced &&
                 incomingOrigin === "user" &&
                 incomingOpId !== null &&
                 incomingOpId === pendingLocalOpId;
+            const isPendingLocalBaselineAck =
+                !isForced &&
+                pendingLocalSerializedContent !== null &&
+                incomingSerialized === pendingLocalSerializedContent;
+            const matchesKnownSavedBaseline =
+                !isForced &&
+                lastSaved !== null &&
+                incomingSerialized === lastSaved;
             const isStaleRevision =
                 !isForced &&
                 incomingRevision > 0 &&
@@ -3170,8 +3205,11 @@ export function Editor({
                 );
             };
             const clearPendingLocalAck = () => {
-                if (isPendingLocalSaveAck) {
+                if (isPendingLocalSaveAck || isPendingLocalBaselineAck) {
                     pendingLocalOpIdByTabId.current.delete(tab.noteId);
+                    pendingLocalSerializedContentByTabId.current.delete(
+                        tab.noteId,
+                    );
                 }
             };
 
@@ -3194,11 +3232,34 @@ export function Editor({
                 return;
             }
 
+            if (
+                !isForced &&
+                (isPendingLocalBaselineAck || matchesKnownSavedBaseline)
+            ) {
+                acknowledgeIncomingRevision();
+                clearPendingLocalAck();
+                syncSavedBaselineForTab(
+                    { id: tabId, noteId: tab.noteId },
+                    incomingSerialized,
+                    currentSerialized,
+                );
+                useEditorStore.getState().clearNoteExternalConflict(tab.noteId);
+                if (activeTabRef.current?.id === tabId) {
+                    setActiveFrontmatter(nextFrontmatter);
+                    setEditableTitle(nextTitle);
+                }
+                return;
+            }
+
             if (hasLocalUnsavedChanges && !isForced) {
                 if (isPendingLocalSaveAck) {
                     acknowledgeIncomingRevision();
                     clearPendingLocalAck();
-                    markTabSaved(tab.noteId, incomingSerialized);
+                    syncSavedBaselineForTab(
+                        { id: tabId, noteId: tab.noteId },
+                        incomingSerialized,
+                        currentSerialized,
+                    );
                     useEditorStore
                         .getState()
                         .clearNoteExternalConflict(tab.noteId);
@@ -3308,6 +3369,7 @@ export function Editor({
         scheduleMergeViewSync,
         serializePersistedContent,
         stripFrontmatter,
+        syncSavedBaselineForTab,
     ]);
 
     useEffect(() => {

@@ -15,6 +15,7 @@ function createCaches(keys: string[]): NoteStateCacheCollection {
         lastSavedContentByTabId: new Map(values),
         lastAckRevisionByTabId: new Map(values),
         pendingLocalOpIdByTabId: new Map(values),
+        pendingLocalSerializedContentByTabId: new Map(values),
         frontmatterByTabId: new Map(values),
     };
 }
@@ -26,6 +27,7 @@ function getAllCacheKeys(caches: NoteStateCacheCollection) {
         caches.lastSavedContentByTabId,
         caches.lastAckRevisionByTabId,
         caches.pendingLocalOpIdByTabId,
+        caches.pendingLocalSerializedContentByTabId,
         caches.frontmatterByTabId,
     ].map((map) => Array.from(map.keys()).sort());
 }
@@ -122,6 +124,7 @@ describe("noteStateCache", () => {
         pruneNoteStateCaches(tabs, caches);
 
         expect(getAllCacheKeys(caches)).toEqual([
+            ["notes/current", "notes/older"],
             ["notes/current", "notes/older"],
             ["notes/current", "notes/older"],
             ["notes/current", "notes/older"],

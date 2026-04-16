@@ -1842,6 +1842,77 @@ describe("Editor", () => {
         vi.useRealTimers();
     });
 
+    it("ignores external watcher echoes for a pending local save while newer edits remain unsaved", async () => {
+        vi.useFakeTimers();
+
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "save_note") {
+                return new Promise(() => {});
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Original",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: "A",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await flushPromises();
+        });
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: "B",
+                },
+            });
+        });
+
+        await act(async () => {
+            useEditorStore.getState().reloadNoteContent("notes/current", {
+                title: "Current",
+                content: "OriginalA",
+                origin: "external",
+                revision: 2,
+                opId: "external-echo-2",
+            });
+            await flushPromises();
+        });
+
+        expect(view.state.doc.toString()).toBe("OriginalAB");
+        expect(
+            screen.queryByText(
+                /This note changed on disk while you still have unsaved edits./i,
+            ),
+        ).toBeNull();
+        expect(useEditorStore.getState().dirtyTabIds.has("tab-1")).toBe(true);
+
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
     it("ignores a local save ack identified by opId while newer edits remain unsaved", async () => {
         vi.useFakeTimers();
         const randomUuidSpy = vi
@@ -1945,6 +2016,7 @@ describe("Editor", () => {
                 /This note changed on disk while you still have unsaved edits\./i,
             ),
         ).toBeNull();
+        expect(useEditorStore.getState().dirtyTabIds.has("tab-1")).toBe(true);
 
         vi.clearAllTimers();
         vi.useRealTimers();

@@ -12,6 +12,7 @@ export interface NoteStateCacheCollection {
     lastSavedContentByTabId: NoteScopedCacheMap;
     lastAckRevisionByTabId: NoteScopedCacheMap;
     pendingLocalOpIdByTabId: NoteScopedCacheMap;
+    pendingLocalSerializedContentByTabId: NoteScopedCacheMap;
     frontmatterByTabId: NoteScopedCacheMap;
 }
 
@@ -22,6 +23,7 @@ function getNoteStateCacheMaps(caches: NoteStateCacheCollection) {
         caches.lastSavedContentByTabId,
         caches.lastAckRevisionByTabId,
         caches.pendingLocalOpIdByTabId,
+        caches.pendingLocalSerializedContentByTabId,
         caches.frontmatterByTabId,
     ];
 }
