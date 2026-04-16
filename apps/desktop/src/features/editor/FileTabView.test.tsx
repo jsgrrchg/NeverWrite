@@ -440,6 +440,73 @@ describe("FileTabView", () => {
         });
     });
 
+    it("ignores external reloads that only restate the last saved file content", async () => {
+        setVaultEntries([]);
+        setEditorTabs([
+            {
+                id: "text-tab",
+                kind: "file",
+                relativePath: "src/a.ts",
+                title: "a.ts",
+                path: "/vault/src/a.ts",
+                mimeType: "text/typescript",
+                viewer: "text",
+                content: "const a = 1;",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command, rawPayload) => {
+            if (command !== "save_vault_file") {
+                throw new Error(`Unexpected command: ${command}`);
+            }
+            const payload = rawPayload as Record<string, string>;
+            return {
+                relative_path: payload.relativePath,
+                file_name: payload.relativePath.split("/").pop(),
+                content: payload.content,
+            };
+        });
+
+        const { unmount } = renderComponent(<FileTabView />);
+
+        const editorElement = document.querySelector(".cm-editor");
+        expect(editorElement).not.toBeNull();
+
+        const view = EditorView.findFromDOM(editorElement as HTMLElement);
+        expect(view).not.toBeNull();
+
+        act(() => {
+            view!.dispatch({
+                changes: {
+                    from: view!.state.doc.length,
+                    insert: "\n// local edit",
+                },
+            });
+        });
+
+        act(() => {
+            useEditorStore.getState().reloadFileContent("src/a.ts", {
+                title: "a.ts",
+                content: "const a = 1;",
+                origin: "external",
+                revision: 1,
+                opId: "external-1",
+            });
+        });
+
+        expect(
+            screen.queryByText(
+                /This file changed on disk while you still have unsaved edits\./i,
+            ),
+        ).not.toBeInTheDocument();
+        expect(view!.state.doc.toString()).toBe("const a = 1;\n// local edit");
+        expect(useEditorStore.getState().dirtyTabIds.has("text-tab")).toBe(true);
+
+        await act(async () => {
+            unmount();
+            await Promise.resolve();
+        });
+    });
+
     it("notifies user edits for text files using the absolute file path", async () => {
         setVaultEntries([]);
         setEditorTabs([

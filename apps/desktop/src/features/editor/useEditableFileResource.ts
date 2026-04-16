@@ -366,6 +366,10 @@ export function useEditableFileResource({
                 incomingOrigin === "user" &&
                 incomingOpId !== null &&
                 incomingOpId === pendingLocalOpId;
+            const matchesKnownSavedBaseline =
+                !isForced &&
+                lastSaved !== null &&
+                incomingContent === lastSaved;
             const isStaleRevision =
                 !isForced &&
                 incomingRevision > 0 &&
@@ -501,6 +505,28 @@ export function useEditableFileResource({
                 }
                 const store = useEditorStore.getState();
                 store.setTabDirty(currentTab.id, false);
+                store.clearFileExternalConflict(relativePath);
+                return;
+            }
+
+            if (!isForced && matchesKnownSavedBaseline) {
+                logDebug(
+                    "file-editor",
+                    "accepting incoming file reload as saved baseline",
+                    {
+                        relativePath,
+                        incomingOrigin,
+                        incomingRevision,
+                        hasLocalUnsavedChanges,
+                    },
+                    {
+                        onceKey: `saved-baseline:${relativePath}:${incomingRevision}:${incomingOrigin}`,
+                    },
+                );
+                acknowledgeIncomingRevision();
+                clearPendingLocalAck();
+                const store = useEditorStore.getState();
+                store.setTabDirty(currentTab.id, true);
                 store.clearFileExternalConflict(relativePath);
                 return;
             }
