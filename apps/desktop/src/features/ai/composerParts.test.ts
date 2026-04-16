@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    cleanPillMarkers,
     serializeComposerParts,
     serializeComposerPartsForAI,
 } from "./composerParts";
@@ -104,6 +105,34 @@ describe("serializeComposerPartsForAI", () => {
             }),
         ).toBe(
             "Inspect /vault/notes/spec.md and /vault/docs plus /vault/notes/spec.md:1-2 and /vault/docs/guide.md",
+        );
+    });
+
+    it("escapes reserved pill characters without changing the visible label", () => {
+        const parts: AIComposerPart[] = [
+            { id: "text-1", type: "text", text: "Review " },
+            {
+                id: "mention-1",
+                type: "mention",
+                noteId: "ideas/[ ] 2026 - Claude Opus 4.7 Lanzamiento.md",
+                label: "[ ] 2026 - Claude Opus 4.7 Lanzamiento",
+                path: "/vault/ideas/[ ] 2026 - Claude Opus 4.7 Lanzamiento.md",
+            },
+            { id: "text-2", type: "text", text: " with " },
+            {
+                id: "file-1",
+                type: "file_attachment",
+                filePath: "/vault/docs/spec].md",
+                mimeType: "text/markdown",
+                label: "spec].md",
+            },
+        ];
+
+        expect(serializeComposerParts(parts)).toBe(
+            "Review [@|%5B%20%5D%202026%20-%20Claude%20Opus%204.7%20Lanzamiento] with [📎|spec%5D.md]",
+        );
+        expect(cleanPillMarkers(serializeComposerParts(parts))).toBe(
+            "Review [ ] 2026 - Claude Opus 4.7 Lanzamiento with spec].md",
         );
     });
 });

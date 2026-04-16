@@ -1,18 +1,88 @@
 import type { AIComposerPart } from "./types";
 
+const SERIALIZED_PILL_VALUE_RE = /[\]|]/;
+
+function shouldEscapeSerializedPillValue(value: string) {
+    return SERIALIZED_PILL_VALUE_RE.test(value);
+}
+
+function encodeSerializedPillValue(value: string) {
+    return encodeURIComponent(value);
+}
+
+export function decodeSerializedPillValue(value: string) {
+    try {
+        return decodeURIComponent(value);
+    } catch {
+        return value;
+    }
+}
+
+function serializeNotePillLabel(label: string) {
+    if (!shouldEscapeSerializedPillValue(label)) {
+        return `[@${label}]`;
+    }
+    return `[@|${encodeSerializedPillValue(label)}]`;
+}
+
+function serializeFolderPillLabel(label: string) {
+    if (!shouldEscapeSerializedPillValue(label)) {
+        return `[@📁 ${label}]`;
+    }
+    return `[@📁|${encodeSerializedPillValue(label)}]`;
+}
+
+function serializeFileMentionPath(path: string) {
+    if (!shouldEscapeSerializedPillValue(path)) {
+        return `[@📄 ${path}]`;
+    }
+    return `[@📄|${encodeSerializedPillValue(path)}]`;
+}
+
+function serializeFileAttachmentLabel(label: string) {
+    if (!shouldEscapeSerializedPillValue(label)) {
+        return `[📎 ${label}]`;
+    }
+    return `[📎|${encodeSerializedPillValue(label)}]`;
+}
+
+function serializeScreenshotLabel(label: string) {
+    if (!shouldEscapeSerializedPillValue(label)) {
+        return `[${label}]`;
+    }
+    return `[Screenshot|${encodeSerializedPillValue(label)}]`;
+}
+
 /**
  * Strip pill serialization markers from text, returning a clean readable string.
  * Useful for displaying content in compact UI areas (queue summaries, chat titles).
  */
 export function cleanPillMarkers(text: string): string {
     return text
+        .replace(/\[@📁\|([^\]]+)\]/g, (_match, value: string) =>
+            decodeSerializedPillValue(value),
+        )
         .replace(/\[@📁 ([^\]]+)\]/g, "$1")
+        .replace(/\[@📄\|([^\]]+)\]/g, (_match, value: string) => {
+            const decoded = decodeSerializedPillValue(value);
+            const normalized = decoded.split("/").pop();
+            return normalized || decoded;
+        })
         .replace(/\[@📄 ([^\]]+)\]/g, (_match, value: string) => {
             const normalized = String(value).split("/").pop();
             return normalized || String(value);
         })
+        .replace(/\[@\|([^\]]+)\]/g, (_match, value: string) =>
+            decodeSerializedPillValue(value),
+        )
         .replace(/\[@([^\]]+)\]/g, "$1")
+        .replace(/\[Screenshot\|([^\]]+)\]/g, (_match, value: string) =>
+            decodeSerializedPillValue(value),
+        )
         .replace(/\[Screenshot ([^\]]+)\]/g, "Screenshot $1")
+        .replace(/\[📎\|([^\]]+)\]/g, (_match, value: string) =>
+            decodeSerializedPillValue(value),
+        )
         .replace(/\[📎 ([^\]]+)\]/g, "$1")
         .replace(/@fetch\b/g, "")
         .replace(/\/plan\b/g, "")
@@ -60,12 +130,18 @@ export function serializeComposerParts(parts: AIComposerPart[]): string {
             if (part.type === "text") return part.text;
             if (part.type === "fetch_mention") return "@fetch";
             if (part.type === "plan_mention") return "/plan";
-            if (part.type === "folder_mention") return `[@📁 ${part.label}]`;
-            if (part.type === "file_mention") return `[@📄 ${part.path}]`;
-            if (part.type === "mention") return `[@${part.label}]`;
-            if (part.type === "selection_mention") return `[@${part.label}]`;
-            if (part.type === "screenshot") return `[${part.label}]`;
-            if (part.type === "file_attachment") return `[📎 ${part.label}]`;
+            if (part.type === "folder_mention")
+                return serializeFolderPillLabel(part.label);
+            if (part.type === "file_mention")
+                return serializeFileMentionPath(part.path);
+            if (part.type === "mention")
+                return serializeNotePillLabel(part.label);
+            if (part.type === "selection_mention")
+                return serializeNotePillLabel(part.label);
+            if (part.type === "screenshot")
+                return serializeScreenshotLabel(part.label);
+            if (part.type === "file_attachment")
+                return serializeFileAttachmentLabel(part.label);
             return "";
         })
         .join("");

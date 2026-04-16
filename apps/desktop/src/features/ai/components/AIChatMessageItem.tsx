@@ -40,6 +40,7 @@ import {
     getFileNameFromPath,
     stepDiffZoom,
 } from "../diff/reviewDiff";
+import { decodeSerializedPillValue } from "../composerParts";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
 import { openChatNoteByReference } from "../chatNoteNavigation";
 import {
@@ -72,9 +73,10 @@ function renderUserContent(
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
     // New bracketed format: [@note], [@📄 /path/file.ts], [@📁 folder], [Screenshot ...], [📎 file]
+    // Escaped variants use a pipe plus URL-encoded payload, e.g. [@|%5B%20%5D].
     // Legacy format (backward compat): @fetch, /plan, @📁word, @word
     const mentionRegex =
-        /(\[@📄 [^\]]+\]|\[@📁 [^\]]+\]|\[@[^\]]+\]|\[Screenshot [^\]]+\]|\[📎 [^\]]+\]|@fetch\b|\/plan\b|@📁[^\s]+|@[^\s@]+)/g;
+        /(\[@📄\|[^\]]+\]|\[@📄 [^\]]+\]|\[@📁\|[^\]]+\]|\[@📁 [^\]]+\]|\[@\|[^\]]+\]|\[@[^\]]+\]|\[Screenshot\|[^\]]+\]|\[Screenshot [^\]]+\]|\[📎\|[^\]]+\]|\[📎 [^\]]+\]|@fetch\b|\/plan\b|@📁[^\s]+|@[^\s@]+)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let key = 0;
@@ -86,8 +88,17 @@ function renderUserContent(
 
         const token = match[0];
 
-        if (token.startsWith("[Screenshot ") || token.startsWith("[📎 ")) {
-            const pillLabel = token.slice(1, -1); // strip [ ]
+        if (
+            token.startsWith("[Screenshot ") ||
+            token.startsWith("[Screenshot|") ||
+            token.startsWith("[📎 ") ||
+            token.startsWith("[📎|")
+        ) {
+            const pillLabel = token.startsWith("[Screenshot|")
+                ? decodeSerializedPillValue(token.slice(12, -1))
+                : token.startsWith("[📎|")
+                  ? decodeSerializedPillValue(token.slice(4, -1))
+                  : token.slice(1, -1); // strip [ ]
             parts.push(
                 <ChatInlinePill
                     key={key++}
@@ -140,8 +151,26 @@ function renderUserContent(
             continue;
         }
 
-        if (token.startsWith("[@📄 ")) {
-            const filePath = token.slice(4, -1).trim();
+        if (token.startsWith("[@📁|")) {
+            const folderLabel = decodeSerializedPillValue(token.slice(5, -1));
+            parts.push(
+                <ChatInlinePill
+                    key={key++}
+                    label={folderLabel}
+                    metrics={pillMetrics}
+                    variant="folder"
+                />,
+            );
+            lastIndex = match.index + token.length;
+            continue;
+        }
+
+        if (token.startsWith("[@📄 ") || token.startsWith("[@📄|")) {
+            const filePath = (
+                token.startsWith("[@📄|")
+                    ? decodeSerializedPillValue(token.slice(5, -1))
+                    : token.slice(4, -1)
+            ).trim();
             const fileLabel = filePath.split("/").pop() || filePath;
             parts.push(
                 <ChatInlinePill
@@ -169,7 +198,9 @@ function renderUserContent(
         // [@NoteName] (new) or @NoteName (legacy) — note/folder mention
         let noteLabel: string;
         let variant: ChatPillVariant = "accent";
-        if (token.startsWith("[@")) {
+        if (token.startsWith("[@|")) {
+            noteLabel = decodeSerializedPillValue(token.slice(3, -1));
+        } else if (token.startsWith("[@")) {
             noteLabel = token.slice(2, -1); // strip [@ and ]
         } else if (token.startsWith("@📁")) {
             noteLabel = token.slice(2).replace(/^\s*/u, ""); // strip @📁

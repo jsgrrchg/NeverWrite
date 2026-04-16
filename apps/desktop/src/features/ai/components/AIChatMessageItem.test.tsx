@@ -861,6 +861,50 @@ describe("AIChatMessageItem user mention pills", () => {
         });
     });
 
+    it("renders escaped note mentions with reserved characters", async () => {
+        setVaultNotes([
+            {
+                id: "ideas/[ ] 2026 - Claude Opus 4.7 Lanzamiento.md",
+                title: "[ ] 2026 - Claude Opus 4.7 Lanzamiento",
+                path: "/vault/ideas/[ ] 2026 - Claude Opus 4.7 Lanzamiento.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+        setEditorTabs([
+            {
+                id: "tab-existing",
+                noteId: "ideas/[ ] 2026 - Claude Opus 4.7 Lanzamiento.md",
+                title: "[ ] 2026 - Claude Opus 4.7 Lanzamiento",
+                content: "# Launch",
+            },
+        ]);
+
+        renderMessage({
+            id: "user:escaped-mention",
+            role: "user",
+            kind: "text",
+            content:
+                "Review [@|%5B%20%5D%202026%20-%20Claude%20Opus%204.7%20Lanzamiento]",
+            timestamp: Date.now(),
+        });
+
+        fireEvent.contextMenu(
+            screen.getByRole("button", {
+                name: /\[ \] 2026 - Claude Op/,
+            }),
+            {
+                clientX: 24,
+                clientY: 36,
+            },
+        );
+        fireEvent.click(screen.getByText("Open in New Tab"));
+
+        await waitFor(() => {
+            expect(useEditorStore.getState().tabs).toHaveLength(2);
+        });
+    });
+
     it("opens file mention pills in a new tab from the context menu", async () => {
         const invokeMock = vi.mocked(invoke);
         invokeMock.mockImplementation(async (command, args) => {
