@@ -1,4 +1,5 @@
 import { fireEvent, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import { AIChatAgentControls } from "./AIChatAgentControls";
@@ -248,5 +249,132 @@ describe("AIChatAgentControls", () => {
         fireEvent.click(screen.getByTitle("Model"));
 
         expect(screen.queryByLabelText("Model search")).not.toBeInTheDocument();
+    });
+
+    it("preserves the current focus when selecting a pointer-driven mode", async () => {
+        const user = userEvent.setup();
+        const onModeChange = vi.fn();
+
+        renderComponent(
+            <div>
+                <input aria-label="Composer focus target" />
+                <AIChatAgentControls
+                    runtimeId="codex-acp"
+                    modelId="gpt-5.2-codex"
+                    modeId="default"
+                    effortsByModel={{}}
+                    models={[
+                        {
+                            id: "gpt-5.2-codex",
+                            runtimeId: "codex-acp",
+                            name: "gpt-5.2-codex",
+                            description: "",
+                        },
+                    ]}
+                    modes={[
+                        {
+                            id: "default",
+                            runtimeId: "codex-acp",
+                            name: "Auto",
+                            description: "",
+                            disabled: false,
+                        },
+                        {
+                            id: "review",
+                            runtimeId: "codex-acp",
+                            name: "Review mode",
+                            description: "",
+                            disabled: false,
+                        },
+                    ]}
+                    configOptions={[]}
+                    onModelChange={() => {}}
+                    onModeChange={onModeChange}
+                    onConfigOptionChange={() => {}}
+                />
+            </div>,
+        );
+
+        const composer = screen.getByLabelText("Composer focus target");
+        composer.focus();
+        expect(composer).toHaveFocus();
+
+        await user.click(screen.getByTitle("Approval Preset"));
+        await user.click(screen.getByRole("button", { name: "Review mode" }));
+
+        expect(onModeChange).toHaveBeenCalledWith("review");
+        expect(composer).toHaveFocus();
+    });
+
+    it("restores the previous focus after choosing a searchable model", async () => {
+        const user = userEvent.setup();
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <div>
+                <input aria-label="Composer focus target" />
+                <AIChatAgentControls
+                    runtimeId="kilo-acp"
+                    modelId="gpt-4o"
+                    modeId="default"
+                    effortsByModel={{}}
+                    models={[]}
+                    modes={[
+                        {
+                            id: "default",
+                            runtimeId: "kilo-acp",
+                            name: "Auto",
+                            description: "",
+                            disabled: false,
+                        },
+                    ]}
+                    configOptions={[
+                        {
+                            id: "model",
+                            runtimeId: "kilo-acp",
+                            category: "model",
+                            label: "Model",
+                            type: "select",
+                            value: "gpt-4o",
+                            options: [
+                                {
+                                    value: "gpt-4o",
+                                    label: "Kilo Gateway/OpenAI: GPT-4o",
+                                },
+                                {
+                                    value: "claude-sonnet-4.6",
+                                    label: "Kilo Gateway/Anthropic: Claude Sonnet 4.6",
+                                },
+                            ],
+                        },
+                    ]}
+                    onModelChange={() => {}}
+                    onModeChange={() => {}}
+                    onConfigOptionChange={onConfigOptionChange}
+                />
+            </div>,
+        );
+
+        const composer = screen.getByLabelText("Composer focus target");
+        composer.focus();
+        expect(composer).toHaveFocus();
+
+        await user.click(screen.getByTitle("Model"));
+
+        const search = screen.getByLabelText("Model search");
+        expect(search).toHaveFocus();
+
+        await user.type(search, "claude");
+        await user.click(
+            screen.getByRole("button", {
+                name: "Kilo Gateway/Anthropic: Claude Sonnet 4.6",
+            }),
+        );
+
+        expect(onConfigOptionChange).toHaveBeenCalledWith(
+            "model",
+            "claude-sonnet-4.6",
+        );
+        expect(composer).toHaveFocus();
     });
 });

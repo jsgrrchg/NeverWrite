@@ -66,8 +66,23 @@ function DropdownField({
     const [query, setQuery] = useState("");
     const ref = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const lastFocusedElementRef = useRef<HTMLElement | null>(null);
     const selected = options.find((option) => option.value === value);
     const isDisabled = disabled || options.length === 0;
+    const rememberFocusedElement = () => {
+        const activeElement = document.activeElement;
+        if (activeElement instanceof HTMLElement) {
+            lastFocusedElementRef.current = activeElement;
+        }
+    };
+    const restoreFocusedElement = () => {
+        const target = lastFocusedElementRef.current;
+        if (!target?.isConnected) {
+            return;
+        }
+
+        target.focus();
+    };
     const closeDropdown = () => {
         setOpen(false);
         setQuery("");
@@ -113,12 +128,20 @@ function DropdownField({
         <div ref={ref} className="relative">
             <button
                 type="button"
+                onMouseDown={(event) => {
+                    if (isDisabled) return;
+                    rememberFocusedElement();
+                    // Keep the composer focused during pointer interactions so
+                    // Cmd+Enter continues to submit immediately after a change.
+                    event.preventDefault();
+                }}
                 onClick={() => {
                     if (isDisabled) return;
                     if (open) {
                         closeDropdown();
                         return;
                     }
+                    rememberFocusedElement();
                     setOpen(true);
                 }}
                 className="flex items-center gap-1 rounded-md px-2 py-1 text-xs"
@@ -227,9 +250,17 @@ function DropdownField({
                                     key={option.value}
                                     type="button"
                                     disabled={option.disabled}
+                                    onMouseDown={(event) => {
+                                        if (option.disabled) {
+                                            return;
+                                        }
+
+                                        event.preventDefault();
+                                    }}
                                     onClick={() => {
                                         onChange(option.value);
                                         closeDropdown();
+                                        restoreFocusedElement();
                                     }}
                                     className="flex w-full items-center px-3 py-1.5 text-left text-xs"
                                     style={{

@@ -34,28 +34,109 @@ function createSessionView(
 }
 
 describe("TerminalViewport", () => {
-    it("renders raw output and forwards xterm input and resize events", async () => {
+    it("renders raw output and forwards xterm input and settled resize events", async () => {
         const writeInput = vi.fn(async () => undefined);
         const resize = vi.fn(async () => undefined);
+        vi.useFakeTimers();
 
-        renderComponent(
-            <TerminalViewport
-                session={createSessionView({
-                    writeInput,
-                    resize,
-                })}
-            />,
-        );
-        await flushPromises();
+        try {
+            renderComponent(
+                <TerminalViewport
+                    session={createSessionView({
+                        writeInput,
+                        resize,
+                    })}
+                />,
+            );
+            await flushPromises();
 
-        expect(screen.getByText(/hello from terminal/i)).toBeInTheDocument();
-        expect(screen.getByText(/ready/i)).toBeInTheDocument();
-        expect(resize).toHaveBeenCalledWith(80, 24);
+            expect(screen.getByText(/hello from terminal/i)).toBeInTheDocument();
+            expect(screen.getByText(/ready/i)).toBeInTheDocument();
+            expect(resize).not.toHaveBeenCalled();
 
-        act(() => {
-            getXtermMockInstances()[0]?.emitData("pwd\r");
+            await act(async () => {
+                vi.advanceTimersByTime(100);
+            });
+
+            expect(resize).toHaveBeenCalledWith(80, 24);
+
+            act(() => {
+                getXtermMockInstances()[0]?.emitData("pwd\r");
+            });
+
+            expect(writeInput).toHaveBeenCalledWith("pwd\r");
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("coalesces noisy resize observer updates into a single PTY resize", async () => {
+        const resize = vi.fn(async () => undefined);
+        const originalResizeObserver = globalThis.ResizeObserver;
+
+        class MockResizeObserver {
+            static callbacks: ResizeObserverCallback[] = [];
+
+            constructor(callback: ResizeObserverCallback) {
+                MockResizeObserver.callbacks.push(callback);
+            }
+
+            observe() {}
+
+            unobserve() {}
+
+            disconnect() {}
+
+            static notifyAll() {
+                for (const callback of MockResizeObserver.callbacks) {
+                    callback([], {} as ResizeObserver);
+                }
+            }
+
+            static reset() {
+                MockResizeObserver.callbacks = [];
+            }
+        }
+
+        vi.useFakeTimers();
+        Object.defineProperty(globalThis, "ResizeObserver", {
+            configurable: true,
+            writable: true,
+            value: MockResizeObserver,
         });
 
-        expect(writeInput).toHaveBeenCalledWith("pwd\r");
+        try {
+            renderComponent(
+                <TerminalViewport
+                    session={createSessionView({
+                        resize,
+                    })}
+                />,
+            );
+            await flushPromises();
+
+            act(() => {
+                MockResizeObserver.notifyAll();
+                MockResizeObserver.notifyAll();
+                MockResizeObserver.notifyAll();
+            });
+
+            expect(resize).not.toHaveBeenCalled();
+
+            await act(async () => {
+                vi.advanceTimersByTime(100);
+            });
+
+            expect(resize).toHaveBeenCalledTimes(1);
+            expect(resize).toHaveBeenLastCalledWith(80, 24);
+        } finally {
+            MockResizeObserver.reset();
+            Object.defineProperty(globalThis, "ResizeObserver", {
+                configurable: true,
+                writable: true,
+                value: originalResizeObserver,
+            });
+            vi.useRealTimers();
+        }
     });
 });

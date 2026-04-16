@@ -52,6 +52,8 @@ function buildSearchSummary(resultIndex: number, resultCount: number) {
     return `${Math.max(resultIndex + 1, 1)} / ${resultCount}`;
 }
 
+const TERMINAL_RESIZE_SETTLE_MS = 80;
+
 export function TerminalViewport({
     session,
 }: {
@@ -65,6 +67,13 @@ export function TerminalViewport({
     const writeInputRef = useRef(writeInput);
     const resizeRef = useRef(resize);
     const snapshotRef = useRef(snapshot);
+    const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(
+        null,
+    );
+    const lastRequestedSizeRef = useRef<{ cols: number; rows: number } | null>(
+        null,
+    );
     const lastSessionIdRef = useRef<string | null>(null);
     const lastRawOutputRef = useRef("");
     const lastRestoredFocusSessionIdRef = useRef<string | null>(null);
@@ -141,6 +150,17 @@ export function TerminalViewport({
     }, [resize, snapshot, writeInput]);
 
     useEffect(() => {
+        const lastRequestedSize = lastRequestedSizeRef.current;
+        if (
+            lastRequestedSize &&
+            lastRequestedSize.cols === snapshot.cols &&
+            lastRequestedSize.rows === snapshot.rows
+        ) {
+            lastRequestedSizeRef.current = null;
+        }
+    }, [snapshot.cols, snapshot.rows]);
+
+    useEffect(() => {
         searchOpenRef.current = searchOpen;
     }, [searchOpen]);
 
@@ -174,15 +194,39 @@ export function TerminalViewport({
             const nextCols = terminal.cols;
             const nextRows = terminal.rows;
             const currentSnapshot = snapshotRef.current;
+            const queuedSize =
+                pendingResizeRef.current ?? lastRequestedSizeRef.current;
             if (
                 nextCols > 0 &&
                 nextRows > 0 &&
                 (nextCols !== currentSnapshot.cols ||
                     nextRows !== currentSnapshot.rows)
             ) {
-                void resizeRef
-                    .current(nextCols, nextRows)
-                    .catch(() => undefined);
+                if (
+                    queuedSize &&
+                    queuedSize.cols === nextCols &&
+                    queuedSize.rows === nextRows
+                ) {
+                    return;
+                }
+
+                pendingResizeRef.current = { cols: nextCols, rows: nextRows };
+                if (resizeTimerRef.current) {
+                    clearTimeout(resizeTimerRef.current);
+                }
+                resizeTimerRef.current = setTimeout(() => {
+                    const pendingResize = pendingResizeRef.current;
+                    resizeTimerRef.current = null;
+                    if (!pendingResize) {
+                        return;
+                    }
+
+                    pendingResizeRef.current = null;
+                    lastRequestedSizeRef.current = pendingResize;
+                    void resizeRef
+                        .current(pendingResize.cols, pendingResize.rows)
+                        .catch(() => undefined);
+                }, TERMINAL_RESIZE_SETTLE_MS);
             }
         };
 
@@ -259,6 +303,12 @@ export function TerminalViewport({
             terminalRef.current = null;
             fitAddonRef.current = null;
             searchAddonRef.current = null;
+            if (resizeTimerRef.current) {
+                clearTimeout(resizeTimerRef.current);
+                resizeTimerRef.current = null;
+            }
+            pendingResizeRef.current = null;
+            lastRequestedSizeRef.current = null;
             lastSessionIdRef.current = null;
             lastRawOutputRef.current = "";
             lastRestoredFocusSessionIdRef.current = null;
