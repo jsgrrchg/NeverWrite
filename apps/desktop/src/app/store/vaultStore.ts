@@ -167,6 +167,17 @@ function wait(ms: number) {
     });
 }
 
+async function loadVaultEntriesSnapshot(vaultPath: string) {
+    try {
+        return await invoke<VaultEntryDto[]>("list_vault_entries", {
+            vaultPath,
+        });
+    } catch (error) {
+        logError("vault-store", "Failed to load vault entries snapshot", error);
+        return null;
+    }
+}
+
 function normalizeOpenState(
     state: Partial<VaultOpenState> | null | undefined,
 ): VaultOpenState {
@@ -583,8 +594,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 modified_at: now,
                 created_at: now,
             };
+            const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((s) => ({
                 notes: [...s.notes, note],
+                entries: Array.isArray(nextEntries) ? nextEntries : s.entries,
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
@@ -605,8 +618,11 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 vaultPath,
                 path,
             });
+            const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((state) => ({
-                entries: [...state.entries, entry],
+                entries: Array.isArray(nextEntries)
+                    ? nextEntries
+                    : [...state.entries, entry],
                 vaultRevision: state.vaultRevision + 1,
                 structureRevision: state.structureRevision + 1,
             }));
@@ -628,16 +644,19 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 )
                 .map((n) => n.id);
             await invoke("delete_folder", { vaultPath, relativePath });
+            const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((s) => ({
                 notes: s.notes.filter(
                     (n) =>
                         n.id !== relativePath && !n.id.startsWith(folderPrefix),
                 ),
-                entries: s.entries.filter(
-                    (e) =>
-                        e.relative_path !== relativePath &&
-                        !e.relative_path.startsWith(folderPrefix),
-                ),
+                entries: Array.isArray(nextEntries)
+                    ? nextEntries
+                    : s.entries.filter(
+                          (e) =>
+                              e.relative_path !== relativePath &&
+                              !e.relative_path.startsWith(folderPrefix),
+                      ),
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
@@ -660,8 +679,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         try {
             const vaultPath = get().vaultPath ?? "";
             await invoke("delete_note", { vaultPath, noteId });
+            const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((s) => ({
                 notes: s.notes.filter((n) => n.id !== noteId),
+                entries: Array.isArray(nextEntries) ? nextEntries : s.entries,
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
@@ -695,8 +716,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 created_at:
                     existing?.created_at ?? Math.floor(Date.now() / 1000),
             };
+            const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((s) => ({
                 notes: s.notes.map((n) => (n.id === noteId ? updated : n)),
+                entries: Array.isArray(nextEntries) ? nextEntries : s.entries,
                 vaultRevision: s.vaultRevision + 1,
                 structureRevision: s.structureRevision + 1,
                 resolverRevision: s.resolverRevision + 1,
@@ -725,16 +748,20 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 },
             );
             const oldRelativePath = `${noteId}.md`;
+            const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((state) => ({
                 notes: state.notes.filter((note) => note.id !== noteId),
-                entries: [
-                    ...state.entries.filter(
-                        (entry) =>
-                            entry.relative_path !== oldRelativePath &&
-                            entry.relative_path !== updated.relative_path,
-                    ),
-                    updated,
-                ],
+                entries: Array.isArray(nextEntries)
+                    ? nextEntries
+                    : [
+                          ...state.entries.filter(
+                              (entry) =>
+                                  entry.relative_path !== oldRelativePath &&
+                                  entry.relative_path !==
+                                      updated.relative_path,
+                          ),
+                          updated,
+                      ],
                 vaultRevision: state.vaultRevision + 1,
                 structureRevision: state.structureRevision + 1,
                 resolverRevision: state.resolverRevision + 1,

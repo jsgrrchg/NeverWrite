@@ -47,7 +47,10 @@ import {
     subscribePretextInvalidation,
 } from "../../../app/services/pretextService";
 import { estimateComposerTextHeight } from "./chatTextPretext";
-import { useVaultStore } from "../../../app/store/vaultStore";
+import {
+    useVaultStore,
+    type VaultEntryDto,
+} from "../../../app/store/vaultStore";
 import { AI_MESSAGE_LABEL } from "../../../app/utils/branding";
 import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 
@@ -606,13 +609,20 @@ function removeAdjacentMention(root: HTMLDivElement) {
     return false;
 }
 
-function extractFolderPaths(notes: AIChatNoteSummary[]): string[] {
+function extractFolderPaths(
+    notes: AIChatNoteSummary[],
+    entries: Array<Pick<VaultEntryDto, "kind" | "relative_path">>,
+): string[] {
     const folders = new Set<string>();
     for (const note of notes) {
         const parts = note.id.split("/");
         for (let i = 1; i < parts.length; i++) {
             folders.add(parts.slice(0, i).join("/"));
         }
+    }
+    for (const entry of entries) {
+        if (entry.kind !== "folder" || !entry.relative_path) continue;
+        folders.add(entry.relative_path);
     }
     return [...folders].sort();
 }
@@ -988,7 +998,10 @@ export function AIChatComposer({
                 .join(""),
         [parts],
     );
-    const folderPaths = useMemo(() => extractFolderPaths(notes), [notes]);
+    const folderPaths = useMemo(
+        () => extractFolderPaths(notes, fallbackEntries),
+        [fallbackEntries, notes],
+    );
     const mentionableFiles = useMemo(() => {
         if (files) {
             return files;

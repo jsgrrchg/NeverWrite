@@ -213,6 +213,51 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("shows empty folders from vault entries in the @ picker", async () => {
+        setVaultEntries([
+            {
+                id: "src",
+                path: "/vault/src",
+                relative_path: "src",
+                title: "src",
+                file_name: "src",
+                extension: "",
+                kind: "folder",
+                modified_at: 0,
+                created_at: 0,
+                size: 0,
+                mime_type: null,
+            },
+        ]);
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[]}
+                status="idle"
+                runtimeName="Assistant"
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message NeverWrite",
+        });
+        composer.textContent = "@sr";
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("src")).toBeInTheDocument();
+        });
+    });
+
     it("does not show /plan in the @ picker", async () => {
         const { composer } = renderComposer();
         composer.textContent = "@pl";
