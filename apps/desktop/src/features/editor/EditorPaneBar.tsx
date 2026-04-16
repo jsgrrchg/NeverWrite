@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useState } from "react";
+import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import {
@@ -250,6 +250,47 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
               ? projectedDropIndex + 1
               : projectedDropIndex;
     const insertionIndicatorIndex = localInsertionIndicatorIndex;
+
+    // Absolutely-positioned indicator ref — avoids flex layout shifts
+    // during drag that cause visible tab jitter.
+    const insertionIndicatorRef = useRef<HTMLDivElement>(null);
+
+    useLayoutEffect(() => {
+        const indicator = insertionIndicatorRef.current;
+        if (!indicator) return;
+
+        if (insertionIndicatorIndex === null) {
+            indicator.style.display = "none";
+            return;
+        }
+
+        const strip = tabStripRef.current;
+        if (!strip) {
+            indicator.style.display = "none";
+            return;
+        }
+
+        const tabNodes = Array.from(
+            strip.querySelectorAll<HTMLElement>("[data-pane-tab-id]"),
+        );
+
+        if (tabNodes.length === 0) {
+            indicator.style.display = "none";
+            return;
+        }
+
+        let left: number;
+        if (insertionIndicatorIndex < tabNodes.length) {
+            left = tabNodes[insertionIndicatorIndex].offsetLeft;
+        } else {
+            const last = tabNodes[tabNodes.length - 1];
+            left = last.offsetLeft + last.offsetWidth;
+        }
+
+        indicator.style.display = "";
+        indicator.style.transform = `translate(${left - 1}px, -50%)`;
+    }, [insertionIndicatorIndex]);
+
     const handleTabClick = useCallback(
         (tabId: string) => {
             if (editingKey === tabId) return;
@@ -357,7 +398,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             data-pane-tab-overflowing={
                                 tabLayout.overflow || undefined
                             }
-                            className="flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-end"
+                            className="relative flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-end"
                             style={{
                                 gap: tabLayout.stripGap,
                                 padding: `0 ${tabLayout.stripPaddingX}px`,
@@ -370,19 +411,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 }
                             }}
                         >
-                            {insertionIndicatorIndex === 0 && (
-                                <div
-                                    aria-hidden="true"
-                                    className="shrink-0 rounded-full"
-                                    style={{
-                                        width: 3,
-                                        height: 20,
-                                        backgroundColor: "var(--accent)",
-                                        boxShadow:
-                                            "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
-                                    }}
-                                />
-                            )}
                             {visualTabs.map((tab, index) => {
                                 const isActive = tab.id === pane.activeTabId;
                                 const isDragging = tab.id === draggingTabId;
@@ -578,24 +606,27 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 ×
                                             </button>
                                         </div>
-                                        {insertionIndicatorIndex ===
-                                            index + 1 && (
-                                            <div
-                                                aria-hidden="true"
-                                                className="shrink-0 rounded-full"
-                                                style={{
-                                                    width: 3,
-                                                    height: 20,
-                                                    backgroundColor:
-                                                        "var(--accent)",
-                                                    boxShadow:
-                                                        "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
-                                                }}
-                                            />
-                                        )}
                                     </Fragment>
                                 );
                             })}
+                            <div
+                                ref={insertionIndicatorRef}
+                                aria-hidden="true"
+                                className="rounded-full"
+                                style={{
+                                    position: "absolute",
+                                    top: "50%",
+                                    left: 0,
+                                    width: 3,
+                                    height: 20,
+                                    backgroundColor: "var(--accent)",
+                                    boxShadow:
+                                        "0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent)",
+                                    pointerEvents: "none",
+                                    zIndex: 20,
+                                    display: "none",
+                                }}
+                            />
                         </div>
                     ) : (
                         <div className="flex min-w-0 flex-1 items-center px-3">

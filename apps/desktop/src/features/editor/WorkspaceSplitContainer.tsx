@@ -1,5 +1,6 @@
 import {
     Fragment,
+    memo,
     useCallback,
     useEffect,
     useMemo,
@@ -89,7 +90,7 @@ function clampSplitResize(
     );
 }
 
-function WorkspacePane({
+const WorkspacePane = memo(function WorkspacePane({
     paneId,
     isFocused,
     isExternalFileDropActive,
@@ -142,7 +143,7 @@ function WorkspacePane({
             />
         </div>
     );
-}
+});
 
 export function WorkspaceSplitContainer({
     node,
