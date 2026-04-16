@@ -1,6 +1,8 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import { openSettingsWindow } from "../../app/detachedWindows";
+import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import {
     isChatTab,
     selectFocusedEditorTab,
@@ -19,6 +21,9 @@ import { getRuntimeDisplayName } from "./utils/runtimeMetadata";
 
 export function AIChatPanel() {
     const [newMenuOpen, setNewMenuOpen] = useState(false);
+    const [newMenuPos, setNewMenuPos] = useState({ x: 0, y: 0 });
+    const newMenuButtonRef = useRef<HTMLButtonElement>(null);
+    const newMenuContentRef = useRef<HTMLDivElement>(null);
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const panelExpanded = useLayoutStore((state) => state.rightPanelExpanded);
     const toggleRightPanelExpanded = useLayoutStore(
@@ -50,6 +55,46 @@ export function AIChatPanel() {
                 ),
         [sessionOrder, sessionsById],
     );
+
+    useLayoutEffect(() => {
+        if (!newMenuOpen) return;
+        const button = newMenuButtonRef.current;
+        const menu = newMenuContentRef.current;
+        if (!button || !menu) return;
+
+        const buttonRect = button.getBoundingClientRect();
+        const menuRect = menu.getBoundingClientRect();
+        const safe = getViewportSafeMenuPosition(
+            buttonRect.right - menuRect.width,
+            buttonRect.bottom + 8,
+            menuRect.width,
+            menuRect.height,
+        );
+        setNewMenuPos(safe);
+    }, [newMenuOpen]);
+
+    useEffect(() => {
+        if (!newMenuOpen) return;
+
+        const handleDown = (event: MouseEvent) => {
+            const target = event.target as Node | null;
+            if (!target) return;
+            if (newMenuButtonRef.current?.contains(target)) return;
+            if (newMenuContentRef.current?.contains(target)) return;
+            setNewMenuOpen(false);
+        };
+
+        const handleKey = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setNewMenuOpen(false);
+        };
+
+        document.addEventListener("mousedown", handleDown);
+        document.addEventListener("keydown", handleKey);
+        return () => {
+            document.removeEventListener("mousedown", handleDown);
+            document.removeEventListener("keydown", handleKey);
+        };
+    }, [newMenuOpen]);
 
     const orderedRuntimes = useMemo(() => {
         const nextRuntimes = [...runtimes];
@@ -85,8 +130,9 @@ export function AIChatPanel() {
                 </div>
 
                 <div className="flex shrink-0 items-center gap-1">
-                    <div className="relative">
+                    <div>
                         <button
+                            ref={newMenuButtonRef}
                             type="button"
                             onClick={() => setNewMenuOpen((open) => !open)}
                             className="rounded px-2 py-0.5 text-[11px]"
@@ -100,71 +146,82 @@ export function AIChatPanel() {
                             New
                         </button>
 
-                        {newMenuOpen ? (
-                            <div
-                                className="absolute right-0 top-full z-20 mt-2 min-w-52 rounded-xl p-1"
-                                style={{
-                                    backgroundColor: "var(--bg-secondary)",
-                                    border: "1px solid var(--border)",
-                                    boxShadow: "0 18px 40px rgb(0 0 0 / 0.28)",
-                                }}
-                            >
-                                {orderedRuntimes.length > 0 ? (
-                                    orderedRuntimes.map((runtime) => (
-                                        <button
-                                            key={runtime.runtime.id}
-                                            type="button"
-                                            onClick={() => {
-                                                setNewMenuOpen(false);
-                                                void createNewChatInWorkspace(
-                                                    runtime.runtime.id,
-                                                );
-                                            }}
-                                            className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
-                                            style={{
-                                                color: "var(--text-primary)",
-                                                background: "transparent",
-                                            }}
-                                        >
-                                            {getRuntimeDisplayName(
-                                                runtime.runtime.id,
-                                                runtime.runtime.name,
-                                            )}
-                                        </button>
-                                    ))
-                                ) : (
-                                    <div
-                                        className="px-2.5 py-2 text-xs"
-                                        style={{
-                                            color: "var(--text-secondary)",
-                                        }}
-                                    >
-                                        No providers available yet.
-                                    </div>
-                                )}
-                                <div
-                                    style={{
-                                        height: 1,
-                                        backgroundColor: "var(--border)",
-                                        margin: "4px 0",
-                                    }}
-                                />
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        setNewMenuOpen(false);
-                                        void openSettingsWindow(vaultPath);
-                                    }}
-                                    className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
-                                    style={{
-                                        color: "var(--text-secondary)",
-                                        background: "transparent",
-                                    }}
-                                >
-                                    Add providers
-                                </button>
-                            </div>
-                        ) : null}
+                        {newMenuOpen
+                            ? createPortal(
+                                  <div
+                                      ref={newMenuContentRef}
+                                      style={{
+                                          position: "fixed",
+                                          top: newMenuPos.y,
+                                          left: newMenuPos.x,
+                                          zIndex: 10010,
+                                          minWidth: 208,
+                                          overflow: "hidden",
+                                          borderRadius: 12,
+                                          padding: 4,
+                                          backgroundColor: "var(--bg-secondary)",
+                                          border: "1px solid var(--border)",
+                                          boxShadow: "0 18px 40px rgb(0 0 0 / 0.28)",
+                                      }}
+                                  >
+                                      {orderedRuntimes.length > 0 ? (
+                                          orderedRuntimes.map((runtime) => (
+                                              <button
+                                                  key={runtime.runtime.id}
+                                                  type="button"
+                                                  onClick={() => {
+                                                      setNewMenuOpen(false);
+                                                      void createNewChatInWorkspace(
+                                                          runtime.runtime.id,
+                                                      );
+                                                  }}
+                                                  className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                                  style={{
+                                                      color: "var(--text-primary)",
+                                                      background: "transparent",
+                                                  }}
+                                              >
+                                                  {getRuntimeDisplayName(
+                                                      runtime.runtime.id,
+                                                      runtime.runtime.name,
+                                                  )}
+                                              </button>
+                                          ))
+                                      ) : (
+                                          <div
+                                              className="px-2.5 py-2 text-xs"
+                                              style={{
+                                                  color: "var(--text-secondary)",
+                                              }}
+                                          >
+                                              No providers available yet.
+                                          </div>
+                                      )}
+                                      <div
+                                          style={{
+                                              height: 1,
+                                              backgroundColor: "var(--border)",
+                                              margin: "4px 0",
+                                          }}
+                                      />
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              setNewMenuOpen(false);
+                                              void openSettingsWindow(vaultPath);
+                                          }}
+                                          className="flex w-full items-center rounded px-2.5 py-1.5 text-left text-xs"
+                                          style={{
+                                              color: "var(--text-secondary)",
+                                              background: "transparent",
+                                          }}
+                                      >
+                                          Add providers
+                                      </button>
+                                  </div>,
+                                  document.body,
+                              )
+                            : null}
                     </div>
                     <button
                         type="button"
