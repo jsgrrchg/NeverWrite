@@ -27,6 +27,7 @@ const ZERO_USAGE = Object.freeze({
     cache_creation_input_tokens: 0,
 });
 const DEFAULT_CONTEXT_WINDOW = 200000;
+const SUPPORTED_EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
 /** Compute a stable fingerprint of the session-defining params so we can
  *  detect when a loadSession/resumeSession call requires tearing down and
  *  recreating the underlying Query process.  MCP servers are sorted by name
@@ -773,9 +774,21 @@ export class ClaudeAcpAgent {
             });
         }
         else if (params.configId === "model") {
-            await this.sessions[params.sessionId].query.setModel(resolvedValue);
+            await session.query.setModel(resolvedValue);
+            const nextEffort = resolveEffortLevelForModel(session.modelInfos, resolvedValue, session.effortLevel);
+            if (nextEffort && nextEffort !== session.effortLevel) {
+                await session.query.applyFlagSettings({ effortLevel: nextEffort });
+                session.effortLevel = nextEffort;
+            }
+            session.configOptions = buildConfigOptions(session.modes, { ...session.models, currentModelId: resolvedValue }, session.modelInfos, nextEffort ?? session.effortLevel);
         }
-        this.syncSessionConfigState(session, params.configId, params.value);
+        else if (params.configId === "effort_level") {
+            await session.query.applyFlagSettings({
+                effortLevel: resolvedValue,
+            });
+            session.effortLevel = resolvedValue;
+        }
+        this.syncSessionConfigState(session, params.configId, resolvedValue);
         session.configOptions = session.configOptions.map((o) => o.id === params.configId && typeof o.currentValue === "string"
             ? { ...o, currentValue: resolvedValue }
             : o);
@@ -1001,6 +1014,9 @@ export class ClaudeAcpAgent {
                 session.contextWindowSize = inferContextWindowFromModel(value) ?? DEFAULT_CONTEXT_WINDOW;
             }
             session.models = { ...session.models, currentModelId: value };
+        }
+        else if (configId === "effort_level") {
+            session.effortLevel = value;
         }
     }
     async getOrCreateSession(params) {
@@ -1241,7 +1257,8 @@ export class ClaudeAcpAgent {
             currentModeId: permissionMode,
             availableModes,
         };
-        const configOptions = buildConfigOptions(modes, models);
+        const initialEffortLevel = defaultEffortLevelForModel(initializationResult.models, models.currentModelId);
+        const configOptions = buildConfigOptions(modes, models, initializationResult.models, initialEffortLevel);
         this.sessions[sessionId] = {
             query: q,
             input: input,
@@ -1263,6 +1280,8 @@ export class ClaudeAcpAgent {
             nextPendingOrder: 0,
             abortController,
             emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
+            effortLevel: initialEffortLevel,
+            modelInfos: initializationResult.models,
             contextWindowSize: inferContextWindowFromModel(models.currentModelId) ?? DEFAULT_CONTEXT_WINDOW,
         };
         return {
@@ -1327,8 +1346,8 @@ function createEnvForGateway(gatewayMeta) {
         ANTHROPIC_AUTH_TOKEN: "", // Must be specified to bypass claude login requirement
     };
 }
-function buildConfigOptions(modes, models) {
-    return [
+function buildConfigOptions(modes, models, modelInfos, currentEffortLevel) {
+    const options = [
         {
             id: "mode",
             name: "Mode",
@@ -1356,6 +1375,44 @@ function buildConfigOptions(modes, models) {
             })),
         },
     ];
+    const effortLevels = supportedEffortLevelsForModel(modelInfos, models.currentModelId);
+    if (effortLevels.length > 0) {
+        options.push({
+            id: "effort_level",
+            name: "Effort",
+            description: "How much the model thinks before responding",
+            category: "thought_level",
+            type: "select",
+            currentValue: resolveEffortLevelForModel(modelInfos, models.currentModelId, currentEffortLevel) ??
+                effortLevels[0],
+            options: effortLevels.map((level) => ({
+                value: level,
+                name: level.charAt(0).toUpperCase() + level.slice(1),
+            })),
+        });
+    }
+    return options;
+}
+function supportedEffortLevelsForModel(modelInfos, modelId) {
+    const levels = modelInfos?.find((model) => model.value === modelId)?.supportedEffortLevels ?? [];
+    return levels.filter((level) => SUPPORTED_EFFORT_LEVELS.includes(level));
+}
+function defaultEffortLevelForModel(modelInfos, modelId) {
+    const supported = supportedEffortLevelsForModel(modelInfos, modelId);
+    if (supported.includes("high")) {
+        return "high";
+    }
+    return supported[0] ?? "high";
+}
+function resolveEffortLevelForModel(modelInfos, modelId, currentEffortLevel) {
+    const supported = supportedEffortLevelsForModel(modelInfos, modelId);
+    if (supported.length === 0) {
+        return null;
+    }
+    if (currentEffortLevel && supported.includes(currentEffortLevel)) {
+        return currentEffortLevel;
+    }
+    return defaultEffortLevelForModel(modelInfos, modelId);
 }
 // Claude Code CLI persists display strings like "opus[1m]" in settings,
 // but the SDK model list uses IDs like "claude-opus-4-6-1m".

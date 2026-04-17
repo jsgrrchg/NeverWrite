@@ -32,6 +32,7 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
         capabilities: [
             "attachments",
             "permissions",
+            "reasoning",
             "plans",
             "terminal_output",
             "create_session",

@@ -28,7 +28,7 @@ use codex_login::{
 };
 use codex_protocol::{
     ThreadId,
-    protocol::{InitialHistory, SessionSource},
+    protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
 };
 use std::{
     cell::RefCell,
@@ -211,6 +211,32 @@ impl CodexAgent {
 
         Ok(config)
     }
+
+    fn sync_config_with_session(
+        config: &mut Config,
+        session_configured: &SessionConfiguredEvent,
+    ) -> Result<(), Error> {
+        config.cwd = session_configured
+            .cwd
+            .clone()
+            .try_into()
+            .map_err(Error::into_internal_error)?;
+        config.model = Some(session_configured.model.clone());
+        config.model_provider_id = session_configured.model_provider_id.clone();
+        config.model_reasoning_effort = session_configured.reasoning_effort;
+        config.service_tier = session_configured.service_tier;
+        config
+            .permissions
+            .approval_policy
+            .set(session_configured.approval_policy)
+            .map_err(Error::into_internal_error)?;
+        config
+            .permissions
+            .sandbox_policy
+            .set(session_configured.sandbox_policy.clone())
+            .map_err(Error::into_internal_error)?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -338,16 +364,18 @@ impl Agent for CodexAgent {
         } = request;
         info!("Creating new session with cwd: {}", cwd.display());
 
-        let config = self.build_session_config(&cwd, mcp_servers)?;
+        let mut config = self.build_session_config(&cwd, mcp_servers)?;
         let num_mcp_servers = config.mcp_servers.len();
 
         let NewThread {
             thread_id,
             thread,
-            session_configured: _,
+            session_configured,
         } = Box::pin(self.thread_manager.start_thread(config.clone()))
             .await
             .map_err(|_e| Error::internal_error())?;
+
+        Self::sync_config_with_session(&mut config, &session_configured)?;
 
         let session_id = Self::session_id_from_thread_id(thread_id);
         // Record the session root for filesystem sandboxing.
@@ -408,12 +436,12 @@ impl Agent for CodexAgent {
             InitialHistory::New => Vec::new(),
         };
 
-        let config = self.build_session_config(&cwd, mcp_servers)?;
+        let mut config = self.build_session_config(&cwd, mcp_servers)?;
 
         let NewThread {
             thread_id: _,
             thread,
-            session_configured: _,
+            session_configured,
         } = Box::pin(self.thread_manager.resume_thread_from_rollout(
             config.clone(),
             rollout_path,
@@ -422,6 +450,8 @@ impl Agent for CodexAgent {
         ))
         .await
         .map_err(|e| Error::internal_error().data(e.to_string()))?;
+
+        Self::sync_config_with_session(&mut config, &session_configured)?;
 
         let thread = Rc::new(Thread::new(
             session_id.clone(),
@@ -680,5 +710,61 @@ fn format_session_title(message: &str) -> Option<String> {
         None
     } else {
         Some(truncate_graphemes(trimmed, SESSION_TITLE_MAX_GRAPHEMES))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_core::config::ConfigOverrides;
+    use codex_protocol::{
+        config_types::{ApprovalsReviewer, ServiceTier},
+        openai_models::ReasoningEffort,
+        protocol::{AskForApproval, SandboxPolicy},
+    };
+
+    #[tokio::test]
+    async fn sync_config_with_session_restores_runtime_state() -> anyhow::Result<()> {
+        let mut config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        let session_configured = SessionConfiguredEvent {
+            session_id: ThreadId::new(),
+            forked_from_id: None,
+            thread_name: Some("Fast session".to_string()),
+            model: "gpt-5".to_string(),
+            model_provider_id: "openai".to_string(),
+            service_tier: Some(ServiceTier::Fast),
+            approval_policy: AskForApproval::OnFailure,
+            approvals_reviewer: ApprovalsReviewer::default(),
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            cwd: std::env::current_dir()?,
+            reasoning_effort: Some(ReasoningEffort::High),
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            network_proxy: None,
+            rollout_path: None,
+        };
+
+        CodexAgent::sync_config_with_session(&mut config, &session_configured)?;
+
+        assert_eq!(config.model.as_deref(), Some("gpt-5"));
+        assert_eq!(config.model_provider_id, "openai");
+        assert_eq!(config.service_tier, Some(ServiceTier::Fast));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(
+            *config.permissions.approval_policy.get(),
+            AskForApproval::OnFailure
+        );
+        assert!(matches!(
+            config.permissions.sandbox_policy.get(),
+            SandboxPolicy::DangerFullAccess
+        ));
+        assert_eq!(config.cwd.to_path_buf(), std::env::current_dir()?);
+
+        Ok(())
     }
 }

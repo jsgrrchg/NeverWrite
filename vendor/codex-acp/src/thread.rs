@@ -22,6 +22,7 @@ use agent_client_protocol::{
     UsageUpdate,
 };
 use codex_apply_patch::parse_patch;
+use codex_features::Feature;
 use codex_core::{
     AuthManager, CodexThread,
     config::{Config, set_project_trust_level},
@@ -47,7 +48,7 @@ use codex_protocol::protocol::{
 };
 use codex_protocol::{
     approvals::{ElicitationRequest, ElicitationRequestEvent},
-    config_types::TrustLevel,
+    config_types::{ServiceTier, TrustLevel},
     custom_prompts::CustomPrompt,
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
     items::TurnItem,
@@ -3382,7 +3383,7 @@ impl<A: Auth> ThreadActor<A> {
                 let result = self.handle_load().await;
                 drop(response_tx.send(result));
                 let client = self.client.clone();
-                let mut available_commands = Self::builtin_commands();
+                let mut available_commands = self.builtin_commands();
                 let load_custom_prompts = self.load_custom_prompts().await;
                 let custom_prompts = self.custom_prompts.clone();
 
@@ -3490,8 +3491,8 @@ impl<A: Auth> ThreadActor<A> {
         }
     }
 
-    fn builtin_commands() -> Vec<AvailableCommand> {
-        vec![
+    fn builtin_commands(&self) -> Vec<AvailableCommand> {
+        let mut commands = vec![
             AvailableCommand::new("review", "Review my current changes and find issues").input(
                 AvailableCommandInput::Unstructured(UnstructuredCommandInput::new(
                     "optional custom review instructions",
@@ -3521,7 +3522,21 @@ impl<A: Auth> ThreadActor<A> {
             ),
             AvailableCommand::new("undo", "undo Codex’s most recent turn"),
             AvailableCommand::new("logout", "logout of Codex"),
-        ]
+        ];
+
+        if self.fast_mode_available() {
+            commands.push(
+                AvailableCommand::new(
+                    "fast",
+                    "toggle Fast mode to enable fastest inference at 2X plan usage",
+                )
+                .input(AvailableCommandInput::Unstructured(
+                    UnstructuredCommandInput::new("optional: on, off, or status"),
+                )),
+            );
+        }
+
+        commands
     }
 
     async fn load_custom_prompts(&mut self) -> oneshot::Receiver<Result<Vec<CustomPrompt>, Error>> {
@@ -3611,6 +3626,22 @@ impl<A: Auth> ThreadActor<A> {
         Some((model.to_owned(), reasoning))
     }
 
+    fn current_service_tier(&self) -> Option<ServiceTier> {
+        self.config.service_tier
+    }
+
+    fn fast_mode_available(&self) -> bool {
+        self.config.features.enabled(Feature::FastMode)
+    }
+
+    fn service_tier_value_id(service_tier: Option<ServiceTier>) -> &'static str {
+        match service_tier {
+            Some(ServiceTier::Fast) => "fast",
+            Some(ServiceTier::Flex) => "flex",
+            None => "off",
+        }
+    }
+
     async fn config_options(&self) -> Result<Vec<SessionConfigOption>, Error> {
         let mut options = Vec::new();
 
@@ -3663,6 +3694,39 @@ impl<A: Auth> ThreadActor<A> {
                 .category(SessionConfigOptionCategory::Model)
                 .description("Choose which model Codex should use"),
         );
+
+        let current_service_tier = self.current_service_tier();
+        if self.fast_mode_available() || current_service_tier.is_some() {
+            let mut service_tier_options = vec![
+                SessionConfigSelectOption::new("off", "Off")
+                    .description("Use standard inference and standard plan usage"),
+            ];
+
+            if self.fast_mode_available() || matches!(current_service_tier, Some(ServiceTier::Fast))
+            {
+                service_tier_options.push(
+                    SessionConfigSelectOption::new("fast", "Fast")
+                        .description("Use the fastest inference at 2X plan usage"),
+                );
+            }
+
+            if matches!(current_service_tier, Some(ServiceTier::Flex)) {
+                service_tier_options.push(
+                    SessionConfigSelectOption::new("flex", "Flex")
+                        .description("Use the currently configured Flex service tier"),
+                );
+            }
+
+            options.push(
+                SessionConfigOption::select(
+                    "service_tier",
+                    "Fast Mode",
+                    Self::service_tier_value_id(current_service_tier),
+                    service_tier_options,
+                )
+                .description("Choose whether to use Codex Fast mode for this session"),
+            );
+        }
 
         // Reasoning effort selector (only if the current preset exists and has >1 supported effort)
         if let Some(preset) = current_preset
@@ -3738,6 +3802,7 @@ impl<A: Auth> ThreadActor<A> {
         match config_id.0.as_ref() {
             "mode" => self.handle_set_mode(SessionModeId::new(value.0)).await,
             "model" => self.handle_set_config_model(value).await,
+            "service_tier" => self.handle_set_config_service_tier(value).await,
             "reasoning_effort" => self.handle_set_config_reasoning_effort(value).await,
             _ => Err(Error::invalid_params().data("Unsupported config option")),
         }
@@ -3843,6 +3908,39 @@ impl<A: Auth> ThreadActor<A> {
         Ok(())
     }
 
+    async fn handle_set_config_service_tier(
+        &mut self,
+        value: SessionConfigValueId,
+    ) -> Result<(), Error> {
+        let service_tier = match value.0.as_ref() {
+            "off" => None,
+            "fast" => Some(ServiceTier::Fast),
+            "flex" => Some(ServiceTier::Flex),
+            _ => return Err(Error::invalid_params().data("Unsupported service tier")),
+        };
+
+        self.thread
+            .submit(Op::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                sandbox_policy: None,
+                model: None,
+                effort: None,
+                summary: None,
+                service_tier: Some(service_tier),
+                collaboration_mode: None,
+                personality: None,
+                windows_sandbox_level: None,
+                approvals_reviewer: None,
+            })
+            .await
+            .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+
+        self.config.service_tier = service_tier;
+
+        Ok(())
+    }
+
     async fn models(&self) -> Result<SessionModelState, Error> {
         let mut available_models = Vec::new();
         let config_model = self.get_current_model().await;
@@ -3914,6 +4012,65 @@ impl<A: Auth> ThreadActor<A> {
                         }],
                         final_output_json_schema: None,
                     }
+                }
+                "fast" => {
+                    if !self.fast_mode_available() {
+                        self.client
+                            .send_agent_text("Fast mode is unavailable in this runtime.".to_string())
+                            .await;
+                        drop(response_tx.send(Ok(StopReason::EndTurn)));
+                        return Ok(response_rx);
+                    }
+
+                    let action = match rest.trim().to_ascii_lowercase().as_str() {
+                        "" => {
+                            if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
+                                "off"
+                            } else {
+                                "on"
+                            }
+                        }
+                        "on" => "on",
+                        "off" => "off",
+                        "status" => "status",
+                        _ => {
+                            self.client
+                                .send_agent_text("Usage: /fast [on|off|status]".to_string())
+                                .await;
+                            drop(response_tx.send(Ok(StopReason::EndTurn)));
+                            return Ok(response_rx);
+                        }
+                    };
+
+                    match action {
+                        "status" => {
+                            let status =
+                                if matches!(self.current_service_tier(), Some(ServiceTier::Fast)) {
+                                    "on"
+                                } else {
+                                    "off"
+                                };
+                            self.client
+                                .send_agent_text(format!("Fast mode is {status}."))
+                                .await;
+                        }
+                        "on" => {
+                            self.handle_set_config_service_tier(SessionConfigValueId::new("fast"))
+                                .await?;
+                            self.maybe_emit_config_options_update().await;
+                            self.client.send_agent_text("Fast mode is on.".to_string()).await;
+                        }
+                        "off" => {
+                            self.handle_set_config_service_tier(SessionConfigValueId::new("off"))
+                                .await?;
+                            self.maybe_emit_config_options_update().await;
+                            self.client.send_agent_text("Fast mode is off.".to_string()).await;
+                        }
+                        _ => unreachable!(),
+                    }
+
+                    drop(response_tx.send(Ok(StopReason::EndTurn)));
+                    return Ok(response_rx);
                 }
                 "review" => {
                     let instructions = rest.trim();
@@ -5245,7 +5402,8 @@ mod tests {
 
     use agent_client_protocol::TextContent;
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
-    use codex_protocol::config_types::ModeKind;
+    use codex_features::Feature;
+    use codex_protocol::config_types::{ModeKind, ServiceTier};
     use tokio::{
         sync::{Mutex, mpsc::UnboundedSender},
         task::LocalSet,
@@ -5377,6 +5535,251 @@ mod tests {
 
         let ops = thread.ops.lock().unwrap();
         assert_eq!(ops.as_slice(), &[Op::Undo]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_config_options_include_fast_mode() -> anyhow::Result<()> {
+        let (_session_id, _client, _thread, message_tx, local_set) = setup(vec![]).await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::GetConfigOptions { response_tx })?;
+
+        let options = tokio::try_join!(
+            async {
+                let options = response_rx.await??;
+                drop(message_tx);
+                anyhow::Ok(options)
+            },
+            async {
+                local_set.await;
+                anyhow::Ok(())
+            }
+        )?
+        .0;
+        let options_json = serde_json::to_value(&options)?;
+
+        let service_tier_option = options_json
+            .as_array()
+            .and_then(|options| {
+                options.iter().find(|option| {
+                    option.get("id").and_then(|id| id.as_str()) == Some("service_tier")
+                })
+            })
+            .cloned()
+            .expect("service_tier config option should be present");
+
+        assert_eq!(
+            service_tier_option
+                .get("currentValue")
+                .and_then(|value| value.as_str()),
+            Some("off")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_config_options_hide_fast_mode_when_feature_disabled() -> anyhow::Result<()> {
+        let (_session_id, _client, _thread, message_tx, local_set) =
+            setup_with_config(vec![], |config| {
+                config.features.disable(Feature::FastMode).unwrap();
+            })
+            .await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::GetConfigOptions { response_tx })?;
+
+        let options = tokio::try_join!(
+            async {
+                let options = response_rx.await??;
+                drop(message_tx);
+                anyhow::Ok(options)
+            },
+            async {
+                local_set.await;
+                anyhow::Ok(())
+            }
+        )?
+        .0;
+        let options_json = serde_json::to_value(&options)?;
+
+        assert!(
+            options_json.as_array().is_some_and(|options| options
+                .iter()
+                .all(|option| option.get("id").and_then(|id| id.as_str()) != Some("service_tier"))),
+            "service_tier config option should be hidden when Fast mode is unavailable: {options_json:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_set_config_option_service_tier_fast() -> anyhow::Result<()> {
+        let (_session_id, _client, thread, message_tx, local_set) = setup(vec![]).await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::SetConfigOption {
+            config_id: SessionConfigId::new("service_tier"),
+            value: SessionConfigOptionValue::ValueId {
+                value: SessionConfigValueId::new("fast"),
+            },
+            response_tx,
+        })?;
+
+        tokio::try_join!(
+            async {
+                response_rx.await??;
+                drop(message_tx);
+                anyhow::Ok(())
+            },
+            async {
+                local_set.await;
+                anyhow::Ok(())
+            }
+        )?;
+
+        let ops = thread.ops.lock().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            Op::OverrideTurnContext {
+                service_tier: Some(Some(ServiceTier::Fast)),
+                ..
+            }
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fast_slash_command_toggles_on() -> anyhow::Result<()> {
+        let (session_id, client, thread, message_tx, local_set) = setup(vec![]).await?;
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id.clone(), vec!["/fast".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        tokio::try_join!(
+            async {
+                let stop_reason = prompt_response_rx.await??.await??;
+                assert_eq!(stop_reason, StopReason::EndTurn);
+                drop(message_tx);
+                anyhow::Ok(())
+            },
+            async {
+                local_set.await;
+                anyhow::Ok(())
+            }
+        )?;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(
+            notifications.iter().any(|notification| matches!(
+                &notification.update,
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "Fast mode is on."
+            )),
+            "notifications don't match {notifications:?}"
+        );
+
+        let ops = thread.ops.lock().unwrap();
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(
+            &ops[0],
+            Op::OverrideTurnContext {
+                service_tier: Some(Some(ServiceTier::Fast)),
+                ..
+            }
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fast_slash_command_status_and_off() -> anyhow::Result<()> {
+        let (session_id, client, thread, message_tx, local_set) = setup(vec![]).await?;
+        tokio::try_join!(
+            async {
+                let (fast_response_tx, fast_response_rx) = tokio::sync::oneshot::channel();
+                message_tx.send(ThreadMessage::Prompt {
+                    request: PromptRequest::new(session_id.clone(), vec!["/fast on".into()]),
+                    response_tx: fast_response_tx,
+                })?;
+                assert_eq!(fast_response_rx.await??.await??, StopReason::EndTurn);
+
+                let (status_response_tx, status_response_rx) = tokio::sync::oneshot::channel();
+                message_tx.send(ThreadMessage::Prompt {
+                    request: PromptRequest::new(session_id.clone(), vec!["/fast status".into()]),
+                    response_tx: status_response_tx,
+                })?;
+                assert_eq!(status_response_rx.await??.await??, StopReason::EndTurn);
+
+                let (off_response_tx, off_response_rx) = tokio::sync::oneshot::channel();
+                message_tx.send(ThreadMessage::Prompt {
+                    request: PromptRequest::new(session_id.clone(), vec!["/fast off".into()]),
+                    response_tx: off_response_tx,
+                })?;
+                assert_eq!(off_response_rx.await??.await??, StopReason::EndTurn);
+
+                drop(message_tx);
+                anyhow::Ok(())
+            },
+            async {
+                local_set.await;
+                anyhow::Ok(())
+            }
+        )?;
+
+        let notifications = client.notifications.lock().unwrap();
+        let fast_on_messages = notifications
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                        content: ContentBlock::Text(TextContent { text, .. }),
+                        ..
+                    }) if text == "Fast mode is on."
+                )
+            })
+            .count();
+        assert_eq!(
+            fast_on_messages, 2,
+            "expected one message from '/fast on' and one from '/fast status'; notifications: {notifications:?}"
+        );
+        assert!(
+            notifications.iter().any(|notification| matches!(
+                &notification.update,
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "Fast mode is off."
+            )),
+            "notifications don't match {notifications:?}"
+        );
+
+        let ops = thread.ops.lock().unwrap();
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(
+            &ops[0],
+            Op::OverrideTurnContext {
+                service_tier: Some(Some(ServiceTier::Fast)),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &ops[1],
+            Op::OverrideTurnContext {
+                service_tier: Some(None),
+                ..
+            }
+        ));
 
         Ok(())
     }
@@ -5888,6 +6291,19 @@ mod tests {
         UnboundedSender<ThreadMessage>,
         LocalSet,
     )> {
+        setup_with_config(custom_prompts, |_| {}).await
+    }
+
+    async fn setup_with_config(
+        custom_prompts: Vec<CustomPrompt>,
+        configure: impl FnOnce(&mut Config),
+    ) -> anyhow::Result<(
+        SessionId,
+        Arc<StubClient>,
+        Arc<StubCodexThread>,
+        UnboundedSender<ThreadMessage>,
+        LocalSet,
+    )> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
         let session_client =
@@ -5899,6 +6315,8 @@ mod tests {
             ConfigOverrides::default(),
         )
         .await?;
+        let mut config = config;
+        configure(&mut config);
         let (message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel();
         let (resolution_tx, resolution_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -6184,6 +6602,7 @@ mod tests {
                         })
                         .unwrap();
                 }
+                Op::OverrideTurnContext { .. } => {}
                 _ => {
                     unimplemented!()
                 }

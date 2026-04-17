@@ -17,7 +17,7 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 | **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.29.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + selected thread/runtime backports + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS. The legacy `claude-agent-acp` sidecar path still exists as a runtime fallback, but it is not staged by default. | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-ai-login` + `console-login` locally, `claude-login` remotely, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
-| **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
+| **Descriptor capabilities** | attachments, permissions, reasoning, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
 | **NeverWrite adapter capabilities** | create, load, resume, fork, list, terminal_output, prompt_queueing | create, load, list, terminal_output, user_input | create, load, resume |
 | **Session RPC used by NeverWrite** | new, load, resume, fork, list, prompt, cancel | new, load, list, authenticate, prompt, cancel, close | new, load, list, authenticate, prompt, cancel, close |
 | **ACP SDK version** | `@agentclientprotocol/sdk` 0.19.0 | `agent-client-protocol` 0.10.4 | Gemini CLI ACP implementation |
@@ -29,7 +29,10 @@ Notes:
 - Gemini emits plans and available-command updates from the ACP stream, but NeverWrite currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
 - The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.111`.
+- Claude now exposes model-specific effort controls through ACP `configOptions` when the selected model reports effort support.
+- That Claude effort support is currently a small local port informed by an external fork; if upstream adopts a native version later, NeverWrite should re-evaluate which implementation to keep.
 - Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, plus selected newer `thread.rs` behavior merged from the maintained adapter copy.
+- NeverWrite also ports Codex Fast Mode exposure locally through ACP `service_tier`, `/fast`, and restored `service_tier` session state; upstream does not ship that surface yet, so we should re-evaluate later which Codex implementation to keep.
 - The remaining NeverWrite-specific Codex delta is still intentional and product-facing: review/diff metadata, resilient mode matching, inline diff reconstruction and the prompt-encoded `user_input` bridge all remain local.
 
 ---
@@ -262,6 +265,7 @@ That delta is intentional and currently lives mainly in `src/thread.rs` and `src
 - primary `neverwrite*` metadata for status, plan, diff hunks and `user_input_request`
 - reconstruction of `unified_diff` into `old_text` / `new_text` for inline review and the edited-files panel
 - resilient `modes` / approval-preset behavior when Codex expands writable roots under `workspace-write`
+- local Fast Mode exposure through ACP `service_tier`, `/fast`, and restored session runtime state
 - the prompt-encoded `user_input` answer bridge (`__neverwrite_user_input_response__...`) used by the desktop adapter
 
 At the same time, the current vendor now also carries forward newer Codex thread behavior that NeverWrite benefits from operationally:

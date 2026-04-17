@@ -1,5 +1,5 @@
 import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModelState, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModelRequest, SetSessionModelResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, TerminalHandle, TerminalOutputResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { CanUseTool, Options, PermissionMode, Query, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { CanUseTool, ModelInfo, Options, PermissionMode, Query, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -18,6 +18,8 @@ type AccumulatedUsage = {
     cachedReadTokens: number;
     cachedWriteTokens: number;
 };
+declare const SUPPORTED_EFFORT_LEVELS: readonly ["low", "medium", "high", "xhigh"];
+type SupportedEffortLevel = (typeof SUPPORTED_EFFORT_LEVELS)[number];
 type Session = {
     query: Query;
     input: Pushable<SDKUserMessage>;
@@ -39,6 +41,8 @@ type Session = {
     nextPendingOrder: number;
     abortController: AbortController;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
+    effortLevel: SupportedEffortLevel;
+    modelInfos: ModelInfo[];
     /** Context window size of the last top-level assistant model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
      *  before the turn's first result message arrives. Defaults to

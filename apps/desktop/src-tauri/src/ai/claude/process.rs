@@ -34,6 +34,7 @@ impl ClaudeRuntime {
                 capabilities: vec![
                     "attachments".to_string(),
                     "permissions".to_string(),
+                    "reasoning".to_string(),
                     "plans".to_string(),
                     "terminal_output".to_string(),
                 ],

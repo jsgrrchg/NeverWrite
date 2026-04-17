@@ -1162,6 +1162,8 @@ describe("stop reason propagation", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            effortLevel: "high",
+            modelInfos: [],
             contextWindowSize: 200000,
         };
     }
@@ -1285,6 +1287,8 @@ describe("stop reason propagation", () => {
             pendingMessages: new Map(),
             nextPendingOrder: 0,
             emitRawSDKMessages: false,
+            effortLevel: "high",
+            modelInfos: [],
             contextWindowSize: 200000,
         };
         const response = await agent.prompt({
@@ -1349,6 +1353,8 @@ describe("session/close", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            effortLevel: "high",
+            modelInfos: [],
             contextWindowSize: 200000,
         };
         return agent.sessions[sessionId];
@@ -1423,6 +1429,8 @@ describe("getOrCreateSession param change detection", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            effortLevel: "high",
+            modelInfos: [],
             contextWindowSize: 200000,
         };
         return agent.sessions[sessionId];
@@ -1602,6 +1610,8 @@ describe("usage_update computation", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
+            effortLevel: "high",
+            modelInfos: [],
             contextWindowSize: 200000,
         };
     }
@@ -2372,6 +2382,8 @@ describe("emitRawSDKMessages", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages,
+            effortLevel: "high",
+            modelInfos: [],
             contextWindowSize: 200000,
         };
     }
