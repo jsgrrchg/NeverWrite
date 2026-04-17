@@ -107,6 +107,8 @@ export function normalizeBackendSession(
         messages: [],
         attachments: [],
         isPersistedSession: false,
+        isPendingSessionCreation: false,
+        pendingSessionError: null,
         resumeContextPending: false,
         runtimeState: "live",
     };

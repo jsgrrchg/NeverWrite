@@ -20,12 +20,18 @@ afterEach(() => {
             fileTreeShowExtensions: false,
         });
     });
+    setEditorTabs([], null);
+    setVaultNotes([]);
+    setVaultEntries([]);
+    vi.restoreAllMocks();
 });
 
 function renderComposer({
     parts = [],
     status = "idle" as const,
     runtimeId,
+    disabled = false,
+    placeholderText,
     composerFontFamily = "system",
     availableCommands = [],
     isStopping = false,
@@ -36,6 +42,8 @@ function renderComposer({
     parts?: AIComposerPart[];
     status?: "idle" | "streaming";
     runtimeId?: string;
+    disabled?: boolean;
+    placeholderText?: string;
     composerFontFamily?: EditorFontFamily;
     availableCommands?: AIAvailableCommand[];
     isStopping?: boolean;
@@ -58,6 +66,8 @@ function renderComposer({
             status={status}
             runtimeName="Assistant"
             runtimeId={runtimeId}
+            disabled={disabled}
+            placeholderText={placeholderText}
             composerFontFamily={composerFontFamily}
             availableCommands={availableCommands}
             isStopping={isStopping}
@@ -86,6 +96,15 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("renders a custom placeholder while the agent is loading", () => {
+        renderComposer({
+            disabled: true,
+            placeholderText: "Loading agent",
+        });
+
+        expect(screen.getByText("Loading agent")).toBeInTheDocument();
+    });
+
     it("opens the @ picker when the caret is inside a text node", async () => {
         const { composer } = renderComposer();
         composer.textContent = "@";

@@ -355,6 +355,8 @@ export interface AIChatSession {
     activePlanMessageId?: string | null;
     attachments: AIChatAttachment[];
     isPersistedSession?: boolean;
+    isPendingSessionCreation?: boolean;
+    pendingSessionError?: string | null;
     resumeContextPending?: boolean;
     runtimeState?: "live" | "persisted_only" | "detached";
 }

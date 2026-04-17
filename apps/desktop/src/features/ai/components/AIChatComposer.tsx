@@ -74,6 +74,7 @@ interface AIChatComposerProps {
     expanded?: boolean;
     contextBar?: ReactNode;
     footer?: ReactNode;
+    placeholderText?: string;
     // Accent overlay rendered along the inner bottom edge of the composer
     // shell (e.g. the context-usage progress strip). Absolutely positioned,
     // should not capture pointer events.
@@ -941,6 +942,7 @@ export function AIChatComposer({
     expanded = false,
     contextBar,
     footer,
+    placeholderText,
     bottomAccent,
     onChange,
     onMentionAttach,
@@ -1758,9 +1760,10 @@ export function AIChatComposer({
                             left: expanded ? 16 : 14,
                         }}
                     >
-                        {disabled
-                            ? "Set up a provider in Settings → AI providers"
-                            : `Message ${runtimeName} — @ to include context, / for commands`}
+                        {placeholderText ??
+                            (disabled
+                                ? "Set up a provider in Settings → AI providers"
+                                : `Message ${runtimeName} — @ to include context, / for commands`)}
                     </div>
                 )}
                 <div

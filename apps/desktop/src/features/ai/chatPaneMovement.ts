@@ -3,23 +3,84 @@ import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import { getPreferredWorkspaceChatSessionIdForSession } from "./chatWorkspaceSelectors";
+import type { AIChatSession, AIRuntimeDescriptor } from "./types";
 
 interface OpenChatInWorkspaceOptions {
     paneId?: string;
     background?: boolean;
+    skipLoad?: boolean;
 }
 
-function resolveCreatedSessionId(beforeSessionIds: Set<string>) {
-    const nextState = useChatStore.getState();
-    return (
-        Object.keys(nextState.sessionsById).find(
-            (sessionId) => !beforeSessionIds.has(sessionId),
-        ) ??
-        (nextState.activeSessionId &&
-        !beforeSessionIds.has(nextState.activeSessionId)
-            ? nextState.activeSessionId
-            : null)
-    );
+function getConfigDefaultValue(
+    runtime: AIRuntimeDescriptor,
+    category: "model" | "mode",
+) {
+    return runtime.configOptions.find((option) => option.category === category)
+        ?.value;
+}
+
+function resolvePendingRuntime(runtimeId?: string) {
+    const state = useChatStore.getState();
+    const resolvedRuntimeId =
+        runtimeId ?? state.selectedRuntimeId ?? state.runtimes[0]?.runtime.id;
+    if (!resolvedRuntimeId) {
+        return null;
+    }
+
+    const runtime =
+        state.runtimes.find(
+            (descriptor) => descriptor.runtime.id === resolvedRuntimeId,
+        ) ?? null;
+    if (!runtime) {
+        return null;
+    }
+
+    return {
+        runtime,
+        runtimeId: resolvedRuntimeId,
+    };
+}
+
+function createPendingWorkspaceSession(
+    runtimeId?: string,
+): AIChatSession | null {
+    const resolvedRuntime = resolvePendingRuntime(runtimeId);
+    if (!resolvedRuntime) {
+        return null;
+    }
+
+    const { runtime, runtimeId: resolvedRuntimeId } = resolvedRuntime;
+    const pendingSessionId = `pending:${crypto.randomUUID()}`;
+
+    return {
+        sessionId: pendingSessionId,
+        historySessionId: pendingSessionId,
+        status: "idle",
+        activeWorkCycleId: null,
+        visibleWorkCycleId: null,
+        isResumingSession: false,
+        effortsByModel: {},
+        runtimeId: resolvedRuntimeId,
+        modelId:
+            getConfigDefaultValue(runtime, "model") ??
+            runtime.models[0]?.id ??
+            "",
+        modeId:
+            getConfigDefaultValue(runtime, "mode") ??
+            runtime.modes.find((mode) => !mode.disabled)?.id ??
+            runtime.modes[0]?.id ??
+            "",
+        models: runtime.models,
+        modes: runtime.modes,
+        configOptions: runtime.configOptions,
+        messages: [],
+        attachments: [],
+        isPersistedSession: false,
+        isPendingSessionCreation: true,
+        pendingSessionError: null,
+        resumeContextPending: false,
+        runtimeState: "live",
+    };
 }
 
 export function openChatSessionInWorkspace(
@@ -41,7 +102,9 @@ export function openChatSessionInWorkspace(
         useChatStore.getState().markSessionFocused(sessionId);
     }
 
-    void useChatStore.getState().loadSession(sessionId);
+    if (!options?.skipLoad) {
+        void useChatStore.getState().loadSession(sessionId);
+    }
     return sessionId;
 }
 
@@ -49,18 +112,28 @@ export async function createNewChatInWorkspace(
     runtimeId?: string,
     options?: OpenChatInWorkspaceOptions,
 ) {
-    const beforeSessionIds = new Set(
-        Object.keys(useChatStore.getState().sessionsById),
-    );
+    const pendingSession = createPendingWorkspaceSession(runtimeId);
+    if (!pendingSession) {
+        const createdSessionId = await useChatStore
+            .getState()
+            .newSession(runtimeId);
+        if (!createdSessionId) {
+            return null;
+        }
 
-    await useChatStore.getState().newSession(runtimeId);
-    const createdSessionId = resolveCreatedSessionId(beforeSessionIds);
-    if (!createdSessionId) {
-        return null;
+        openChatSessionInWorkspace(createdSessionId, options);
+        return createdSessionId;
     }
 
-    openChatSessionInWorkspace(createdSessionId, options);
-    return createdSessionId;
+    useChatStore.getState().upsertSession(pendingSession, true);
+    openChatSessionInWorkspace(pendingSession.sessionId, {
+        ...options,
+        skipLoad: true,
+    });
+    void useChatStore
+        .getState()
+        .newSession(pendingSession.runtimeId, pendingSession.sessionId);
+    return pendingSession.sessionId;
 }
 
 export async function ensureWorkspaceChatSession(

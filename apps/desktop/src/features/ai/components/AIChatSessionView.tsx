@@ -116,6 +116,14 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
               IDLE_CONNECTION)
             : IDLE_CONNECTION,
     );
+    const isPendingSessionCreation = Boolean(session?.isPendingSessionCreation);
+    const pendingSessionError = session?.pendingSessionError ?? null;
+    const displayedConnection = isPendingSessionCreation
+        ? {
+              status: pendingSessionError ? "error" : "loading",
+              message: pendingSessionError,
+          }
+        : activeConnection;
 
     const agentCatalog = useMemo(() => {
         const models =
@@ -174,7 +182,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const runtimeLabel =
         activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
     const agentControlsDisabled =
-        !session || Boolean(session.isResumingSession);
+        !session ||
+        isPendingSessionCreation ||
+        Boolean(session.isResumingSession);
 
     // Handlers
     const handleRemoveAttachment = useCallback(
@@ -389,7 +399,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
             </div>
 
             <AIChatRuntimeBanner
-                connection={activeConnection}
+                connection={displayedConnection}
                 runtimeName={activeRuntime?.runtime.name.replace(/ ACP$/, "")}
             />
 
@@ -478,8 +488,16 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
                     disabled={
                         !session ||
+                        isPendingSessionCreation ||
                         activeConnection.status === "loading" ||
                         Boolean(session.isResumingSession)
+                    }
+                    placeholderText={
+                        isPendingSessionCreation
+                            ? pendingSessionError
+                                ? "Agent unavailable"
+                                : "Loading agent"
+                            : undefined
                     }
                     contextBar={
                         <AIChatContextBar
@@ -526,32 +544,39 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }
                     footer={
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                            <AIChatAgentControls
-                                disabled={agentControlsDisabled}
-                                runtimeId={session?.runtimeId}
-                                modelId={session?.modelId ?? ""}
-                                modeId={session?.modeId ?? ""}
-                                effortsByModel={session?.effortsByModel ?? {}}
-                                models={agentCatalog.models}
-                                modes={agentCatalog.modes}
-                                configOptions={agentCatalog.configOptions}
-                                onModelChange={(modelId) => {
-                                    void chatActions.setModel(
-                                        modelId,
-                                        sessionId,
-                                    );
-                                }}
-                                onModeChange={(modeId) => {
-                                    void chatActions.setMode(modeId, sessionId);
-                                }}
-                                onConfigOptionChange={(optionId, value) => {
-                                    void chatActions.setConfigOption(
-                                        optionId,
-                                        value,
-                                        sessionId,
-                                    );
-                                }}
-                            />
+                            {!isPendingSessionCreation && (
+                                <AIChatAgentControls
+                                    disabled={agentControlsDisabled}
+                                    runtimeId={session?.runtimeId}
+                                    modelId={session?.modelId ?? ""}
+                                    modeId={session?.modeId ?? ""}
+                                    effortsByModel={
+                                        session?.effortsByModel ?? {}
+                                    }
+                                    models={agentCatalog.models}
+                                    modes={agentCatalog.modes}
+                                    configOptions={agentCatalog.configOptions}
+                                    onModelChange={(modelId) => {
+                                        void chatActions.setModel(
+                                            modelId,
+                                            sessionId,
+                                        );
+                                    }}
+                                    onModeChange={(modeId) => {
+                                        void chatActions.setMode(
+                                            modeId,
+                                            sessionId,
+                                        );
+                                    }}
+                                    onConfigOptionChange={(optionId, value) => {
+                                        void chatActions.setConfigOption(
+                                            optionId,
+                                            value,
+                                            sessionId,
+                                        );
+                                    }}
+                                />
+                            )}
                         </div>
                     }
                     onChange={(parts) => {

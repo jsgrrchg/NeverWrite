@@ -1253,7 +1253,10 @@ interface ChatStore {
         userEdits: import("../diff/actionLogTypes").TextEdit[],
         newFullText: string,
     ) => void;
-    newSession: (runtimeId?: string) => Promise<void>;
+    newSession: (
+        runtimeId?: string,
+        provisionalSessionId?: string,
+    ) => Promise<string | null>;
     deleteSession: (sessionId: string) => Promise<void>;
     deleteAllSessions: () => Promise<void>;
     renameSession: (sessionId: string, newTitle: string | null) => void;
@@ -4434,6 +4437,10 @@ function mergeSession(
                         (incoming.messages.length > 0 ? 0 : null),
                     isLoadingPersistedMessages:
                         incoming.isLoadingPersistedMessages ?? false,
+                    isPendingSessionCreation:
+                        incoming.isPendingSessionCreation ?? false,
+                    pendingSessionError:
+                        incoming.pendingSessionError ?? null,
                     runtimeState:
                         incoming.runtimeState ??
                         (incoming.isPersistedSession
@@ -4531,6 +4538,14 @@ function mergeSession(
             incoming.isLoadingPersistedMessages ??
             normalizedExisting.isLoadingPersistedMessages ??
             false,
+        isPendingSessionCreation:
+            incoming.isPendingSessionCreation ??
+            normalizedExisting.isPendingSessionCreation ??
+            false,
+        pendingSessionError:
+            incoming.pendingSessionError ??
+            normalizedExisting.pendingSessionError ??
+            null,
         runtimeState:
             incoming.runtimeState ?? normalizedExisting.runtimeState ?? "live",
         status,
@@ -7417,6 +7432,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const state = get();
             const session = state.sessionsById[sessionId];
             if (!session) return null;
+            if (session.isPendingSessionCreation) return sessionId;
             if (session.runtimeState === "live") return sessionId;
             if (session.isResumingSession) return sessionId;
 
@@ -7615,6 +7631,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionId,
                     ),
                 }));
+                if (existing.isPendingSessionCreation) {
+                    return;
+                }
                 if (existing.runtimeState !== "live") {
                     await get().resumeSession(sessionId);
                     return;
@@ -9157,13 +9176,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        newSession: async (runtimeId) => {
+        newSession: async (runtimeId, provisionalSessionId) => {
             const runtimes = get().runtimes;
             const nextRuntimeId =
                 runtimeId ??
                 get().selectedRuntimeId ??
                 getDefaultRuntimeId(runtimes);
-            if (!nextRuntimeId) return;
+            if (!nextRuntimeId) return null;
+
+            const markPendingSessionError = (message: string) => {
+                if (!provisionalSessionId) {
+                    return;
+                }
+
+                set((state) => {
+                    const provisionalSession =
+                        state.sessionsById[provisionalSessionId];
+                    if (!provisionalSession?.isPendingSessionCreation) {
+                        return state;
+                    }
+
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [provisionalSessionId]: {
+                                ...provisionalSession,
+                                status: "error",
+                                pendingSessionError: message,
+                            },
+                        },
+                    };
+                });
+            };
 
             try {
                 set({ selectedRuntimeId: nextRuntimeId });
@@ -9173,7 +9217,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...applyRuntimeSetupStatusPatch(state, setupStatus),
                 }));
                 if (setupStatus.onboardingRequired) {
-                    return;
+                    markPendingSessionError(
+                        setupStatus.message ??
+                            getAuthenticationReconnectMessage(
+                                nextRuntimeId,
+                                runtimes,
+                            ),
+                    );
+                    return provisionalSessionId ?? null;
                 }
 
                 if (
@@ -9196,14 +9247,37 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             },
                         ),
                     }));
-                    return;
+                    markPendingSessionError(
+                        getRuntimeReadyButDisabledMessage(
+                            runtimes,
+                            nextRuntimeId,
+                        ),
+                    );
+                    return provisionalSessionId ?? null;
                 }
 
                 const session = await aiCreateSession(
                     nextRuntimeId,
                     useVaultStore.getState().vaultPath,
                 );
-                get().upsertSession(session, true);
+                const migrated =
+                    provisionalSessionId &&
+                    migrateSessionLocalState(
+                        provisionalSessionId,
+                        {
+                            ...session,
+                            isPendingSessionCreation: false,
+                            pendingSessionError: null,
+                        },
+                        (state) =>
+                            Boolean(
+                                state.sessionsById[provisionalSessionId]
+                                    ?.isPendingSessionCreation,
+                            ),
+                    );
+                if (!migrated) {
+                    get().upsertSession(session, true);
+                }
                 await persistSessionNow(session);
 
                 registerOpenEditorBaselines(session.sessionId);
@@ -9260,17 +9334,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         }
                     }
                 }
+                return session.sessionId;
             } catch (error) {
                 const message = getAiErrorMessage(
                     error,
                     "Failed to create a new session.",
                 );
-                get().applySessionError({
-                    message,
-                });
+                if (provisionalSessionId) {
+                    markPendingSessionError(message);
+                } else {
+                    get().applySessionError({
+                        message,
+                    });
+                }
                 if (isAuthenticationErrorMessage(message)) {
                     await get().refreshSetupStatus(nextRuntimeId);
                 }
+                return provisionalSessionId ?? null;
             }
         },
 
