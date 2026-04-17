@@ -36,11 +36,12 @@ use crate::ai::emit::{
     emit_available_commands_updated, emit_message_completed, emit_message_delta,
     emit_message_started, emit_permission_request, emit_plan_update, emit_runtime_connection,
     emit_session_error, emit_status_event, emit_thinking_completed, emit_thinking_delta,
-    emit_thinking_started, emit_tool_activity, AiAvailableCommandPayload,
+    emit_thinking_started, emit_token_usage, emit_tool_activity, AiAvailableCommandPayload,
     AiAvailableCommandsPayload, AiFileDiffHunkPayload, AiFileDiffPayload,
     AiPermissionOptionPayload, AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload,
-    AiRuntimeConnectionPayload, AiStatusEventPayload, AiToolActivityPayload,
-    AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload, AiUserInputRequestPayload,
+    AiRuntimeConnectionPayload, AiStatusEventPayload, AiTokenUsageCostPayload, AiTokenUsagePayload,
+    AiToolActivityPayload, AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload,
+    AiUserInputRequestPayload,
 };
 use crate::ai::env::preferred_path_value;
 use crate::branding::APP_BRAND_NAME;
@@ -932,6 +933,9 @@ impl Client for VaultAiAcpClient {
             }
             SessionUpdate::Plan(plan) => {
                 emit_plan_update(&self.app, map_plan_update(&session_id, plan));
+            }
+            SessionUpdate::UsageUpdate(update) => {
+                emit_token_usage(&self.app, map_usage_update(&session_id, update));
             }
             SessionUpdate::AvailableCommandsUpdate(update) => {
                 emit_available_commands_updated(
@@ -2205,6 +2209,21 @@ fn map_available_commands_update(
                 }
             })
             .collect(),
+    }
+}
+
+fn map_usage_update(
+    session_id: &str,
+    update: agent_client_protocol::UsageUpdate,
+) -> AiTokenUsagePayload {
+    AiTokenUsagePayload {
+        session_id: session_id.to_string(),
+        used: update.used,
+        size: update.size,
+        cost: update.cost.map(|cost| AiTokenUsageCostPayload {
+            amount: cost.amount,
+            currency: cost.currency,
+        }),
     }
 }
 

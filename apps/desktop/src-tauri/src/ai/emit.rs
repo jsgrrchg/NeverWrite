@@ -18,6 +18,7 @@ pub const AI_USER_INPUT_REQUEST_EVENT: &str = "ai://user-input-request";
 pub const AI_PLAN_UPDATED_EVENT: &str = "ai://plan-updated";
 pub const AI_AVAILABLE_COMMANDS_UPDATED_EVENT: &str = "ai://available-commands-updated";
 pub const AI_RUNTIME_CONNECTION_EVENT: &str = "ai://runtime-connection";
+pub const AI_TOKEN_USAGE_EVENT: &str = "ai://token-usage";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiSessionErrorPayload {
@@ -30,6 +31,21 @@ pub struct AiRuntimeConnectionPayload {
     pub runtime_id: String,
     pub status: String,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiTokenUsageCostPayload {
+    pub amount: f64,
+    pub currency: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiTokenUsagePayload {
+    pub session_id: String,
+    pub used: u64,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost: Option<AiTokenUsageCostPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -268,4 +284,8 @@ pub fn emit_available_commands_updated(app: &AppHandle, payload: AiAvailableComm
 
 pub fn emit_runtime_connection(app: &AppHandle, payload: AiRuntimeConnectionPayload) {
     let _ = app.emit(AI_RUNTIME_CONNECTION_EVENT, payload);
+}
+
+pub fn emit_token_usage(app: &AppHandle, payload: AiTokenUsagePayload) {
+    let _ = app.emit(AI_TOKEN_USAGE_EVENT, payload);
 }

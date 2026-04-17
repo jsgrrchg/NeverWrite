@@ -14,6 +14,7 @@ import {
     listenToAiThinkingCompleted,
     listenToAiThinkingDelta,
     listenToAiThinkingStarted,
+    listenToAiTokenUsage,
     listenToAiToolActivity,
     listenToAiUserInputRequest,
 } from "./api";
@@ -88,6 +89,9 @@ export function useAiChatEventBridge(enabled = true) {
                 }),
                 listenToAiRuntimeConnection((payload) => {
                     if (!disposed) chatActions.applyRuntimeConnection(payload);
+                }),
+                listenToAiTokenUsage((payload) => {
+                    if (!disposed) chatActions.applyTokenUsage(payload);
                 }),
             ]);
 

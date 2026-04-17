@@ -74,6 +74,10 @@ interface AIChatComposerProps {
     expanded?: boolean;
     contextBar?: ReactNode;
     footer?: ReactNode;
+    // Accent overlay rendered along the inner bottom edge of the composer
+    // shell (e.g. the context-usage progress strip). Absolutely positioned,
+    // should not capture pointer events.
+    bottomAccent?: ReactNode;
     onChange: (parts: AIComposerPart[]) => void;
     onMentionAttach: (note: AIChatNoteSummary) => void;
     onFileMentionAttach?: (file: AIChatFileSummary) => void;
@@ -937,6 +941,7 @@ export function AIChatComposer({
     expanded = false,
     contextBar,
     footer,
+    bottomAccent,
     onChange,
     onMentionAttach,
     onFileMentionAttach,
@@ -2318,6 +2323,7 @@ export function AIChatComposer({
                         ]}
                     />
                 )}
+                {bottomAccent}
             </div>
         </div>
     );

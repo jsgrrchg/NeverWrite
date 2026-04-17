@@ -114,6 +114,8 @@ import {
     type AIPermissionRequestPayload,
     type AIPlanUpdatePayload,
     type AIStatusEventPayload,
+    type AITokenUsage,
+    type AITokenUsagePayload,
     type AIToolActivityPayload,
     type AIUserInputRequestPayload,
     type AIRuntimeConnectionPayload,
@@ -787,6 +789,19 @@ function getConfigOptionValue(
         ?.value;
 }
 
+function removeSessionMapEntry<T>(
+    map: Record<string, T>,
+    sessionId: string,
+): Record<string, T> {
+    if (!(sessionId in map)) {
+        return map;
+    }
+
+    const next = { ...map };
+    delete next[sessionId];
+    return next;
+}
+
 function supportsModelSelection(
     session: Pick<AIChatSession, "models" | "configOptions">,
     modelId: string,
@@ -977,12 +992,20 @@ async function applyAgentConfigMutation({
                         runtime.runtime.id === currentSession.runtimeId,
                 ),
             );
+            const nextSession = applyLocal(hydratedSession);
 
             return {
                 sessionsById: {
                     ...state.sessionsById,
-                    [session.sessionId]: applyLocal(hydratedSession),
+                    [session.sessionId]: nextSession,
                 },
+                tokenUsageBySessionId:
+                    currentSession.modelId !== nextSession.modelId
+                        ? removeSessionMapEntry(
+                              state.tokenUsageBySessionId,
+                              session.sessionId,
+                          )
+                        : state.tokenUsageBySessionId,
             };
         });
         persistPreference();
@@ -1081,6 +1104,7 @@ interface ChatStore {
     activeQueuedMessageBySessionId: Record<string, DeferredQueuedMessage>;
     pausedQueueBySessionId: Record<string, PausedQueueState>;
     interruptedTurnStateBySessionId: Record<string, InterruptedTurnState>;
+    tokenUsageBySessionId: Record<string, AITokenUsage>;
     initialize: (
         options?: { createDefaultSession?: boolean },
     ) => Promise<ChatInitializationResult>;
@@ -1130,6 +1154,7 @@ interface ChatStore {
     upsertSession: (session: AIChatSession, activate?: boolean) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
     applyRuntimeConnection: (payload: AIRuntimeConnectionPayload) => void;
+    applyTokenUsage: (payload: AITokenUsagePayload) => void;
     applyMessageStarted: (payload: {
         session_id: string;
         message_id: string;
@@ -5757,6 +5782,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         activeQueuedMessageBySessionId: {},
         pausedQueueBySessionId: {},
         interruptedTurnStateBySessionId: {},
+        tokenUsageBySessionId: {},
 
         syncAutoContextForVault: (vaultPath) => {
             const next = loadAutoContextPreference(vaultPath);
@@ -6402,6 +6428,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                           scopedSession,
                       ]);
                 const nextSession = mergeSession(existing, scopedSession);
+                const nextTokenUsageBySessionId =
+                    existing && existing.modelId !== nextSession.modelId
+                        ? removeSessionMapEntry(
+                              state.tokenUsageBySessionId,
+                              scopedSession.sessionId,
+                          )
+                        : state.tokenUsageBySessionId;
                 const reconciledQueueState =
                     existing &&
                     nextSession.status === "idle" &&
@@ -6446,6 +6479,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                               [scopedSession.sessionId]:
                                   createEmptyComposerParts(),
                           },
+                    tokenUsageBySessionId: nextTokenUsageBySessionId,
                     ...(reconciledQueueState ?? {}),
                 };
             });
@@ -6576,6 +6610,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     void persistSession(session);
                 }
             }
+        },
+
+        applyTokenUsage: ({ session_id, used, size, cost }) => {
+            set((state) => {
+                if (!state.sessionsById[session_id]) {
+                    return state;
+                }
+
+                return {
+                    tokenUsageBySessionId: {
+                        ...state.tokenUsageBySessionId,
+                        [session_id]: {
+                            session_id,
+                            used,
+                            size,
+                            cost: cost ?? null,
+                            updatedAt: Date.now(),
+                        },
+                    },
+                };
+            });
         },
 
         applySessionError: ({ session_id, message }) => {
@@ -9269,6 +9324,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 ...state.queuedMessageEditBySessionId,
             };
             delete nextQueuedMessageEditBySessionId[sessionId];
+            const nextTokenUsageBySessionId = removeSessionMapEntry(
+                state.tokenUsageBySessionId,
+                sessionId,
+            );
             const nextActiveQueuedMessageBySessionId =
                 cleanupDeferredQueuedMessagesBySessionId(
                     state.activeQueuedMessageBySessionId,
@@ -9312,6 +9371,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     [],
                 ),
                 queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+                tokenUsageBySessionId: nextTokenUsageBySessionId,
                 activeQueuedMessageBySessionId:
                     nextActiveQueuedMessageBySessionId,
                 pausedQueueBySessionId: nextPausedQueueBySessionId,
@@ -9368,6 +9428,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 activeQueuedMessageBySessionId: {},
                 pausedQueueBySessionId: {},
                 interruptedTurnStateBySessionId: {},
+                tokenUsageBySessionId: {},
             });
             await get().newSession();
         },
@@ -9937,6 +9998,7 @@ export function resetChatStore() {
         activeQueuedMessageBySessionId: {},
         pausedQueueBySessionId: {},
         interruptedTurnStateBySessionId: {},
+        tokenUsageBySessionId: {},
     });
 }
 

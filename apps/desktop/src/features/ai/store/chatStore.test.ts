@@ -8181,6 +8181,51 @@ describe("chatStore", () => {
         });
     });
 
+    it("tracks token usage outside the transcript and clears it when the model changes", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.getState().applyTokenUsage({
+            session_id: activeSessionId,
+            used: 170_000,
+            size: 200_000,
+            cost: {
+                amount: 0.0421,
+                currency: "USD",
+            },
+        });
+
+        expect(
+            useChatStore.getState().tokenUsageBySessionId[activeSessionId],
+        ).toMatchObject({
+            session_id: activeSessionId,
+            used: 170_000,
+            size: 200_000,
+            cost: {
+                amount: 0.0421,
+                currency: "USD",
+            },
+        });
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.filter(
+                    (message) => message.kind === "status",
+                ),
+        ).toHaveLength(0);
+
+        useChatStore.getState().upsertSession({
+            ...session,
+            modelId: "wide-model",
+        });
+
+        expect(
+            useChatStore.getState().tokenUsageBySessionId[activeSessionId],
+        ).toBeUndefined();
+    });
+
     it("upserts plan updates into a single live plan message", async () => {
         await useChatStore.getState().initialize();
 
