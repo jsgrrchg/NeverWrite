@@ -20,6 +20,13 @@ function sanitizeTitle(text) {
     }
     return sanitized.slice(0, MAX_TITLE_LENGTH - 1) + "…";
 }
+const ZERO_USAGE = Object.freeze({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+});
+const DEFAULT_CONTEXT_WINDOW = 200000;
 /** Compute a stable fingerprint of the session-defining params so we can
  *  detect when a loadSession/resumeSession call requires tearing down and
  *  recreating the underlying Query process.  MCP servers are sorted by name
@@ -282,8 +289,8 @@ export class ClaudeAcpAgent {
             cachedWriteTokens: 0,
         };
         let lastAssistantTotalUsage = null;
+        let lastAssistantUsage = null;
         let lastAssistantModel = null;
-        let lastContextWindowSize = 200000;
         const userMessage = promptToClaude(params);
         const promptUuid = randomUUID();
         userMessage.uuid = promptUuid;
@@ -354,12 +361,13 @@ export class ClaudeAcpAgent {
                                 // "944k/1m" right after the user sees "Compacting completed",
                                 // which is confusing and wrong.
                                 lastAssistantTotalUsage = 0;
+                                lastAssistantUsage = null;
                                 await this.client.sessionUpdate({
                                     sessionId: message.session_id,
                                     update: {
                                         sessionUpdate: "usage_update",
                                         used: 0,
-                                        size: lastContextWindowSize,
+                                        size: session.contextWindowSize,
                                     },
                                 });
                                 await this.client.sessionUpdate({
@@ -396,6 +404,9 @@ export class ClaudeAcpAgent {
                             case "task_progress":
                             case "task_updated":
                             case "elicitation_complete":
+                            case "plugin_install":
+                            case "memory_recall":
+                            case "notification":
                             case "api_retry":
                                 // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
                                 break;
@@ -413,8 +424,13 @@ export class ClaudeAcpAgent {
                         const matchingModelUsage = lastAssistantModel
                             ? getMatchingModelUsage(message.modelUsage, lastAssistantModel)
                             : null;
-                        const contextWindowSize = matchingModelUsage?.contextWindow ?? 200000;
-                        lastContextWindowSize = contextWindowSize;
+                        // Only overwrite when we have an authoritative value — a miss
+                        // (e.g. a turn with no top-level assistant message) would
+                        // otherwise discard the window learned on a prior turn and
+                        // leave the next prompt's mid-stream updates reporting 200k.
+                        if (matchingModelUsage) {
+                            session.contextWindowSize = matchingModelUsage.contextWindow;
+                        }
                         // Send usage_update notification
                         if (lastAssistantTotalUsage !== null) {
                             await this.client.sessionUpdate({
@@ -422,7 +438,7 @@ export class ClaudeAcpAgent {
                                 update: {
                                     sessionUpdate: "usage_update",
                                     used: lastAssistantTotalUsage,
-                                    size: contextWindowSize,
+                                    size: session.contextWindowSize,
                                     cost: {
                                         amount: message.total_cost_usd,
                                         currency: "USD",
@@ -481,6 +497,53 @@ export class ClaudeAcpAgent {
                         break;
                     }
                     case "stream_event": {
+                        if (message.parent_tool_use_id === null &&
+                            (message.event.type === "message_start" || message.event.type === "message_delta")) {
+                            if (message.event.type === "message_start") {
+                                lastAssistantUsage = snapshotFromUsage(message.event.message.usage);
+                                const model = message.event.message.model;
+                                if (model && model !== "<synthetic>") {
+                                    lastAssistantModel = model;
+                                    // Only upgrade from the default — once a `result` has given
+                                    // us an authoritative window, trust it over the heuristic.
+                                    // Model switches invalidate the cached window via
+                                    // `syncSessionConfigState`, which resets us back to the
+                                    // default so this branch runs again for the new model.
+                                    if (session.contextWindowSize === DEFAULT_CONTEXT_WINDOW) {
+                                        const inferred = inferContextWindowFromModel(model);
+                                        if (inferred !== null) {
+                                            session.contextWindowSize = inferred;
+                                        }
+                                    }
+                                }
+                            }
+                            else {
+                                const usage = message.event.usage;
+                                const prev = lastAssistantUsage ?? ZERO_USAGE;
+                                // Per Anthropic API, message_delta usage fields are *cumulative*;
+                                // nullable fields (input_tokens and the cache fields) fall back
+                                // to the prior snapshot when the server omits them from this
+                                // delta. Only output_tokens is guaranteed non-null.
+                                lastAssistantUsage = {
+                                    input_tokens: usage.input_tokens ?? prev.input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    cache_read_input_tokens: usage.cache_read_input_tokens ?? prev.cache_read_input_tokens,
+                                    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? prev.cache_creation_input_tokens,
+                                };
+                            }
+                            const nextUsage = totalTokens(lastAssistantUsage);
+                            if (nextUsage !== lastAssistantTotalUsage) {
+                                lastAssistantTotalUsage = nextUsage;
+                                await this.client.sessionUpdate({
+                                    sessionId: params.sessionId,
+                                    update: {
+                                        sessionUpdate: "usage_update",
+                                        used: nextUsage,
+                                        size: session.contextWindowSize,
+                                    },
+                                });
+                            }
+                        }
                         for (const notification of streamEventToAcpNotifications(message, params.sessionId, this.toolUseCache, this.client, this.logger, {
                             clientCapabilities: this.clientCapabilities,
                             cwd: session.cwd,
@@ -513,27 +576,16 @@ export class ClaudeAcpAgent {
                                 break;
                             }
                         }
-                        // Store latest assistant usage (excluding subagents)
-                        // Sum all token types as a proxy for post-turn context occupancy:
-                        // current turn's output will become next turn's input.
-                        // Note: per the Anthropic API, input_tokens excludes cache tokens —
-                        // cache_read and cache_creation are reported separately, so summing
-                        // all four fields is not double-counting.
-                        if (message.message.usage && message.parent_tool_use_id === null) {
-                            const messageWithUsage = message.message;
-                            lastAssistantTotalUsage =
-                                messageWithUsage.usage.input_tokens +
-                                    messageWithUsage.usage.output_tokens +
-                                    messageWithUsage.usage.cache_read_input_tokens +
-                                    messageWithUsage.usage.cache_creation_input_tokens;
-                        }
-                        // Track the current top-level model for context window size lookup
-                        // (exclude subagent messages to stay in sync with lastAssistantTotalUsage)
-                        if (message.type === "assistant" &&
-                            message.parent_tool_use_id === null &&
-                            message.message.model &&
-                            message.message.model !== "<synthetic>") {
-                            lastAssistantModel = message.message.model;
+                        // Snapshot the latest top-level assistant usage and model so the
+                        // next `result` can emit a usage_update tied to the right context
+                        // window. Subagent messages are excluded to keep the snapshot
+                        // aligned with what the user's current selection is producing.
+                        if (message.type === "assistant" && message.parent_tool_use_id === null) {
+                            lastAssistantUsage = snapshotFromUsage(message.message.usage);
+                            lastAssistantTotalUsage = totalTokens(lastAssistantUsage);
+                            if (message.message.model && message.message.model !== "<synthetic>") {
+                                lastAssistantModel = message.message.model;
+                            }
                         }
                         // Slash commands like /compact can generate invalid output... doesn't match
                         // their own docs: https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-slash-commands#%2Fcompact-compact-conversation-history
@@ -941,6 +993,13 @@ export class ClaudeAcpAgent {
             session.modes = { ...session.modes, currentModeId: value };
         }
         else if (configId === "model") {
+            if (session.models.currentModelId !== value) {
+                // The cached context window was learned for the previous model; reset
+                // to the new model's heuristic so mid-stream updates between now and
+                // the next `result` reflect the user's selection instead of the old
+                // model's window.
+                session.contextWindowSize = inferContextWindowFromModel(value) ?? DEFAULT_CONTEXT_WINDOW;
+            }
             session.models = { ...session.models, currentModelId: value };
         }
     }
@@ -1204,6 +1263,7 @@ export class ClaudeAcpAgent {
             nextPendingOrder: 0,
             abortController,
             emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
+            contextWindowSize: inferContextWindowFromModel(models.currentModelId) ?? DEFAULT_CONTEXT_WINDOW,
         };
         return {
             sessionId,
@@ -1230,6 +1290,29 @@ function sessionUsage(session) {
             session.accumulatedUsage.outputTokens +
             session.accumulatedUsage.cachedReadTokens +
             session.accumulatedUsage.cachedWriteTokens,
+    };
+}
+/** Sum all four fields as a proxy for post-turn context occupancy: the current
+ *  turn's output becomes next turn's input. Per the Anthropic API, input_tokens
+ *  excludes cache tokens — cache_read and cache_creation are reported
+ *  separately — so summing all four is not double-counting. */
+function totalTokens(usage) {
+    return (usage.input_tokens +
+        usage.output_tokens +
+        usage.cache_read_input_tokens +
+        usage.cache_creation_input_tokens);
+}
+/** Project a nullable API usage object into our non-null snapshot shape.
+ *  Both SDK message_start and assistant message `usage` have `number | null`
+ *  cache fields; we coerce absent values to 0 so `totalTokens` never hits
+ *  NaN. Delta events have different semantics (cumulative + prev fallback)
+ *  and are handled inline. */
+function snapshotFromUsage(usage) {
+    return {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
     };
 }
 function createEnvForGateway(gatewayMeta) {
@@ -1767,6 +1850,16 @@ function commonPrefixLength(a, b) {
         i++;
     }
     return i;
+}
+/** Best-effort first guess of a model's context window from its ID, used only
+ *  until a `result` message arrives with the authoritative `modelUsage` value.
+ *  Anthropic 1M-context variants encode "1m" as a distinct token in the SDK
+ *  model ID (e.g., "claude-opus-4-6-1m"), which `\b1m\b` catches without also
+ *  matching things like "10m" or embedded substrings. */
+function inferContextWindowFromModel(model) {
+    if (/\b1m\b/i.test(model))
+        return 1_000_000;
+    return null;
 }
 function getMatchingModelUsage(modelUsage, currentModel) {
     let bestKey = null;

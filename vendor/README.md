@@ -41,7 +41,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
   - local NeverWrite delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.27.0`
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.29.0`
 
 ## Current Codex Delta
 

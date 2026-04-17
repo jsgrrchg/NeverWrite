@@ -39,6 +39,12 @@ type Session = {
     nextPendingOrder: number;
     abortController: AbortController;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
+    /** Context window size of the last top-level assistant model, carried across
+     *  prompts so mid-stream usage_update notifications report a correct `size`
+     *  before the turn's first result message arrives. Defaults to
+     *  DEFAULT_CONTEXT_WINDOW, refreshed from each result's modelUsage, and
+     *  invalidated when the user switches the session's model. */
+    contextWindowSize: number;
 };
 type BackgroundTerminal = {
     handle: TerminalHandle;
