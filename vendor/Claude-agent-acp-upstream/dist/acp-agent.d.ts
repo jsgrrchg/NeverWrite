@@ -18,7 +18,7 @@ type AccumulatedUsage = {
     cachedReadTokens: number;
     cachedWriteTokens: number;
 };
-declare const SUPPORTED_EFFORT_LEVELS: readonly ["low", "medium", "high", "xhigh"];
+declare const SUPPORTED_EFFORT_LEVELS: readonly ["low", "medium", "high", "xhigh", "max"];
 type SupportedEffortLevel = (typeof SUPPORTED_EFFORT_LEVELS)[number];
 type Session = {
     query: Query;

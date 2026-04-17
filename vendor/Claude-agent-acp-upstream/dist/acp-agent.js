@@ -27,7 +27,7 @@ const ZERO_USAGE = Object.freeze({
     cache_creation_input_tokens: 0,
 });
 const DEFAULT_CONTEXT_WINDOW = 200000;
-const SUPPORTED_EFFORT_LEVELS = ["low", "medium", "high", "xhigh"];
+const SUPPORTED_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 /** Compute a stable fingerprint of the session-defining params so we can
  *  detect when a loadSession/resumeSession call requires tearing down and
  *  recreating the underlying Query process.  MCP servers are sorted by name
@@ -777,7 +777,9 @@ export class ClaudeAcpAgent {
             await session.query.setModel(resolvedValue);
             const nextEffort = resolveEffortLevelForModel(session.modelInfos, resolvedValue, session.effortLevel);
             if (nextEffort && nextEffort !== session.effortLevel) {
-                await session.query.applyFlagSettings({ effortLevel: nextEffort });
+                await session.query.applyFlagSettings({
+                    effortLevel: nextEffort,
+                });
                 session.effortLevel = nextEffort;
             }
             session.configOptions = buildConfigOptions(session.modes, { ...session.models, currentModelId: resolvedValue }, session.modelInfos, nextEffort ?? session.effortLevel);

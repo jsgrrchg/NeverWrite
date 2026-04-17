@@ -2017,7 +2017,7 @@ fn summarize_stderr(stderr: &str) -> String {
         .join(" | ")
 }
 
-const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh"];
+const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 /// Strip the reasoning-effort suffix that the ACP bakes into model IDs and names.
 /// IDs use slash format:   "gpt-5.3-codex/medium" → "gpt-5.3-codex"
 /// Names use paren format: "gpt-5.3-codex (medium)" → "gpt-5.3-codex"
@@ -2902,6 +2902,42 @@ mod tests {
         assert_eq!(session.model_id, "claude-3-7-sonnet");
         assert_eq!(session.mode_id, "plan");
         assert_eq!(session.config_options, updated_options);
+    }
+
+    #[test]
+    fn map_loaded_session_state_normalizes_max_effort_models() {
+        let state = agent_client_protocol::SessionModelState::new(
+            "claude-3-7-sonnet/max",
+            vec![
+                agent_client_protocol::ModelInfo::new(
+                    "claude-3-7-sonnet/high",
+                    "Claude 3.7 Sonnet (high)",
+                )
+                .description("Balanced"),
+                agent_client_protocol::ModelInfo::new(
+                    "claude-3-7-sonnet/max",
+                    "Claude 3.7 Sonnet (max)",
+                )
+                .description("Balanced"),
+            ],
+        );
+
+        let mapped = map_loaded_session_state("session-1".to_string(), Some(state), None, None)
+            .expect("loaded session state should map");
+
+        assert_eq!(mapped.model_id, "claude-3-7-sonnet");
+        assert_eq!(
+            mapped.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            vec!["claude-3-7-sonnet"]
+        );
+        assert_eq!(
+            mapped
+                .efforts_by_model
+                .get("claude-3-7-sonnet")
+                .cloned()
+                .unwrap_or_default(),
+            vec!["high".to_string(), "max".to_string()]
+        );
     }
 
     #[test]
