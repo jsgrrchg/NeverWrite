@@ -31,6 +31,7 @@ import { AIChatMessageList } from "./AIChatMessageList";
 import { AIChatComposer } from "./AIChatComposer";
 import { AIChatContextBar } from "./AIChatContextBar";
 import { AIChatAgentControls } from "./AIChatAgentControls";
+import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
@@ -73,6 +74,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         queuedMessages,
         queuedMessageEdit,
         interruptedTurnState,
+        tokenUsage,
     } = useChatStore(
         useShallow((state) => {
             const s = sessionId
@@ -94,6 +96,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     : null,
                 interruptedTurnState: sid
                     ? (state.interruptedTurnStateBySessionId[sid] ?? null)
+                    : null,
+                tokenUsage: sid
+                    ? (state.tokenUsageBySessionId[sid] ?? null)
                     : null,
             };
         }),
@@ -513,30 +518,41 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             onClearAll={handleClearAttachments}
                         />
                     }
-                    footer={
-                        <AIChatAgentControls
-                            disabled={agentControlsDisabled}
-                            runtimeId={session?.runtimeId}
-                            modelId={session?.modelId ?? ""}
-                            modeId={session?.modeId ?? ""}
-                            effortsByModel={session?.effortsByModel ?? {}}
-                            models={agentCatalog.models}
-                            modes={agentCatalog.modes}
-                            configOptions={agentCatalog.configOptions}
-                            onModelChange={(modelId) => {
-                                void chatActions.setModel(modelId, sessionId);
-                            }}
-                            onModeChange={(modeId) => {
-                                void chatActions.setMode(modeId, sessionId);
-                            }}
-                            onConfigOptionChange={(optionId, value) => {
-                                void chatActions.setConfigOption(
-                                    optionId,
-                                    value,
-                                    sessionId,
-                                );
-                            }}
+                    bottomAccent={
+                        <AIChatContextUsageBar
+                            usage={tokenUsage}
+                            cornerRadius={composerExpanded ? 9 : 11}
                         />
+                    }
+                    footer={
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            <AIChatAgentControls
+                                disabled={agentControlsDisabled}
+                                runtimeId={session?.runtimeId}
+                                modelId={session?.modelId ?? ""}
+                                modeId={session?.modeId ?? ""}
+                                effortsByModel={session?.effortsByModel ?? {}}
+                                models={agentCatalog.models}
+                                modes={agentCatalog.modes}
+                                configOptions={agentCatalog.configOptions}
+                                onModelChange={(modelId) => {
+                                    void chatActions.setModel(
+                                        modelId,
+                                        sessionId,
+                                    );
+                                }}
+                                onModeChange={(modeId) => {
+                                    void chatActions.setMode(modeId, sessionId);
+                                }}
+                                onConfigOptionChange={(optionId, value) => {
+                                    void chatActions.setConfigOption(
+                                        optionId,
+                                        value,
+                                        sessionId,
+                                    );
+                                }}
+                            />
+                        </div>
                     }
                     onChange={(parts) => {
                         chatActions.setComposerParts(parts, sessionId);

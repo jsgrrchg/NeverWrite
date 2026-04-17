@@ -19,6 +19,7 @@ import type {
     AIPermissionRequestPayload,
     AIPlanUpdatePayload,
     AIStatusEventPayload,
+    AITokenUsagePayload,
     AIToolActivityPayload,
     AIUserInputRequestPayload,
     AIRuntimeDescriptor,
@@ -51,6 +52,7 @@ export const AI_PLAN_UPDATED_EVENT = "ai://plan-updated";
 export const AI_AVAILABLE_COMMANDS_UPDATED_EVENT =
     "ai://available-commands-updated";
 export const AI_RUNTIME_CONNECTION_EVENT = "ai://runtime-connection";
+export const AI_TOKEN_USAGE_EVENT = "ai://token-usage";
 export const AI_AUTH_TERMINAL_STARTED_EVENT = "ai://auth-terminal-started";
 export const AI_AUTH_TERMINAL_OUTPUT_EVENT = "ai://auth-terminal-output";
 export const AI_AUTH_TERMINAL_EXITED_EVENT = "ai://auth-terminal-exited";
@@ -831,6 +833,14 @@ export async function listenToAiRuntimeConnection(
             callback(event.payload);
         },
     );
+}
+
+export async function listenToAiTokenUsage(
+    callback: (payload: AITokenUsagePayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AITokenUsagePayload>(AI_TOKEN_USAGE_EVENT, (event) => {
+        callback(event.payload);
+    });
 }
 
 export async function listenToAiAuthTerminalStarted(

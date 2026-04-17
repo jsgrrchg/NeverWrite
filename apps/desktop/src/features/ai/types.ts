@@ -24,6 +24,22 @@ export interface AIRuntimeConnectionPayload extends AIRuntimeConnectionState {
     runtime_id: string;
 }
 
+export interface AITokenUsageCost {
+    amount: number;
+    currency: string;
+}
+
+export interface AITokenUsagePayload {
+    session_id: string;
+    used: number;
+    size: number;
+    cost?: AITokenUsageCost | null;
+}
+
+export interface AITokenUsage extends AITokenUsagePayload {
+    updatedAt: number;
+}
+
 export type AISecretPatch =
     | { action: "unchanged" }
     | { action: "clear" }
