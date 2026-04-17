@@ -14,7 +14,7 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.29.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.29.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + selected thread/runtime backports + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS. The legacy `claude-agent-acp` sidecar path still exists as a runtime fallback, but it is not staged by default. | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-ai-login` + `console-login` locally, `claude-login` remotely, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
@@ -29,7 +29,8 @@ Notes:
 - Gemini emits plans and available-command updates from the ACP stream, but NeverWrite currently does **not** surface Gemini `user_input` as a supported adapter capability.
 - Codex and Gemini support `session/close` in the client/runtime handle path; Claude session removal is currently local-state cleanup only.
 - The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.111`.
-- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, with a small local delta to preserve NeverWrite review, diff, mode and user-input behavior.
+- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, plus selected newer `thread.rs` behavior merged from the maintained adapter copy.
+- The remaining NeverWrite-specific Codex delta is still intentional and product-facing: review/diff metadata, resilient mode matching, inline diff reconstruction and the prompt-encoded `user_input` bridge all remain local.
 
 ---
 
@@ -261,7 +262,15 @@ That delta is intentional and currently lives mainly in `src/thread.rs` and `src
 - primary `neverwrite*` metadata for status, plan, diff hunks and `user_input_request`
 - reconstruction of `unified_diff` into `old_text` / `new_text` for inline review and the edited-files panel
 - resilient `modes` / approval-preset behavior when Codex expands writable roots under `workspace-write`
-- actor shutdown semantics that do not keep internal message channels alive after external senders are dropped
+- the prompt-encoded `user_input` answer bridge (`__neverwrite_user_input_response__...`) used by the desktop adapter
+
+At the same time, the current vendor now also carries forward newer Codex thread behavior that NeverWrite benefits from operationally:
+
+- explicit actor `shutdown` handling instead of only aborting the local task
+- async permission-resolution routing keyed by request identity rather than a weak sender shortcut
+- richer exec approval option mapping based on `effective_available_decisions()`
+- MCP tool approval elicitation routed through ACP permission requests when the runtime emits the supported metadata shape
+- `GuardianAssessment` surfaced as tool-call activity
 
 In other words, Codex is now aligned with upstream `0.11.1`, but it is not a raw upstream checkout. The remaining delta is product-facing, not incidental.
 
@@ -353,7 +362,7 @@ The actor runs on a dedicated thread with a tokio `LocalSet` so it can safely ho
 - `set_session_config_option`
 - cancel notification
 
-Permission approval is resolved through ACP permission request handling inside the client runtime state. Codex `user_input` replies are currently sent back by synthesizing a special prompt payload rather than using a dedicated first-class ACP request method.
+Permission approval is resolved through ACP permission request handling inside the client runtime state. Codex now maps exec approvals from `effective_available_decisions()`, routes supported MCP tool approvals through ACP permission requests, and still sends `user_input` replies back by synthesizing a special prompt payload rather than using a dedicated first-class ACP request method.
 
 ### Agent → Client notifications handled by NeverWrite
 
@@ -405,7 +414,7 @@ The Rust backend emits the following events to the React frontend:
 Notes:
 
 - Claude emits plan + available-command updates.
-- Codex emits permission, plan, status, tool activity and `user-input-request`.
+- Codex emits permission, plan, status, tool activity, guardian-review activity and `user-input-request`.
 - Gemini emits plan + available-command updates, but NeverWrite currently rejects Gemini `respond_user_input`.
 
 ---
@@ -509,7 +518,8 @@ External auth state also used:
 
 - Gemini is integrated end-to-end in NeverWrite, but it is **not** currently bundled by `build.rs` / Tauri resources.
 - Claude is the only ACP runtime whose stderr is currently captured and surfaced in disconnect errors.
-- Codex `user_input` is supported in NeverWrite; Gemini `user_input` is not.
+- Codex `user_input` is supported in NeverWrite through a local prompt-encoded bridge; Gemini `user_input` is not.
+- Codex now carries newer shutdown / permission / MCP-elicitation / guardian-assessment behavior in `vendor/codex-acp/src/thread.rs`, but it is still not a raw upstream checkout.
 - NeverWrite does **not** yet surface Claude `usage_update` in the app, even though newer Claude ACP upstream emits it.
 - NeverWrite currently consumes Claude terminal metadata and session config/mode updates, but does **not** yet expose richer Claude tool metadata such as `_meta.claudeCode.toolName`, `toolResponse` or `parentToolUseId`.
 - Claude runtime resolution still includes a legacy bundled `claude-agent-acp` sidecar fallback, but the normal build path now prefers and stages the embedded Node+JS runtime instead.
