@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::DerefMut,
     path::{Path, PathBuf},
     rc::Rc,
@@ -17,8 +17,9 @@ use agent_client_protocol::{
     SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
     SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
     SessionModeState, SessionModelState, SessionNotification, SessionUpdate, StopReason, Terminal,
-    TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput, UsageUpdate,
+    TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
+    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    UsageUpdate,
 };
 use codex_apply_patch::parse_patch;
 use codex_core::{
@@ -34,30 +35,29 @@ use codex_protocol::protocol::{
     AgentReasoningRawContentEvent, AgentReasoningSectionBreakEvent, ApplyPatchApprovalRequestEvent,
     AskForApproval, ElicitationAction, ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent,
     ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecCommandStatus,
-    ExitedReviewModeEvent, FileChange, ItemCompletedEvent, ItemStartedEvent,
-    ListCustomPromptsResponseEvent, McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent,
-    McpToolCallBeginEvent, McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent,
-    PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent,
-    ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest,
-    ReviewTarget, SandboxPolicy, StreamErrorEvent, TerminalInteractionEvent, TokenCountEvent,
-    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
-    ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
+    ExitedReviewModeEvent, FileChange, GuardianAssessmentEvent, GuardianAssessmentStatus,
+    ItemCompletedEvent, ItemStartedEvent, ListCustomPromptsResponseEvent, McpInvocation,
+    McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent, McpToolCallEndEvent,
+    ModelRerouteEvent, Op, PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyStatus,
+    PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent, ReviewDecision,
+    ReviewOutputEvent, ReviewRequest, ReviewTarget, SandboxPolicy, StreamErrorEvent,
+    TerminalInteractionEvent, TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent,
+    TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent,
+    WebSearchEndEvent,
 };
 use codex_protocol::{
-    approvals::ElicitationRequestEvent,
+    approvals::{ElicitationRequest, ElicitationRequestEvent},
     config_types::TrustLevel,
     custom_prompts::CustomPrompt,
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
     items::TurnItem,
     mcp::CallToolResult,
-    models::{
-        FileSystemPermissions, ResponseItem, WebSearchAction,
-    },
+    models::{FileSystemPermissions, PermissionProfile, ResponseItem, WebSearchAction},
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
     protocol::{
-        DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyAmendment, RolloutItem,
+        DynamicToolCallResponseEvent, NetworkApprovalContext, NetworkPolicyRuleAction, RolloutItem,
     },
     request_permissions::{
         PermissionGrantScope, RequestPermissionProfile, RequestPermissionsEvent,
@@ -229,21 +229,26 @@ enum ThreadMessage {
     Cancel {
         response_tx: oneshot::Sender<Result<(), Error>>,
     },
+    Shutdown {
+        response_tx: oneshot::Sender<Result<(), Error>>,
+    },
     ReplayHistory {
         history: Vec<RolloutItem>,
         response_tx: oneshot::Sender<Result<(), Error>>,
     },
     PermissionRequestResolved {
         submission_id: String,
-        request_id: String,
-        outcome: Result<RequestPermissionOutcome, Error>,
+        request_key: String,
+        response: Result<RequestPermissionResponse, Error>,
     },
 }
 
 pub struct Thread {
+    /// Direct handle to the underlying Codex thread for out-of-band shutdown.
+    thread: Arc<dyn CodexThreadImpl>,
     /// A sender for interacting with the thread.
     message_tx: mpsc::UnboundedSender<ThreadMessage>,
-    /// A handle to the spawned task.
+    /// Keep the actor task alive for the lifetime of the thread wrapper.
     _handle: tokio::task::JoinHandle<()>,
 }
 
@@ -257,19 +262,22 @@ impl Thread {
         config: Config,
     ) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
+        let (resolution_tx, resolution_rx) = mpsc::unbounded_channel();
 
         let actor = ThreadActor::new(
             auth,
             SessionClient::new(session_id, client_capabilities),
-            thread,
+            thread.clone(),
             models_manager,
             config,
             message_rx,
-            message_tx.downgrade(),
+            resolution_tx,
+            resolution_rx,
         );
         let handle = tokio::task::spawn_local(actor.spawn());
 
         Self {
+            thread,
             message_tx,
             _handle: handle,
         }
@@ -366,8 +374,21 @@ impl Thread {
     }
 
     pub async fn shutdown(&self) -> Result<(), Error> {
-        drop(self.cancel().await);
-        self._handle.abort();
+        let (response_tx, response_rx) = oneshot::channel();
+        let message = ThreadMessage::Shutdown { response_tx };
+
+        if self.message_tx.send(message).is_err() {
+            self.thread
+                .submit(Op::Shutdown)
+                .await
+                .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+        } else {
+            response_rx
+                .await
+                .map_err(|e| Error::internal_error().data(e.to_string()))??;
+        }
+        // Let the actor drain the resulting shutdown events so in-flight turns
+        // can finish with a clean cancellation instead of a dropped channel.
         Ok(())
     }
 
@@ -405,6 +426,36 @@ impl SubmissionState {
         match self {
             Self::CustomPrompts(state) => state.handle_event(event),
             Self::Prompt(state) => state.handle_event(client, event).await,
+        }
+    }
+
+    async fn handle_permission_request_resolved(
+        &mut self,
+        client: &SessionClient,
+        request_key: String,
+        response: Result<RequestPermissionResponse, Error>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::CustomPrompts(..) => Ok(()),
+            Self::Prompt(state) => {
+                state
+                    .handle_permission_request_resolved(client, request_key, response)
+                    .await
+            }
+        }
+    }
+
+    fn abort_pending_interactions(&mut self) {
+        if let Self::Prompt(state) = self {
+            state.abort_pending_interactions();
+        }
+    }
+
+    fn fail(&mut self, err: Error) {
+        if let Self::Prompt(state) = self
+            && let Some(response_tx) = state.response_tx.take()
+        {
+            drop(response_tx.send(Err(err)));
         }
     }
 }
@@ -455,31 +506,316 @@ struct ActiveCommand {
 
 struct PendingPermissionInteraction {
     request: PendingPermissionRequest,
-    handle: tokio::task::JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 enum PendingPermissionRequest {
     Exec {
         approval_id: String,
         turn_id: String,
+        option_map: HashMap<String, ReviewDecision>,
     },
     Patch {
         call_id: String,
+        option_map: HashMap<String, ReviewDecision>,
     },
     RequestPermissions {
         call_id: String,
-        permissions: RequestPermissionProfile,
+        permissions: PermissionProfile,
+    },
+    McpElicitation {
+        server_name: String,
+        request_id: codex_protocol::mcp::RequestId,
+        option_map: HashMap<String, ResolvedMcpElicitation>,
     },
 }
 
+#[derive(Clone)]
+struct ResolvedMcpElicitation {
+    action: ElicitationAction,
+    content: Option<serde_json::Value>,
+    meta: Option<serde_json::Value>,
+}
+
+impl ResolvedMcpElicitation {
+    fn accept() -> Self {
+        Self {
+            action: ElicitationAction::Accept,
+            content: None,
+            meta: None,
+        }
+    }
+
+    fn accept_with_persist(persist: &'static str) -> Self {
+        Self {
+            action: ElicitationAction::Accept,
+            content: None,
+            meta: Some(serde_json::json!({ "persist": persist })),
+        }
+    }
+
+    fn cancel() -> Self {
+        Self {
+            action: ElicitationAction::Cancel,
+            content: None,
+            meta: None,
+        }
+    }
+}
+
+fn exec_request_key(call_id: &str) -> String {
+    format!("exec:{call_id}")
+}
+
+fn patch_request_key(call_id: &str) -> String {
+    format!("patch:{call_id}")
+}
+
+fn permissions_request_key(call_id: &str) -> String {
+    format!("permissions:{call_id}")
+}
+
+fn mcp_elicitation_request_key(
+    server_name: &str,
+    request_id: &codex_protocol::mcp::RequestId,
+) -> String {
+    format!("mcp-elicitation:{server_name}:{request_id}")
+}
+
+const MCP_TOOL_APPROVAL_KIND_KEY: &str = "codex_approval_kind";
+const MCP_TOOL_APPROVAL_KIND_MCP_TOOL_CALL: &str = "mcp_tool_call";
+const MCP_TOOL_APPROVAL_PERSIST_KEY: &str = "persist";
+const MCP_TOOL_APPROVAL_PERSIST_SESSION: &str = "session";
+const MCP_TOOL_APPROVAL_PERSIST_ALWAYS: &str = "always";
+const MCP_TOOL_APPROVAL_TOOL_TITLE_KEY: &str = "tool_title";
+const MCP_TOOL_APPROVAL_TOOL_DESCRIPTION_KEY: &str = "tool_description";
+const MCP_TOOL_APPROVAL_CONNECTOR_NAME_KEY: &str = "connector_name";
+const MCP_TOOL_APPROVAL_CONNECTOR_DESCRIPTION_KEY: &str = "connector_description";
+const MCP_TOOL_APPROVAL_TOOL_PARAMS_KEY: &str = "tool_params";
+const MCP_TOOL_APPROVAL_TOOL_PARAMS_DISPLAY_KEY: &str = "tool_params_display";
+const MCP_TOOL_APPROVAL_REQUEST_ID_PREFIX: &str = "mcp_tool_call_approval_";
+const MCP_TOOL_APPROVAL_ALLOW_OPTION_ID: &str = "approved";
+const MCP_TOOL_APPROVAL_ALLOW_SESSION_OPTION_ID: &str = "approved-for-session";
+const MCP_TOOL_APPROVAL_ALLOW_ALWAYS_OPTION_ID: &str = "approved-always";
+const MCP_TOOL_APPROVAL_CANCEL_OPTION_ID: &str = "cancel";
+
+struct SupportedMcpElicitationPermissionRequest {
+    request_key: String,
+    tool_call: ToolCallUpdate,
+    options: Vec<PermissionOption>,
+    option_map: HashMap<String, ResolvedMcpElicitation>,
+}
+
+fn build_supported_mcp_elicitation_permission_request(
+    server_name: &str,
+    request_id: &codex_protocol::mcp::RequestId,
+    request: &ElicitationRequest,
+    raw_input: serde_json::Value,
+) -> Option<SupportedMcpElicitationPermissionRequest> {
+    let ElicitationRequest::Form {
+        meta: Some(meta),
+        message,
+        requested_schema: _,
+    } = request
+    else {
+        return None;
+    };
+    let meta = meta.as_object()?;
+    if meta
+        .get(MCP_TOOL_APPROVAL_KIND_KEY)
+        .and_then(serde_json::Value::as_str)
+        != Some(MCP_TOOL_APPROVAL_KIND_MCP_TOOL_CALL)
+    {
+        return None;
+    }
+
+    let (allow_session_remember, allow_persistent_approval) = mcp_tool_approval_persist_modes(meta);
+    let mut options = vec![PermissionOption::new(
+        MCP_TOOL_APPROVAL_ALLOW_OPTION_ID,
+        "Allow",
+        PermissionOptionKind::AllowOnce,
+    )];
+    let mut option_map = HashMap::from([(
+        MCP_TOOL_APPROVAL_ALLOW_OPTION_ID.to_string(),
+        ResolvedMcpElicitation::accept(),
+    )]);
+
+    if allow_session_remember {
+        options.push(PermissionOption::new(
+            MCP_TOOL_APPROVAL_ALLOW_SESSION_OPTION_ID,
+            "Allow for this session",
+            PermissionOptionKind::AllowAlways,
+        ));
+        option_map.insert(
+            MCP_TOOL_APPROVAL_ALLOW_SESSION_OPTION_ID.to_string(),
+            ResolvedMcpElicitation::accept_with_persist(MCP_TOOL_APPROVAL_PERSIST_SESSION),
+        );
+    }
+
+    if allow_persistent_approval {
+        options.push(PermissionOption::new(
+            MCP_TOOL_APPROVAL_ALLOW_ALWAYS_OPTION_ID,
+            "Allow and don't ask again",
+            PermissionOptionKind::AllowAlways,
+        ));
+        option_map.insert(
+            MCP_TOOL_APPROVAL_ALLOW_ALWAYS_OPTION_ID.to_string(),
+            ResolvedMcpElicitation::accept_with_persist(MCP_TOOL_APPROVAL_PERSIST_ALWAYS),
+        );
+    }
+
+    options.push(PermissionOption::new(
+        MCP_TOOL_APPROVAL_CANCEL_OPTION_ID,
+        "Cancel",
+        PermissionOptionKind::RejectOnce,
+    ));
+    option_map.insert(
+        MCP_TOOL_APPROVAL_CANCEL_OPTION_ID.to_string(),
+        ResolvedMcpElicitation::cancel(),
+    );
+
+    let tool_call_id = mcp_tool_approval_call_id(request_id)
+        .unwrap_or_else(|| format!("mcp-elicitation:{request_id}"));
+    let title = meta
+        .get(MCP_TOOL_APPROVAL_TOOL_TITLE_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+        .map(|title| format!("Approve {title}"))
+        .unwrap_or_else(|| "Approve MCP tool call".to_string());
+    let content = format_mcp_tool_approval_content(server_name, message, meta);
+
+    Some(SupportedMcpElicitationPermissionRequest {
+        request_key: mcp_elicitation_request_key(server_name, request_id),
+        tool_call: ToolCallUpdate::new(
+            ToolCallId::new(tool_call_id),
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Pending)
+                .title(title)
+                .content(vec![ToolCallContent::Content(Content::new(
+                    ContentBlock::Text(TextContent::new(content)),
+                ))])
+                .raw_input(raw_input),
+        ),
+        options,
+        option_map,
+    })
+}
+
+fn mcp_tool_approval_persist_modes(
+    meta: &serde_json::Map<String, serde_json::Value>,
+) -> (bool, bool) {
+    match meta.get(MCP_TOOL_APPROVAL_PERSIST_KEY) {
+        Some(serde_json::Value::String(persist)) => (
+            persist == MCP_TOOL_APPROVAL_PERSIST_SESSION,
+            persist == MCP_TOOL_APPROVAL_PERSIST_ALWAYS,
+        ),
+        Some(serde_json::Value::Array(values)) => (
+            values
+                .iter()
+                .any(|value| value.as_str() == Some(MCP_TOOL_APPROVAL_PERSIST_SESSION)),
+            values
+                .iter()
+                .any(|value| value.as_str() == Some(MCP_TOOL_APPROVAL_PERSIST_ALWAYS)),
+        ),
+        _ => (false, false),
+    }
+}
+
+fn mcp_tool_approval_call_id(request_id: &codex_protocol::mcp::RequestId) -> Option<String> {
+    match request_id {
+        codex_protocol::mcp::RequestId::String(value) => value
+            .strip_prefix(MCP_TOOL_APPROVAL_REQUEST_ID_PREFIX)
+            .map(ToString::to_string),
+        codex_protocol::mcp::RequestId::Integer(_) => None,
+    }
+}
+
+fn format_mcp_tool_approval_content(
+    server_name: &str,
+    message: &str,
+    meta: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let mut sections = vec![message.trim().to_string()];
+
+    let source = meta
+        .get(MCP_TOOL_APPROVAL_CONNECTOR_NAME_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("Source: {value}"))
+        .unwrap_or_else(|| format!("Server: {server_name}"));
+    sections.push(source);
+
+    if let Some(description) = meta
+        .get(MCP_TOOL_APPROVAL_CONNECTOR_DESCRIPTION_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        sections.push(description.to_string());
+    }
+
+    if let Some(description) = meta
+        .get(MCP_TOOL_APPROVAL_TOOL_DESCRIPTION_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        sections.push(description.to_string());
+    }
+
+    if let Some(params) = format_mcp_tool_approval_params(meta) {
+        sections.push(format!("Arguments:\n{params}"));
+    }
+
+    sections.join("\n\n")
+}
+
+fn format_mcp_tool_approval_params(
+    meta: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    if let Some(serde_json::Value::Array(params)) =
+        meta.get(MCP_TOOL_APPROVAL_TOOL_PARAMS_DISPLAY_KEY)
+    {
+        let params = params
+            .iter()
+            .filter_map(|param| {
+                let object = param.as_object()?;
+                let name = object
+                    .get("display_name")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| object.get("name").and_then(serde_json::Value::as_str))?;
+                let value = object.get("value")?;
+                Some(format!(
+                    "- {name}: {}",
+                    format_mcp_tool_approval_value(value)
+                ))
+            })
+            .collect::<Vec<_>>();
+        if !params.is_empty() {
+            return Some(params.join("\n"));
+        }
+    }
+
+    meta.get(MCP_TOOL_APPROVAL_TOOL_PARAMS_KEY).map(|params| {
+        serde_json::to_string_pretty(params)
+            .unwrap_or_else(|_| format_mcp_tool_approval_value(params))
+    })
+}
+
+fn format_mcp_tool_approval_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(value) => value.clone(),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+    }
+}
+
 struct PromptState {
+    submission_id: String,
     active_commands: HashMap<String, ActiveCommand>,
     active_web_search: Option<String>,
+    active_guardian_assessments: HashSet<String>,
     active_plan_text: HashMap<String, String>,
     thread: Arc<dyn CodexThreadImpl>,
-    message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
-    submission_id: String,
-    pending_permission_requests: HashMap<String, PendingPermissionInteraction>,
+    resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
+    pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
     event_count: usize,
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
@@ -493,7 +829,10 @@ struct NeverWriteUserInputAnswerPayload {
 
 fn neverwrite_status_meta(kind: &str, emphasis: &str) -> Meta {
     let mut meta = Meta::new();
-    meta.insert(NEVERWRITE_STATUS_EVENT_TYPE_KEY.to_string(), json!("status"));
+    meta.insert(
+        NEVERWRITE_STATUS_EVENT_TYPE_KEY.to_string(),
+        json!("status"),
+    );
     meta.insert(NEVERWRITE_STATUS_KIND_KEY.to_string(), json!(kind));
     meta.insert(NEVERWRITE_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
     meta
@@ -834,19 +1173,20 @@ fn extract_user_input_answer_payload(
 
 impl PromptState {
     fn new(
-        thread: Arc<dyn CodexThreadImpl>,
-        message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
         submission_id: String,
+        thread: Arc<dyn CodexThreadImpl>,
+        resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
         response_tx: oneshot::Sender<Result<StopReason, Error>>,
     ) -> Self {
         Self {
+            submission_id,
             active_commands: HashMap::new(),
             active_web_search: None,
+            active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
             thread,
-            message_tx,
-            submission_id,
-            pending_permission_requests: HashMap::new(),
+            resolution_tx,
+            pending_permission_interactions: HashMap::new(),
             event_count: 0,
             response_tx: Some(response_tx),
             seen_message_deltas: false,
@@ -864,69 +1204,71 @@ impl PromptState {
     fn spawn_permission_request(
         &mut self,
         client: &SessionClient,
-        request_id: String,
-        request: PendingPermissionRequest,
+        request_key: String,
+        pending_request: PendingPermissionRequest,
         tool_call: ToolCallUpdate,
         options: Vec<PermissionOption>,
     ) {
         let client = client.clone();
-        let message_tx = self.message_tx.clone();
+        let resolution_tx = self.resolution_tx.clone();
         let submission_id = self.submission_id.clone();
-        let request_id_for_task = request_id.clone();
+        let resolved_request_key = request_key.clone();
         let handle = tokio::task::spawn_local(async move {
-            let outcome = client
-                .request_permission(tool_call, options)
-                .await
-                .map(|response| response.outcome);
-            if let Some(message_tx) = message_tx.upgrade() {
-                drop(message_tx.send(ThreadMessage::PermissionRequestResolved {
+            let response = client.request_permission(tool_call, options).await;
+            drop(
+                resolution_tx.send(ThreadMessage::PermissionRequestResolved {
                     submission_id,
-                    request_id: request_id_for_task,
-                    outcome,
-                }));
-            }
+                    request_key: resolved_request_key,
+                    response,
+                }),
+            );
         });
 
-        self.pending_permission_requests
-            .insert(request_id, PendingPermissionInteraction { request, handle });
+        if let Some(interaction) = self.pending_permission_interactions.insert(
+            request_key,
+            PendingPermissionInteraction {
+                request: pending_request,
+                task: handle,
+            },
+        ) {
+            interaction.task.abort();
+        }
     }
 
     fn abort_pending_interactions(&mut self) {
-        for interaction in self
-            .pending_permission_requests
-            .drain()
-            .map(|(_, value)| value)
-        {
-            interaction.handle.abort();
+        for (_, interaction) in self.pending_permission_interactions.drain() {
+            interaction.task.abort();
         }
     }
 
     async fn handle_permission_request_resolved(
         &mut self,
-        request_id: String,
-        outcome: Result<RequestPermissionOutcome, Error>,
+        _client: &SessionClient,
+        request_key: String,
+        response: Result<RequestPermissionResponse, Error>,
     ) -> Result<(), Error> {
-        let Some(interaction) = self.pending_permission_requests.remove(&request_id) else {
+        let Some(interaction) = self.pending_permission_interactions.remove(&request_key) else {
+            warn!("Ignoring permission response for unknown request key: {request_key}");
             return Ok(());
         };
 
-        let outcome = outcome?;
-        match interaction.request {
+        let pending_request = interaction.request;
+        let response = response?;
+        match pending_request {
             PendingPermissionRequest::Exec {
                 approval_id,
                 turn_id,
+                option_map,
             } => {
-                let decision = match outcome {
+                let decision = match response.outcome {
                     RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
                         option_id,
                         ..
-                    }) => match option_id.0.as_ref() {
-                        "approved-for-session" => ReviewDecision::ApprovedForSession,
-                        "approved" => ReviewDecision::Approved,
-                        _ => ReviewDecision::Abort,
-                    },
-                    RequestPermissionOutcome::Cancelled => ReviewDecision::Abort,
-                    _ => ReviewDecision::Abort,
+                    }) => option_map
+                        .get(option_id.0.as_ref())
+                        .cloned()
+                        .unwrap_or(ReviewDecision::Abort),
+                    RequestPermissionOutcome::Cancelled | _ => ReviewDecision::Abort,
                 };
 
                 self.thread
@@ -938,18 +1280,19 @@ impl PromptState {
                     .await
                     .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
             }
-            PendingPermissionRequest::Patch { call_id } => {
-                let decision = match outcome {
+            PendingPermissionRequest::Patch {
+                call_id,
+                option_map,
+            } => {
+                let decision = match response.outcome {
                     RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
                         option_id,
                         ..
-                    }) => match option_id.0.as_ref() {
-                        "approved-for-session" => ReviewDecision::ApprovedForSession,
-                        "approved" => ReviewDecision::Approved,
-                        _ => ReviewDecision::Abort,
-                    },
-                    RequestPermissionOutcome::Cancelled => ReviewDecision::Abort,
-                    _ => ReviewDecision::Abort,
+                    }) => option_map
+                        .get(option_id.0.as_ref())
+                        .cloned()
+                        .unwrap_or(ReviewDecision::Abort),
+                    RequestPermissionOutcome::Cancelled | _ => ReviewDecision::Abort,
                 };
 
                 self.thread
@@ -964,17 +1307,17 @@ impl PromptState {
                 call_id,
                 permissions,
             } => {
-                let response = match outcome {
+                let response = match response.outcome {
                     RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
                         option_id,
                         ..
                     }) => match option_id.0.as_ref() {
                         "approved-for-session" => RequestPermissionsResponse {
-                            permissions,
+                            permissions: permissions.into(),
                             scope: PermissionGrantScope::Session,
                         },
                         "approved" => RequestPermissionsResponse {
-                            permissions,
+                            permissions: permissions.into(),
                             scope: PermissionGrantScope::Turn,
                         },
                         _ => RequestPermissionsResponse {
@@ -982,11 +1325,7 @@ impl PromptState {
                             scope: PermissionGrantScope::Turn,
                         },
                     },
-                    RequestPermissionOutcome::Cancelled => RequestPermissionsResponse {
-                        permissions: RequestPermissionProfile::default(),
-                        scope: PermissionGrantScope::Turn,
-                    },
-                    _ => RequestPermissionsResponse {
+                    RequestPermissionOutcome::Cancelled | _ => RequestPermissionsResponse {
                         permissions: RequestPermissionProfile::default(),
                         scope: PermissionGrantScope::Turn,
                     },
@@ -996,6 +1335,33 @@ impl PromptState {
                     .submit(Op::RequestPermissionsResponse {
                         id: call_id,
                         response,
+                    })
+                    .await
+                    .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+            }
+            PendingPermissionRequest::McpElicitation {
+                server_name,
+                request_id,
+                option_map,
+            } => {
+                let response = match response.outcome {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
+                        option_id,
+                        ..
+                    }) => option_map
+                        .get(option_id.0.as_ref())
+                        .cloned()
+                        .unwrap_or_else(ResolvedMcpElicitation::cancel),
+                    RequestPermissionOutcome::Cancelled | _ => ResolvedMcpElicitation::cancel(),
+                };
+
+                self.thread
+                    .submit(Op::ResolveElicitation {
+                        server_name,
+                        request_id,
+                        decision: response.action,
+                        content: response.content,
+                        meta: response.meta,
                     })
                     .await
                     .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -1587,6 +1953,13 @@ impl PromptState {
                     )
                     .await;
             }
+            EventMsg::GuardianAssessment(event) => {
+                info!(
+                    "Guardian assessment: id={}, status={:?}, turn_id={}",
+                    event.id, event.status, event.turn_id
+                );
+                self.guardian_assessment(client, event).await;
+            }
 
             EventMsg::ContextCompacted(..) => {
                 info!("Context compacted");
@@ -1623,7 +1996,6 @@ impl PromptState {
             | EventMsg::CollabCloseEnd(..)
             | EventMsg::ImageGenerationBegin(..)
             | EventMsg::ImageGenerationEnd(..)
-            | EventMsg::GuardianAssessment(..)
             | EventMsg::HookStarted(..)
             | EventMsg::HookCompleted(..) => {}
             e @ (EventMsg::McpListToolsResponse(..)
@@ -1639,7 +2011,7 @@ impl PromptState {
     }
 
     async fn mcp_elicitation(
-        &self,
+        &mut self,
         client: &SessionClient,
         event: ElicitationRequestEvent,
     ) -> Result<(), Error> {
@@ -1648,74 +2020,52 @@ impl PromptState {
             server_name,
             id,
             request,
-            ..
+            turn_id: _,
         } = event;
-        let tool_call_id = ToolCallId::new(match &id {
-            codex_protocol::mcp::RequestId::String(s) => s.clone(),
-            codex_protocol::mcp::RequestId::Integer(i) => i.to_string(),
-        });
-        let response = client
-            .request_permission(
-                ToolCallUpdate::new(
-                    tool_call_id.clone(),
-                    ToolCallUpdateFields::new()
-                        .title(server_name.clone())
-                        .status(ToolCallStatus::Pending)
-                        .content(vec![request.message().to_string().into()])
-                        .raw_input(raw_input),
-                ),
-                vec![
-                    PermissionOption::new(
-                        "approved",
-                        "Yes, provide the requested info",
-                        PermissionOptionKind::AllowOnce,
-                    ),
-                    PermissionOption::new(
-                        "abort",
-                        "No, but continue without it",
-                        PermissionOptionKind::RejectOnce,
-                    ),
-                    PermissionOption::new(
-                        "cancel",
-                        "Cancel this request",
-                        PermissionOptionKind::RejectOnce,
-                    ),
-                ],
-            )
-            .await?;
+        if let Some(supported_request) = build_supported_mcp_elicitation_permission_request(
+            &server_name,
+            &id,
+            &request,
+            raw_input,
+        ) {
+            info!(
+                "Routing MCP tool approval elicitation through ACP permission request: server={}, id={:?}",
+                server_name, id
+            );
+            self.spawn_permission_request(
+                client,
+                supported_request.request_key,
+                PendingPermissionRequest::McpElicitation {
+                    server_name,
+                    request_id: id,
+                    option_map: supported_request.option_map,
+                },
+                supported_request.tool_call,
+                supported_request.options,
+            );
+            return Ok(());
+        }
 
-        let decision = match response.outcome {
-            RequestPermissionOutcome::Selected(SelectedPermissionOutcome { option_id, .. }) => {
-                match option_id.0.as_ref() {
-                    "approved" => ElicitationAction::Accept,
-                    "abort" => ElicitationAction::Decline,
-                    _ => ElicitationAction::Cancel,
-                }
-            }
-            RequestPermissionOutcome::Cancelled | _ => ElicitationAction::Cancel,
+        let request_kind = match &request {
+            ElicitationRequest::Form { .. } => "form",
+            ElicitationRequest::Url { .. } => "url",
         };
+
+        info!(
+            "Auto-declining unsupported MCP elicitation: server={}, id={:?}, kind={request_kind}",
+            server_name, id
+        );
 
         self.thread
             .submit(Op::ResolveElicitation {
                 server_name,
                 request_id: id,
-                decision,
+                decision: ElicitationAction::Decline,
                 content: None,
                 meta: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
-
-        client
-            .send_notification(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                tool_call_id,
-                ToolCallUpdateFields::new().status(if decision == ElicitationAction::Accept {
-                    ToolCallStatus::Completed
-                } else {
-                    ToolCallStatus::Failed
-                }),
-            )))
-            .await;
 
         Ok(())
     }
@@ -1745,10 +2095,10 @@ impl PromptState {
 
         self.spawn_permission_request(
             client,
-            call_id.clone(),
+            permissions_request_key(&call_id),
             PendingPermissionRequest::RequestPermissions {
                 call_id: call_id.clone(),
-                permissions,
+                permissions: permissions.into(),
             },
             ToolCallUpdate::new(
                 call_id,
@@ -1779,6 +2129,68 @@ impl PromptState {
         );
 
         Ok(())
+    }
+
+    async fn guardian_assessment(
+        &mut self,
+        client: &SessionClient,
+        event: GuardianAssessmentEvent,
+    ) {
+        let call_id = guardian_assessment_tool_call_id(&event.id);
+        let status = guardian_assessment_tool_call_status(&event.status);
+        let content = guardian_assessment_content(&event);
+        let raw_event = serde_json::json!(&event);
+
+        match event.status {
+            GuardianAssessmentStatus::InProgress => {
+                if self.active_guardian_assessments.insert(event.id.clone()) {
+                    client
+                        .send_tool_call(
+                            ToolCall::new(call_id, "Guardian Review")
+                                .kind(ToolKind::Think)
+                                .status(status)
+                                .content(content)
+                                .raw_input(raw_event),
+                        )
+                        .await;
+                } else {
+                    client
+                        .send_tool_call_update(ToolCallUpdate::new(
+                            call_id,
+                            ToolCallUpdateFields::new()
+                                .status(status)
+                                .content(content)
+                                .raw_output(raw_event),
+                        ))
+                        .await;
+                }
+            }
+            GuardianAssessmentStatus::Approved
+            | GuardianAssessmentStatus::Denied
+            | GuardianAssessmentStatus::Aborted => {
+                if self.active_guardian_assessments.remove(&event.id) {
+                    client
+                        .send_tool_call_update(ToolCallUpdate::new(
+                            call_id,
+                            ToolCallUpdateFields::new()
+                                .status(status)
+                                .content(content)
+                                .raw_output(raw_event),
+                        ))
+                        .await;
+                } else {
+                    client
+                        .send_tool_call(
+                            ToolCall::new(call_id, "Guardian Review")
+                                .kind(ToolKind::Think)
+                                .status(status)
+                                .content(content)
+                                .raw_input(raw_event),
+                        )
+                        .await;
+                }
+            }
+        }
     }
 
     async fn review_mode_exit(
@@ -1828,11 +2240,24 @@ impl PromptState {
             turn_id: _,
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
+        let request_key = patch_request_key(&call_id);
+        let options = vec![
+            PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
+            PermissionOption::new(
+                "abort",
+                "No, provide feedback",
+                PermissionOptionKind::RejectOnce,
+            ),
+        ];
         self.spawn_permission_request(
             client,
-            call_id.clone(),
+            request_key,
             PendingPermissionRequest::Patch {
                 call_id: call_id.clone(),
+                option_map: HashMap::from([
+                    ("approved".to_string(), ReviewDecision::Approved),
+                    ("abort".to_string(), ReviewDecision::Abort),
+                ]),
             },
             ToolCallUpdate::new(
                 call_id.clone(),
@@ -1844,19 +2269,7 @@ impl PromptState {
                     .content(content.chain(reason.map(|r| r.into())).collect::<Vec<_>>())
                     .raw_input(raw_input),
             ),
-            vec![
-                PermissionOption::new(
-                    "approved-for-session",
-                    "Always",
-                    PermissionOptionKind::AllowAlways,
-                ),
-                PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
-                PermissionOption::new(
-                    "abort",
-                    "No, provide feedback",
-                    PermissionOptionKind::RejectOnce,
-                ),
-            ],
+            options,
         );
         Ok(())
     }
@@ -2050,6 +2463,7 @@ impl PromptState {
         client: &SessionClient,
         event: ExecApprovalRequestEvent,
     ) -> Result<(), Error> {
+        let available_decisions = event.effective_available_decisions();
         let raw_input = serde_json::json!(&event);
         let ExecApprovalRequestEvent {
             call_id,
@@ -2062,7 +2476,7 @@ impl PromptState {
             approval_id,
             network_approval_context,
             additional_permissions,
-            available_decisions,
+            available_decisions: _,
             proposed_network_policy_amendments,
             ..
         } = event;
@@ -2092,37 +2506,32 @@ impl PromptState {
         if let Some(reason) = reason {
             content.push(reason);
         }
-        if let Some(amendment) = proposed_execpolicy_amendment {
+        if let Some(amendment) = proposed_execpolicy_amendment.as_ref() {
             content.push(format!(
                 "Proposed Amendment: {}",
                 amendment.command().join("\n")
             ));
         }
-        if let Some(policy) = network_approval_context {
+        if let Some(policy) = network_approval_context.as_ref() {
             let NetworkApprovalContext { host, protocol } = policy;
             content.push(format!("Network Approval Context: {:?} {}", protocol, host));
         }
-        if let Some(permissions) = additional_permissions {
+        if let Some(permissions) = additional_permissions.as_ref() {
             content.push(format!(
                 "Additional Permissions: {}",
                 serde_json::to_string_pretty(&permissions)?
             ));
         }
-        if let Some(decisions) = available_decisions {
-            content.push(format!(
-                "Available Decisions: {}",
-                decisions.into_iter().map(|d| d.to_string()).join("\n")
-            ));
-        }
-        if let Some(amendments) = proposed_network_policy_amendments {
+        content.push(format!(
+            "Available Decisions: {}",
+            available_decisions.iter().map(|d| d.to_string()).join("\n")
+        ));
+        if let Some(amendments) = proposed_network_policy_amendments.as_ref() {
             content.push(format!(
                 "Proposed Network Policy Amendments: {}",
                 amendments
-                    .into_iter()
-                    .map(|NetworkPolicyAmendment { host, action }| format!(
-                        "{:?} {:?}",
-                        action, host
-                    ))
+                    .iter()
+                    .map(|amendment| format!("{:?} {:?}", amendment.action, amendment.host))
                     .join("\n")
             ));
         }
@@ -2132,13 +2541,22 @@ impl PromptState {
         } else {
             Some(vec![content.join("\n").into()])
         };
+        let permission_options = build_exec_permission_options(
+            &available_decisions,
+            network_approval_context.as_ref(),
+            additional_permissions.as_ref(),
+        );
 
         self.spawn_permission_request(
             client,
-            call_id.clone(),
+            exec_request_key(&call_id),
             PendingPermissionRequest::Exec {
                 approval_id: approval_id.unwrap_or(call_id.clone()),
                 turn_id,
+                option_map: permission_options
+                    .iter()
+                    .map(|option| (option.option_id.to_string(), option.decision.clone()))
+                    .collect(),
             },
             ToolCallUpdate::new(
                 tool_call_id,
@@ -2154,19 +2572,10 @@ impl PromptState {
                         Some(locations)
                     }),
             ),
-            vec![
-                PermissionOption::new(
-                    "approved-for-session",
-                    "Always",
-                    PermissionOptionKind::AllowAlways,
-                ),
-                PermissionOption::new("approved", "Yes", PermissionOptionKind::AllowOnce),
-                PermissionOption::new(
-                    "abort",
-                    "No, provide feedback",
-                    PermissionOptionKind::RejectOnce,
-                ),
-            ],
+            permission_options
+                .into_iter()
+                .map(|option| option.permission_option)
+                .collect(),
         );
 
         Ok(())
@@ -2480,6 +2889,120 @@ impl PromptState {
     }
 }
 
+#[derive(Clone)]
+struct ExecPermissionOption {
+    option_id: &'static str,
+    permission_option: PermissionOption,
+    decision: ReviewDecision,
+}
+
+fn build_exec_permission_options(
+    available_decisions: &[ReviewDecision],
+    network_approval_context: Option<&NetworkApprovalContext>,
+    additional_permissions: Option<&PermissionProfile>,
+) -> Vec<ExecPermissionOption> {
+    available_decisions
+        .iter()
+        .map(|decision| match decision {
+            ReviewDecision::Approved => ExecPermissionOption {
+                option_id: "approved",
+                permission_option: PermissionOption::new(
+                    "approved",
+                    if network_approval_context.is_some() {
+                        "Yes, just this once"
+                    } else {
+                        "Yes, proceed"
+                    },
+                    PermissionOptionKind::AllowOnce,
+                ),
+                decision: ReviewDecision::Approved,
+            },
+            ReviewDecision::ApprovedExecpolicyAmendment {
+                proposed_execpolicy_amendment,
+            } => {
+                let command_prefix = proposed_execpolicy_amendment.command().join(" ");
+                let label = if command_prefix.contains('\n')
+                    || command_prefix.contains('\r')
+                    || command_prefix.is_empty()
+                {
+                    "Yes, and remember this command pattern".to_string()
+                } else {
+                    format!(
+                        "Yes, and don't ask again for commands that start with `{command_prefix}`"
+                    )
+                };
+                ExecPermissionOption {
+                    option_id: "approved-execpolicy-amendment",
+                    permission_option: PermissionOption::new(
+                        "approved-execpolicy-amendment",
+                        label,
+                        PermissionOptionKind::AllowAlways,
+                    ),
+                    decision: ReviewDecision::ApprovedExecpolicyAmendment {
+                        proposed_execpolicy_amendment: proposed_execpolicy_amendment.clone(),
+                    },
+                }
+            }
+            ReviewDecision::ApprovedForSession => ExecPermissionOption {
+                option_id: "approved-for-session",
+                permission_option: PermissionOption::new(
+                    "approved-for-session",
+                    if network_approval_context.is_some() {
+                        "Yes, and allow this host for this session"
+                    } else if additional_permissions.is_some() {
+                        "Yes, and allow these permissions for this session"
+                    } else {
+                        "Yes, and don't ask again for this command in this session"
+                    },
+                    PermissionOptionKind::AllowAlways,
+                ),
+                decision: ReviewDecision::ApprovedForSession,
+            },
+            ReviewDecision::NetworkPolicyAmendment {
+                network_policy_amendment,
+            } => {
+                let (option_id, label, kind) = match network_policy_amendment.action {
+                    NetworkPolicyRuleAction::Allow => (
+                        "network-policy-amendment-allow",
+                        "Yes, and allow this host in the future",
+                        PermissionOptionKind::AllowAlways,
+                    ),
+                    NetworkPolicyRuleAction::Deny => (
+                        "network-policy-amendment-deny",
+                        "No, and block this host in the future",
+                        PermissionOptionKind::RejectAlways,
+                    ),
+                };
+                ExecPermissionOption {
+                    option_id,
+                    permission_option: PermissionOption::new(option_id, label, kind),
+                    decision: ReviewDecision::NetworkPolicyAmendment {
+                        network_policy_amendment: network_policy_amendment.clone(),
+                    },
+                }
+            }
+            ReviewDecision::Denied => ExecPermissionOption {
+                option_id: "denied",
+                permission_option: PermissionOption::new(
+                    "denied",
+                    "No, continue without running it",
+                    PermissionOptionKind::RejectOnce,
+                ),
+                decision: ReviewDecision::Denied,
+            },
+            ReviewDecision::Abort => ExecPermissionOption {
+                option_id: "abort",
+                permission_option: PermissionOption::new(
+                    "abort",
+                    "No, and tell Codex what to do differently",
+                    PermissionOptionKind::RejectOnce,
+                ),
+                decision: ReviewDecision::Abort,
+            },
+        })
+        .collect()
+}
+
 struct ParseCommandToolCall {
     title: String,
     file_extension: Option<String>,
@@ -2784,17 +3307,20 @@ struct ThreadActor<A> {
     custom_prompts: Rc<RefCell<Vec<CustomPrompt>>>,
     /// The models available for this thread.
     models_manager: Arc<dyn ModelsManagerImpl>,
+    /// Internal sender used to route spawned interaction results back to the actor.
+    resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     /// A sender for each interested `Op` submission that needs events routed.
     submissions: HashMap<String, SubmissionState>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
-    /// Weak sender used to feed async results back without keeping the actor alive.
-    message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
+    /// A receiver for spawned interaction results.
+    resolution_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// Last config options state we emitted to the client, used for deduping updates.
     last_sent_config_options: Option<Vec<SessionConfigOption>>,
 }
 
 impl<A: Auth> ThreadActor<A> {
+    #[expect(clippy::too_many_arguments)]
     fn new(
         auth: A,
         client: SessionClient,
@@ -2802,7 +3328,8 @@ impl<A: Auth> ThreadActor<A> {
         models_manager: Arc<dyn ModelsManagerImpl>,
         config: Config,
         message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
-        message_tx: mpsc::WeakUnboundedSender<ThreadMessage>,
+        resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
+        resolution_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     ) -> Self {
         Self {
             auth,
@@ -2811,20 +3338,25 @@ impl<A: Auth> ThreadActor<A> {
             config,
             custom_prompts: Rc::default(),
             models_manager,
+            resolution_tx,
             submissions: HashMap::new(),
             message_rx,
-            message_tx,
+            resolution_rx,
             last_sent_config_options: None,
         }
     }
 
     async fn spawn(mut self) {
+        let mut message_rx_open = true;
         loop {
             tokio::select! {
                 biased;
-                message = self.message_rx.recv() => match message {
+                message = self.message_rx.recv(), if message_rx_open => match message {
                     Some(message) => self.handle_message(message).await,
-                    None => break,
+                    None => message_rx_open = false,
+                },
+                message = self.resolution_rx.recv() => if let Some(message) = message {
+                    self.handle_message(message).await
                 },
                 event = self.thread.next_event() => match event {
                     Ok(event) => self.handle_event(event).await,
@@ -2837,6 +3369,10 @@ impl<A: Auth> ThreadActor<A> {
             // Litter collection of senders with no receivers
             self.submissions
                 .retain(|_, submission| submission.is_active());
+
+            if !message_rx_open && self.submissions.is_empty() {
+                break;
+            }
         }
     }
 
@@ -2920,6 +3456,10 @@ impl<A: Auth> ThreadActor<A> {
                 let result = self.handle_cancel().await;
                 drop(response_tx.send(result));
             }
+            ThreadMessage::Shutdown { response_tx } => {
+                let result = self.handle_shutdown().await;
+                drop(response_tx.send(result));
+            }
             ThreadMessage::ReplayHistory {
                 history,
                 response_tx,
@@ -2929,19 +3469,22 @@ impl<A: Auth> ThreadActor<A> {
             }
             ThreadMessage::PermissionRequestResolved {
                 submission_id,
-                request_id,
-                outcome,
+                request_key,
+                response,
             } => {
-                if let Some(SubmissionState::Prompt(state)) =
-                    self.submissions.get_mut(&submission_id)
+                let Some(submission) = self.submissions.get_mut(&submission_id) else {
+                    warn!(
+                        "Ignoring permission response for unknown submission ID: {submission_id}"
+                    );
+                    return;
+                };
+
+                if let Err(err) = submission
+                    .handle_permission_request_resolved(&self.client, request_key, response)
+                    .await
                 {
-                    if let Err(err) = state
-                        .handle_permission_request_resolved(request_id, outcome)
-                        .await
-                        && let Some(response_tx) = state.response_tx.take()
-                    {
-                        drop(response_tx.send(Err(err)));
-                    }
+                    submission.abort_pending_interactions();
+                    submission.fail(err);
                 }
             }
         }
@@ -3453,9 +3996,9 @@ impl<A: Auth> ThreadActor<A> {
         info!("Starting to wait for conversation events for submission_id: {submission_id}");
 
         let state = SubmissionState::Prompt(PromptState::new(
-            self.thread.clone(),
-            self.message_tx.clone(),
             submission_id.clone(),
+            self.thread.clone(),
+            self.resolution_tx.clone(),
             response_tx,
         ));
 
@@ -3561,11 +4104,27 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_cancel(&mut self) -> Result<(), Error> {
+        self.abort_pending_interactions();
         self.thread
             .submit(Op::Interrupt)
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
         Ok(())
+    }
+
+    async fn handle_shutdown(&mut self) -> Result<(), Error> {
+        self.abort_pending_interactions();
+        self.thread
+            .submit(Op::Shutdown)
+            .await
+            .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+        Ok(())
+    }
+
+    fn abort_pending_interactions(&mut self) {
+        for submission in self.submissions.values_mut() {
+            submission.abort_pending_interactions();
+        }
     }
 
     /// Replay conversation history to the client via session/update notifications.
@@ -3598,9 +4157,7 @@ impl<A: Auth> ThreadActor<A> {
                 self.client.send_user_message(message.clone()).await;
             }
             EventMsg::AgentMessage(AgentMessageEvent {
-                message,
-                phase: _,
-                ..
+                message, phase: _, ..
             }) => {
                 self.client.send_agent_text(message.clone()).await;
             }
@@ -4435,7 +4992,9 @@ fn extract_tool_call_content_from_changes(
     };
     let locations = changes
         .iter()
-        .map(|(path, change)| ToolCallLocation::new(extract_tool_call_location_for_change(path, change)))
+        .map(|(path, change)| {
+            ToolCallLocation::new(extract_tool_call_location_for_change(path, change))
+        })
         .collect_vec();
     let content = changes
         .into_iter()
@@ -4454,7 +5013,10 @@ fn extract_tool_call_location_for_change(path: &Path, change: &FileChange) -> Pa
     }
 }
 
-fn extract_tool_call_content_from_change(path: PathBuf, change: FileChange) -> Vec<ToolCallContent> {
+fn extract_tool_call_content_from_change(
+    path: PathBuf,
+    change: FileChange,
+) -> Vec<ToolCallContent> {
     match change {
         FileChange::Add { content } => vec![ToolCallContent::Diff(with_neverwrite_diff_meta(
             Diff::new(path, content.clone()),
@@ -4495,6 +5057,131 @@ fn extract_tool_call_content_from_unified_diff(
         ))]
     } else {
         vec![ToolCallContent::Content(Content::new(unified_diff))]
+    }
+}
+
+fn guardian_assessment_tool_call_id(id: &str) -> String {
+    format!("guardian_assessment:{id}")
+}
+
+fn guardian_assessment_tool_call_status(status: &GuardianAssessmentStatus) -> ToolCallStatus {
+    match status {
+        GuardianAssessmentStatus::InProgress => ToolCallStatus::InProgress,
+        GuardianAssessmentStatus::Approved => ToolCallStatus::Completed,
+        GuardianAssessmentStatus::Denied | GuardianAssessmentStatus::Aborted => {
+            ToolCallStatus::Failed
+        }
+    }
+}
+
+fn guardian_assessment_content(event: &GuardianAssessmentEvent) -> Vec<ToolCallContent> {
+    let mut lines = vec![format!(
+        "Status: {}",
+        match event.status {
+            GuardianAssessmentStatus::InProgress => "In progress",
+            GuardianAssessmentStatus::Approved => "Approved",
+            GuardianAssessmentStatus::Denied => "Denied",
+            GuardianAssessmentStatus::Aborted => "Aborted",
+        }
+    )];
+
+    if let Some(summary) = event.action.as_ref().and_then(guardian_action_summary) {
+        lines.push(format!("Action: {summary}"));
+    }
+
+    match (event.risk_level, event.risk_score) {
+        (Some(level), Some(score)) => {
+            lines.push(format!(
+                "Risk: {} ({score}/100)",
+                format!("{level:?}").to_lowercase()
+            ));
+        }
+        (Some(level), None) => {
+            lines.push(format!("Risk: {}", format!("{level:?}").to_lowercase()));
+        }
+        (None, Some(score)) => lines.push(format!("Risk score: {score}/100")),
+        (None, None) => {}
+    }
+
+    if let Some(rationale) = event.rationale.as_ref()
+        && !rationale.trim().is_empty()
+    {
+        lines.push(format!("Rationale: {rationale}"));
+    }
+
+    let mut content = vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
+        TextContent::new(lines.join("\n")),
+    )))];
+
+    if let Some(action) = event.action.as_ref()
+        && guardian_action_summary(action).is_none()
+        && let Ok(action_json) = serde_json::to_string_pretty(action)
+    {
+        content.push(ToolCallContent::Content(Content::new(ContentBlock::Text(
+            TextContent::new(format!("Action payload:\n{action_json}")),
+        ))));
+    }
+
+    content
+}
+
+fn guardian_action_summary(action: &serde_json::Value) -> Option<String> {
+    let tool = action.get("tool").and_then(serde_json::Value::as_str)?;
+    match tool {
+        "shell" | "exec_command" => match action.get("command") {
+            Some(serde_json::Value::String(command)) => Some(command.clone()),
+            Some(serde_json::Value::Array(command)) => {
+                let args = command
+                    .iter()
+                    .map(serde_json::Value::as_str)
+                    .collect::<Option<Vec<_>>>()?;
+                shlex::try_join(args.iter().copied())
+                    .ok()
+                    .or_else(|| Some(args.join(" ")))
+            }
+            _ => None,
+        },
+        "apply_patch" => {
+            let files = action
+                .get("files")
+                .and_then(serde_json::Value::as_array)
+                .map(|files| {
+                    files
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let change_count = action
+                .get("change_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(files.len() as u64);
+            Some(if files.len() == 1 {
+                format!("apply_patch touching {}", files[0])
+            } else {
+                format!(
+                    "apply_patch touching {change_count} changes across {} files",
+                    files.len()
+                )
+            })
+        }
+        "network_access" => action
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| action.get("host").and_then(serde_json::Value::as_str))
+            .map(|target| format!("network access to {target}")),
+        "mcp_tool_call" => {
+            let tool_name = action
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str)?;
+            let label = action
+                .get("connector_name")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| action.get("server").and_then(serde_json::Value::as_str))
+                .unwrap_or("unknown server");
+            Some(format!("MCP {tool_name} on {label}"))
+        }
+        _ => None,
     }
 }
 
@@ -5112,15 +5799,14 @@ mod tests {
         let session_client =
             SessionClient::with_client(session_id.clone(), client.clone(), Arc::default());
         let thread = Arc::new(StubCodexThread::new());
-        let (message_tx, _message_rx) = mpsc::unbounded_channel();
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
         let (response_tx, _response_rx) = oneshot::channel();
-        let mut prompt_state =
-            PromptState::new(
-                thread,
-                message_tx.downgrade(),
-                "submission-1".to_string(),
-                response_tx,
-            );
+        let mut prompt_state = PromptState::new(
+            "submission-1".to_string(),
+            thread,
+            resolution_tx,
+            response_tx,
+        );
 
         prompt_state
             .handle_event(
@@ -5214,6 +5900,7 @@ mod tests {
         )
         .await?;
         let (message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (resolution_tx, resolution_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut actor = ThreadActor::new(
             StubAuth,
@@ -5222,7 +5909,8 @@ mod tests {
             models_manager,
             config,
             message_rx,
-            message_tx.downgrade(),
+            resolution_tx,
+            resolution_rx,
         );
         actor.custom_prompts = Rc::new(RefCell::new(custom_prompts));
 
