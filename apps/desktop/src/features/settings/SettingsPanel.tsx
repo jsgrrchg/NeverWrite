@@ -2418,6 +2418,12 @@ function AISettings() {
     const toggleRequireCmdEnterToSend = useChatStore(
         (s) => s.toggleRequireCmdEnterToSend,
     );
+    const contextUsageBarEnabled = useChatStore(
+        (s) => s.contextUsageBarEnabled,
+    );
+    const setContextUsageBarEnabled = useChatStore(
+        (s) => s.setContextUsageBarEnabled,
+    );
     const screenshotRetentionSeconds = useChatStore(
         (s) => s.screenshotRetentionSeconds,
     );
@@ -2507,6 +2513,16 @@ function AISettings() {
                     <Toggle
                         value={requireCmdEnterToSend}
                         onChange={() => toggleRequireCmdEnterToSend()}
+                    />
+                }
+            />
+            <Row
+                label="Show context usage bar"
+                description="Display a thin usage strip at the bottom of the composer to track context window consumption."
+                control={
+                    <Toggle
+                        value={contextUsageBarEnabled}
+                        onChange={setContextUsageBarEnabled}
                     />
                 }
             />

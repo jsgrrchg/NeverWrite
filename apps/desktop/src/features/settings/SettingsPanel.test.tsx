@@ -378,6 +378,28 @@ describe("SettingsPanel", () => {
         ).toBeInTheDocument();
     });
 
+    it("renders and persists the context usage bar toggle in AI settings", () => {
+        useChatStore.setState({
+            contextUsageBarEnabled: true,
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+
+        const label = screen.getByText("Show context usage bar");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        const toggle = within(row as HTMLElement).getByRole("switch");
+        expect(toggle).toHaveAttribute("aria-checked", "true");
+
+        fireEvent.click(toggle);
+
+        expect(useChatStore.getState().contextUsageBarEnabled).toBe(false);
+        expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+
     it("groups the font family selector and persists new bundled font options", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 

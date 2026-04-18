@@ -178,6 +178,7 @@ interface AiPreferences {
     configOptions?: Record<string, string>;
     autoContextEnabled?: boolean;
     requireCmdEnterToSend?: boolean;
+    contextUsageBarEnabled?: boolean;
     composerFontSize?: number;
     chatFontSize?: number;
     composerFontFamily?: EditorFontFamily;
@@ -189,6 +190,7 @@ interface AiPreferences {
 
 interface NormalizedAiPreferences {
     requireCmdEnterToSend: boolean;
+    contextUsageBarEnabled: boolean;
     composerFontSize: number;
     chatFontSize: number;
     composerFontFamily: EditorFontFamily;
@@ -200,6 +202,7 @@ interface NormalizedAiPreferences {
 
 const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     requireCmdEnterToSend: false,
+    contextUsageBarEnabled: true,
     composerFontSize: 14,
     chatFontSize: 14,
     composerFontFamily: "system",
@@ -253,6 +256,7 @@ function aiPrefsEqual(
     left: Pick<
         ChatStore,
         | "requireCmdEnterToSend"
+        | "contextUsageBarEnabled"
         | "composerFontSize"
         | "chatFontSize"
         | "composerFontFamily"
@@ -265,6 +269,7 @@ function aiPrefsEqual(
 ) {
     return (
         left.requireCmdEnterToSend === right.requireCmdEnterToSend &&
+        left.contextUsageBarEnabled === right.contextUsageBarEnabled &&
         left.composerFontSize === right.composerFontSize &&
         left.chatFontSize === right.chatFontSize &&
         left.composerFontFamily === right.composerFontFamily &&
@@ -340,6 +345,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
     const prefs = loadAiPreferences();
     return {
         requireCmdEnterToSend: prefs.requireCmdEnterToSend === true,
+        contextUsageBarEnabled: prefs.contextUsageBarEnabled !== false,
         composerFontSize: prefs.composerFontSize ?? 14,
         chatFontSize: prefs.chatFontSize ?? 14,
         composerFontFamily: normalizeEditorFontFamily(prefs.composerFontFamily),
@@ -1091,6 +1097,7 @@ interface ChatStore {
     historySelectedSessionId: string | null;
     autoContextEnabled: boolean;
     requireCmdEnterToSend: boolean;
+    contextUsageBarEnabled: boolean;
     composerFontSize: number;
     chatFontSize: number;
     composerFontFamily: EditorFontFamily;
@@ -1280,6 +1287,7 @@ interface ChatStore {
     clearAttachments: (sessionId?: string) => void;
     toggleAutoContext: () => void;
     toggleRequireCmdEnterToSend: () => void;
+    setContextUsageBarEnabled: (enabled: boolean) => void;
     setComposerFontSize: (size: number) => void;
     setChatFontSize: (size: number) => void;
     setComposerFontFamily: (fontFamily: EditorFontFamily) => void;
@@ -5783,6 +5791,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         historySelectedSessionId: null,
         autoContextEnabled: false,
         requireCmdEnterToSend: DEFAULT_AI_PREFERENCES.requireCmdEnterToSend,
+        contextUsageBarEnabled: DEFAULT_AI_PREFERENCES.contextUsageBarEnabled,
         composerFontSize: DEFAULT_AI_PREFERENCES.composerFontSize,
         chatFontSize: DEFAULT_AI_PREFERENCES.chatFontSize,
         composerFontFamily: DEFAULT_AI_PREFERENCES.composerFontFamily,
@@ -9812,6 +9821,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             saveAiPreferences({ requireCmdEnterToSend: next });
         },
 
+        setContextUsageBarEnabled: (enabled: boolean) => {
+            set({ contextUsageBarEnabled: enabled });
+            saveAiPreferences({ contextUsageBarEnabled: enabled });
+        },
+
         setComposerFontSize: (size: number) => {
             set({ composerFontSize: size });
             saveAiPreferences({ composerFontSize: size });
@@ -9961,6 +9975,7 @@ export function hydrateChatStorePreferences() {
             useVaultStore.getState().vaultPath,
         ),
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,
+        contextUsageBarEnabled: prefs.contextUsageBarEnabled,
         composerFontSize: prefs.composerFontSize,
         chatFontSize: prefs.chatFontSize,
         composerFontFamily: prefs.composerFontFamily,
@@ -9991,6 +10006,8 @@ export function initializeChatStoreRuntime() {
                         : {
                               requireCmdEnterToSend:
                                   prefs.requireCmdEnterToSend,
+                              contextUsageBarEnabled:
+                                  prefs.contextUsageBarEnabled,
                               composerFontSize: prefs.composerFontSize,
                               chatFontSize: prefs.chatFontSize,
                               composerFontFamily: prefs.composerFontFamily,
@@ -10065,6 +10082,7 @@ export function resetChatStore() {
             useVaultStore.getState().vaultPath,
         ),
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,
+        contextUsageBarEnabled: prefs.contextUsageBarEnabled,
         composerFontSize: prefs.composerFontSize,
         chatFontSize: prefs.chatFontSize,
         composerFontFamily: prefs.composerFontFamily,

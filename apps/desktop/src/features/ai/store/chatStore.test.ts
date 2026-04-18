@@ -642,6 +642,17 @@ describe("chatStore", () => {
         });
     });
 
+    it("persists the context usage bar preference", () => {
+        useChatStore.getState().setContextUsageBarEnabled(false);
+
+        expect(useChatStore.getState().contextUsageBarEnabled).toBe(false);
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({
+            contextUsageBarEnabled: false,
+        });
+    });
+
     it("coalesces rapid AI preference storage events and applies only the latest values", () => {
         vi.useFakeTimers();
 

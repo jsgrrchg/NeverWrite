@@ -144,6 +144,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
 
     // Settings
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
+    const contextUsageBarEnabled = useChatStore(
+        (s) => s.contextUsageBarEnabled,
+    );
     const composerFontSize = useChatStore((s) => s.composerFontSize);
     const composerFontFamily = useChatStore((s) => s.composerFontFamily);
     const chatFontSize = useChatStore((s) => s.chatFontSize);
@@ -538,10 +541,12 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         />
                     }
                     bottomAccent={
-                        <AIChatContextUsageBar
-                            usage={tokenUsage}
-                            cornerRadius={composerExpanded ? 9 : 11}
-                        />
+                        contextUsageBarEnabled ? (
+                            <AIChatContextUsageBar
+                                usage={tokenUsage}
+                                cornerRadius={composerExpanded ? 9 : 11}
+                            />
+                        ) : null
                     }
                     footer={
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
