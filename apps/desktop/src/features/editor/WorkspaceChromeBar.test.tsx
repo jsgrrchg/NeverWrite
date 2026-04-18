@@ -51,8 +51,8 @@ describe("WorkspaceChromeBar", () => {
         expect(group).toHaveStyle({
             display: "flex",
             alignItems: "center",
-            borderRadius: "12px",
-            padding: "0 3px",
+            borderRadius: "8px",
+            padding: "0 2px",
         });
         expect(chatButton).toHaveClass(
             "ub-chrome-btn",

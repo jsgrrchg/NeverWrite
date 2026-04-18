@@ -583,9 +583,11 @@ Object.defineProperty(Range.prototype, "getClientRects", {
 });
 
 let useEditorStore: typeof import("../app/store/editorStore").useEditorStore;
+let useLayoutStore: typeof import("../app/store/layoutStore").useLayoutStore;
 let useSettingsStore: typeof import("../app/store/settingsStore").useSettingsStore;
 let useThemeStore: typeof import("../app/store/themeStore").useThemeStore;
 let useVaultStore: typeof import("../app/store/vaultStore").useVaultStore;
+let useBookmarkStore: typeof import("../app/store/bookmarkStore").useBookmarkStore;
 let useCommandStore: typeof import("../features/command-palette/store/commandStore").useCommandStore;
 let resetChatStore: typeof import("../features/ai/store/chatStore").resetChatStore;
 let resetChatTabsStore: typeof import("../features/ai/store/chatTabsStore").resetChatTabsStore;
@@ -633,25 +635,20 @@ beforeEach(async () => {
     });
 
     ({ useEditorStore } = await import("../app/store/editorStore"));
+    ({ useLayoutStore } = await import("../app/store/layoutStore"));
     ({ useSettingsStore } = await import("../app/store/settingsStore"));
     ({ useThemeStore } = await import("../app/store/themeStore"));
     ({ useVaultStore } = await import("../app/store/vaultStore"));
+    ({ useBookmarkStore } = await import("../app/store/bookmarkStore"));
     ({ useCommandStore } =
         await import("../features/command-palette/store/commandStore"));
     ({ resetChatStore } = await import("../features/ai/store/chatStore"));
     ({ resetChatTabsStore } =
         await import("../features/ai/store/chatTabsStore"));
 
-    useEditorStore.setState({
-        tabs: [],
-        activeTabId: null,
-        recentlyClosedTabs: [],
-        activationHistory: [],
-        tabNavigationHistory: [],
-        tabNavigationIndex: -1,
-        pendingReveal: null,
-        pendingSelectionReveal: null,
-    });
+    useEditorStore.setState(useEditorStore.getInitialState(), true);
+    useLayoutStore.setState(useLayoutStore.getInitialState(), true);
+    useBookmarkStore.setState(useBookmarkStore.getInitialState(), true);
 
     useThemeStore.setState({
         mode: "system",
@@ -661,44 +658,8 @@ beforeEach(async () => {
 
     useSettingsStore.getState().reset();
 
-    useVaultStore.setState({
-        vaultPath: null,
-        notes: [],
-        entries: [],
-        vaultRevision: 0,
-        contentRevision: 0,
-        structureRevision: 0,
-        resolverRevision: 0,
-        graphRevision: 0,
-        tagsRevision: 0,
-        isLoading: false,
-        vaultOpenState: {
-            path: null,
-            stage: "idle",
-            message: "",
-            processed: 0,
-            total: 0,
-            note_count: 0,
-            snapshot_used: false,
-            cancelled: false,
-            started_at_ms: null,
-            finished_at_ms: null,
-            metrics: {
-                scan_ms: 0,
-                snapshot_load_ms: 0,
-                parse_ms: 0,
-                index_ms: 0,
-                snapshot_save_ms: 0,
-            },
-            error: null,
-        },
-        error: null,
-    });
-
-    useCommandStore.setState({
-        commands: new Map(),
-        activeModal: null,
-    });
+    useVaultStore.setState(useVaultStore.getInitialState(), true);
+    useCommandStore.setState(useCommandStore.getInitialState(), true);
 
     resetChatStore();
     resetChatTabsStore();

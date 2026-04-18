@@ -502,8 +502,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 });
                                             }}
                                             style={{
+                                                width: tabLayout.tabWidth,
+                                                minWidth: tabLayout.tabWidth,
                                                 maxWidth: 240,
                                                 height: 33,
+                                                flexShrink: 0,
                                                 boxSizing: "border-box",
                                                 gap: tabLayout.tabGap,
                                                 padding: `0 ${tabLayout.tabPaddingX}px`,

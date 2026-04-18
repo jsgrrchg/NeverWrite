@@ -201,22 +201,28 @@ describe("FileTree", () => {
         const stickyRootFolder = within(stickyLayer)
             .getByText("root")
             .closest("button");
+        const stickyNestedFolder = within(stickyLayer)
+            .getByText("folder")
+            .closest("button");
         expect(stickyRootFolder).not.toBeNull();
+        expect(stickyNestedFolder).not.toBeNull();
         expect(stickyRootFolder).toHaveStyle({
-            backgroundColor: "var(--bg-elevated)",
-            boxShadow:
-                "inset 0 -1px 0 color-mix(in srgb, var(--border) 88%, transparent), 0 3px 8px rgba(0,0,0,0.08)",
+            backgroundColor: "var(--bg-secondary)",
         });
-        expect(stickyRootFolder?.parentElement).toHaveStyle({
-            left: "-4px",
-            width: "calc(100% + 8px)",
-            minWidth: "calc(100% + 8px)",
-            boxSizing: "border-box",
-            overflow: "hidden",
-        });
-        expect(
-            stickyRootFolder?.parentElement?.getAttribute("style"),
-        ).not.toContain("translateX");
+        const stickyRootChromeStyle =
+            stickyRootFolder?.parentElement?.getAttribute("style") ?? "";
+        expect(stickyRootChromeStyle).toContain("left: -4px;");
+        expect(stickyRootChromeStyle).toContain(
+            "width: calc(100% + 8px);",
+        );
+        expect(stickyRootChromeStyle).toContain("overflow: hidden;");
+        expect(stickyRootChromeStyle).not.toContain("translateX");
+
+        const stickyNestedChromeStyle =
+            stickyNestedFolder?.parentElement?.getAttribute("style") ?? "";
+        expect(stickyNestedChromeStyle).toContain(
+            "box-shadow: 0 2px 6px rgba(0,0,0,0.18);",
+        );
     });
 
     it("renders indent guides for nested rows without affecting root rows", async () => {

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 export type EditorTabDensity = "comfortable" | "compact" | "tight" | "overflow";
 
@@ -176,6 +176,7 @@ export function useResponsiveEditorTabLayout({
     const [layout, setLayout] = useState<EditorTabLayout>(() =>
         buildFallbackLayout(),
     );
+    const hasMeasuredRef = useRef(false);
 
     useLayoutEffect(() => {
         if (freeze) {
@@ -189,11 +190,19 @@ export function useResponsiveEditorTabLayout({
 
         const measure = () => {
             setLayout((current) => {
+                const stripWidth = strip.clientWidth;
                 const next = resolveEditorTabLayout({
-                    stripWidth: strip.clientWidth,
+                    stripWidth,
                     tabCount,
-                    previousDensity: current.density,
+                    // Let the first real measurement derive its density from the
+                    // current width instead of inheriting the fallback layout.
+                    previousDensity: hasMeasuredRef.current
+                        ? current.density
+                        : undefined,
                 });
+                if (stripWidth > 0) {
+                    hasMeasuredRef.current = true;
+                }
                 return layoutsEqual(current, next) ? current : next;
             });
         };

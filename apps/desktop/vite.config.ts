@@ -69,15 +69,4 @@ export default defineConfig({
         port: 5173,
         strictPort: true,
     },
-    // Vitest consumes this block when the test toolchain is installed.
-    // The regular Vite runtime ignores it.
-    // @ts-expect-error Vitest augments Vite config with `test`.
-    test: {
-        environment: "jsdom",
-        globals: true,
-        setupFiles: "./src/test/setup.ts",
-        clearMocks: true,
-        restoreMocks: true,
-        css: true,
-    },
 });

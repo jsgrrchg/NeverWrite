@@ -132,14 +132,19 @@ describe("AIChatPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
         await waitFor(() => {
-            expect(newSession).toHaveBeenCalledWith("codex");
+            expect(newSession).toHaveBeenCalledWith(
+                "codex",
+                expect.stringMatching(/^pending:/),
+            );
+            const pendingSessionId = newSession.mock.calls[0]?.[1];
+            expect(pendingSessionId).toMatch(/^pending:/);
             expect(
                 useEditorStore
                     .getState()
                     .tabs.some(
                         (tab) =>
                             tab.kind === "ai-chat" &&
-                            tab.sessionId === "session-new",
+                            tab.sessionId === pendingSessionId,
                     ),
             ).toBe(true);
         });
