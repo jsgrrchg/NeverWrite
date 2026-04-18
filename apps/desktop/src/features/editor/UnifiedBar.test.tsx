@@ -679,6 +679,7 @@ describe("UnifiedBar tab strip drop", () => {
 
     it("opens the New Agent submenu and creates a chat for the selected provider", async () => {
         const user = userEvent.setup();
+        type NewSessionFn = ReturnType<typeof useChatStore.getState>["newSession"];
         setEditorTabs([
             {
                 id: "tab-a",
@@ -691,7 +692,7 @@ describe("UnifiedBar tab strip drop", () => {
         setVaultEntries([]);
         useChatStore.setState((state) => ({
             ...state,
-            newSession: vi.fn(async (runtimeId?: string) => {
+            newSession: vi.fn<NewSessionFn>(async (runtimeId) => {
                 const sessionId = `session-${runtimeId ?? "default"}`;
                 useChatStore.setState((current) => ({
                     ...current,
@@ -714,6 +715,7 @@ describe("UnifiedBar tab strip drop", () => {
                     sessionOrder: [sessionId, ...current.sessionOrder],
                     activeSessionId: sessionId,
                 }));
+                return sessionId;
             }),
         }));
 

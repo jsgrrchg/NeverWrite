@@ -1,6 +1,6 @@
 import { act, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
 import type { ReactNode } from "react";
@@ -195,7 +195,8 @@ describe("App web clipper routing", () => {
                 eventName as string,
                 handler as (event: { payload: unknown }) => void,
             );
-            return vi.fn();
+            const unlisten: UnlistenFn = () => {};
+            return unlisten;
         });
         vi.mocked(getCurrentWindow().listen).mockImplementation(
             async (eventName, handler) => {
@@ -203,7 +204,8 @@ describe("App web clipper routing", () => {
                     eventName as string,
                     handler as (event: { payload: unknown }) => void,
                 );
-                return vi.fn();
+                const unlisten: UnlistenFn = () => {};
+                return unlisten;
             },
         );
 

@@ -36,8 +36,8 @@ function renderComposer({
     availableCommands = [],
     isStopping = false,
     hasPendingSubmitAfterStop = false,
-    onSubmit = vi.fn(),
-    onStop = vi.fn(),
+    onSubmit = () => {},
+    onStop = () => {},
 }: {
     parts?: AIComposerPart[];
     status?: "idle" | "streaming";
@@ -48,8 +48,8 @@ function renderComposer({
     availableCommands?: AIAvailableCommand[];
     isStopping?: boolean;
     hasPendingSubmitAfterStop?: boolean;
-    onSubmit?: ReturnType<typeof vi.fn>;
-    onStop?: ReturnType<typeof vi.fn>;
+    onSubmit?: () => void;
+    onStop?: () => void;
 } = {}) {
     const onChange = vi.fn();
 

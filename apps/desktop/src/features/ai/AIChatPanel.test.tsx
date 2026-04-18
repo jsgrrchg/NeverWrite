@@ -95,7 +95,9 @@ describe("AIChatPanel", () => {
     });
 
     it("creates a new workspace chat from the sidebar launcher", async () => {
-        const newSession = vi.fn(async () => {
+        type NewSessionFn = ReturnType<typeof useChatStore.getState>["newSession"];
+        const newSession = vi.fn<NewSessionFn>(
+            async (_runtimeId, _provisionalSessionId) => {
             useChatStore.setState((state) => ({
                 ...state,
                 activeSessionId: "session-new",
@@ -105,7 +107,9 @@ describe("AIChatPanel", () => {
                 },
                 sessionOrder: ["session-new", ...state.sessionOrder],
             }));
-        });
+                return "session-new";
+            },
+        );
 
         useChatStore.setState((state) => ({
             ...state,
@@ -132,11 +136,10 @@ describe("AIChatPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
         await waitFor(() => {
-            expect(newSession).toHaveBeenCalledWith(
-                "codex",
-                expect.stringMatching(/^pending:/),
-            );
-            const pendingSessionId = newSession.mock.calls[0]?.[1];
+            const pendingSessionCall = newSession.mock.calls[0];
+            expect(pendingSessionCall).toBeDefined();
+            const [runtimeId, pendingSessionId] = pendingSessionCall!;
+            expect(runtimeId).toBe("codex");
             expect(pendingSessionId).toMatch(/^pending:/);
             expect(
                 useEditorStore

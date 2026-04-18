@@ -118,7 +118,8 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     );
     const isPendingSessionCreation = Boolean(session?.isPendingSessionCreation);
     const pendingSessionError = session?.pendingSessionError ?? null;
-    const displayedConnection = isPendingSessionCreation
+    const displayedConnection: AIRuntimeConnectionState =
+        isPendingSessionCreation
         ? {
               status: pendingSessionError ? "error" : "loading",
               message: pendingSessionError,
