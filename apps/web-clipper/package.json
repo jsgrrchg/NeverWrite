@@ -5,6 +5,9 @@
     "version": "0.1.0",
     "type": "module",
     "packageManager": "pnpm@10.33.0",
+    "engines": {
+        "node": ">=22"
+    },
     "scripts": {
         "dev": "wxt",
         "dev:firefox": "wxt -b firefox",
@@ -24,15 +27,15 @@
     "dependencies": {
         "defuddle": "^0.14.0",
         "dompurify": "^3.3.3",
-        "react": "^19.2.0",
-        "react-dom": "^19.2.0",
+        "react": "^19.2.5",
+        "react-dom": "^19.2.5",
         "react-markdown": "^10.1.0",
         "remark-gfm": "^4.0.1"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.2.2",
-        "@types/node": "^24.10.1",
         "@types/jsdom": "^21.1.7",
+        "@types/node": "^24.10.1",
         "@types/react": "^19.2.14",
         "@types/react-dom": "^19.2.3",
         "@wxt-dev/module-react": "^1.2.2",
@@ -40,6 +43,6 @@
         "tailwindcss": "^4.2.2",
         "typescript": "^5.9.3",
         "vitest": "^3.2.4",
-        "wxt": "^0.20.20"
+        "wxt": "^0.20.24"
     }
 }

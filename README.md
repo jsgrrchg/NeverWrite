@@ -118,9 +118,11 @@ Important: there is no top-level JavaScript workspace package. JavaScript depend
 ### Requirements
 
 - Rust and Cargo
-- Node.js and npm for `apps/desktop`
+- Node.js 22+ and npm for `apps/desktop` and JavaScript tooling
 - Pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
 - Standard Tauri prerequisites for your operating system
+
+CI and release workflows are pinned to Node.js 22, so local development should use Node 22 or newer.
 
 ### Desktop app
 

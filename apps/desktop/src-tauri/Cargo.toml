@@ -35,7 +35,7 @@ neverwrite-vault = { path = "../../../crates/vault" }
 neverwrite-index = { path = "../../../crates/index" }
 neverwrite-diff = { path = "../../../crates/diff" }
 neverwrite-ai = { path = "../../../crates/ai" }
-tauri-plugin-dialog = "2.6.0"
+tauri-plugin-dialog = "2.7.0"
 tauri-plugin-opener = "2"
 notify = "7"
 base64 = "0.22"
