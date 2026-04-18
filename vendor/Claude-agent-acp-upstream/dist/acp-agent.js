@@ -1224,7 +1224,7 @@ export class ClaudeAcpAgent {
             {
                 id: "auto",
                 name: "Auto",
-                description: "Use a model classifier to approve/deny permission prompts.",
+                description: "Use a model classifier to approve/deny permission prompts",
             },
             {
                 id: "default",
@@ -1326,12 +1326,15 @@ function totalTokens(usage) {
 /** Project a nullable API usage object into our non-null snapshot shape.
  *  Both SDK message_start and assistant message `usage` have `number | null`
  *  cache fields; we coerce absent values to 0 so `totalTokens` never hits
- *  NaN. Delta events have different semantics (cumulative + prev fallback)
- *  and are handled inline. */
+ *  NaN. `input_tokens`/`output_tokens` are typed `number` by the SDK but
+ *  synthetic or third-party-backend stream events have been observed emitting
+ *  them as null/undefined so a malformed upstream event cannot leak NaN into
+ *  the wire `used` field. Delta events have different semantics (cumulative +
+ *  prev fallback) and are handled inline. */
 function snapshotFromUsage(usage) {
     return {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
+        input_tokens: usage.input_tokens ?? 0,
+        output_tokens: usage.output_tokens ?? 0,
         cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
     };
