@@ -378,24 +378,18 @@ fn build_update_status(
     updater_config: &UpdaterRuntimeConfig,
     update: Option<AvailableUpdateDto>,
 ) -> AppUpdateStatusDto {
-    let message = if updater_config.pubkey.is_none() {
-        Some(
-            "Updater public key is not configured. Set NEVERWRITE_UPDATER_PUBLIC_KEY before checking for updates."
-                .to_string(),
-        )
-    } else if let Some(error) = updater_config.endpoint_error.as_ref() {
-        Some(error.clone())
-    } else if updater_config.endpoint.is_none() {
-        Some(
-            "Updater endpoint is not configured. Set NEVERWRITE_UPDATER_ENDPOINT or NEVERWRITE_UPDATER_BASE_URL."
-                .to_string(),
-        )
-    } else {
-        None
-    };
+    // Only surface runtime validation errors to the UI. Missing pubkey / endpoint
+    // means the build was packaged without updater support — that's a build-time
+    // concern, not something the end user can act on, so we leave `message` empty
+    // and let the frontend render a neutral "not available" state.
+    let message = updater_config.endpoint_error.clone();
+
+    let fully_configured = updater_config.pubkey.is_some()
+        && updater_config.endpoint.is_some()
+        && message.is_none();
 
     AppUpdateStatusDto {
-        enabled: message.is_none(),
+        enabled: fully_configured,
         current_version: app.package_info().version.to_string(),
         channel: updater_config.channel.clone(),
         endpoint: updater_config.endpoint_display.clone(),

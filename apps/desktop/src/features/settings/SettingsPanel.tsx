@@ -1864,6 +1864,18 @@ function VaultSettings() {
     );
 }
 
+type UpdateStateKind =
+    | "not-configured"
+    | "idle"
+    | "checking"
+    | "available"
+    | "downloading"
+    | "up-to-date"
+    | "error";
+
+const MONO_FONT_STACK =
+    'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
+
 function UpdatesSettings() {
     const status = useAppUpdateStore((state) => state.status);
     const loading = useAppUpdateStore((state) => state.loading);
@@ -1916,171 +1928,142 @@ function UpdatesSettings() {
         };
     }, []);
 
-    const effectiveError = error ?? status?.message ?? null;
-    const updaterStateLabel = loading
-        ? "Loading"
-        : installing
-          ? "Installing"
-          : status?.update
-            ? "Update available"
-            : status?.enabled
-              ? "Ready"
-              : "Not configured";
-    const lastCheckedLabel =
-        lastCheckedAt == null
-            ? "Never"
-            : formatUpdateDate(new Date(lastCheckedAt).toISOString());
     const anyBusy = loading || checking || installing;
+    const effectiveError = error ?? null;
+    const updaterConfigured = Boolean(status?.enabled);
+    const stateKind = resolveUpdateStateKind({
+        checking,
+        installing,
+        hasUpdate: Boolean(status?.update),
+        hasChecked,
+        hasError: Boolean(effectiveError),
+        configured: updaterConfigured,
+    });
+    const currentVersionLabel = formatVersionPillLabel(
+        status?.currentVersion ?? "",
+    );
+    const lastCheckedLabel = formatLastCheckedLabel(lastCheckedAt);
+    const canInstallUpdate = Boolean(status?.update) && !anyBusy;
+    const canCheckForUpdates = updaterConfigured && !anyBusy;
     const showConfirmInstall =
         confirmInstall && sensitiveState.requiresConfirmation;
 
+    const triggerInstall = () => {
+        void (async () => {
+            const nextSensitiveState = await readSettledSensitiveUpdateState();
+            setSensitiveState(nextSensitiveState);
+            if (nextSensitiveState.requiresConfirmation && !showConfirmInstall) {
+                setConfirmInstall(true);
+                return;
+            }
+            await installAvailableUpdate().catch(() => {});
+        })();
+    };
+
+    const primaryAction = status?.update
+        ? {
+              label: installing
+                  ? "installing..."
+                  : checking
+                    ? "checking..."
+                    : "download and install",
+              active: true,
+              disabled: !canInstallUpdate,
+              onClick: triggerInstall,
+          }
+        : {
+              label: getCheckForUpdatesLabel({ checking, installing }),
+              active: false,
+              disabled: !canCheckForUpdates,
+              onClick: () => {
+                  setConfirmInstall(false);
+                  void checkNow();
+              },
+          };
+
+    const statusDescription = resolveStatusDescription({
+        configured: updaterConfigured,
+        message: status?.message ?? null,
+        error: effectiveError,
+        hasChecked,
+        stateKind,
+    });
+
     return (
         <div>
-            <SectionLabel>Release feed</SectionLabel>
+            <SectionLabel>Version</SectionLabel>
             <Row
                 label="Current version"
+                description={`You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`}
                 control={
-                    <span
+                    <div
                         style={{
-                            fontSize: 12,
-                            color: "var(--text-secondary)",
-                            fontVariantNumeric: "tabular-nums",
+                            alignItems: "center",
+                            display: "flex",
+                            gap: 8,
                         }}
                     >
-                        {status?.currentVersion ?? "..."}
-                    </span>
+                        <VersionPill label={currentVersionLabel} />
+                        <UpdaterActionButton
+                            active={primaryAction.active}
+                            disabled={primaryAction.disabled}
+                            onClick={primaryAction.onClick}
+                        >
+                            {primaryAction.label}
+                        </UpdaterActionButton>
+                    </div>
                 }
             />
             <Row
                 label="Channel"
-                control={
-                    <span
-                        style={{
-                            fontSize: 12,
-                            color: "var(--text-secondary)",
-                            textTransform: "lowercase",
-                        }}
-                    >
-                        {status?.channel ?? "stable"}
-                    </span>
-                }
+                description="Release track used when querying the update feed."
+                control={<VersionPill label={status?.channel ?? "stable"} />}
             />
             <Row
-                label="Status"
+                label="Automatic updates"
                 description={
-                    !status?.enabled && !status?.endpoint
-                        ? "Set NEVERWRITE_UPDATER_BASE_URL to enable."
-                        : undefined
+                    updaterConfigured
+                        ? "Enabled. Updates are fetched from the release feed and applied after restart."
+                        : "Not available in this build."
                 }
                 control={
-                    <span
-                        style={{
-                            fontSize: 12,
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        {updaterStateLabel}
-                    </span>
+                    <Toggle
+                        disabled
+                        value={updaterConfigured}
+                        onChange={() => {}}
+                    />
                 }
             />
             <Row
-                label="Last check"
+                label="Update status"
+                description={statusDescription}
                 control={
-                    <span
+                    <div
                         style={{
-                            fontSize: 12,
-                            color: "var(--text-secondary)",
-                            fontVariantNumeric: "tabular-nums",
+                            alignItems: "center",
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 8,
+                            justifyContent: "flex-end",
                         }}
                     >
-                        {lastCheckedLabel}
-                    </span>
+                        <UpdateStatusBadge kind={stateKind} />
+                        {status?.update ? (
+                            <span
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    fontFamily: MONO_FONT_STACK,
+                                    fontSize: 10,
+                                }}
+                            >
+                                {`target ${formatVersionPillLabel(status.update.version)}`}
+                            </span>
+                        ) : null}
+                    </div>
                 }
             />
 
-            <div
-                style={{
-                    paddingTop: 12,
-                    display: "flex",
-                    gap: 8,
-                    flexWrap: "wrap",
-                }}
-            >
-                <button
-                    type="button"
-                    disabled={anyBusy}
-                    onClick={() => {
-                        setConfirmInstall(false);
-                        void checkNow();
-                    }}
-                    style={{
-                        borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        backgroundColor: "var(--bg-tertiary)",
-                        color: "var(--text-primary)",
-                        padding: "6px 10px",
-                        fontSize: 12,
-                        fontFamily: "inherit",
-                        cursor: anyBusy ? "not-allowed" : "pointer",
-                        opacity: anyBusy ? 0.5 : 1,
-                    }}
-                >
-                    {checking ? "Checking..." : "Check for updates"}
-                </button>
-                {status?.update ? (
-                    <button
-                        type="button"
-                        disabled={anyBusy}
-                        onClick={() => {
-                            void (async () => {
-                                const nextSensitiveState =
-                                    await readSettledSensitiveUpdateState();
-                                setSensitiveState(nextSensitiveState);
-                                if (
-                                    nextSensitiveState.requiresConfirmation &&
-                                    !showConfirmInstall
-                                ) {
-                                    setConfirmInstall(true);
-                                    return;
-                                }
-                                await installAvailableUpdate().catch(() => {});
-                            })();
-                        }}
-                        style={{
-                            borderRadius: 6,
-                            border: "1px solid var(--border)",
-                            backgroundColor: "var(--bg-tertiary)",
-                            color: "var(--text-primary)",
-                            padding: "6px 10px",
-                            fontSize: 12,
-                            fontFamily: "inherit",
-                            cursor: anyBusy ? "not-allowed" : "pointer",
-                            opacity: anyBusy ? 0.5 : 1,
-                        }}
-                    >
-                        {installing ? "Installing..." : "Download and install"}
-                    </button>
-                ) : null}
-            </div>
-
-            {effectiveError ? (
-                <div
-                    style={{
-                        marginTop: 12,
-                        padding: "8px 10px",
-                        borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg-secondary)",
-                        color: "var(--text-secondary)",
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                    }}
-                >
-                    {effectiveError}
-                </div>
-            ) : null}
-
-            {status?.update && showConfirmInstall ? (
+            {showConfirmInstall ? (
                 <div
                     style={{
                         marginTop: 12,
@@ -2123,8 +2106,8 @@ function UpdatesSettings() {
                             gap: 8,
                         }}
                     >
-                        <button
-                            type="button"
+                        <UpdaterActionButton
+                            active
                             disabled={installing}
                             onClick={() => {
                                 void (async () => {
@@ -2136,38 +2119,16 @@ function UpdatesSettings() {
                                     );
                                 })();
                             }}
-                            style={{
-                                borderRadius: 6,
-                                border: "1px solid var(--border)",
-                                backgroundColor: "var(--bg-tertiary)",
-                                color: "var(--text-primary)",
-                                padding: "6px 10px",
-                                fontSize: 12,
-                                fontFamily: "inherit",
-                                cursor: installing ? "not-allowed" : "pointer",
-                                opacity: installing ? 0.5 : 1,
-                            }}
                         >
-                            {installing ? "Installing..." : "Install anyway"}
-                        </button>
-                        <button
-                            type="button"
+                            {installing ? "installing..." : "install anyway"}
+                        </UpdaterActionButton>
+                        <UpdaterActionButton
+                            active={false}
                             disabled={installing}
                             onClick={() => setConfirmInstall(false)}
-                            style={{
-                                borderRadius: 6,
-                                border: "1px solid var(--border)",
-                                backgroundColor: "transparent",
-                                color: "var(--text-secondary)",
-                                padding: "6px 10px",
-                                fontSize: 12,
-                                fontFamily: "inherit",
-                                cursor: installing ? "not-allowed" : "pointer",
-                                opacity: installing ? 0.5 : 1,
-                            }}
                         >
-                            Cancel
-                        </button>
+                            cancel
+                        </UpdaterActionButton>
                     </div>
                 </div>
             ) : null}
@@ -2178,15 +2139,11 @@ function UpdatesSettings() {
                     <Row
                         label="Version"
                         control={
-                            <span
-                                style={{
-                                    fontSize: 12,
-                                    color: "var(--text-secondary)",
-                                    fontVariantNumeric: "tabular-nums",
-                                }}
-                            >
-                                {status.update.version}
-                            </span>
+                            <VersionPill
+                                label={formatVersionPillLabel(
+                                    status.update.version,
+                                )}
+                            />
                         }
                     />
                     <Row
@@ -2196,6 +2153,7 @@ function UpdatesSettings() {
                                 style={{
                                     fontSize: 12,
                                     color: "var(--text-secondary)",
+                                    fontVariantNumeric: "tabular-nums",
                                 }}
                             >
                                 {formatUpdateDate(status.update.date)}
@@ -2228,31 +2186,246 @@ function UpdatesSettings() {
                         </div>
                     ) : null}
                 </>
-            ) : hasChecked && !effectiveError ? (
-                <div
-                    style={{
-                        paddingTop: 16,
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
-                        lineHeight: 1.5,
-                    }}
-                >
-                    You're up to date.
-                </div>
-            ) : !hasChecked && !effectiveError ? (
-                <div
-                    style={{
-                        paddingTop: 16,
-                        fontSize: 12,
-                        color: "var(--text-secondary)",
-                        lineHeight: 1.5,
-                    }}
-                >
-                    Check manually to see if a new version is available.
-                </div>
             ) : null}
         </div>
     );
+}
+
+function VersionPill({ label }: { label: string }) {
+    return (
+        <span
+            style={{
+                backgroundColor:
+                    "color-mix(in srgb, var(--accent) 14%, transparent)",
+                borderRadius: 4,
+                color: "var(--accent)",
+                fontFamily: MONO_FONT_STACK,
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                padding: "2px 6px",
+                textTransform: "uppercase",
+            }}
+        >
+            {label}
+        </span>
+    );
+}
+
+function UpdateStatusBadge({ kind }: { kind: UpdateStateKind }) {
+    const { backgroundColor, color, label } = getUpdateStatusPresentation(kind);
+    return (
+        <span
+            style={{
+                backgroundColor,
+                borderRadius: 4,
+                color,
+                fontFamily: MONO_FONT_STACK,
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                padding: "2px 6px",
+                textTransform: "uppercase",
+            }}
+        >
+            {label}
+        </span>
+    );
+}
+
+function UpdaterActionButton({
+    children,
+    active,
+    disabled,
+    onClick,
+}: {
+    children: string;
+    active: boolean;
+    disabled?: boolean;
+    onClick: () => void;
+}) {
+    return (
+        <button
+            type="button"
+            disabled={disabled}
+            onClick={onClick}
+            style={{
+                backgroundColor: active
+                    ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+                    : "var(--bg-tertiary)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                color: active ? "var(--accent)" : "var(--text-primary)",
+                cursor: disabled ? "not-allowed" : "pointer",
+                fontFamily: "inherit",
+                fontSize: 12,
+                opacity: disabled ? 0.5 : 1,
+                padding: "5px 10px",
+                whiteSpace: "nowrap",
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
+function resolveUpdateStateKind({
+    checking,
+    installing,
+    hasUpdate,
+    hasChecked,
+    hasError,
+    configured,
+}: {
+    checking: boolean;
+    installing: boolean;
+    hasUpdate: boolean;
+    hasChecked: boolean;
+    hasError: boolean;
+    configured: boolean;
+}): UpdateStateKind {
+    if (hasError) return "error";
+    if (!configured) return "not-configured";
+    if (installing) return "downloading";
+    if (checking) return "checking";
+    if (hasUpdate) return "available";
+    if (hasChecked) return "up-to-date";
+    return "idle";
+}
+
+function getUpdateStatusPresentation(kind: UpdateStateKind): {
+    backgroundColor: string;
+    color: string;
+    label: string;
+} {
+    switch (kind) {
+        case "checking":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--accent) 12%, transparent)",
+                color: "var(--accent)",
+                label: "Checking",
+            };
+        case "available":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--accent) 14%, transparent)",
+                color: "var(--accent)",
+                label: "Available",
+            };
+        case "downloading":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--accent) 14%, transparent)",
+                color: "var(--accent)",
+                label: "Installing",
+            };
+        case "up-to-date":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--text-secondary) 12%, transparent)",
+                color: "var(--text-secondary)",
+                label: "Up to date",
+            };
+        case "error":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, #ef4444 14%, transparent)",
+                color: "#ef4444",
+                label: "Error",
+            };
+        case "not-configured":
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
+                color: "var(--text-secondary)",
+                label: "Not configured",
+            };
+        case "idle":
+        default:
+            return {
+                backgroundColor:
+                    "color-mix(in srgb, var(--accent) 10%, transparent)",
+                color: "var(--accent)",
+                label: "Idle",
+            };
+    }
+}
+
+function getCheckForUpdatesLabel({
+    checking,
+    installing,
+}: {
+    checking: boolean;
+    installing: boolean;
+}): string {
+    if (installing) return "installing...";
+    if (checking) return "checking...";
+    return "check for updates";
+}
+
+function formatVersionPillLabel(version: string): string {
+    const normalized = version.trim();
+    return normalized.length > 0 ? `v${normalized}` : "unknown";
+}
+
+function formatLastCheckedLabel(lastCheckedAt: number | null): string {
+    if (lastCheckedAt == null) return "never";
+
+    const diffMs = Date.now() - lastCheckedAt;
+    if (diffMs < 60_000) return "just now";
+
+    const diffMinutes = Math.floor(diffMs / 60_000);
+    if (diffMinutes < 60) return `${diffMinutes} min ago`;
+
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours} hr ago`;
+
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) {
+        return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+    }).format(new Date(lastCheckedAt));
+}
+
+function resolveStatusDescription({
+    configured,
+    message,
+    error,
+    hasChecked,
+    stateKind,
+}: {
+    configured: boolean;
+    message: string | null;
+    error: string | null;
+    hasChecked: boolean;
+    stateKind: UpdateStateKind;
+}): string {
+    if (error) return error;
+    if (message) return message;
+    if (!configured) {
+        return "Automatic updates are not available in this build.";
+    }
+    switch (stateKind) {
+        case "available":
+            return "A new version is ready to download.";
+        case "downloading":
+            return "Installing the latest release.";
+        case "checking":
+            return "Contacting the release feed...";
+        case "up-to-date":
+            return "You're running the latest release.";
+        case "idle":
+        default:
+            return hasChecked
+                ? "Waiting for the next manual check."
+                : "Check manually to see if a new version is available.";
+    }
 }
 
 function DevelopersSettings() {
