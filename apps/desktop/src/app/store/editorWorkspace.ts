@@ -156,10 +156,19 @@ export interface EditorWorkspaceActions {
     closeReview: (sessionId: string) => void;
     openChat: (
         sessionId: string,
-        options?: { background?: boolean; title?: string; paneId?: string },
+        options?: {
+            background?: boolean;
+            title?: string;
+            paneId?: string;
+            historySessionId?: string | null;
+        },
     ) => void;
     closeChat: (sessionId: string) => void;
-    replaceAiSessionId: (fromSessionId: string, toSessionId: string) => void;
+    replaceAiSessionId: (
+        fromSessionId: string,
+        toSessionId: string,
+        historySessionId?: string | null,
+    ) => void;
     goBack: () => void;
     goForward: () => void;
     navigateToHistoryIndex: (index: number) => void;
@@ -778,14 +787,34 @@ function replaceAiSessionTabReference(
     tab: Tab,
     fromSessionId: string,
     toSessionId: string,
+    historySessionId?: string | null,
 ) {
-    if (
-        (isChatTab(tab) || isReviewTab(tab)) &&
-        tab.sessionId === fromSessionId
-    ) {
+    if (isReviewTab(tab) && tab.sessionId === fromSessionId) {
+        if (toSessionId === fromSessionId) {
+            return tab;
+        }
+
         return {
             ...tab,
             sessionId: toSessionId,
+        };
+    }
+
+    if (isChatTab(tab) && tab.sessionId === fromSessionId) {
+        const nextHistorySessionId = historySessionId ?? tab.historySessionId;
+        if (
+            toSessionId === fromSessionId &&
+            nextHistorySessionId === tab.historySessionId
+        ) {
+            return tab;
+        }
+
+        return {
+            ...tab,
+            sessionId: toSessionId,
+            ...(nextHistorySessionId
+                ? { historySessionId: nextHistorySessionId }
+                : {}),
         };
     }
 
@@ -2179,27 +2208,56 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         openChat: (sessionId, options) => {
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
+                const requestedHistorySessionId =
+                    options?.historySessionId ?? null;
 
                 const existingPane = workspace.panes.find((pane) =>
                     pane.tabs.some(
-                        (tab) => isChatTab(tab) && tab.sessionId === sessionId,
+                        (tab) =>
+                            isChatTab(tab) &&
+                            (tab.sessionId === sessionId ||
+                                (!!requestedHistorySessionId &&
+                                    tab.historySessionId ===
+                                        requestedHistorySessionId)),
                     ),
                 );
                 const existing =
                     existingPane?.tabs.find(
                         (tab): tab is ChatTab =>
-                            isChatTab(tab) && tab.sessionId === sessionId,
+                            isChatTab(tab) &&
+                            (tab.sessionId === sessionId ||
+                                (!!requestedHistorySessionId &&
+                                    tab.historySessionId ===
+                                        requestedHistorySessionId)),
                     ) ?? null;
                 if (existingPane && existing) {
                     const nextTitle = options?.title ?? existing.title;
+                    const nextHistorySessionId =
+                        requestedHistorySessionId ?? existing.historySessionId;
+                    const nextTab =
+                        nextTitle === existing.title &&
+                        existing.sessionId === sessionId &&
+                        existing.historySessionId === nextHistorySessionId
+                            ? existing
+                            : {
+                                  ...existing,
+                                  title: nextTitle,
+                                  sessionId,
+                                  ...(nextHistorySessionId
+                                      ? {
+                                            historySessionId:
+                                                nextHistorySessionId,
+                                        }
+                                      : {}),
+                              };
                     const nextPane =
-                        nextTitle === existing.title
+                        nextTab === existing
                             ? existingPane
                             : createEditorPaneState(existingPane.id, {
                                   ...existingPane,
                                   tabs: existingPane.tabs.map((tab) =>
                                       tab.id === existing.id
-                                          ? { ...tab, title: nextTitle }
+                                          ? nextTab
                                           : tab,
                                   ),
                               });
@@ -2241,6 +2299,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 const newTab: ChatTab = createChatTab(
                     sessionId,
                     options?.title ?? "Chat",
+                    requestedHistorySessionId,
                 );
 
                 const targetPaneId =
@@ -2289,11 +2348,11 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             if (tab) get().closeTab(tab.id);
         },
 
-        replaceAiSessionId: (fromSessionId, toSessionId) => {
+        replaceAiSessionId: (fromSessionId, toSessionId, historySessionId) => {
             if (
                 !fromSessionId ||
                 !toSessionId ||
-                fromSessionId === toSessionId
+                (fromSessionId === toSessionId && !historySessionId)
             ) {
                 return;
             }
@@ -2308,6 +2367,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                             tab,
                             fromSessionId,
                             toSessionId,
+                            historySessionId,
                         );
                         if (nextTab !== tab) {
                             paneChanged = true;
@@ -2333,6 +2393,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                             entry.tab,
                             fromSessionId,
                             toSessionId,
+                            historySessionId,
                         );
                         if (nextTab === entry.tab) {
                             return entry;

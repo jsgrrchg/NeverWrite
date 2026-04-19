@@ -235,6 +235,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         stripRef: tabStripRef,
         tabCount: visualTabs.length,
         freeze: draggingTabId !== null,
+        sizingMode: "fixed",
     });
     const draggedPreviewTab =
         dragPreviewTabId === null

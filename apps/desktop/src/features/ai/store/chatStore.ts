@@ -2102,7 +2102,11 @@ function migrateSessionLocalState(
         );
     useEditorStore
         .getState()
-        .replaceAiSessionId(fromSessionId, toSession.sessionId);
+        .replaceAiSessionId(
+            fromSessionId,
+            toSession.sessionId,
+            toSession.historySessionId,
+        );
     registerOpenEditorBaselines(toSession.sessionId);
 
     return true;
@@ -6077,17 +6081,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const sessionIdsNeedingCatalog = new Set<string>();
             const vaultPath = useVaultStore.getState().vaultPath;
+            const resolvedSessionIdByTabId = new Map<string, string>();
 
             set((state) => {
                 const nextSessionsById = { ...state.sessionsById };
                 const changedSessions: AIChatSession[] = [];
+                const sessionIdByHistoryId = new Map(
+                    Object.values(nextSessionsById).flatMap((session) =>
+                        session.historySessionId
+                            ? [
+                                  [
+                                      session.historySessionId,
+                                      session.sessionId,
+                                  ] as const,
+                              ]
+                            : [],
+                    ),
+                );
 
                 for (const tab of tabs) {
                     if (!tab.sessionId || !tab.historySessionId) {
                         continue;
                     }
 
-                    const currentSession = nextSessionsById[tab.sessionId];
+                    const resolvedSessionId =
+                        nextSessionsById[tab.sessionId]?.sessionId ??
+                        sessionIdByHistoryId.get(tab.historySessionId) ??
+                        tab.sessionId;
+                    resolvedSessionIdByTabId.set(tab.id, resolvedSessionId);
+
+                    const currentSession = nextSessionsById[resolvedSessionId];
                     if (!currentSession) {
                         continue;
                     }
@@ -6120,14 +6143,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     }
 
                     if (!sessionHasAgentCatalog(nextSession)) {
-                        sessionIdsNeedingCatalog.add(tab.sessionId);
+                        sessionIdsNeedingCatalog.add(nextSession.sessionId);
                     }
 
                     if (nextSession === currentSession) {
                         continue;
                     }
 
-                    nextSessionsById[tab.sessionId] = nextSession;
+                    nextSessionsById[nextSession.sessionId] = nextSession;
                     changedSessions.push(nextSession);
                 }
 
@@ -6149,7 +6172,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             const activeSessionId = activeTabId
-                ? (tabs.find((tab) => tab.id === activeTabId)?.sessionId ??
+                ? (resolvedSessionIdByTabId.get(activeTabId) ??
+                  tabs.find((tab) => tab.id === activeTabId)?.sessionId ??
                   null)
                 : null;
             if (!activeSessionId) {
@@ -9663,6 +9687,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     title: activeSession
                         ? getSessionTitle(activeSession)
                         : "Chat",
+                    historySessionId: activeSession?.historySessionId ?? null,
                 });
                 appendSelectionToSession(activeSessionId);
                 return;
@@ -9686,6 +9711,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     title: createdSession
                         ? getSessionTitle(createdSession)
                         : "Chat",
+                    historySessionId:
+                        createdSession?.historySessionId ?? null,
                 });
                 appendSelectionToSession(createdSessionId);
             })();
@@ -9935,6 +9962,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
                 useEditorStore.getState().openChat(forkedSessionId, {
                     title: forkedTitle,
+                    historySessionId: newHistoryId,
                 });
             } catch (error) {
                 logError("chat-store", "Failed to fork session", error);

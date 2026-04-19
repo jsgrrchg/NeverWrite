@@ -97,6 +97,7 @@ export function openChatSessionInWorkspace(
         title: session ? getSessionTitle(session) : "Chat",
         paneId: options?.paneId,
         background: options?.background,
+        historySessionId: session?.historySessionId ?? null,
     });
     if (!options?.background) {
         useChatStore.getState().markSessionFocused(sessionId);

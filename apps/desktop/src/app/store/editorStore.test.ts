@@ -3417,6 +3417,42 @@ describe("editorStore tab management", () => {
         ).toBe("Renamed");
     });
 
+    it("reuses a restored chat tab when the runtime session id changes but the history id stays stable", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "chat-restored",
+                            kind: "ai-chat",
+                            sessionId: "persisted:history-1",
+                            historySessionId: "history-1",
+                            title: "Recovered chat",
+                        },
+                    ],
+                    activeTabId: "chat-restored",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().openChat("live-session-1", {
+            title: "Recovered chat",
+            historySessionId: "history-1",
+        });
+
+        const pane = useEditorStore.getState().panes[0];
+        expect(pane?.tabs.filter((tab) => isChatTab(tab))).toHaveLength(1);
+        expect(pane?.tabs[0]).toMatchObject({
+            id: "chat-restored",
+            kind: "ai-chat",
+            sessionId: "live-session-1",
+            historySessionId: "history-1",
+            title: "Recovered chat",
+        });
+    });
+
     it("moves a tab into a split relative to the target pane", () => {
         useEditorStore.getState().hydrateWorkspace(
             [

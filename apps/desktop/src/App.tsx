@@ -1578,24 +1578,107 @@ export default function App() {
                 restoredWorkspace = true;
 
                 const restoredChatWorkspace = useChatTabsStore.getState();
+                const persistedChatMetadataBySessionId = new Map(
+                    (workspace?.tabs ?? []).map((tab) => [tab.sessionId, tab]),
+                );
                 const restoredChatMetadataBySessionId = new Map(
                     restoredChatWorkspace.tabs.map((tab) => [tab.sessionId, tab]),
                 );
+                const restoredChatMetadataByHistoryId = new Map(
+                    restoredChatWorkspace.tabs.flatMap((tab) =>
+                        tab.historySessionId
+                            ? [[tab.historySessionId, tab] as const]
+                            : [],
+                    ),
+                );
+                const sessionIdByHistoryId = new Map(
+                    Object.values(chatState.sessionsById).flatMap((session) =>
+                        session.historySessionId
+                            ? [
+                                  [
+                                      session.historySessionId,
+                                      session.sessionId,
+                                  ] as const,
+                              ]
+                            : [],
+                    ),
+                );
+                const resolveEditorChatHistorySessionId = (
+                    sessionId: string,
+                    historySessionId?: string | null,
+                ) =>
+                    historySessionId ??
+                    chatState.sessionsById[sessionId]?.historySessionId ??
+                    persistedChatMetadataBySessionId.get(sessionId)
+                        ?.historySessionId ??
+                    restoredChatMetadataBySessionId.get(sessionId)
+                        ?.historySessionId ??
+                    (sessionId.startsWith("persisted:")
+                        ? sessionId.slice("persisted:".length)
+                        : null);
+
+                const initialEditorState = useEditorStore.getState();
+                for (const tab of selectEditorWorkspaceTabs(
+                    initialEditorState,
+                ).filter(isChatTab)) {
+                    const resolvedHistorySessionId =
+                        resolveEditorChatHistorySessionId(
+                            tab.sessionId,
+                            tab.historySessionId,
+                        );
+                    if (!resolvedHistorySessionId) {
+                        continue;
+                    }
+
+                    const resolvedSessionId =
+                        sessionIdByHistoryId.get(resolvedHistorySessionId) ??
+                        restoredChatMetadataByHistoryId.get(
+                            resolvedHistorySessionId,
+                        )?.sessionId ??
+                        tab.sessionId;
+
+                    if (
+                        resolvedSessionId !== tab.sessionId ||
+                        resolvedHistorySessionId !== tab.historySessionId
+                    ) {
+                        useEditorStore.getState().replaceAiSessionId(
+                            tab.sessionId,
+                            resolvedSessionId,
+                            resolvedHistorySessionId,
+                        );
+                    }
+                }
+
                 const editorState = useEditorStore.getState();
                 const focusedEditorTab = selectFocusedEditorTab(editorState);
                 await useChatStore.getState().reconcileRestoredWorkspaceTabs(
                     selectEditorWorkspaceTabs(editorState)
                         .filter((tab) => isChatTab(tab))
                         .map((tab) => {
-                            const metadata = restoredChatMetadataBySessionId.get(
-                                tab.sessionId,
-                            );
+                            const resolvedHistorySessionId =
+                                resolveEditorChatHistorySessionId(
+                                    tab.sessionId,
+                                    tab.historySessionId,
+                                );
+                            const metadata =
+                                restoredChatMetadataBySessionId.get(
+                                    tab.sessionId,
+                                ) ??
+                                (resolvedHistorySessionId
+                                    ? restoredChatMetadataByHistoryId.get(
+                                          resolvedHistorySessionId,
+                                      )
+                                    : undefined);
                             return {
                                 id: tab.id,
                                 sessionId: tab.sessionId,
                                 historySessionId:
-                                    metadata?.historySessionId ?? null,
-                                runtimeId: metadata?.runtimeId ?? null,
+                                    resolvedHistorySessionId ?? null,
+                                runtimeId:
+                                    metadata?.runtimeId ??
+                                    chatState.sessionsById[tab.sessionId]
+                                        ?.runtimeId ??
+                                    null,
                             };
                         }),
                     isChatTab(focusedEditorTab) ? focusedEditorTab.id : null,

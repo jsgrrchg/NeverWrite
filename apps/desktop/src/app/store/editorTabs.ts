@@ -156,6 +156,7 @@ export interface ChatTab {
     id: string;
     kind: "ai-chat";
     sessionId: string;
+    historySessionId?: string;
     title: string;
 }
 
@@ -771,11 +772,16 @@ export function createChatHistoryTab(): ChatHistoryTab {
     };
 }
 
-export function createChatTab(sessionId: string, title: string): ChatTab {
+export function createChatTab(
+    sessionId: string,
+    title: string,
+    historySessionId?: string | null,
+): ChatTab {
     return {
         id: crypto.randomUUID(),
         kind: "ai-chat",
         sessionId,
+        ...(historySessionId ? { historySessionId } : {}),
         title,
     };
 }

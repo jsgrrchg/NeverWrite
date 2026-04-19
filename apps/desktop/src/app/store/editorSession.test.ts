@@ -254,6 +254,7 @@ describe("editorSession", () => {
                             id: "chat-1",
                             kind: "ai-chat",
                             sessionId: "session-1",
+                            historySessionId: "history-1",
                             title: "Research Chat",
                         },
                     ],
@@ -269,6 +270,7 @@ describe("editorSession", () => {
                     id: "chat-1",
                     kind: "ai-chat",
                     sessionId: "session-1",
+                    historySessionId: "history-1",
                     title: "Research Chat",
                 },
             ],
@@ -279,6 +281,7 @@ describe("editorSession", () => {
             id: "chat-1",
             kind: "ai-chat",
             sessionId: "session-1",
+            historySessionId: "history-1",
             title: "Research Chat",
         });
 
@@ -298,6 +301,7 @@ describe("editorSession", () => {
                         id: "chat-1",
                         kind: "ai-chat",
                         sessionId: "session-1",
+                        historySessionId: "history-1",
                         title: "Research Chat",
                     }),
                 ],

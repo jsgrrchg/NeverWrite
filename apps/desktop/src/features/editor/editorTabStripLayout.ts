@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 export type EditorTabDensity = "comfortable" | "compact" | "tight" | "overflow";
+export type EditorTabSizingMode = "responsive" | "fixed";
 
 export interface EditorTabLayout {
     density: EditorTabDensity;
@@ -106,11 +107,13 @@ function layoutsEqual(left: EditorTabLayout, right: EditorTabLayout) {
 
 function buildFallbackLayout(
     previousDensity?: EditorTabDensity,
+    sizingMode: EditorTabSizingMode = "responsive",
 ): EditorTabLayout {
     return resolveEditorTabLayout({
         stripWidth: 0,
         tabCount: 1,
         previousDensity,
+        sizingMode,
     });
 }
 
@@ -118,10 +121,12 @@ export function resolveEditorTabLayout({
     stripWidth,
     tabCount,
     previousDensity,
+    sizingMode = "responsive",
 }: {
     stripWidth: number;
     tabCount: number;
     previousDensity?: EditorTabDensity;
+    sizingMode?: EditorTabSizingMode;
 }): EditorTabLayout {
     if (tabCount <= 1 || stripWidth <= 0) {
         return {
@@ -143,6 +148,22 @@ export function resolveEditorTabLayout({
         EDITOR_TAB_STRIP_PADDING_X * 2 -
         Math.max(0, tabCount - 1) * EDITOR_TAB_STRIP_GAP;
     const idealWidth = availableWidth / tabCount;
+
+    if (sizingMode === "fixed") {
+        return {
+            density: "comfortable",
+            tabWidth: EDITOR_TAB_MAX_WIDTH,
+            tabGap: 6,
+            tabPaddingX: 12,
+            titleFontSize: 12,
+            closeButtonSize: 16,
+            closeIconSize: 10,
+            stripGap: EDITOR_TAB_STRIP_GAP,
+            stripPaddingX: EDITOR_TAB_STRIP_PADDING_X,
+            overflow: idealWidth < EDITOR_TAB_MAX_WIDTH,
+        };
+    }
+
     const tabWidth = roundTo(
         clamp(idealWidth, EDITOR_TAB_MIN_WIDTH, EDITOR_TAB_MAX_WIDTH),
         2,
@@ -168,13 +189,15 @@ export function useResponsiveEditorTabLayout({
     stripRef,
     tabCount,
     freeze,
+    sizingMode = "responsive",
 }: {
     stripRef: RefObject<HTMLDivElement | null>;
     tabCount: number;
     freeze: boolean;
+    sizingMode?: EditorTabSizingMode;
 }) {
     const [layout, setLayout] = useState<EditorTabLayout>(() =>
-        buildFallbackLayout(),
+        buildFallbackLayout(undefined, sizingMode),
     );
     const hasMeasuredRef = useRef(false);
 
@@ -199,6 +222,7 @@ export function useResponsiveEditorTabLayout({
                     previousDensity: hasMeasuredRef.current
                         ? current.density
                         : undefined,
+                    sizingMode,
                 });
                 if (stripWidth > 0) {
                     hasMeasuredRef.current = true;
@@ -226,7 +250,7 @@ export function useResponsiveEditorTabLayout({
             resizeObserver?.disconnect();
             window.removeEventListener("resize", measure);
         };
-    }, [freeze, stripRef, tabCount]);
+    }, [freeze, sizingMode, stripRef, tabCount]);
 
     return layout;
 }

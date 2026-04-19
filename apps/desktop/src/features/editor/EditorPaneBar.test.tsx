@@ -480,7 +480,7 @@ describe("EditorPaneBar", () => {
             expect(firstTab).not.toBeNull();
 
             defineElementMetric(strip!, "clientWidth", 420);
-            defineElementMetric(strip!, "scrollWidth", 420);
+            defineElementMetric(strip!, "scrollWidth", 480);
 
             await act(async () => {
                 for (const resizeCallback of resizeCallbacks) {
@@ -502,10 +502,12 @@ describe("EditorPaneBar", () => {
                 await Promise.resolve();
             });
 
-            expect(strip).toHaveAttribute("data-pane-tab-density", "compact");
-            expect(strip).not.toHaveAttribute("data-pane-tab-overflowing");
-            expect(parseFloat(firstTab!.style.width)).toBeGreaterThan(128);
-            expect(parseFloat(firstTab!.style.width)).toBeLessThan(160);
+            expect(strip).toHaveAttribute(
+                "data-pane-tab-density",
+                "comfortable",
+            );
+            expect(strip).toHaveAttribute("data-pane-tab-overflowing", "true");
+            expect(parseFloat(firstTab!.style.width)).toBe(160);
 
             defineElementMetric(strip!, "clientWidth", 560);
             defineElementMetric(strip!, "scrollWidth", 560);

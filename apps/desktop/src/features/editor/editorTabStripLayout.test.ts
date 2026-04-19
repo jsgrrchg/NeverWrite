@@ -60,4 +60,18 @@ describe("resolveEditorTabLayout", () => {
         expect(roomy.tabWidth).toBe(EDITOR_TAB_MAX_WIDTH);
         expect(roomy.density).toBe("comfortable");
     });
+
+    it("keeps comfortable tab widths in fixed mode and overflows instead of shrinking", () => {
+        expect(
+            resolveEditorTabLayout({
+                stripWidth: 420,
+                tabCount: 3,
+                sizingMode: "fixed",
+            }),
+        ).toMatchObject({
+            density: "comfortable",
+            tabWidth: EDITOR_TAB_MAX_WIDTH,
+            overflow: true,
+        });
+    });
 });

@@ -121,6 +121,7 @@ type PersistedChatWorkspaceTab = {
     id: string;
     kind: "ai-chat";
     sessionId: string;
+    historySessionId?: string;
     title: string;
 };
 
@@ -359,6 +360,9 @@ function serializeWorkspaceTabForSession(
             id: tab.id,
             kind: "ai-chat",
             sessionId: tab.sessionId,
+            ...(tab.historySessionId
+                ? { historySessionId: tab.historySessionId }
+                : {}),
             title: tab.title,
         };
     }
@@ -676,6 +680,9 @@ async function restorePersistedWorkspaceTabsById(
                 id: tab.id,
                 kind: "ai-chat",
                 sessionId: tab.sessionId,
+                ...(tab.historySessionId
+                    ? { historySessionId: tab.historySessionId }
+                    : {}),
                 title: tab.title,
             };
             continue;
