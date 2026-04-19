@@ -106,6 +106,11 @@ describe("editorSession", () => {
                     title: "Graph View",
                 },
                 {
+                    id: "history-1",
+                    kind: "ai-chat-history",
+                    title: "History",
+                },
+                {
                     id: "review-1",
                     kind: "ai-review",
                     sessionId: "review-session",
@@ -120,7 +125,14 @@ describe("editorSession", () => {
             panes: [
                 {
                     id: "primary",
-                    tabIds: ["note-1", "pdf-1", "file-1", "map-1", "graph-1"],
+                    tabIds: [
+                        "note-1",
+                        "pdf-1",
+                        "file-1",
+                        "map-1",
+                        "graph-1",
+                        "history-1",
+                    ],
                     activeTabId: "file-1",
                 },
             ],
@@ -153,6 +165,11 @@ describe("editorSession", () => {
             id: "graph-1",
             kind: "graph",
             title: "Graph View",
+        });
+        expect(session.tabsById["history-1"]).toMatchObject({
+            id: "history-1",
+            kind: "ai-chat-history",
+            title: "History",
         });
         expect(session.tabsById["review-1"]).toBeUndefined();
     });
@@ -287,6 +304,64 @@ describe("editorSession", () => {
             }),
         ]);
         expect(restored?.activeTabId).toBe("chat-1");
+    });
+
+    it("persists and restores workspace chat history tabs as first-class tabs", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "history-1",
+                            kind: "ai-chat-history",
+                            title: "History",
+                        },
+                    ],
+                    activeTabId: "history-1",
+                    activationHistory: ["history-1"],
+                    tabNavigationHistory: ["history-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                {
+                    id: "history-1",
+                    kind: "ai-chat-history",
+                    title: "History",
+                },
+            ],
+            activeTabId: "history-1",
+        });
+
+        expect(session.tabsById["history-1"]).toMatchObject({
+            id: "history-1",
+            kind: "ai-chat-history",
+            title: "History",
+        });
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.panes).toEqual([
+            expect.objectContaining({
+                id: "primary",
+                activeTabId: "history-1",
+                tabs: [
+                    expect.objectContaining({
+                        id: "history-1",
+                        kind: "ai-chat-history",
+                        title: "History",
+                    }),
+                ],
+            }),
+        ]);
+        expect(restored?.activeTabId).toBe("history-1");
     });
 
     it("serializes and restores pane-aware workspace sessions", async () => {

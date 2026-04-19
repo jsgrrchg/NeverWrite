@@ -20,17 +20,24 @@ interface ResizeSession {
     startWidth: number;
 }
 
-export function ChatHistoryView() {
+interface ChatHistoryViewProps {
+    selectedHistorySessionId: string | null;
+    onSelectHistorySessionId: (sessionId: string | null) => void;
+    onRestoreHistorySession?: (historySessionId: string) => void;
+    onRequestClose?: () => void;
+    showBackButton?: boolean;
+}
+
+export function ChatHistoryView({
+    selectedHistorySessionId,
+    onSelectHistorySessionId,
+    onRestoreHistorySession,
+    onRequestClose,
+    showBackButton = true,
+}: ChatHistoryViewProps) {
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const runtimes = useChatStore((s) => s.runtimes);
-    const historySelectedSessionId = useChatStore(
-        (s) => s.historySelectedSessionId,
-    );
-    const setHistorySelectedSessionId = useChatStore(
-        (s) => s.setHistorySelectedSessionId,
-    );
-    const closeHistoryView = useChatStore((s) => s.closeHistoryView);
     const deleteSession = useChatStore((s) => s.deleteSession);
     const forkSession = useChatStore((s) => s.forkSession);
     const renameSession = useChatStore((s) => s.renameSession);
@@ -67,9 +74,9 @@ export function ChatHistoryView() {
         () =>
             findSessionForHistorySelection(
                 sessionsById,
-                historySelectedSessionId,
+                selectedHistorySessionId,
             ),
-        [historySelectedSessionId, sessionsById],
+        [selectedHistorySessionId, sessionsById],
     );
 
     // --- Resizer state ---
@@ -155,7 +162,7 @@ export function ChatHistoryView() {
             selectedSession?.sessionId &&
             deleteConfirmIds.includes(selectedSession.sessionId)
         ) {
-            setHistorySelectedSessionId(null);
+            onSelectHistorySessionId(null);
         }
         void (async () => {
             for (const sessionId of deleteConfirmIds) {
@@ -167,7 +174,7 @@ export function ChatHistoryView() {
         deleteConfirmIds,
         deleteSession,
         selectedSession,
-        setHistorySelectedSessionId,
+        onSelectHistorySessionId,
     ]);
 
     const cancelDelete = useCallback(() => {
@@ -202,16 +209,21 @@ export function ChatHistoryView() {
 
     const handleRestoreSession = useCallback(
         (historySessionId: string) => {
+            if (onRestoreHistorySession) {
+                onRestoreHistorySession(historySessionId);
+                return;
+            }
+
             const session = findSessionForHistorySelection(
                 sessionsById,
                 historySessionId,
             );
             if (!session) return;
 
-            closeHistoryView();
             openChatSessionInWorkspace(session.sessionId);
+            onRequestClose?.();
         },
-        [closeHistoryView, sessionsById],
+        [onRequestClose, onRestoreHistorySession, sessionsById],
     );
 
     return (
@@ -224,30 +236,32 @@ export function ChatHistoryView() {
                 className="flex shrink-0 items-center gap-2 px-3 py-1"
                 style={{ borderBottom: "1px solid var(--border)" }}
             >
-                <button
-                    type="button"
-                    onClick={closeHistoryView}
-                    className="flex h-6 w-6 items-center justify-center rounded"
-                    style={{
-                        background: "none",
-                        border: "none",
-                        color: "var(--text-secondary)",
-                    }}
-                    title="Back to chat"
-                >
-                    <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                {showBackButton ? (
+                    <button
+                        type="button"
+                        onClick={() => onRequestClose?.()}
+                        className="flex h-6 w-6 items-center justify-center rounded"
+                        style={{
+                            background: "none",
+                            border: "none",
+                            color: "var(--text-secondary)",
+                        }}
+                        title="Back to chat"
                     >
-                        <path d="M10 3L5 8l5 5" />
-                    </svg>
-                </button>
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M10 3L5 8l5 5" />
+                        </svg>
+                    </button>
+                ) : null}
                 <span
                     className="flex-1 text-xs font-medium"
                     style={{ color: "var(--text-primary)" }}
@@ -295,8 +309,8 @@ export function ChatHistoryView() {
                     <HistorySessionList
                         sessions={sessions}
                         runtimes={runtimeOptions}
-                        selectedSessionId={historySelectedSessionId}
-                        onSelectSession={setHistorySelectedSessionId}
+                        selectedSessionId={selectedHistorySessionId}
+                        onSelectSession={onSelectHistorySessionId}
                         onRestoreSession={handleRestoreSession}
                         onDeleteSession={handleDeleteSession}
                         onDeleteSessions={handleDeleteSessions}
@@ -330,11 +344,11 @@ export function ChatHistoryView() {
 
                 {/* Transcript viewer (detail) */}
                 <div className="min-w-0 flex-1">
-                    {historySelectedSessionId ? (
+                    {selectedHistorySessionId ? (
                         <HistoryTranscriptViewer
-                            historySessionId={historySelectedSessionId}
+                            historySessionId={selectedHistorySessionId}
                             onRestore={() =>
-                                handleRestoreSession(historySelectedSessionId)
+                                handleRestoreSession(selectedHistorySessionId)
                             }
                             onExport={() =>
                                 selectedSession

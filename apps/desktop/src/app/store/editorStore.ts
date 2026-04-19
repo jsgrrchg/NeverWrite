@@ -14,6 +14,7 @@ import { useVaultStore } from "./vaultStore";
 export {
     fileViewerNeedsTextContent,
     isChatTab,
+    isChatHistoryTab,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -27,6 +28,7 @@ export {
 } from "./editorTabs";
 export type {
     ChatTab,
+    ChatHistoryTab,
     FileHistoryEntry,
     FileTab,
     FileTabInput,

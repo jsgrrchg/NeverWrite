@@ -16,11 +16,13 @@ import {
 import {
     useEditorStore,
     isChatTab,
+    isChatHistoryTab,
     isFileTab,
     isPdfTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
     type ChatTab,
+    type ChatHistoryTab,
     type NoteTab,
 } from "../../app/store/editorStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
@@ -86,6 +88,13 @@ type QuickSwitcherItem =
           title: string;
           subtitle: string;
           tab: ChatTab;
+      }
+    | {
+          key: string;
+          kind: "history";
+          title: string;
+          subtitle: string;
+          tab: ChatHistoryTab;
       };
 
 function QuickSwitcherDialog() {
@@ -150,6 +159,17 @@ function QuickSwitcherDialog() {
         [chatSessionsById],
     );
 
+    const buildHistoryItem = useCallback(
+        (tab: ChatHistoryTab): QuickSwitcherItem => ({
+            key: `history:${tab.id}`,
+            kind: "history",
+            title: tab.title,
+            subtitle: "Chat history",
+            tab,
+        }),
+        [],
+    );
+
     const results = useMemo(() => {
         const searchableEntries = entries.filter(
             (entry) => entry.kind !== "note" && entry.kind !== "folder",
@@ -160,6 +180,9 @@ function QuickSwitcherDialog() {
                 .map((tab) => {
                     if (isChatTab(tab)) {
                         return buildChatItem(tab);
+                    }
+                    if (isChatHistoryTab(tab)) {
+                        return buildHistoryItem(tab);
                     }
                     if (isPdfTab(tab)) {
                         const entry = entryMap.get(tab.path);
@@ -230,6 +253,20 @@ function QuickSwitcherDialog() {
                         ),
                     };
                 }),
+            ...openTabs
+                .filter(
+                    (tab): tab is ChatHistoryTab => isChatHistoryTab(tab),
+                )
+                .map((tab) => {
+                    const item = buildHistoryItem(tab);
+                    return {
+                        item,
+                        score: Math.max(
+                            fuzzyScore(deferredQuery, item.title),
+                            fuzzyScore(deferredQuery, item.subtitle),
+                        ),
+                    };
+                }),
             ...notes.map((note) => ({
                 item: buildNoteItem(note),
                 score: Math.max(
@@ -254,6 +291,7 @@ function QuickSwitcherDialog() {
     }, [
         buildEntryItem,
         buildChatItem,
+        buildHistoryItem,
         buildNoteItem,
         deferredQuery,
         entries,
@@ -307,7 +345,7 @@ function QuickSwitcherDialog() {
     const openItemAndClose = useCallback(
         async (item: QuickSwitcherItem) => {
             closeModal();
-            if (item.kind === "chat") {
+            if (item.kind === "chat" || item.kind === "history") {
                 switchTab(item.tab.id);
                 return;
             }

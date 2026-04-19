@@ -2,12 +2,14 @@ import type { StoreApi } from "zustand";
 import type { EditorTarget } from "../../features/editor/editorTargetResolver";
 import {
     buildTabFromHistory,
+    createChatHistoryTab,
     createChatTab,
     createFileHistoryEntry,
     createGraphTab,
     createMapTab,
     ensureFileTabDefaults,
     isChatTab,
+    isChatHistoryTab,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -146,6 +148,7 @@ export interface EditorWorkspaceActions {
     ) => void;
     openMap: (relativePath: string, title: string) => void;
     openGraph: () => void;
+    openChatHistory: () => void;
     openReview: (
         sessionId: string,
         options?: { background?: boolean; title?: string },
@@ -931,7 +934,7 @@ function normalizeHydratedTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isChatTab(tab)) {
+    if (isChatTab(tab) || isChatHistoryTab(tab)) {
         return tab;
     }
     if (isGraphTab(tab)) {
@@ -944,8 +947,25 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isReviewTab(tab) || isChatTab(tab) || isGraphTab(tab)) {
+    if (
+        isReviewTab(tab) ||
+        isChatTab(tab) ||
+        isChatHistoryTab(tab) ||
+        isGraphTab(tab)
+    ) {
         return tab;
+    }
+    return null;
+}
+
+function getSingletonWorkspaceTabKind(
+    tab: Tab | TabInput | null | undefined,
+): "graph" | "ai-chat-history" | null {
+    if (isGraphTab(tab)) {
+        return "graph";
+    }
+    if (isChatHistoryTab(tab)) {
+        return "ai-chat-history";
     }
     return null;
 }
@@ -962,8 +982,11 @@ function insertNormalizedTab(
     incoming: Tab,
     index?: number,
 ) {
-    if (isGraphTab(incoming)) {
-        const existing = state.tabs.find((tab) => isGraphTab(tab));
+    const singletonKind = getSingletonWorkspaceTabKind(incoming);
+    if (singletonKind) {
+        const existing = state.tabs.find(
+            (tab) => getSingletonWorkspaceTabKind(tab) === singletonKind,
+        );
         if (existing) {
             const tabs =
                 existing.title === incoming.title
@@ -1979,6 +2002,37 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     );
                 }
                 const newTab = createGraphTab();
+                return (
+                    mutateFocusedPaneWorkspace(state, (pane) =>
+                        insertNormalizedTab(pane, newTab),
+                    ) ?? state
+                );
+            });
+        },
+
+        openChatHistory: () => {
+            set((state) => {
+                const existing = selectEditorWorkspaceTabs(state).find((tab) =>
+                    isChatHistoryTab(tab),
+                );
+                if (existing) {
+                    const workspace = getEffectivePaneWorkspace(state);
+                    const targetPane = findPaneContainingTab(
+                        workspace.panes,
+                        existing.id,
+                    );
+                    if (!targetPane) {
+                        return state;
+                    }
+                    return (
+                        activatePaneTab(
+                            workspace,
+                            targetPane.id,
+                            existing.id,
+                        ) ?? state
+                    );
+                }
+                const newTab = createChatHistoryTab();
                 return (
                     mutateFocusedPaneWorkspace(state, (pane) =>
                         insertNormalizedTab(pane, newTab),
@@ -3290,18 +3344,20 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         },
 
         hydrateWorkspace: (panes, focusedPaneId, layoutTree) => {
-            const seenGraph = new Set<string>();
+            const seenSingletonKinds = new Set<string>();
             const hydratedPanes = panes.flatMap((pane, index) => {
                 const hydratedTabs: Tab[] = pane.tabs.flatMap((tab): Tab[] => {
                     const normalized = normalizeHydratedTab(tab);
                     if (!normalized) {
                         return [];
                     }
-                    if (isGraphTab(normalized)) {
-                        if (seenGraph.size > 0) {
+                    const singletonKind =
+                        getSingletonWorkspaceTabKind(normalized);
+                    if (singletonKind) {
+                        if (seenSingletonKinds.has(singletonKind)) {
                             return [];
                         }
-                        seenGraph.add(normalized.id);
+                        seenSingletonKinds.add(singletonKind);
                     }
                     return [normalized];
                 });
@@ -3349,17 +3405,18 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         hydrateTabs: (tabs, activeTabId) => {
             // Detached windows and a few test helpers still hydrate a
             // single-pane workspace directly through this API.
-            const seenGraph = new Set<string>();
+            const seenSingletonKinds = new Set<string>();
             const hydratedTabs: Tab[] = tabs.flatMap((tab): Tab[] => {
                 const normalized = normalizeHydratedTab(tab);
                 if (!normalized) {
                     return [];
                 }
-                if (isGraphTab(normalized)) {
-                    if (seenGraph.size > 0) {
+                const singletonKind = getSingletonWorkspaceTabKind(normalized);
+                if (singletonKind) {
+                    if (seenSingletonKinds.has(singletonKind)) {
                         return [];
                     }
-                    seenGraph.add(normalized.id);
+                    seenSingletonKinds.add(singletonKind);
                 }
                 return [normalized];
             });
