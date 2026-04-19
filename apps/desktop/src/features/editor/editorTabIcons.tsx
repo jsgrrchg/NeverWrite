@@ -133,6 +133,26 @@ export function renderEditorTabLeadingIcon(tab: Tab): ReactNode {
         );
     }
 
+    if (tab.kind === "ai-chat-history") {
+        return (
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.15"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 opacity-60"
+            >
+                <path d="M8 2.5a5.5 5.5 0 1 0 5.5 5.5" />
+                <path d="M8 5.2v3.1l2.1 1.2" />
+                <path d="M8 1.6v1.2M12.7 3.3l-.9.9" />
+            </svg>
+        );
+    }
+
     if (tab.kind === "map") {
         return (
             <svg

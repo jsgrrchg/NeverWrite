@@ -231,4 +231,51 @@ describe("QuickSwitcher", () => {
         expect(state.focusedPaneId).toBe("right");
         expect(state.panes.flatMap((pane) => pane.tabs)).toHaveLength(1);
     });
+
+    it("includes chat history tabs in results and activates them without creating duplicates", async () => {
+        vi.useFakeTimers();
+
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "left",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "right",
+                    tabs: [
+                        {
+                            id: "history-tab-1",
+                            kind: "ai-chat-history",
+                            title: "History",
+                        },
+                    ],
+                    activeTabId: "history-tab-1",
+                },
+            ],
+            "left",
+        );
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("History")).toBeInTheDocument();
+        expect(screen.getByText("Chat history")).toBeInTheDocument();
+
+        const input = screen.getByPlaceholderText("Search files and notes...");
+        fireEvent.change(input, { target: { value: "History" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+        fireEvent.click(screen.getByRole("button", { name: /History/i }));
+
+        const state = useEditorStore.getState();
+        expect(state.activeTabId).toBe("history-tab-1");
+        expect(state.focusedPaneId).toBe("right");
+        expect(state.panes.flatMap((pane) => pane.tabs)).toHaveLength(1);
+    });
 });

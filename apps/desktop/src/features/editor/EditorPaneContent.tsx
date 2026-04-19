@@ -2,6 +2,7 @@ import React from "react";
 import {
     useEditorStore,
     isChatTab,
+    isChatHistoryTab,
     isFileTab,
     isGraphTab,
     isMapTab,
@@ -17,6 +18,7 @@ import { FileTabView } from "./FileTabView";
 import { NewTabView } from "./NewTabView";
 import { SearchView } from "../search/SearchView";
 import { PdfTabView } from "../pdf/PdfTabView";
+import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
 import { AIReviewView } from "../ai/components/AIReviewView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 
@@ -27,6 +29,7 @@ type EditorPanelView =
     | "search"
     | "ai-review"
     | "ai-chat"
+    | "ai-chat-history"
     | "editor"
     | "map"
     | "graph";
@@ -99,6 +102,8 @@ function renderEditorPanelView(
                     <LazyAIChatSessionView paneId={paneId} />
                 </React.Suspense>
             );
+        case "ai-chat-history":
+            return <AIChatHistoryWorkspaceView />;
         case "map":
             if (!EXCALIDRAW_RUNTIME_SUPPORTED) {
                 return <UnsupportedMapView />;
@@ -140,6 +145,7 @@ export function EditorPaneContent({
         if (isFileTab(tab)) return "file";
         if (isReviewTab(tab)) return "ai-review";
         if (isChatTab(tab)) return "ai-chat";
+        if (isChatHistoryTab(tab)) return "ai-chat-history";
         if (isMapTab(tab)) return "map";
         if (isGraphTab(tab)) return "graph";
         if (!isNoteTab(tab)) return "editor";

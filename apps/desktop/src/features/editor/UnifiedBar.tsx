@@ -19,6 +19,7 @@ import {
 import {
     useEditorStore,
     isChatTab,
+    isChatHistoryTab,
     isNoteTab,
     isReviewTab,
     isFileTab,
@@ -1630,7 +1631,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             ];
                         }
 
-                        if (isReview || tab.kind === "graph") {
+                        if (
+                            isReview ||
+                            isChatHistoryTab(tab) ||
+                            tab.kind === "graph"
+                        ) {
                             return [
                                 {
                                     label: "Close",
