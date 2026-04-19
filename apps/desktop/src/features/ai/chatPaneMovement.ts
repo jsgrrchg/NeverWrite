@@ -108,6 +108,10 @@ export function openChatSessionInWorkspace(
     return sessionId;
 }
 
+export function openChatHistoryInWorkspace() {
+    useEditorStore.getState().openChatHistory();
+}
+
 export async function createNewChatInWorkspace(
     runtimeId?: string,
     options?: OpenChatInWorkspaceOptions,

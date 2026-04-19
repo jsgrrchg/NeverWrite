@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { getViewportSafeMenuPosition } from "../../../app/utils/menuPosition";
 import { openSettingsWindow } from "../../../app/detachedWindows";
 import { useVaultStore } from "../../../app/store/vaultStore";
-import { useChatStore } from "../store/chatStore";
+import { openChatHistoryInWorkspace } from "../chatPaneMovement";
 import { getRuntimeDisplayName } from "../utils/runtimeMetadata";
 import { AIChatSessionList } from "./AIChatSessionList";
 import { AIChatTabs } from "./AIChatTabs";
@@ -616,13 +616,11 @@ export function AIChatHeader({
 }
 
 function ChatHistoryMenuButton({ onClose }: { onClose: () => void }) {
-    const openHistoryView = useChatStore((s) => s.openHistoryView);
-
     return (
         <button
             type="button"
             onClick={() => {
-                openHistoryView();
+                openChatHistoryInWorkspace();
                 onClose();
             }}
             className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs"

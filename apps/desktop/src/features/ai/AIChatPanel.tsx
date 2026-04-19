@@ -12,9 +12,9 @@ import { useLayoutStore } from "../../app/store/layoutStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     createNewChatInWorkspace,
+    openChatHistoryInWorkspace,
     openChatSessionInWorkspace,
 } from "./chatPaneMovement";
-import { ChatHistoryView } from "./components/ChatHistoryView";
 import { AIChatSessionList } from "./components/AIChatSessionList";
 import { useChatStore } from "./store/chatStore";
 import { getRuntimeDisplayName } from "./utils/runtimeMetadata";
@@ -29,13 +29,13 @@ export function AIChatPanel() {
     const toggleRightPanelExpanded = useLayoutStore(
         (state) => state.toggleRightPanelExpanded,
     );
-    const historyViewOpen = useChatStore((state) => state.historyViewOpen);
     const activeSessionId = useChatStore((state) => state.activeSessionId);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const sessionOrder = useChatStore((state) => state.sessionOrder);
     const runtimes = useChatStore((state) => state.runtimes);
     const selectedRuntimeId = useChatStore((state) => state.selectedRuntimeId);
-    const chatActions = useRef(useChatStore.getState()).current;
+    const deleteSession = useChatStore((state) => state.deleteSession);
+    const renameSession = useChatStore((state) => state.renameSession);
 
     const focusedWorkspaceChatSessionId = useEditorStore(
         useShallow((state) => {
@@ -105,10 +105,6 @@ export function AIChatPanel() {
         });
         return nextRuntimes;
     }, [runtimes, selectedRuntimeId]);
-
-    if (historyViewOpen) {
-        return <ChatHistoryView />;
-    }
 
     return (
         <div
@@ -225,7 +221,7 @@ export function AIChatPanel() {
                     </div>
                     <button
                         type="button"
-                        onClick={() => chatActions.openHistoryView()}
+                        onClick={() => openChatHistoryInWorkspace()}
                         className="rounded px-2 py-0.5 text-[11px]"
                         style={{
                             color: "var(--text-secondary)",
@@ -296,10 +292,10 @@ export function AIChatPanel() {
                     void openChatSessionInWorkspace(sessionId);
                 }}
                 onDeleteSession={(sessionId) => {
-                    void chatActions.deleteSession(sessionId);
+                    void deleteSession(sessionId);
                 }}
                 onRenameSession={(sessionId, newTitle) => {
-                    chatActions.renameSession(sessionId, newTitle);
+                    renameSession(sessionId, newTitle);
                 }}
             />
         </div>
