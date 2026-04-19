@@ -21,8 +21,8 @@ interface ResizeSession {
 }
 
 interface ChatHistoryViewProps {
-    selectedHistorySessionId?: string | null;
-    onSelectHistorySessionId?: (sessionId: string | null) => void;
+    selectedHistorySessionId: string | null;
+    onSelectHistorySessionId: (sessionId: string | null) => void;
     onRestoreHistorySession?: (historySessionId: string) => void;
     onRequestClose?: () => void;
     showBackButton?: boolean;
@@ -34,17 +34,10 @@ export function ChatHistoryView({
     onRestoreHistorySession,
     onRequestClose,
     showBackButton = true,
-}: ChatHistoryViewProps = {}) {
+}: ChatHistoryViewProps) {
     const sessionsById = useChatStore((s) => s.sessionsById);
     const sessionOrder = useChatStore((s) => s.sessionOrder);
     const runtimes = useChatStore((s) => s.runtimes);
-    const storeHistorySelectedSessionId = useChatStore(
-        (s) => s.historySelectedSessionId,
-    );
-    const storeSetHistorySelectedSessionId = useChatStore(
-        (s) => s.setHistorySelectedSessionId,
-    );
-    const closeHistoryView = useChatStore((s) => s.closeHistoryView);
     const deleteSession = useChatStore((s) => s.deleteSession);
     const forkSession = useChatStore((s) => s.forkSession);
     const renameSession = useChatStore((s) => s.renameSession);
@@ -64,13 +57,6 @@ export function ChatHistoryView({
         () => runtimes.map((d) => d.runtime),
         [runtimes],
     );
-    const effectiveSelectedHistorySessionId =
-        selectedHistorySessionId !== undefined
-            ? selectedHistorySessionId
-            : storeHistorySelectedSessionId;
-    const setEffectiveSelectedHistorySessionId =
-        onSelectHistorySessionId ?? storeSetHistorySelectedSessionId;
-    const handleRequestClose = onRequestClose ?? closeHistoryView;
 
     // --- Delete confirmation ---
     const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[]>([]);
@@ -88,9 +74,9 @@ export function ChatHistoryView({
         () =>
             findSessionForHistorySelection(
                 sessionsById,
-                effectiveSelectedHistorySessionId,
+                selectedHistorySessionId,
             ),
-        [effectiveSelectedHistorySessionId, sessionsById],
+        [selectedHistorySessionId, sessionsById],
     );
 
     // --- Resizer state ---
@@ -176,7 +162,7 @@ export function ChatHistoryView({
             selectedSession?.sessionId &&
             deleteConfirmIds.includes(selectedSession.sessionId)
         ) {
-            setEffectiveSelectedHistorySessionId(null);
+            onSelectHistorySessionId(null);
         }
         void (async () => {
             for (const sessionId of deleteConfirmIds) {
@@ -188,7 +174,7 @@ export function ChatHistoryView({
         deleteConfirmIds,
         deleteSession,
         selectedSession,
-        setEffectiveSelectedHistorySessionId,
+        onSelectHistorySessionId,
     ]);
 
     const cancelDelete = useCallback(() => {
@@ -234,10 +220,10 @@ export function ChatHistoryView({
             );
             if (!session) return;
 
-            closeHistoryView();
             openChatSessionInWorkspace(session.sessionId);
+            onRequestClose?.();
         },
-        [closeHistoryView, onRestoreHistorySession, sessionsById],
+        [onRequestClose, onRestoreHistorySession, sessionsById],
     );
 
     return (
@@ -253,7 +239,7 @@ export function ChatHistoryView({
                 {showBackButton ? (
                     <button
                         type="button"
-                        onClick={handleRequestClose}
+                        onClick={() => onRequestClose?.()}
                         className="flex h-6 w-6 items-center justify-center rounded"
                         style={{
                             background: "none",
@@ -323,10 +309,8 @@ export function ChatHistoryView({
                     <HistorySessionList
                         sessions={sessions}
                         runtimes={runtimeOptions}
-                        selectedSessionId={effectiveSelectedHistorySessionId}
-                        onSelectSession={(sessionId) =>
-                            setEffectiveSelectedHistorySessionId(sessionId)
-                        }
+                        selectedSessionId={selectedHistorySessionId}
+                        onSelectSession={onSelectHistorySessionId}
                         onRestoreSession={handleRestoreSession}
                         onDeleteSession={handleDeleteSession}
                         onDeleteSessions={handleDeleteSessions}
@@ -360,15 +344,11 @@ export function ChatHistoryView({
 
                 {/* Transcript viewer (detail) */}
                 <div className="min-w-0 flex-1">
-                    {effectiveSelectedHistorySessionId ? (
+                    {selectedHistorySessionId ? (
                         <HistoryTranscriptViewer
-                            historySessionId={
-                                effectiveSelectedHistorySessionId
-                            }
+                            historySessionId={selectedHistorySessionId}
                             onRestore={() =>
-                                handleRestoreSession(
-                                    effectiveSelectedHistorySessionId,
-                                )
+                                handleRestoreSession(selectedHistorySessionId)
                             }
                             onExport={() =>
                                 selectedSession

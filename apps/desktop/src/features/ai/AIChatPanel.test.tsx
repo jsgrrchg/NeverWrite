@@ -184,7 +184,6 @@ describe("AIChatPanel", () => {
     it("opens chat history as a workspace tab from the sidebar launcher", async () => {
         useChatStore.setState((state) => ({
             ...state,
-            historyViewOpen: true,
             sessionsById: {
                 "session-a": createSession("session-a", "Saved conversation"),
             },
@@ -209,6 +208,9 @@ describe("AIChatPanel", () => {
                 historyTabs[0]?.id ?? null,
             );
         });
+        expect(
+            screen.getByRole("button", { name: /Saved conversation/ }),
+        ).toBeInTheDocument();
 
         fireEvent.click(screen.getByRole("button", { name: "History" }));
 

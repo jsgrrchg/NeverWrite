@@ -3,8 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
+import { exportChatSessionToVaultNote } from "../chatExport";
 import type { AIChatSession } from "../types";
 import { AIChatHistoryWorkspaceView } from "./AIChatHistoryWorkspaceView";
+
+vi.mock("../chatExport", () => ({
+    exportChatSessionToVaultNote: vi.fn().mockResolvedValue({
+        noteId: "exported-note",
+        path: "/vault/exported-note.md",
+        title: "Exported note",
+        content: "# Exported",
+    }),
+}));
 
 function createSession(
     sessionId: string,
@@ -43,6 +53,7 @@ function createSession(
 describe("AIChatHistoryWorkspaceView", () => {
     beforeEach(() => {
         resetChatStore();
+        vi.clearAllMocks();
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -62,7 +73,6 @@ describe("AIChatHistoryWorkspaceView", () => {
         useChatStore.setState((state) => ({
             ...state,
             loadSession,
-            historyViewOpen: true,
             runtimes: [
                 {
                     runtime: {
@@ -91,7 +101,6 @@ describe("AIChatHistoryWorkspaceView", () => {
 
         await waitFor(() => {
             expect(loadSession).toHaveBeenCalledWith("session-a");
-            expect(useChatStore.getState().historyViewOpen).toBe(true);
             expect(
                 useEditorStore
                     .getState()
@@ -101,6 +110,78 @@ describe("AIChatHistoryWorkspaceView", () => {
                             tab.sessionId === "session-a",
                     ),
             ).toBe(true);
+        });
+    });
+
+    it("keeps rename, fork, delete, and export actions working inside the workspace tab", async () => {
+        const session = createSession("session-a", "Saved conversation");
+        const ensureSessionTranscriptLoaded = vi.fn().mockResolvedValue(true);
+        const forkSession = vi.fn().mockResolvedValue(undefined);
+        const deleteSession = vi.fn().mockResolvedValue(undefined);
+        const renameSession = vi.fn();
+
+        useChatStore.setState((state) => ({
+            ...state,
+            ensureSessionTranscriptLoaded,
+            forkSession,
+            deleteSession,
+            renameSession,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "codex-acp",
+                        name: "Codex ACP",
+                        description: "",
+                        capabilities: [],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+        }));
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+        await screen.findByRole("button", { name: "Restore" });
+
+        const cardTitle = screen.getAllByText("Saved conversation")[0];
+
+        fireEvent.mouseEnter(cardTitle!);
+        fireEvent.click(screen.getByTitle("Fork chat"));
+        await waitFor(() => {
+            expect(forkSession).toHaveBeenCalledWith("session-a");
+        });
+
+        fireEvent.click(screen.getAllByTitle("Export to note")[0]!);
+        await waitFor(() => {
+            expect(ensureSessionTranscriptLoaded).toHaveBeenCalledWith(
+                "session-a",
+                "full",
+            );
+            expect(exportChatSessionToVaultNote).toHaveBeenCalled();
+        });
+
+        fireEvent.doubleClick(cardTitle!);
+        const renameInput = await screen.findByDisplayValue(
+            "Saved conversation",
+        );
+        fireEvent.change(renameInput, { target: { value: "Renamed conversation" } });
+        fireEvent.keyDown(renameInput, { key: "Enter" });
+        await waitFor(() => {
+            expect(renameSession).toHaveBeenCalledWith(
+                "session-a",
+                "Renamed conversation",
+            );
+        });
+
+        fireEvent.click(screen.getByTitle("Delete chat"));
+        fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+        await waitFor(() => {
+            expect(deleteSession).toHaveBeenCalledWith("session-a");
         });
     });
 });

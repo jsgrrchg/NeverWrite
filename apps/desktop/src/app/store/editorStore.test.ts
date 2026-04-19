@@ -1869,6 +1869,54 @@ describe("editorStore tab management", () => {
         expect(state.activeTabId).toBe(firstHistoryTab?.id ?? null);
     });
 
+    it("focuses an existing chat history tab in another pane without duplicating it", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "left",
+                    tabs: [
+                        {
+                            id: "note-1",
+                            kind: "note",
+                            noteId: "notes/alpha",
+                            title: "Alpha",
+                            content: "alpha",
+                        },
+                    ],
+                    activeTabId: "note-1",
+                },
+                {
+                    id: "right",
+                    tabs: [
+                        {
+                            id: "history-1",
+                            kind: "ai-chat-history",
+                            title: "History",
+                        },
+                    ],
+                    activeTabId: "history-1",
+                },
+            ],
+            "left",
+        );
+
+        useEditorStore.getState().openChatHistory();
+
+        const state = useEditorStore.getState();
+        expect(state.focusedPaneId).toBe("right");
+        expect(state.activeTabId).toBe("history-1");
+        expect(
+            state.tabs.filter((tab) => isChatHistoryTab(tab)),
+        ).toHaveLength(1);
+        expect(
+            state.panes.some((pane) =>
+                pane.tabs.some(
+                    (tab) => isNoteTab(tab) && tab.noteId === "notes/alpha",
+                ),
+            ),
+        ).toBe(true);
+    });
+
     it("updates renamed notes inside inactive history entries", () => {
         useEditorStore.setState({
             tabs: [
