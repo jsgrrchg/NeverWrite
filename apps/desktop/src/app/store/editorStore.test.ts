@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createEditorPaneState,
     isChatTab,
+    isChatHistoryTab,
     type FileViewerMode,
     isFileTab,
     isGraphTab,
@@ -916,6 +917,19 @@ describe("editorStore hydration and external insertion", () => {
             kind: "graph",
         });
         expect(state.activeTabId).toBe("graph-1");
+
+        useEditorStore.getState().insertExternalTab({
+            id: "history-1",
+            kind: "ai-chat-history",
+            title: "History",
+        });
+
+        state = useEditorStore.getState();
+        expect(state.tabs[state.tabs.length - 1]).toMatchObject({
+            id: "history-1",
+            kind: "ai-chat-history",
+        });
+        expect(state.activeTabId).toBe("history-1");
     });
 
     it("preserves graph singleton when inserting an external graph tab", () => {
@@ -947,6 +961,34 @@ describe("editorStore hydration and external insertion", () => {
             title: "Knowledge Graph",
         });
         expect(state.activeTabId).toBe("graph-existing");
+    });
+
+    it("preserves chat history singleton when inserting an external history tab", () => {
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "history-existing",
+                    kind: "ai-chat-history",
+                    title: "History",
+                },
+            ],
+            activeTabId: "history-existing",
+            activationHistory: ["history-existing"],
+            tabNavigationHistory: ["history-existing"],
+            tabNavigationIndex: 0,
+        });
+
+        useEditorStore.getState().insertExternalTab({
+            id: "history-new",
+            kind: "ai-chat-history",
+            title: "History",
+        });
+
+        const state = useEditorStore.getState();
+        const historyTabs = state.tabs.filter((tab) => isChatHistoryTab(tab));
+        expect(historyTabs).toHaveLength(1);
+        expect(historyTabs[0]?.id).toBe("history-existing");
+        expect(state.activeTabId).toBe("history-existing");
     });
 
     it("skips invalid external map tabs that cannot resolve a relative path", () => {
@@ -1811,6 +1853,20 @@ describe("editorStore tab management", () => {
         const graphTabs = state.tabs.filter((tab) => isGraphTab(tab));
         expect(graphTabs).toHaveLength(1);
         expect(state.activeTabId).toBe(firstGraphTab?.id ?? null);
+    });
+
+    it("opens chat history as a singleton and reactivates the existing tab", () => {
+        useEditorStore.getState().openChatHistory();
+        const firstHistoryTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => isChatHistoryTab(tab));
+
+        useEditorStore.getState().openChatHistory();
+
+        const state = useEditorStore.getState();
+        const historyTabs = state.tabs.filter((tab) => isChatHistoryTab(tab));
+        expect(historyTabs).toHaveLength(1);
+        expect(state.activeTabId).toBe(firstHistoryTab?.id ?? null);
     });
 
     it("updates renamed notes inside inactive history entries", () => {

@@ -8,6 +8,7 @@ import {
     normalizeFileViewer,
     isPdfTab,
     isChatTab,
+    isChatHistoryTab,
     isReviewTab,
     type FileViewerMode,
     type PdfViewMode,
@@ -123,13 +124,20 @@ type PersistedChatWorkspaceTab = {
     title: string;
 };
 
+type PersistedChatHistoryWorkspaceTab = {
+    id: string;
+    kind: "ai-chat-history";
+    title: string;
+};
+
 type PersistedWorkspaceTab =
     | PersistedNoteWorkspaceTab
     | PersistedPdfWorkspaceTab
     | PersistedFileWorkspaceTab
     | PersistedMapWorkspaceTab
     | PersistedGraphWorkspaceTab
-    | PersistedChatWorkspaceTab;
+    | PersistedChatWorkspaceTab
+    | PersistedChatHistoryWorkspaceTab;
 
 export interface PersistedSessionV2 {
     version: 2;
@@ -355,6 +363,14 @@ function serializeWorkspaceTabForSession(
         };
     }
 
+    if (isChatHistoryTab(tab)) {
+        return {
+            id: tab.id,
+            kind: "ai-chat-history",
+            title: tab.title,
+        };
+    }
+
     if (isGraphTab(tab)) {
         return {
             id: tab.id,
@@ -544,8 +560,23 @@ function normalizeRestoredTabInput(tab: TabInput): TabInput | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isGraphTab(tab) || isMapTab(tab)) {
+    if (isGraphTab(tab) || isChatHistoryTab(tab) || isMapTab(tab)) {
         return tab;
+    }
+    return null;
+}
+
+function getSingletonSessionTabKind(
+    tab: Tab | TabInput | PersistedWorkspaceTab | null | undefined,
+): "graph" | "ai-chat-history" | null {
+    if (!tab) {
+        return null;
+    }
+    if (tab.kind === "graph") {
+        return "graph";
+    }
+    if (tab.kind === "ai-chat-history") {
+        return "ai-chat-history";
     }
     return null;
 }
@@ -590,7 +621,7 @@ async function restoreLegacyNoteTabs(session: PersistedLegacySession) {
 function restoreLegacyPersistedPaneTabs(
     panes: PersistedSessionPane[],
 ): PersistedSessionPane[] {
-    const seenGraph = new Set<string>();
+    const seenSingletonKinds = new Set<string>();
 
     return panes.map((pane, index) => {
         const tabs = pane.tabs.flatMap((tab): TabInput[] => {
@@ -598,11 +629,12 @@ function restoreLegacyPersistedPaneTabs(
             if (!normalized) {
                 return [];
             }
-            if (isGraphTab(normalized)) {
-                if (seenGraph.size > 0) {
+            const singletonKind = getSingletonSessionTabKind(normalized);
+            if (singletonKind) {
+                if (seenSingletonKinds.has(singletonKind)) {
                     return [];
                 }
-                seenGraph.add(normalized.id);
+                seenSingletonKinds.add(singletonKind);
             }
             return [normalized];
         });
@@ -636,7 +668,7 @@ async function restorePersistedWorkspaceTabsById(
     vaultPath: string | null,
 ) {
     const restoredTabsById: Record<string, TabInput> = {};
-    const seenGraph = new Set<string>();
+    const seenSingletonKinds = new Set<string>();
 
     for (const tab of Object.values(tabsById)) {
         if (tab.kind === "ai-chat") {
@@ -649,14 +681,15 @@ async function restorePersistedWorkspaceTabsById(
             continue;
         }
 
-        if (tab.kind === "graph") {
-            if (seenGraph.size > 0) {
+        const singletonKind = getSingletonSessionTabKind(tab);
+        if (singletonKind) {
+            if (seenSingletonKinds.has(singletonKind)) {
                 continue;
             }
-            seenGraph.add(tab.id);
+            seenSingletonKinds.add(singletonKind);
             restoredTabsById[tab.id] = {
                 id: tab.id,
-                kind: "graph",
+                kind: singletonKind,
                 title: tab.title,
             };
             continue;
@@ -751,6 +784,10 @@ async function restorePersistedWorkspaceTabsById(
             } catch {
                 // Malformed payload; skip.
             }
+            continue;
+        }
+
+        if (tab.kind !== "file") {
             continue;
         }
 
@@ -1148,7 +1185,7 @@ function normalizeHydratedSessionTab(tab: TabInput): Tab | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isChatTab(tab) || isGraphTab(tab)) {
+    if (isChatTab(tab) || isChatHistoryTab(tab) || isGraphTab(tab)) {
         return tab;
     }
     return null;

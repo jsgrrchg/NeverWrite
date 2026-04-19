@@ -159,6 +159,12 @@ export interface ChatTab {
     title: string;
 }
 
+export interface ChatHistoryTab {
+    id: string;
+    kind: "ai-chat-history";
+    title: string;
+}
+
 export interface MapTab {
     id: string;
     kind: "map";
@@ -180,6 +186,7 @@ export type Tab =
     | FileTab
     | ReviewTab
     | ChatTab
+    | ChatHistoryTab
     | MapTab
     | GraphTab;
 
@@ -235,6 +242,7 @@ export type TabInput =
     | FileTabInput
     | ReviewTab
     | ChatTab
+    | ChatHistoryTab
     | MapTabInput
     | GraphTab;
 
@@ -249,7 +257,7 @@ export type NavigableHistoryTabInput =
     | NoteTabInput
     | PdfTabInput
     | FileTabInput;
-export type TransientTab = ReviewTab | ChatTab | GraphTab;
+export type TransientTab = ReviewTab | ChatTab | ChatHistoryTab | GraphTab;
 export type ResourceBackedTab = NoteTab | FileTab;
 export type TabCloseReason =
     | "user"
@@ -333,6 +341,18 @@ export function isChatTab(
     return inferTabKind(tab) === "ai-chat";
 }
 
+export function isChatHistoryTab(
+    tab: Tab | null | undefined,
+): tab is ChatHistoryTab;
+export function isChatHistoryTab(
+    tab: TabInput | null | undefined,
+): tab is ChatHistoryTab;
+export function isChatHistoryTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is ChatHistoryTab {
+    return inferTabKind(tab) === "ai-chat-history";
+}
+
 export function isMapTab(tab: Tab | null | undefined): tab is MapTab;
 export function isMapTab(tab: TabInput | null | undefined): tab is MapTabInput;
 export function isMapTab(
@@ -385,7 +405,12 @@ export function isTransientTab(
     tab: Tab | TabInput | null | undefined,
 ): tab is TransientTab {
     const kind = inferTabKind(tab);
-    return kind === "ai-review" || kind === "ai-chat" || kind === "graph";
+    return (
+        kind === "ai-review" ||
+        kind === "ai-chat" ||
+        kind === "ai-chat-history" ||
+        kind === "graph"
+    );
 }
 
 export function isResourceBackedTab(
@@ -735,6 +760,14 @@ export function createGraphTab(): GraphTab {
         id: crypto.randomUUID(),
         kind: "graph",
         title: "Graph View",
+    };
+}
+
+export function createChatHistoryTab(): ChatHistoryTab {
+    return {
+        id: crypto.randomUUID(),
+        kind: "ai-chat-history",
+        title: "History",
     };
 }
 
