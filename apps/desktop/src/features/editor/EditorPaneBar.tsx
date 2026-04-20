@@ -15,6 +15,7 @@ import {
 } from "../../app/store/editorStore";
 import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
+import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import { useInlineRename } from "../ai/components/useInlineRename";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -290,7 +291,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
 
         indicator.style.display = "";
         indicator.style.transform = `translate(${left - 1}px, -50%)`;
-    }, [insertionIndicatorIndex]);
+    }, [insertionIndicatorIndex, tabStripRef]);
 
     const handleTabClick = useCallback(
         (tabId: string) => {
@@ -319,6 +320,28 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             renameChatSession(tab.sessionId, value);
         },
         [renameChatSession],
+    );
+    const requestCloseTab = useCallback(
+        async (tabId: string) => {
+            const tab = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((candidate) => candidate.id === tabId);
+            if (!tab) {
+                return;
+            }
+
+            const approved = await confirmActiveAgentTabClose({
+                actionLabel: "close this tab",
+                tabs: [tab],
+                sessionsById: useChatStore.getState().sessionsById,
+            });
+            if (!approved) {
+                return;
+            }
+
+            closeTab(tab.id);
+        },
+        [closeTab],
     );
 
     return (
@@ -596,7 +619,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 title={`Close ${tabLabel}`}
                                                 onClick={(event) => {
                                                     event.stopPropagation();
-                                                    closeTab(tab.id);
+                                                    void requestCloseTab(
+                                                        tab.id,
+                                                    );
                                                 }}
                                                 className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded px-0.5 text-[10px] transition ${
                                                     isActive
@@ -732,7 +757,8 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         const entries: ContextMenuEntry[] = [
                             {
                                 label: "Close",
-                                action: () => closeTab(targetTab.id),
+                                action: () =>
+                                    void requestCloseTab(targetTab.id),
                             },
                         ];
 

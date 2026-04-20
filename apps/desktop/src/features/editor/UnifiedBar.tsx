@@ -48,6 +48,8 @@ import {
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
+import { useChatStore } from "../ai/store/chatStore";
+import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
@@ -424,6 +426,24 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             const state = useEditorStore.getState();
             const currentTabs = selectEditorWorkspaceTabs(state);
             const focusedTab = selectFocusedEditorTab(state);
+            const targetTab =
+                currentTabs.find((candidate) => candidate.id === tabId) ??
+                null;
+            if (!targetTab) {
+                return;
+            }
+
+            const approved = await confirmActiveAgentTabClose({
+                actionLabel:
+                    windowMode === "note" && currentTabs.length === 1
+                        ? "close this tab and window"
+                        : "close this tab",
+                tabs: [targetTab],
+                sessionsById: useChatStore.getState().sessionsById,
+            });
+            if (!approved) {
+                return;
+            }
 
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
@@ -450,6 +470,48 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             closeTab(tabId, { reason: "user" });
         },
         [closeTab, windowMode],
+    );
+
+    const closeTabIdsWithProtection = useCallback(
+        async (
+            tabIds: string[],
+            options: {
+                actionLabel: string;
+                reason: "bulk-user" | "user";
+            },
+        ) => {
+            const state = useEditorStore.getState();
+            const currentTabs = selectEditorWorkspaceTabs(state);
+            const tabsToClose = tabIds
+                .map(
+                    (tabId) =>
+                        currentTabs.find((candidate) => candidate.id === tabId) ??
+                        null,
+                )
+                .filter((tab): tab is (typeof currentTabs)[number] => tab !== null);
+
+            if (tabsToClose.length === 0) {
+                return false;
+            }
+
+            const approved = await confirmActiveAgentTabClose({
+                actionLabel: options.actionLabel,
+                tabs: tabsToClose,
+                sessionsById: useChatStore.getState().sessionsById,
+            });
+            if (!approved) {
+                return false;
+            }
+
+            for (const id of tabIds) {
+                useEditorStore.getState().closeTab(id, {
+                    reason: options.reason,
+                });
+            }
+
+            return true;
+        },
+        [],
     );
 
     const getExternalFileDropTarget = useCallback(
@@ -559,17 +621,18 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         [],
     );
 
-    const closeOtherTabs = useCallback((tabId: string) => {
+    const closeOtherTabs = useCallback(async (tabId: string) => {
         const tabIds = selectEditorPaneState(useEditorStore.getState())
             .tabs.filter((tab) => tab.id !== tabId)
             .map((tab) => tab.id);
 
-        for (const id of tabIds) {
-            useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
-        }
-    }, []);
+        await closeTabIdsWithProtection(tabIds, {
+            actionLabel: "close the other tabs",
+            reason: "bulk-user",
+        });
+    }, [closeTabIdsWithProtection]);
 
-    const closeTabsToTheRight = useCallback((tabId: string) => {
+    const closeTabsToTheRight = useCallback(async (tabId: string) => {
         const pane = selectEditorPaneState(useEditorStore.getState());
         const index = pane.tabs.findIndex((tab) => tab.id === tabId);
         if (index === -1) return;
@@ -578,21 +641,25 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             .slice(index + 1)
             .map((tab) => tab.id)
             .reverse();
-        for (const id of tabIds) {
-            useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
-        }
-    }, []);
 
-    const closeTabsToTheLeft = useCallback((tabId: string) => {
+        await closeTabIdsWithProtection(tabIds, {
+            actionLabel: "close the tabs to the right",
+            reason: "bulk-user",
+        });
+    }, [closeTabIdsWithProtection]);
+
+    const closeTabsToTheLeft = useCallback(async (tabId: string) => {
         const pane = selectEditorPaneState(useEditorStore.getState());
         const index = pane.tabs.findIndex((tab) => tab.id === tabId);
         if (index === -1) return;
 
         const tabIds = pane.tabs.slice(0, index).map((tab) => tab.id);
-        for (const id of tabIds) {
-            useEditorStore.getState().closeTab(id, { reason: "bulk-user" });
-        }
-    }, []);
+
+        await closeTabIdsWithProtection(tabIds, {
+            actionLabel: "close the tabs to the left",
+            reason: "bulk-user",
+        });
+    }, [closeTabIdsWithProtection]);
 
     const emitTabDragDetail = useCallback(
         (tabId: string, phase: "attach" | "start" | "move" | "end") => {

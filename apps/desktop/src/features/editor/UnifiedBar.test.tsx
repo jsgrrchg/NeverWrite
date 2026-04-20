@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
@@ -43,6 +44,34 @@ const mockCurrentWindow = {
     close: closeMock,
     label: "main",
 };
+
+function createChatSession(
+    sessionId: string,
+    title: string,
+    status: "idle" | "streaming" | "waiting_permission" | "waiting_user_input",
+) {
+    return {
+        sessionId,
+        historySessionId: sessionId,
+        status,
+        runtimeId: "codex-acp",
+        modelId: "test-model",
+        modeId: "default",
+        models: [],
+        modes: [],
+        configOptions: [],
+        messages: [
+            {
+                id: `${sessionId}-message`,
+                role: "user" as const,
+                kind: "text" as const,
+                content: title,
+                timestamp: 10,
+            },
+        ],
+        attachments: [],
+    };
+}
 
 vi.mock("@tauri-apps/api/window", () => ({
     getCurrentWindow: () => mockCurrentWindow,
@@ -158,6 +187,8 @@ describe("UnifiedBar tab strip drop", () => {
         isMaximizedMock.mockReset();
         isMaximizedMock.mockResolvedValue(false);
         closeMock.mockClear();
+        vi.mocked(confirm).mockReset();
+        vi.mocked(confirm).mockResolvedValue(true);
 
         scaleFactorMock.mockResolvedValue(1);
         innerPositionMock.mockResolvedValue({
@@ -492,6 +523,174 @@ describe("UnifiedBar tab strip drop", () => {
         ).toBe("Reference");
     });
 
+    it("confirms before closing a tab with an active agent", async () => {
+        setEditorTabs([
+            {
+                id: "tab-chat",
+                kind: "ai-chat",
+                sessionId: "session-busy",
+                title: "Chat",
+            },
+            {
+                id: "tab-note",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": createChatSession(
+                    "session-busy",
+                    "Busy agent",
+                    "streaming",
+                ),
+            },
+        });
+        vi.mocked(confirm).mockResolvedValue(false);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const busyTab = document.querySelector(
+            '[data-tab-id="tab-chat"]',
+        ) as HTMLElement | null;
+        expect(busyTab).not.toBeNull();
+
+        fireEvent.click(busyTab!.querySelector("button") as HTMLElement);
+        await flushPromises();
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-chat",
+            "tab-note",
+        ]);
+    });
+
+    it("confirms before closing other tabs when an active agent would be closed", async () => {
+        const user = userEvent.setup();
+        setEditorTabs(
+            [
+                {
+                    id: "tab-keep",
+                    kind: "note",
+                    noteId: "notes/keep.md",
+                    title: "Keep",
+                    content: "keep",
+                },
+                {
+                    id: "tab-busy",
+                    kind: "ai-chat",
+                    sessionId: "session-busy",
+                    title: "Chat",
+                },
+                {
+                    id: "tab-other",
+                    kind: "note",
+                    noteId: "notes/other.md",
+                    title: "Other",
+                    content: "other",
+                },
+            ],
+            "tab-keep",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": createChatSession(
+                    "session-busy",
+                    "Busy agent",
+                    "streaming",
+                ),
+            },
+        });
+        vi.mocked(confirm).mockResolvedValue(false);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const keepTab = document.querySelector(
+            '[data-tab-id="tab-keep"]',
+        ) as HTMLElement | null;
+        expect(keepTab).not.toBeNull();
+
+        fireEvent.contextMenu(keepTab!);
+        await user.click(
+            await screen.findByRole("button", { name: "Close Others" }),
+        );
+        await flushPromises();
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-keep",
+            "tab-busy",
+            "tab-other",
+        ]);
+    });
+
+    it("confirms before closing tabs to the right when an active agent would be closed", async () => {
+        const user = userEvent.setup();
+        setEditorTabs(
+            [
+                {
+                    id: "tab-anchor",
+                    kind: "note",
+                    noteId: "notes/anchor.md",
+                    title: "Anchor",
+                    content: "anchor",
+                },
+                {
+                    id: "tab-busy",
+                    kind: "ai-chat",
+                    sessionId: "session-busy",
+                    title: "Chat",
+                },
+                {
+                    id: "tab-right",
+                    kind: "note",
+                    noteId: "notes/right.md",
+                    title: "Right",
+                    content: "right",
+                },
+            ],
+            "tab-anchor",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": createChatSession(
+                    "session-busy",
+                    "Busy agent",
+                    "streaming",
+                ),
+            },
+        });
+        vi.mocked(confirm).mockResolvedValue(false);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const anchorTab = document.querySelector(
+            '[data-tab-id="tab-anchor"]',
+        ) as HTMLElement | null;
+        expect(anchorTab).not.toBeNull();
+
+        fireEvent.contextMenu(anchorTab!);
+        await user.click(
+            await screen.findByRole("button", { name: "Close Right" }),
+        );
+        await flushPromises();
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-anchor",
+            "tab-busy",
+            "tab-right",
+        ]);
+    });
+
     it("ignores drag-drop events emitted by the tab strip itself", async () => {
         setEditorTabs([
             {
@@ -619,6 +818,7 @@ describe("UnifiedBar tab strip drop", () => {
         expect(closeButton).not.toBeNull();
 
         fireEvent.click(closeButton!);
+        await flushPromises();
 
         expect(useEditorStore.getState().tabs).toHaveLength(0);
         expect(useEditorStore.getState().activeTabId).toBeNull();

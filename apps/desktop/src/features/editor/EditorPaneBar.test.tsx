@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
@@ -155,6 +156,8 @@ describe("EditorPaneBar", () => {
             ],
             "primary",
         );
+        vi.mocked(confirm).mockReset();
+        vi.mocked(confirm).mockResolvedValue(true);
     });
 
     it("shows compact empty-pane chrome when a pane has no tabs", () => {
@@ -194,6 +197,45 @@ describe("EditorPaneBar", () => {
         expect(
             screen.queryByRole("button", { name: "Move to Pane 2" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("confirms before closing a tab with an active agent", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-chat",
+                            kind: "ai-chat",
+                            sessionId: "session-busy",
+                            title: "Chat",
+                        },
+                    ],
+                    activeTabId: "tab-chat",
+                },
+            ],
+            "primary",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": {
+                    ...createChatSession("session-busy", "Busy agent"),
+                    status: "streaming",
+                },
+            },
+        });
+        vi.mocked(confirm).mockResolvedValue(false);
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        fireEvent.click(screen.getByTitle("Close Busy agent"));
+        await waitFor(() => {
+            expect(confirm).toHaveBeenCalledTimes(1);
+        });
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-chat",
+        ]);
     });
 
     it("moves a tab into a new right split from the tab context menu", async () => {

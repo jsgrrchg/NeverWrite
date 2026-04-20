@@ -1,4 +1,5 @@
 import { act, fireEvent, screen } from "@testing-library/react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorSelection } from "@codemirror/state";
 import { undo } from "@codemirror/commands";
@@ -2476,6 +2477,66 @@ describe("Editor", () => {
             "tab-1",
         ]);
         expect(useEditorStore.getState().activeTabId).toBe("tab-1");
+    });
+
+    it("confirms Cmd+W before closing an active agent tab", async () => {
+        vi.mocked(confirm).mockReset();
+        vi.mocked(confirm).mockResolvedValue(false);
+
+        setEditorTabs(
+            [
+                {
+                    id: "tab-chat",
+                    kind: "ai-chat",
+                    sessionId: "session-busy",
+                    title: "Chat",
+                },
+                {
+                    id: "tab-note",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "Current body",
+                },
+            ],
+            "tab-chat",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": {
+                    sessionId: "session-busy",
+                    historySessionId: "session-busy",
+                    status: "streaming",
+                    runtimeId: "test-runtime",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                },
+            },
+        });
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "w",
+                    metaKey: true,
+                    bubbles: true,
+                }),
+            );
+        });
+        await flushPromises();
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-chat",
+            "tab-note",
+        ]);
+        vi.mocked(confirm).mockResolvedValue(true);
     });
 
     it("saves the active note before handling a global close-tab request", async () => {
