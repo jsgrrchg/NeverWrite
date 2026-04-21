@@ -12,6 +12,7 @@ import {
     type ReviewProjectionInvariantId,
 } from "./reviewProjectionDiagnostics";
 
+// Test-only invariant checks for review projection behavior.
 export interface ReviewProjectionInvariantViolation {
     id: ReviewProjectionInvariantId;
     message: string;

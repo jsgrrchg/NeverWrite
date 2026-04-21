@@ -724,7 +724,7 @@ describe("Editor", () => {
             "---\ntitle: Frontmatter title\n---\n# Body heading\nBody",
         );
         // Only the editable title textarea shows "Frontmatter title"
-        // (FrontmatterPanel is disabled in source mode)
+        // (the properties body is not rendered in source mode)
         expect(screen.getAllByDisplayValue("Frontmatter title")).toHaveLength(
             1,
         );
@@ -1703,7 +1703,7 @@ describe("Editor", () => {
         });
 
         // Only the editable title textarea shows "Renamed externally"
-        // (FrontmatterPanel is disabled in source mode)
+        // (the properties body is not rendered in source mode)
         expect(screen.getAllByDisplayValue("Renamed externally")).toHaveLength(
             1,
         );

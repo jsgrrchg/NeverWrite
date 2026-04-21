@@ -2838,10 +2838,6 @@ dependencies = [
 name = "neverwrite-ai"
 version = "0.1.0"
 dependencies = [
- "neverwrite-diff",
- "neverwrite-index",
- "neverwrite-types",
- "neverwrite-vault",
  "serde",
 ]
 
@@ -2879,7 +2875,6 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tokio-util",
- "toml 0.8.2",
  "url",
  "uuid",
 ]

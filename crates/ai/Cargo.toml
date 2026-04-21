@@ -5,7 +5,3 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-neverwrite-types = { path = "../types" }
-neverwrite-vault = { path = "../vault" }
-neverwrite-index = { path = "../index" }
-neverwrite-diff = { path = "../diff" }

@@ -22,7 +22,7 @@ import { expandReviewIndexHunksToOverlapClosure } from "./reviewProjectionIndex"
 import {
   reviewHunkIdsStableWithinVersion,
   validateReviewProjection,
-} from "./reviewProjectionValidation";
+} from "./reviewProjection.testUtils";
 import {
   buildPatchFromTexts,
   buildTextRangePatchFromTexts,
