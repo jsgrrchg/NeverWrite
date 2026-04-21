@@ -41,6 +41,13 @@ pub struct TrackedFile {
     pub status: TrackedFileStatus,
     pub review_state: Option<ReviewState>,
     pub diff_base: String,
+    // Passed through without mutation; the TypeScript wrapper recomputes these
+    // whenever the engine replaces `diff_base`. Optional for lazy compatibility
+    // with sessions persisted before the hash-tracked baseline existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_base_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_base_captured_at: Option<u64>,
     pub current_text: String,
     pub unreviewed_ranges: Option<TextRangePatch>,
     pub unreviewed_edits: LinePatch,
@@ -938,6 +945,8 @@ mod tests {
             status: TrackedFileStatus::Modified,
             review_state: Some(ReviewState::Pending),
             diff_base: diff_base.to_string(),
+            diff_base_hash: None,
+            diff_base_captured_at: None,
             current_text: current_text.to_string(),
             unreviewed_ranges: None,
             unreviewed_edits: empty_patch(),
@@ -1047,6 +1056,8 @@ mod tests {
             status: TrackedFileStatus::Modified,
             review_state: Some(ReviewState::Pending),
             diff_base: "foo bar baz".to_string(),
+            diff_base_hash: None,
+            diff_base_captured_at: None,
             current_text: "FOO bar BAZ".to_string(),
             unreviewed_ranges: Some(TextRangePatch {
                 spans: vec![
@@ -1106,6 +1117,8 @@ mod tests {
             status: TrackedFileStatus::Modified,
             review_state: Some(ReviewState::Pending),
             diff_base: "foo bar baz".to_string(),
+            diff_base_hash: None,
+            diff_base_captured_at: None,
             current_text: "FOO bar BAZ".to_string(),
             unreviewed_ranges: Some(TextRangePatch {
                 spans: vec![

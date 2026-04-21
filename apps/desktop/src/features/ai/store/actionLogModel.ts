@@ -48,6 +48,7 @@ import {
     syncDerivedLinePatchRust,
 } from "./actionLogRustEngine";
 import { pathsMatchVaultScoped } from "../../../app/utils/vaultPaths";
+import { logWarn } from "../../../app/utils/runtimeLog";
 
 // ---------------------------------------------------------------------------
 // Patch primitives
@@ -127,6 +128,7 @@ const TRACKED_FILE_DOMAIN_INVARIANTS: readonly TrackedFileDomainInvariantId[] =
         "pending_ranges_cover_visible_diff",
         "pending_ranges_rebuild_diff_base",
         "line_patch_matches_ranges",
+        "diff_base_hash_matches_content",
     ];
 
 export interface TrackedFileDomainContract {
@@ -354,6 +356,63 @@ function trackedFileRangesRebuildDiffBase(
     );
 }
 
+/**
+ * Compute the canonical FNV-1a hash for a diffBase value. Returns "" for the
+ * empty baseline so `diffBaseHash` is always a plain string when present.
+ */
+export function computeDiffBaseHash(diffBase: string): string {
+    return hashTextContent(diffBase) ?? "";
+}
+
+function captureDiffBaseMetadata(
+    diffBase: string,
+    timestamp: number,
+): { diffBaseHash: string; diffBaseCapturedAt: number } {
+    return {
+        diffBaseHash: computeDiffBaseHash(diffBase),
+        diffBaseCapturedAt: timestamp,
+    };
+}
+
+/**
+ * Keep the previous diffBase metadata when `next` reuses the same diffBase,
+ * and recompute it otherwise. Used to wrap Rust/JS engine results that may
+ * replace diffBase without knowing about the hash cache.
+ */
+function reconcileDiffBaseMetadata(
+    previous: TrackedFile,
+    next: TrackedFile,
+    now: number,
+): TrackedFile {
+    if (next.diffBase === previous.diffBase) {
+        const prevHash = previous.diffBaseHash;
+        const prevAt = previous.diffBaseCapturedAt;
+        if (prevHash === undefined || prevAt === undefined) {
+            // Parent was also missing metadata; fall through to recompute so
+            // the first sync backfills it cleanly.
+            return {
+                ...next,
+                ...captureDiffBaseMetadata(next.diffBase, now),
+            };
+        }
+        if (
+            next.diffBaseHash === prevHash &&
+            next.diffBaseCapturedAt === prevAt
+        ) {
+            return next;
+        }
+        return {
+            ...next,
+            diffBaseHash: prevHash,
+            diffBaseCapturedAt: prevAt,
+        };
+    }
+    return {
+        ...next,
+        ...captureDiffBaseMetadata(next.diffBase, now),
+    };
+}
+
 export function validateTrackedFileDomain(
     file: TrackedFile,
 ): TrackedFileDomainViolation[] {
@@ -412,6 +471,18 @@ export function validateTrackedFileDomain(
         });
     }
 
+    const expectedDiffBaseHash = computeDiffBaseHash(file.diffBase);
+    if (
+        file.diffBaseHash !== undefined &&
+        file.diffBaseHash !== expectedDiffBaseHash
+    ) {
+        violations.push({
+            id: "diff_base_hash_matches_content",
+            message:
+                "TrackedFile diffBaseHash does not match hashTextContent(diffBase).",
+        });
+    }
+
     return violations;
 }
 
@@ -448,7 +519,22 @@ function repairTrackedFileDomain(file: TrackedFile): TrackedFile {
         repairedLinePatch,
     );
 
-    if (rangesAlreadySynced && linePatchAlreadySynced) {
+    const expectedDiffBaseHash = computeDiffBaseHash(file.diffBase);
+    const diffBaseHashSynced = file.diffBaseHash === expectedDiffBaseHash;
+    // Backfill timestamp from updatedAt when missing so legacy sessions keep a
+    // meaningful capture time instead of jumping to "now" at load.
+    const repairedDiffBaseCapturedAt =
+        file.diffBaseCapturedAt ?? file.updatedAt;
+    const diffBaseCapturedAtSynced =
+        file.diffBaseCapturedAt !== undefined &&
+        file.diffBaseCapturedAt === repairedDiffBaseCapturedAt;
+
+    if (
+        rangesAlreadySynced &&
+        linePatchAlreadySynced &&
+        diffBaseHashSynced &&
+        diffBaseCapturedAtSynced
+    ) {
         return file;
     }
 
@@ -456,6 +542,8 @@ function repairTrackedFileDomain(file: TrackedFile): TrackedFile {
         ...file,
         unreviewedRanges: repairedRanges,
         unreviewedEdits: repairedLinePatch,
+        diffBaseHash: expectedDiffBaseHash,
+        diffBaseCapturedAt: repairedDiffBaseCapturedAt,
     };
 }
 
@@ -722,10 +810,46 @@ export function deriveLinePatchFromTextRanges(
     return deriveLinePatchFromTextRangesRust(baseText, currentText, spans);
 }
 
+/**
+ * Cached form of a TrackedFile with derived fields in sync with canonical
+ * state. The cache is keyed by object identity — callers MUST create a new
+ * TrackedFile instance whenever any canonical field changes. In-place
+ * mutation would leave the cache returning a stale derived view against a
+ * mutated canonical baseline. A DEV assertion below guards against that
+ * anti-pattern: if the cached hit disagrees with the canonical baseline, we
+ * log and bypass the cache instead of returning stale data.
+ */
 export function syncDerivedLinePatch(file: TrackedFile): TrackedFile {
     const cached = syncedTrackedFileCache.get(file);
     if (cached) {
-        return cached;
+        if (import.meta.env.DEV) {
+            const expectedHash = computeDiffBaseHash(file.diffBase);
+            if (
+                cached.version !== file.version ||
+                (cached.diffBaseHash !== undefined &&
+                    cached.diffBaseHash !== expectedHash)
+            ) {
+                logWarn(
+                    "action-log-engine",
+                    "sync cache hit disagrees with canonical TrackedFile; bypassing (likely in-place mutation upstream)",
+                    {
+                        identityKey: file.identityKey,
+                        cachedVersion: cached.version,
+                        fileVersion: file.version,
+                        cachedHash: cached.diffBaseHash,
+                        expectedHash,
+                    },
+                    {
+                        onceKey: `action-log-engine:stale-sync-cache:${file.identityKey}`,
+                    },
+                );
+                syncedTrackedFileCache.delete(file);
+            } else {
+                return cached;
+            }
+        } else {
+            return cached;
+        }
     }
 
     const synced = repairTrackedFileDomain(syncDerivedLinePatchRust(file));
@@ -843,6 +967,7 @@ export function createTrackedFileFromDiff(
         status,
         reviewState: "pending",
         diffBase,
+        ...captureDiffBaseMetadata(diffBase, timestamp),
         currentText,
         unreviewedRanges,
         unreviewedEdits,
@@ -1069,7 +1194,8 @@ export function applyNonConflictingEdits(
     userEdits: TextEdit[],
     newFullText: string,
 ): TrackedFile {
-    return applyNonConflictingEditsRust(file, userEdits, newFullText);
+    const result = applyNonConflictingEditsRust(file, userEdits, newFullText);
+    return reconcileDiffBaseMetadata(file, result, Date.now());
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,6 +1261,7 @@ export function keepAllEdits(file: TrackedFile): TrackedFile {
     return {
         ...syncedFile,
         diffBase: syncedFile.currentText,
+        ...captureDiffBaseMetadata(syncedFile.currentText, Date.now()),
         unreviewedRanges: emptyTextRangePatch(),
         unreviewedEdits: emptyPatch(),
         version: syncedFile.version + 1,
@@ -1151,7 +1278,8 @@ export function keepExactSpans(
 
     // Exact review resolution is canonical-span based. This path must stay
     // independent from overlap-based line-range selection.
-    return keepExactSpansRust(file, spans);
+    const result = keepExactSpansRust(file, spans);
+    return reconcileDiffBaseMetadata(file, result, Date.now());
 }
 
 export interface ReviewHunkSelection {
@@ -1210,7 +1338,11 @@ export function rejectAllEdits(file: TrackedFile): {
     file: TrackedFile;
     undoData: PerFileUndo;
 } {
-    return rejectAllEditsRust(file);
+    const result = rejectAllEditsRust(file);
+    return {
+        file: reconcileDiffBaseMetadata(file, result.file, Date.now()),
+        undoData: result.undoData,
+    };
 }
 
 export function rejectExactSpans(
@@ -1230,7 +1362,11 @@ export function rejectExactSpans(
 
     // Exact review resolution is canonical-span based. This path must stay
     // independent from overlap-based line-range selection.
-    return rejectExactSpansRust(file, spans);
+    const result = rejectExactSpansRust(file, spans);
+    return {
+        file: reconcileDiffBaseMetadata(file, result.file, Date.now()),
+        undoData: result.undoData,
+    };
 }
 
 export function rejectReviewHunks(
@@ -1255,7 +1391,8 @@ export function applyRejectUndo(
     file: TrackedFile,
     undo: PerFileUndo,
 ): TrackedFile {
-    return applyRejectUndoRust(file, undo);
+    const result = applyRejectUndoRust(file, undo);
+    return reconcileDiffBaseMetadata(file, result, Date.now());
 }
 
 // ---------------------------------------------------------------------------

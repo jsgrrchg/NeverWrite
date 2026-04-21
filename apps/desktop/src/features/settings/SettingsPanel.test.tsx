@@ -261,6 +261,12 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Ctrl+O")).toBeInTheDocument();
         expect(screen.getByText("Open Settings")).toBeInTheDocument();
         expect(screen.getByText("Ctrl+,")).toBeInTheDocument();
+        expect(screen.getByText("Find in Note")).toBeInTheDocument();
+        expect(screen.getByText("Ctrl+F")).toBeInTheDocument();
+        expect(screen.getByText("Remove Heading")).toBeInTheDocument();
+        expect(screen.getByText("Ctrl+Shift+0")).toBeInTheDocument();
+        expect(screen.getByText("Add Selection to Chat")).toBeInTheDocument();
+        expect(screen.getByText("Ctrl+L")).toBeInTheDocument();
     });
 
     it("hides the inline close button in standalone Windows settings", () => {

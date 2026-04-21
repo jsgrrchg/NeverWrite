@@ -11819,13 +11819,100 @@ describe("chatStore", () => {
         });
     });
 
+    it("resolveReviewHunks surfaces a conflict and preserves the pre-reject snapshot when aiRestoreTextFile fails", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-hunk-disk-fail",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "aaa\nbbb\nccc",
+                    new_text: "aaa\nBBB\nccc",
+                },
+            ],
+        });
+        useEditorStore.getState().openReview(activeSessionId, {
+            title: "Review Codex",
+        });
+
+        const entry = getVisibleBuffer(activeSessionId)[0]!;
+        const projection = buildReviewProjection(entry);
+        const preRejectHash = hashTextContent(entry.currentText);
+        const appliedHash = hashTextContent(entry.currentText);
+        let restoreCalls = 0;
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_get_text_file_hash") {
+                return appliedHash;
+            }
+            if (command === "ai_restore_text_file") {
+                restoreCalls += 1;
+                throw new Error("disk write failed (permission denied)");
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await expect(
+            useChatStore
+                .getState()
+                .resolveReviewHunks(
+                    activeSessionId,
+                    entry.identityKey,
+                    "rejected",
+                    entry.version,
+                    [projection.hunks[0]!.id],
+                ),
+        ).rejects.toThrow("disk write failed");
+
+        expect(restoreCalls).toBe(1);
+
+        const [remaining] = getVisibleBuffer(activeSessionId);
+        // Domain snapshot is preserved (pre-reject currentText intact) and
+        // the tracked file is marked as conflict so the UI degrades the
+        // selection to the conflict panel instead of silently dropping it.
+        expect(remaining).toMatchObject({
+            identityKey: entry.identityKey,
+            currentText: entry.currentText,
+            diffBase: entry.diffBase,
+            conflictHash: preRejectHash,
+        });
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]?.actionLog
+                ?.lastRejectUndo,
+        ).toBeNull();
+    });
+
     it("resolveReviewHunks accepts only the selected accumulated hunk and preserves later agent hunks", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         await useChatStore.getState().initialize();
 
+        // The accept branch runs a settle+reconcile conflict check so the
+        // domain never diverges from disk silently. The mock returns the hash
+        // of the tracked file's current text to simulate disk == applied.
+        let simulatedDiskText: string | null = null;
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_send_message") {
                 return { ...sessionPayload, status: "streaming" };
+            }
+            if (command === "ai_get_text_file_hash") {
+                return simulatedDiskText == null
+                    ? null
+                    : hashTextContent(simulatedDiskText);
             }
             return defaultInvokeImplementation(command, args);
         });
@@ -11887,6 +11974,7 @@ describe("chatStore", () => {
         const projection = buildReviewProjection(entry);
         expect(projection.hunks).toHaveLength(2);
 
+        simulatedDiskText = entry.currentText;
         await useChatStore
             .getState()
             .resolveReviewHunks(

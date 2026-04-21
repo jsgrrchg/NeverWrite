@@ -407,6 +407,8 @@ function useRegisterCommands(
         );
         const nextTabShortcut = getShortcutDefinition("next_tab");
         const previousTabShortcut = getShortcutDefinition("previous_tab");
+        const goBackShortcut = getShortcutDefinition("go_back");
+        const goForwardShortcut = getShortcutDefinition("go_forward");
         const hasVault = () => useVaultStore.getState().vaultPath !== null;
         const hasActiveTab = () =>
             selectFocusedEditorTab(useEditorStore.getState()) !== null;
@@ -467,17 +469,17 @@ function useRegisterCommands(
 
         register({
             id: "nav:back",
-            label: "Back",
-            shortcut: platform === "macos" ? "⌘[" : "Ctrl+[",
-            category: "Navigation",
+            label: goBackShortcut.label,
+            shortcut: formatShortcutAction(goBackShortcut.id, platform),
+            category: goBackShortcut.category,
             execute: () => useEditorStore.getState().goBack(),
         });
 
         register({
             id: "nav:forward",
-            label: "Forward",
-            shortcut: platform === "macos" ? "⌘]" : "Ctrl+]",
-            category: "Navigation",
+            label: goForwardShortcut.label,
+            shortcut: formatShortcutAction(goForwardShortcut.id, platform),
+            category: goForwardShortcut.category,
             execute: () => useEditorStore.getState().goForward(),
         });
 

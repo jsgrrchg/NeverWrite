@@ -52,7 +52,7 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import {
     getCodeMirrorShortcut,
     matchesShortcutAction,
-    formatPrimaryShortcut,
+    formatShortcutAction,
 } from "../../app/shortcuts/registry";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { logError, logWarn } from "../../app/utils/runtimeLog";
@@ -2041,7 +2041,7 @@ export function Editor({
             {
                 id: "editor:heading-1",
                 label: "Heading 1",
-                shortcut: formatPrimaryShortcut("1", platform),
+                shortcut: formatShortcutAction("heading_1", platform),
                 execute: () => {
                     applyHeadingCommand(1);
                 },
@@ -2049,7 +2049,7 @@ export function Editor({
             {
                 id: "editor:heading-2",
                 label: "Heading 2",
-                shortcut: formatPrimaryShortcut("2", platform),
+                shortcut: formatShortcutAction("heading_2", platform),
                 execute: () => {
                     applyHeadingCommand(2);
                 },
@@ -2057,7 +2057,7 @@ export function Editor({
             {
                 id: "editor:heading-3",
                 label: "Heading 3",
-                shortcut: formatPrimaryShortcut("3", platform),
+                shortcut: formatShortcutAction("heading_3", platform),
                 execute: () => {
                     applyHeadingCommand(3);
                 },
@@ -2065,7 +2065,7 @@ export function Editor({
             {
                 id: "editor:heading-4",
                 label: "Heading 4",
-                shortcut: formatPrimaryShortcut("4", platform),
+                shortcut: formatShortcutAction("heading_4", platform),
                 execute: () => {
                     applyHeadingCommand(4);
                 },
@@ -2073,7 +2073,7 @@ export function Editor({
             {
                 id: "editor:heading-5",
                 label: "Heading 5",
-                shortcut: formatPrimaryShortcut("5", platform),
+                shortcut: formatShortcutAction("heading_5", platform),
                 execute: () => {
                     applyHeadingCommand(5);
                 },
@@ -2081,7 +2081,7 @@ export function Editor({
             {
                 id: "editor:heading-6",
                 label: "Heading 6",
-                shortcut: formatPrimaryShortcut("6", platform),
+                shortcut: formatShortcutAction("heading_6", platform),
                 execute: () => {
                     applyHeadingCommand(6);
                 },
@@ -2089,7 +2089,7 @@ export function Editor({
             {
                 id: "editor:heading-0",
                 label: "Remove Heading",
-                shortcut: formatPrimaryShortcut("0", platform),
+                shortcut: formatShortcutAction("remove_heading", platform),
                 execute: () => {
                     applyHeadingCommand(0);
                 },
@@ -2097,7 +2097,7 @@ export function Editor({
             {
                 id: "editor:search-in-note",
                 label: "Find in Note",
-                shortcut: platform === "macos" ? "⌘F" : "Ctrl+F",
+                shortcut: formatShortcutAction("find_in_note", platform),
                 execute: () => {
                     handleSearchClick();
                 },
@@ -2105,7 +2105,7 @@ export function Editor({
             {
                 id: "editor:save-active-note",
                 label: "Save",
-                shortcut: platform === "macos" ? "⇧⌘S" : "Ctrl+Shift+S",
+                shortcut: formatShortcutAction("save_note", platform),
                 execute: () => {
                     const tab = activeTabRef.current;
                     if (!tab || !isNoteTab(tab)) return;
@@ -2117,7 +2117,7 @@ export function Editor({
             {
                 id: "editor:highlight-selection",
                 label: "Highlight",
-                shortcut: platform === "macos" ? "⇧⌘H" : "Ctrl+Shift+H",
+                shortcut: formatShortcutAction("highlight_selection", platform),
                 execute: () => {
                     const view = viewRef.current;
                     if (!view) return;
@@ -2138,7 +2138,7 @@ export function Editor({
             {
                 id: "editor:bold-selection",
                 label: "Bold",
-                shortcut: platform === "macos" ? "⌘B" : "Ctrl+B",
+                shortcut: formatShortcutAction("bold_selection", platform),
                 execute: () => {
                     const view = viewRef.current;
                     if (!view) return;
@@ -2329,7 +2329,9 @@ export function Editor({
                     ),
                     keymap.of([
                         {
-                            key: "Mod-f",
+                            key:
+                                getCodeMirrorShortcut("find_in_note") ??
+                                "Mod-f",
                             run: (view) => {
                                 if (searchPanelOpen(view.state)) {
                                     closeSearchPanel(view);
@@ -2372,7 +2374,10 @@ export function Editor({
                             },
                         },
                         {
-                            key: "Mod-l",
+                            key:
+                                getCodeMirrorShortcut(
+                                    "add_selection_to_chat",
+                                ) ?? "Mod-l",
                             run: (view) => {
                                 if (view.state.selection.main.empty)
                                     return false;
@@ -2384,31 +2389,39 @@ export function Editor({
                             },
                         },
                         {
-                            key: "Mod-1",
+                            key:
+                                getCodeMirrorShortcut("heading_1") ?? "Mod-1",
                             run: () => applyHeadingCommand(1),
                         },
                         {
-                            key: "Mod-2",
+                            key:
+                                getCodeMirrorShortcut("heading_2") ?? "Mod-2",
                             run: () => applyHeadingCommand(2),
                         },
                         {
-                            key: "Mod-3",
+                            key:
+                                getCodeMirrorShortcut("heading_3") ?? "Mod-3",
                             run: () => applyHeadingCommand(3),
                         },
                         {
-                            key: "Mod-4",
+                            key:
+                                getCodeMirrorShortcut("heading_4") ?? "Mod-4",
                             run: () => applyHeadingCommand(4),
                         },
                         {
-                            key: "Mod-5",
+                            key:
+                                getCodeMirrorShortcut("heading_5") ?? "Mod-5",
                             run: () => applyHeadingCommand(5),
                         },
                         {
-                            key: "Mod-6",
+                            key:
+                                getCodeMirrorShortcut("heading_6") ?? "Mod-6",
                             run: () => applyHeadingCommand(6),
                         },
                         {
-                            key: "Mod-Shift-0",
+                            key:
+                                getCodeMirrorShortcut("remove_heading") ??
+                                "Mod-Shift-0",
                             run: () => applyHeadingCommand(0),
                         },
                         {
@@ -3554,13 +3567,13 @@ export function Editor({
             }
 
             // Cmd+[ / Ctrl+[: go back in history
-            if ((e.metaKey || e.ctrlKey) && e.key === "[") {
+            if (matchesShortcutAction(e, "go_back", platform)) {
                 e.preventDefault();
                 useEditorStore.getState().goBack();
             }
 
             // Cmd+] / Ctrl+]: go forward in history
-            if ((e.metaKey || e.ctrlKey) && e.key === "]") {
+            if (matchesShortcutAction(e, "go_forward", platform)) {
                 e.preventDefault();
                 useEditorStore.getState().goForward();
             }

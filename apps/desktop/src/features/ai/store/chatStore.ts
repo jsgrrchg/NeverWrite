@@ -2812,7 +2812,11 @@ function updateUserInputMessageState(
 interface RestoreConflictCheckResult {
     conflict: boolean;
     currentHash: string | null;
-    reason: "applied-content-mismatch" | "origin-path-reused" | null;
+    reason:
+        | "applied-content-mismatch"
+        | "origin-path-reused"
+        | "disk-write-failed"
+        | null;
     conflictingPath: string | null;
     appliedHash: string;
     pathHash: string | null;
@@ -2880,6 +2884,58 @@ function waitForTrackedConflictSettle(delayMs: number) {
     return new Promise<void>((resolve) => {
         setTimeout(resolve, delayMs);
     });
+}
+
+type ReviewHunkConflictSource = "resolve-review-hunks";
+
+/**
+ * Run the settle-aware conflict check and, on applied-content mismatch, try to
+ * reconcile against the persisted file content. Returns the effective tracked
+ * file (reconciled when available) plus the final conflict outcome. Callers
+ * decide whether to proceed, abort, or surface the conflict to the review
+ * panel — this helper intentionally performs no mutations beyond reconcile.
+ */
+async function detectAndReconcileReviewHunkConflict(
+    sessionId: string,
+    identityKey: string,
+    tracked: TrackedFile,
+    vaultPath: string,
+    source: ReviewHunkConflictSource,
+): Promise<{
+    tracked: TrackedFile;
+    check: RestoreConflictCheckResult;
+}> {
+    let activeTracked = tracked;
+    let restoreCheck = await hasConflictAfterSettle(vaultPath, tracked, {
+        sessionId,
+        identityKey,
+        source,
+    });
+
+    if (
+        restoreCheck.conflict &&
+        restoreCheck.reason === "applied-content-mismatch"
+    ) {
+        const reconciled = await reconcileTrackedFileWithPersistedContentIfSafe(
+            sessionId,
+            identityKey,
+            tracked,
+            source,
+            {
+                expectedHash: restoreCheck.currentHash,
+            },
+        );
+        if (reconciled) {
+            activeTracked = reconciled;
+            restoreCheck = await hasConflictAfterSettle(vaultPath, reconciled, {
+                sessionId,
+                identityKey,
+                source,
+            });
+        }
+    }
+
+    return { tracked: activeTracked, check: restoreCheck };
 }
 
 async function hasConflictAfterSettle(
@@ -8927,89 +8983,97 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 snapshot: TrackedFile;
             } | null = null;
 
+            const vaultPath = useVaultStore.getState().vaultPath;
+            if (vaultPath) {
+                // Run the same settle + reconcile dance for accept as for
+                // reject. On accept we don't write to disk, but an external
+                // edit between the agent apply and the user's accept click
+                // means our in-memory currentText no longer matches disk;
+                // accepting without checking would leave domain and disk
+                // desynchronised on the next cycle.
+                const resolution = await detectAndReconcileReviewHunkConflict(
+                    sessionId,
+                    identityKey,
+                    tracked,
+                    vaultPath,
+                    "resolve-review-hunks",
+                );
+                if (resolution.check.conflict) {
+                    logTrackedFileConflict(
+                        sessionId,
+                        identityKey,
+                        resolution.tracked,
+                        resolution.check,
+                        "resolve-review-hunks",
+                    );
+                    markTrackedFileConflictAndPersist(
+                        sessionId,
+                        identityKey,
+                        resolution.check.currentHash,
+                    );
+                    return;
+                }
+                if (resolution.tracked !== tracked) {
+                    tracked = resolution.tracked;
+                }
+            }
+
             if (decision === "accepted") {
                 updatedFile = keepExactSpans(tracked, resolvedExactSpans);
             } else {
-                const vaultPath = useVaultStore.getState().vaultPath;
-                if (vaultPath) {
-                    let activeTracked: TrackedFile = tracked;
-                    let restoreCheck = await hasConflictAfterSettle(
-                        vaultPath,
-                        tracked,
-                        {
-                            sessionId,
-                            identityKey,
-                            source: "resolve-review-hunks",
-                        },
-                    );
-                    if (
-                        restoreCheck.conflict &&
-                        restoreCheck.reason === "applied-content-mismatch"
-                    ) {
-                        const reconciled =
-                            await reconcileTrackedFileWithPersistedContentIfSafe(
-                                sessionId,
-                                identityKey,
-                                tracked,
-                                "resolve-review-hunks",
-                                {
-                                    expectedHash: restoreCheck.currentHash,
-                                },
-                            );
-                        if (reconciled) {
-                            activeTracked = reconciled;
-                            restoreCheck = await hasConflictAfterSettle(
-                                vaultPath,
-                                reconciled,
-                                {
-                                    sessionId,
-                                    identityKey,
-                                    source: "resolve-review-hunks",
-                                },
-                            );
-                        }
-                    }
-
-                    if (restoreCheck.conflict) {
-                        logTrackedFileConflict(
-                            sessionId,
-                            identityKey,
-                            activeTracked,
-                            restoreCheck,
-                            "resolve-review-hunks",
-                        );
-                        markTrackedFileConflictAndPersist(
-                            sessionId,
-                            identityKey,
-                            restoreCheck.currentHash,
-                        );
-                        return;
-                    }
-
-                    if (activeTracked !== tracked) {
-                        tracked = activeTracked;
-                    }
-                }
-
+                const preRejectTracked = tracked;
                 const { file } = rejectExactSpans(tracked, resolvedExactSpans);
                 updatedFile = file;
                 hunkUndoSnapshot = { identityKey, snapshot: tracked };
 
                 if (vaultPath) {
-                    const change = await aiRestoreTextFile({
-                        vaultPath,
-                        path: tracked.path,
-                        previousPath:
-                            tracked.originPath !== tracked.path
-                                ? tracked.originPath
-                                : null,
-                        content: updatedFile.currentText,
-                    });
-                    reloadOpenEditorContent(
-                        tracked.path,
-                        updatedFile.currentText,
-                        change,
-                    );
+                    try {
+                        const change = await aiRestoreTextFile({
+                            vaultPath,
+                            path: tracked.path,
+                            previousPath:
+                                tracked.originPath !== tracked.path
+                                    ? tracked.originPath
+                                    : null,
+                            content: updatedFile.currentText,
+                        });
+                        reloadOpenEditorContent(
+                            tracked.path,
+                            updatedFile.currentText,
+                            change,
+                        );
+                    } catch (error) {
+                        // Disk write failed after the domain reject was
+                        // computed. Degrade to the conflict panel — we never
+                        // persisted `updatedFile` so the store still carries
+                        // the pre-reject snapshot, but we surface the failure
+                        // as a conflict so the UI does not silently drop the
+                        // selection.
+                        const preRejectHash = hashTextContent(
+                            preRejectTracked.currentText,
+                        );
+                        logTrackedFileConflict(
+                            sessionId,
+                            identityKey,
+                            preRejectTracked,
+                            {
+                                conflict: true,
+                                currentHash: preRejectHash,
+                                reason: "disk-write-failed",
+                                conflictingPath: preRejectTracked.path,
+                                appliedHash: preRejectHash ?? "",
+                                pathHash: preRejectHash,
+                                originHash: null,
+                            },
+                            "resolve-review-hunks",
+                        );
+                        markTrackedFileConflictAndPersist(
+                            sessionId,
+                            identityKey,
+                            preRejectHash,
+                        );
+                        throw error;
+                    }
                 }
             }
 

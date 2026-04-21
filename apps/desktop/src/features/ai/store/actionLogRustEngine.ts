@@ -42,11 +42,92 @@ import {
     rejectExactSpansFallback,
     syncDerivedLinePatchFallback,
 } from "./actionLogJsFallback";
+import { logWarn } from "../../../app/utils/runtimeLog";
 
 let rustEngineReady = false;
 let rustEngineInitPromise: Promise<void> | null = null;
 let rustEngineInitError: unknown = null;
-let rustEngineRuntimeFallbackWarned = false;
+
+interface RustFallbackOpStats {
+    count: number;
+    firstAt: number;
+    lastAt: number;
+    lastError: unknown;
+}
+
+const rustFallbackCounters = new Map<string, RustFallbackOpStats>();
+
+function recordRustFallback(opName: string, error: unknown) {
+    const now = Date.now();
+    const existing = rustFallbackCounters.get(opName);
+    if (existing) {
+        existing.count += 1;
+        existing.lastAt = now;
+        existing.lastError = error;
+    } else {
+        rustFallbackCounters.set(opName, {
+            count: 1,
+            firstAt: now,
+            lastAt: now,
+            lastError: error,
+        });
+    }
+    // Emit once per opName so log noise stays bounded but every operation
+    // that silently degrades is visible at least once in the session.
+    logWarn(
+        "action-log-engine",
+        "rust fallback triggered",
+        {
+            opName,
+            count: rustFallbackCounters.get(opName)?.count ?? 1,
+            error,
+            initError: rustEngineInitError,
+        },
+        {
+            onceKey: `action-log-engine:rust-fallback:${opName}`,
+        },
+    );
+}
+
+export interface RustFallbackStats {
+    totalOps: number;
+    totalCalls: number;
+    ops: Array<{
+        opName: string;
+        count: number;
+        firstAt: number;
+        lastAt: number;
+    }>;
+}
+
+/**
+ * Snapshot of how many times each engine op has degraded to the JS fallback
+ * during this session. Intended for diagnostics/statusbar — non-zero counts
+ * mean the WASM engine is unavailable or malfunctioning.
+ */
+export function getRustFallbackStats(): RustFallbackStats {
+    const ops: RustFallbackStats["ops"] = [];
+    let totalCalls = 0;
+    for (const [opName, stats] of rustFallbackCounters.entries()) {
+        totalCalls += stats.count;
+        ops.push({
+            opName,
+            count: stats.count,
+            firstAt: stats.firstAt,
+            lastAt: stats.lastAt,
+        });
+    }
+    return {
+        totalOps: ops.length,
+        totalCalls,
+        ops,
+    };
+}
+
+/** Test helper — reset fallback counters between test cases. */
+export function resetRustFallbackStatsForTests() {
+    rustFallbackCounters.clear();
+}
 
 async function initActionLogRustEngine() {
     if (import.meta.env.MODE === "test") {
@@ -119,22 +200,20 @@ function assertRustEngineReady() {
     );
 }
 
-function callWithFallback<T>(rustCall: () => T, fallbackCall: () => T): T {
+function callWithFallback<T>(
+    opName: string,
+    rustCall: () => T,
+    fallbackCall: () => T,
+): T {
     if (!rustEngineReady) {
+        recordRustFallback(opName, rustEngineInitError ?? "engine-not-ready");
         return fallbackCall();
     }
 
     try {
         return rustCall();
     } catch (error) {
-        if (!rustEngineRuntimeFallbackWarned) {
-            rustEngineRuntimeFallbackWarned = true;
-            console.warn(
-                "Rust/WASM action log call failed; using JS fallback for this session.",
-                error,
-                rustEngineInitError,
-            );
-        }
+        recordRustFallback(opName, error);
         return fallbackCall();
     }
 }
@@ -162,6 +241,7 @@ export function buildPatchFromTextsRust(
     newText: string,
 ): LinePatch {
     return callWithFallback(
+        "buildPatchFromTexts",
         () => {
             assertRustEngineReady();
             return parseJson(build_patch_from_texts_json(oldText, newText));
@@ -176,6 +256,7 @@ export function buildTextRangePatchFromTextsRust(
     linePatch?: LinePatch,
 ): TextRangePatch {
     return callWithFallback(
+        "buildTextRangePatchFromTexts",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -205,6 +286,7 @@ export function computeWordDiffsForHunkRust(
     } = {},
 ): HunkWordDiffs | null {
     return callWithFallback(
+        "computeWordDiffsForHunk",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -233,6 +315,7 @@ export function deriveLinePatchFromTextRangesRust(
     spans: AgentTextSpan[],
 ): LinePatch {
     return callWithFallback(
+        "deriveLinePatchFromTextRanges",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -250,6 +333,7 @@ export function deriveLinePatchFromTextRangesRust(
 
 export function syncDerivedLinePatchRust(file: TrackedFile): TrackedFile {
     return callWithFallback(
+        "syncDerivedLinePatch",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -266,6 +350,7 @@ export function applyNonConflictingEditsRust(
     newFullText: string,
 ): TrackedFile {
     return callWithFallback(
+        "applyNonConflictingEdits",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -285,6 +370,7 @@ export function keepExactSpansRust(
     spans: AgentTextSpan[],
 ): TrackedFile {
     return callWithFallback(
+        "keepExactSpans",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -300,6 +386,7 @@ export function keepExactSpansRust(
 
 export function rejectAllEditsRust(file: TrackedFile): RejectEditsResult {
     return callWithFallback(
+        "rejectAllEdits",
         () => {
             assertRustEngineReady();
             return parseJson(reject_all_edits_json(JSON.stringify(file)));
@@ -313,6 +400,7 @@ export function rejectExactSpansRust(
     spans: AgentTextSpan[],
 ): RejectEditsResult {
     return callWithFallback(
+        "rejectExactSpans",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -331,6 +419,7 @@ export function applyRejectUndoRust(
     undo: PerFileUndo,
 ): TrackedFile {
     return callWithFallback(
+        "applyRejectUndo",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -350,6 +439,7 @@ export function mapTextPositionThroughEditsRust(
     assoc: -1 | 1,
 ): number {
     return callWithFallback(
+        "mapTextPositionThroughEdits",
         () => {
             assertRustEngineReady();
             return map_text_position_through_edits_json(
@@ -367,6 +457,7 @@ export function mapAgentSpanThroughTextEditsRust(
     edits: TextEdit[],
 ): AgentTextSpan | null {
     return callWithFallback(
+        "mapAgentSpanThroughTextEdits",
         () => {
             assertRustEngineReady();
             return parseJson(
@@ -386,6 +477,7 @@ export function rebuildDiffBaseFromPendingSpansRust(
     spans: AgentTextSpan[],
 ): string {
     return callWithFallback(
+        "rebuildDiffBaseFromPendingSpans",
         () => {
             assertRustEngineReady();
             return rebuild_diff_base_from_pending_spans_json(
@@ -410,6 +502,7 @@ export function partitionSpansByOverlapRust(
     currentText: string,
 ): PartitionedSpans {
     return callWithFallback(
+        "partitionSpansByOverlap",
         () => {
             assertRustEngineReady();
             return parseJson(

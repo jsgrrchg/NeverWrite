@@ -11,6 +11,7 @@ export type ShortcutActionId =
     | "command_palette"
     | "quick_switcher"
     | "search_in_vault"
+    | "find_in_note"
     | "open_vault"
     | "new_note"
     | "new_agent"
@@ -19,6 +20,8 @@ export type ShortcutActionId =
     | "reopen_closed_tab"
     | "next_tab"
     | "previous_tab"
+    | "go_back"
+    | "go_forward"
     | "toggle_left_sidebar"
     | "toggle_right_panel"
     | "zoom_in"
@@ -26,8 +29,16 @@ export type ShortcutActionId =
     | "reset_zoom"
     | "open_settings"
     | "toggle_live_preview"
+    | "heading_1"
+    | "heading_2"
+    | "heading_3"
+    | "heading_4"
+    | "heading_5"
+    | "heading_6"
+    | "remove_heading"
     | "bold_selection"
     | "highlight_selection"
+    | "add_selection_to_chat"
     | "save_note";
 
 export interface ShortcutDefinition {
@@ -72,6 +83,15 @@ const shortcutDefinitions = [
         bindings: {
             macos: [{ key: "f", modifiers: ["meta", "shift"] }],
             windows: [{ key: "f", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "find_in_note",
+        label: "Find in Note",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "f", modifiers: ["meta"] }],
+            windows: [{ key: "f", modifiers: ["ctrl"] }],
         },
     },
     {
@@ -150,6 +170,24 @@ const shortcutDefinitions = [
         },
     },
     {
+        id: "go_back",
+        label: "Back",
+        category: "Navigation",
+        bindings: {
+            macos: [{ key: "[", modifiers: ["meta"] }],
+            windows: [{ key: "[", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "go_forward",
+        label: "Forward",
+        category: "Navigation",
+        bindings: {
+            macos: [{ key: "]", modifiers: ["meta"] }],
+            windows: [{ key: "]", modifiers: ["ctrl"] }],
+        },
+    },
+    {
         id: "toggle_left_sidebar",
         label: "Toggle Sidebar",
         category: "View",
@@ -221,6 +259,69 @@ const shortcutDefinitions = [
         },
     },
     {
+        id: "heading_1",
+        label: "Heading 1",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "1", modifiers: ["meta"] }],
+            windows: [{ key: "1", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "heading_2",
+        label: "Heading 2",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "2", modifiers: ["meta"] }],
+            windows: [{ key: "2", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "heading_3",
+        label: "Heading 3",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "3", modifiers: ["meta"] }],
+            windows: [{ key: "3", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "heading_4",
+        label: "Heading 4",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "4", modifiers: ["meta"] }],
+            windows: [{ key: "4", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "heading_5",
+        label: "Heading 5",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "5", modifiers: ["meta"] }],
+            windows: [{ key: "5", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "heading_6",
+        label: "Heading 6",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "6", modifiers: ["meta"] }],
+            windows: [{ key: "6", modifiers: ["ctrl"] }],
+        },
+    },
+    {
+        id: "remove_heading",
+        label: "Remove Heading",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "0", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "0", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
         id: "bold_selection",
         label: "Bold Selection",
         category: "Editor",
@@ -236,6 +337,15 @@ const shortcutDefinitions = [
         bindings: {
             macos: [{ key: "h", modifiers: ["meta", "shift"] }],
             windows: [{ key: "h", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "add_selection_to_chat",
+        label: "Add Selection to Chat",
+        category: "AI",
+        bindings: {
+            macos: [{ key: "l", modifiers: ["meta"] }],
+            windows: [{ key: "l", modifiers: ["ctrl"] }],
         },
     },
     {
@@ -287,15 +397,26 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "search_in_vault",
     "next_tab",
     "previous_tab",
+    "go_back",
+    "go_forward",
     "open_vault",
     "new_note",
     "new_agent",
     "new_tab",
     "reopen_closed_tab",
+    "find_in_note",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "heading_4",
+    "heading_5",
+    "heading_6",
+    "remove_heading",
     "bold_selection",
     "highlight_selection",
     "toggle_live_preview",
     "save_note",
+    "add_selection_to_chat",
     "close_tab",
     "toggle_left_sidebar",
     "toggle_right_panel",

@@ -27,6 +27,13 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("reopen_closed_tab", "windows")).toBe(
             "Ctrl+Shift+T",
         );
+        expect(formatShortcutAction("find_in_note", "windows")).toBe("Ctrl+F");
+        expect(formatShortcutAction("go_back", "windows")).toBe("Ctrl+[");
+        expect(formatShortcutAction("go_forward", "macos")).toBe("⌘]");
+        expect(formatShortcutAction("heading_1", "windows")).toBe("Ctrl+1");
+        expect(formatShortcutAction("remove_heading", "windows")).toBe(
+            "Ctrl+Shift+0",
+        );
     });
 
     it("builds Settings entries from the same registry for Windows", () => {
@@ -57,6 +64,27 @@ describe("shortcut registry formatting", () => {
             category: "View",
             shortcut: "Ctrl+=",
         });
+        expect(
+            entries.find((entry) => entry.id === "find_in_note"),
+        ).toMatchObject({
+            label: "Find in Note",
+            category: "Editor",
+            shortcut: "Ctrl+F",
+        });
+        expect(
+            entries.find((entry) => entry.id === "remove_heading"),
+        ).toMatchObject({
+            label: "Remove Heading",
+            category: "Editor",
+            shortcut: "Ctrl+Shift+0",
+        });
+        expect(
+            entries.find((entry) => entry.id === "add_selection_to_chat"),
+        ).toMatchObject({
+            label: "Add Selection to Chat",
+            category: "AI",
+            shortcut: "Ctrl+L",
+        });
     });
 
     it("keeps editor bindings compatible with CodeMirror on both platforms", () => {
@@ -66,6 +94,14 @@ describe("shortcut registry formatting", () => {
         );
         expect(getCodeMirrorShortcut("highlight_selection", "macos")).toBe(
             "Mod-Shift-h",
+        );
+        expect(getCodeMirrorShortcut("find_in_note", "windows")).toBe("Mod-f");
+        expect(getCodeMirrorShortcut("heading_1", "macos")).toBe("Mod-1");
+        expect(getCodeMirrorShortcut("remove_heading", "windows")).toBe(
+            "Mod-Shift-0",
+        );
+        expect(getCodeMirrorShortcut("add_selection_to_chat", "windows")).toBe(
+            "Mod-l",
         );
     });
 
@@ -239,6 +275,34 @@ describe("shortcut registry matching", () => {
         );
         expect(
             matchesShortcutAction(windowsEvent, "reset_zoom", "windows"),
+        ).toBe(true);
+    });
+
+    it("matches navigation and editor-only shortcuts from the shared registry", () => {
+        expect(
+            matchesShortcutAction(
+                new KeyboardEvent("keydown", { key: "[", ctrlKey: true }),
+                "go_back",
+                "windows",
+            ),
+        ).toBe(true);
+        expect(
+            matchesShortcutAction(
+                new KeyboardEvent("keydown", { key: "]", metaKey: true }),
+                "go_forward",
+                "macos",
+            ),
+        ).toBe(true);
+        expect(
+            matchesShortcutAction(
+                new KeyboardEvent("keydown", {
+                    key: "0",
+                    ctrlKey: true,
+                    shiftKey: true,
+                }),
+                "remove_heading",
+                "windows",
+            ),
         ).toBe(true);
     });
 });

@@ -85,6 +85,8 @@ export const TRACKED_FILE_CANONICAL_FIELDS = [
     "status",
     "reviewState",
     "diffBase",
+    "diffBaseHash",
+    "diffBaseCapturedAt",
     "currentText",
     "unreviewedRanges",
     "version",
@@ -110,7 +112,8 @@ export type TrackedFileDomainInvariantId =
     | "empty_diff_has_no_pending_line_patch"
     | "pending_ranges_cover_visible_diff"
     | "pending_ranges_rebuild_diff_base"
-    | "line_patch_matches_ranges";
+    | "line_patch_matches_ranges"
+    | "diff_base_hash_matches_content";
 
 // ---------------------------------------------------------------------------
 // Core tracked file
@@ -138,6 +141,20 @@ export interface TrackedFile {
      * edits so that `diffBase → currentText` always shows only the agent's work.
      */
     diffBase: string;
+    /**
+     * FNV-1a hash of `diffBase` captured when diffBase was last set. Used to
+     * detect drift between our in-memory baseline and the file on disk without
+     * rehashing on every conflict check. Optional for lazy compatibility with
+     * persisted sessions created before the hash-tracked baseline existed;
+     * repairTrackedFileDomain backfills it when missing or stale.
+     */
+    diffBaseHash?: string;
+    /**
+     * Timestamp (ms) when diffBase was last changed. Optional for lazy
+     * compatibility; repairTrackedFileDomain backfills with updatedAt when
+     * missing.
+     */
+    diffBaseCapturedAt?: number;
     /** Canonical full text as last applied by the agent. */
     currentText: string;
     /**

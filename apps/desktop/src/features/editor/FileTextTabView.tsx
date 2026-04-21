@@ -40,6 +40,7 @@ import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
 import { aiRegisterFileBaseline } from "../ai/api";
 import { useChatStore } from "../ai/store/chatStore";
+import { getCodeMirrorShortcut } from "../../app/shortcuts/registry";
 import { loadCodeLanguage } from "./codeLanguage";
 import { searchTheme } from "./extensions/searchTheme";
 import { resolveTrackedFileMatchForPaths } from "./trackedFileMatch";
@@ -306,7 +307,9 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
                     searchTheme,
                     keymap.of([
                         {
-                            key: "Mod-f",
+                            key:
+                                getCodeMirrorShortcut("find_in_note") ??
+                                "Mod-f",
                             run: (view) => {
                                 if (searchPanelOpen(view.state)) {
                                     closeSearchPanel(view);
@@ -317,7 +320,10 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
                         },
                         ...searchKeymap,
                         {
-                            key: "Mod-l",
+                            key:
+                                getCodeMirrorShortcut(
+                                    "add_selection_to_chat",
+                                ) ?? "Mod-l",
                             run: (view) => {
                                 if (view.state.selection.main.empty) {
                                     return false;

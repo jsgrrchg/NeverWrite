@@ -464,6 +464,8 @@ describe("TrackedFile domain contract", () => {
                 "status",
                 "reviewState",
                 "diffBase",
+                "diffBaseHash",
+                "diffBaseCapturedAt",
                 "currentText",
                 "unreviewedRanges",
                 "version",
@@ -478,6 +480,7 @@ describe("TrackedFile domain contract", () => {
                 "pending_ranges_cover_visible_diff",
                 "pending_ranges_rebuild_diff_base",
                 "line_patch_matches_ranges",
+                "diff_base_hash_matches_content",
             ],
         });
     });
