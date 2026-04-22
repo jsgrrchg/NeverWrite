@@ -26,6 +26,8 @@ vendor/**/node_modules/
 vendor/**/.vite/
 vendor/**/.vite-temp/
 apps/desktop/dist/
+apps/desktop/dist-electron/
+apps/desktop/out/
 apps/desktop/node_modules/
 assets/
 !apps/desktop/src/assets/

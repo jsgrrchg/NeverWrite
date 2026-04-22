@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { invoke } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import { useEditorStore } from "../../app/store/editorStore";
 import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
 import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";

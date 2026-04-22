@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import {
     useEditorStore,
     isNoteTab,

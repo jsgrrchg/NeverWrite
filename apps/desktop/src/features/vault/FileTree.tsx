@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { confirm, open } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     canOpenVaultFileEntryInApp,

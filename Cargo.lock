@@ -2901,6 +2901,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "neverwrite-native-backend"
+version = "0.1.0"
+dependencies = [
+ "neverwrite-diff",
+ "neverwrite-index",
+ "neverwrite-types",
+ "neverwrite-vault",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "neverwrite-types"
 version = "0.1.0"
 dependencies = [

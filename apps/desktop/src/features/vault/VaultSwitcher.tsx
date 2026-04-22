@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "@neverwrite/runtime";
 import {
     useVaultStore,
     getRecentVaults,

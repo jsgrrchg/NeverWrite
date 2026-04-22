@@ -29,7 +29,7 @@ import {
 } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit } from "@codemirror/language";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWebview } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useShallow } from "zustand/react/shallow";
 import {

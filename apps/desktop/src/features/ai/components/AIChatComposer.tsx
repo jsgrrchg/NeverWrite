@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWebview } from "@neverwrite/runtime";
 import {
     useSettingsStore,
     type EditorFontFamily,

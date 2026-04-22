@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
-import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@neverwrite/runtime";
+import { listen } from "@neverwrite/runtime";
+import { getCurrentWebview } from "@neverwrite/runtime";
+import { getAllWebviewWindows } from "@neverwrite/runtime";
+import { open } from "@neverwrite/runtime";
+import { invoke } from "@neverwrite/runtime";
 import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";

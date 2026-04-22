@@ -1,5 +1,5 @@
 import { useCallback, type MouseEvent as ReactMouseEvent } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@neverwrite/runtime";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { useLayoutStore } from "../../app/store/layoutStore";
 import { getDesktopPlatform } from "../../app/utils/platform";

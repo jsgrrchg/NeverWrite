@@ -15,6 +15,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
     openPath: vi.fn(),
+    openUrl: vi.fn(),
+    revealItemInDir: vi.fn(),
 }));
 
 describe("vaultEntries", () => {

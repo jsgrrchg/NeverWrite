@@ -3,6 +3,7 @@
     "private": true,
     "version": "0.1.0",
     "type": "module",
+    "main": "out/electron/main/index.js",
     "engines": {
         "node": ">=22"
     },
@@ -14,6 +15,15 @@
         "test:watch": "vitest",
         "test:split-grid-baseline": "vitest run src/app/store/workspaceLayoutTree.test.ts src/app/store/workspaceLayoutNavigation.test.ts src/app/store/editorStore.test.ts src/app/store/editorSession.test.ts src/app/store/layoutStore.test.ts src/features/editor/MultiPaneWorkspace.test.tsx src/features/editor/EditorPaneBar.test.tsx src/features/editor/workspaceTabDropPreview.test.ts src/features/editor/UnifiedBar.test.tsx src/features/vault/FileTree.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/components/AIReviewView.test.tsx",
         "preview": "vite preview",
+        "electron:dev": "node scripts/run-electron-dev.mjs",
+        "electron:build": "node scripts/build-electron.mjs",
+        "electron:sidecar:build": "cargo build -p neverwrite-native-backend",
+        "electron:sidecar:build:release": "cargo build -p neverwrite-native-backend --release",
+        "electron:sidecar:stage": "node scripts/stage-electron-sidecar.mjs",
+        "electron:sidecar:smoke:packaged": "node scripts/smoke-packaged-sidecar.mjs",
+        "electron:vault-editor:smoke": "node scripts/smoke-electron-vault-editor.mjs",
+        "electron:package": "npm run electron:sidecar:stage && electron-builder --dir",
+        "electron:package:unsigned": "npm run electron:sidecar:stage && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
         "tauri": "node scripts/run-tauri.mjs"
     },
     "dependencies": {
@@ -76,12 +86,39 @@
         "eslint": "^9.39.1",
         "eslint-plugin-react-hooks": "^7.0.1",
         "eslint-plugin-react-refresh": "^0.4.24",
+        "electron": "^41.2.1",
+        "electron-builder": "^26.8.1",
         "globals": "^16.5.0",
         "jsdom": "^26.1.0",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.58.2",
         "vite": "^8.0.8",
         "vitest": "^4.1.4"
+    },
+    "build": {
+        "appId": "com.neverwrite.desktop.electron",
+        "productName": "NeverWrite",
+        "directories": {
+            "output": "dist-electron"
+        },
+        "files": [
+            "out/electron/**/*",
+            "package.json"
+        ],
+        "extraResources": [
+            {
+                "from": "out/native-backend",
+                "to": "native-backend",
+                "filter": ["**/*"]
+            }
+        ],
+        "mac": {
+            "category": "public.app-category.productivity",
+            "target": ["dmg", "zip"]
+        },
+        "win": {
+            "target": ["nsis"]
+        }
     },
     "overrides": {
         "react": "$react",

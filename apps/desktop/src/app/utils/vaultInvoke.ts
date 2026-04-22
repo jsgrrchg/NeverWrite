@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import { useVaultStore } from "../store/vaultStore";
 
 const IPC_DEBUG_ENABLED =
@@ -11,7 +11,7 @@ const _ipcStats = new Map<
 >();
 
 /**
- * Wrapper around Tauri's invoke that automatically injects `vaultPath`
+ * Wrapper around the desktop runtime invoke that automatically injects `vaultPath`
  * from the current vault store state. Use for all vault-scoped commands
  * (read_note, save_note, search_notes, etc.).
  *
@@ -54,7 +54,7 @@ if (IPC_DEBUG_ENABLED && typeof window !== "undefined") {
     (window as unknown as Record<string, unknown>).__ipcDebug = {
         enable() {
             _ipcTracing = true;
-            // Also enable Rust-side timing
+            // Also enable native-side timing when the active runtime supports it.
             void invoke("debug_set_timing", { enabled: true });
             console.log("[ipc] Tracing enabled (frontend + Rust)");
         },

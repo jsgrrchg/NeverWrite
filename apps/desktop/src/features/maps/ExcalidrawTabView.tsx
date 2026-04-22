@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import type { MutableRefObject } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@neverwrite/runtime";
+import { listen } from "@neverwrite/runtime";
 import { useEditorStore, isMapTab } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useThemeStore } from "../../app/store/themeStore";

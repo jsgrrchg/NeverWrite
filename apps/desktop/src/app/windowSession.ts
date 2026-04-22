@@ -1,4 +1,4 @@
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows } from "@neverwrite/runtime";
 import type { DetachedWindowPayload } from "./detachedWindows";
 import {
     safeStorageGetItem,

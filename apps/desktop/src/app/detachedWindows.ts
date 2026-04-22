@@ -1,10 +1,10 @@
-import { emitTo } from "@tauri-apps/api/event";
+import { emitTo } from "@neverwrite/runtime";
 import {
     WebviewWindow,
     getAllWebviewWindows,
     getCurrentWebviewWindow,
-} from "@tauri-apps/api/webviewWindow";
-import { LogicalPosition } from "@tauri-apps/api/dpi";
+} from "@neverwrite/runtime";
+import { LogicalPosition } from "@neverwrite/runtime";
 import type { Tab, TabInput } from "./store/editorStore";
 import type { WorkspaceDropTarget } from "./store/workspaceContracts";
 import { getPathBaseName } from "./utils/path";
@@ -423,7 +423,7 @@ export async function commitDetachedTabDrop({
 
 function settingsWindowLabel(vaultPath: string | null): string {
     if (!vaultPath) return "settings";
-    // Deterministic, Tauri-safe label derived from the vault path
+    // Deterministic runtime-safe label derived from the vault path
     let hash = 5381;
     for (let i = 0; i < vaultPath.length; i++) {
         hash = (((hash << 5) + hash) ^ vaultPath.charCodeAt(i)) >>> 0;

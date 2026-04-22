@@ -8,10 +8,10 @@ import {
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { confirm } from "@tauri-apps/plugin-dialog";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { confirm } from "@neverwrite/runtime";
+import { getCurrentWindow } from "@neverwrite/runtime";
+import { getCurrentWebview } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import {
     getCurrentWindowLabel,
     publishWindowTabDropZone,

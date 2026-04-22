@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@neverwrite/runtime";
 
 import { resolveLinkHref, linkReferenceField } from "./livePreviewHelpers";
 import { dispatchOpenYouTubeModal } from "../youtube";

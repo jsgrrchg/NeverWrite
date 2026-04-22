@@ -1,4 +1,4 @@
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath } from "@neverwrite/runtime";
 
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";

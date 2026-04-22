@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@neverwrite/runtime";
+import { listen } from "@neverwrite/runtime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import {

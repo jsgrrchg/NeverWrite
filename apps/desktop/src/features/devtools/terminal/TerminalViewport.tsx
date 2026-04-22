@@ -3,7 +3,7 @@ import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@neverwrite/runtime";
 import { Terminal } from "@xterm/xterm";
 import {
     useCallback,

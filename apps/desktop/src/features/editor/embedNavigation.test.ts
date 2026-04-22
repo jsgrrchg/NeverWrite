@@ -6,6 +6,8 @@ import { setEditorTabs, setVaultEntries } from "../../test/test-utils";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
     openPath: vi.fn(),
+    openUrl: vi.fn(),
+    revealItemInDir: vi.fn(),
 }));
 
 describe("embedNavigation", () => {

@@ -5,8 +5,8 @@ import {
     useEffect,
     useState,
 } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@neverwrite/runtime";
+import { getCurrentWebviewWindow } from "@neverwrite/runtime";
 import { getWindowChromeLayout } from "../../app/utils/platform";
 
 const WINDOWS_CONTROL_BUTTON_WIDTH = 32;

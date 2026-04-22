@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@neverwrite/runtime";
+import { listen, type UnlistenFn } from "@neverwrite/runtime";
 import type { VaultNoteChange } from "../../app/store/vaultStore";
 import type {
     AIAvailableCommandsPayload,

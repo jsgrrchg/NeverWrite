@@ -6,7 +6,7 @@ import {
     useState,
     type CSSProperties,
 } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@neverwrite/runtime";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import {
     ContextMenu,
