@@ -567,10 +567,10 @@ class ReviewControlWidget extends WidgetType {
 
         wrap.appendChild(
             createDecisionButton(
-                "accept",
+                "reject",
                 () => {
                     this.onDecision({
-                        decision: "accepted",
+                        decision: "rejected",
                         chunkId: this.entry.chunkId,
                         hunkIds: this.entry.hunkIds,
                         view,
@@ -586,10 +586,10 @@ class ReviewControlWidget extends WidgetType {
         );
         wrap.appendChild(
             createDecisionButton(
-                "reject",
+                "accept",
                 () => {
                     this.onDecision({
-                        decision: "rejected",
+                        decision: "accepted",
                         chunkId: this.entry.chunkId,
                         hunkIds: this.entry.hunkIds,
                         view,

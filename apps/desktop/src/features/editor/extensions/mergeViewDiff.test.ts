@@ -219,7 +219,13 @@ describe("mergeViewDiff", () => {
       ],
     });
 
-    expect(view.dom.querySelectorAll("[data-review-decision]")).toHaveLength(2);
+    const decisionButtons = Array.from(
+      view.dom.querySelectorAll<HTMLButtonElement>("[data-review-decision]"),
+    );
+    expect(decisionButtons).toHaveLength(2);
+    expect(
+      decisionButtons.map((button) => button.dataset.reviewDecision),
+    ).toEqual(["reject", "accept"]);
     expect(
       view.dom.querySelector('[data-review-decision="accept"]'),
     ).not.toBeNull();

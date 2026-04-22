@@ -375,21 +375,6 @@ function HunkActionBar({
         >
             <button
                 type="button"
-                onClick={onAccept}
-                aria-label={`Accept hunk ${hunkIndex + 1}`}
-                className="review-action-btn"
-                style={{
-                    ...baseButtonStyle,
-                    border: "1px solid color-mix(in srgb, var(--diff-add) 32%, var(--border))",
-                    backgroundColor:
-                        "color-mix(in srgb, var(--diff-add) 10%, var(--bg-primary))",
-                    color: "var(--diff-add)",
-                }}
-            >
-                Accept
-            </button>
-            <button
-                type="button"
                 onClick={onReject}
                 aria-label={`Reject hunk ${hunkIndex + 1}`}
                 className="review-action-btn"
@@ -402,6 +387,21 @@ function HunkActionBar({
                 }}
             >
                 Reject
+            </button>
+            <button
+                type="button"
+                onClick={onAccept}
+                aria-label={`Accept hunk ${hunkIndex + 1}`}
+                className="review-action-btn"
+                style={{
+                    ...baseButtonStyle,
+                    border: "1px solid color-mix(in srgb, var(--diff-add) 32%, var(--border))",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--diff-add) 10%, var(--bg-primary))",
+                    color: "var(--diff-add)",
+                }}
+            >
+                Accept
             </button>
         </div>
     );

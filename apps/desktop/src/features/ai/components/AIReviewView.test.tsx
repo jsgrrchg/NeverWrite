@@ -763,18 +763,31 @@ describe("AIReviewView", () => {
 
         expect(screen.getByText("file.md")).toBeInTheDocument();
         expect(screen.getByTitle("Reject")).toBeInTheDocument();
+        const rejectHunk1 = screen.getByRole("button", {
+            name: "Reject hunk 1",
+        });
+        const acceptHunk1 = screen.getByRole("button", {
+            name: "Accept hunk 1",
+        });
+        const rejectHunk2 = screen.getByRole("button", {
+            name: "Reject hunk 2",
+        });
+        const acceptHunk2 = screen.getByRole("button", {
+            name: "Accept hunk 2",
+        });
+
+        expect(rejectHunk1).toBeInTheDocument();
+        expect(acceptHunk1).toBeInTheDocument();
+        expect(rejectHunk2).toBeInTheDocument();
+        expect(acceptHunk2).toBeInTheDocument();
         expect(
-            screen.getByRole("button", { name: "Accept hunk 1" }),
-        ).toBeInTheDocument();
+            rejectHunk1.compareDocumentPosition(acceptHunk1) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
         expect(
-            screen.getByRole("button", { name: "Reject hunk 1" }),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByRole("button", { name: "Accept hunk 2" }),
-        ).toBeInTheDocument();
-        expect(
-            screen.getByRole("button", { name: "Reject hunk 2" }),
-        ).toBeInTheDocument();
+            rejectHunk2.compareDocumentPosition(acceptHunk2) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
     });
 
     it("shows summary with file count", () => {
