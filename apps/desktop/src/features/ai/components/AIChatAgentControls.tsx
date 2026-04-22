@@ -316,12 +316,14 @@ function filterConfigOptions(
     }
 
     const supportedEfforts = effortsByModel?.[modelId];
-    const items =
-        supportedEfforts && supportedEfforts.length > 0
-            ? option.options.filter((item) =>
-                  supportedEfforts.includes(item.value),
-              )
-            : option.options;
+    const hasModelEffortMetadata =
+        effortsByModel &&
+        Object.prototype.hasOwnProperty.call(effortsByModel, modelId);
+    const items = hasModelEffortMetadata
+        ? option.options.filter((item) =>
+              supportedEfforts?.includes(item.value),
+          )
+        : option.options;
 
     return items.map((item) => ({
         value: item.value,
@@ -363,6 +365,20 @@ export function AIChatAgentControls({
                 }),
         [configOptions],
     );
+    const visibleExtraConfigs = useMemo(
+        () =>
+            extraConfigs
+                .map((option) => ({
+                    option,
+                    options: filterConfigOptions(
+                        option,
+                        selectedModelId,
+                        effortsByModel,
+                    ),
+                }))
+                .filter(({ options }) => options.length > 0),
+        [effortsByModel, extraConfigs, selectedModelId],
+    );
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -400,17 +416,13 @@ export function AIChatAgentControls({
                         : onModelChange(value)
                 }
             />
-            {extraConfigs.map((option) => (
+            {visibleExtraConfigs.map(({ option, options }) => (
                 <DropdownField
                     key={option.id}
                     disabled={disabled}
                     label={option.label}
                     value={option.value}
-                    options={filterConfigOptions(
-                        option,
-                        selectedModelId,
-                        effortsByModel,
-                    )}
+                    options={options}
                     onChange={(value) => onConfigOptionChange(option.id, value)}
                 />
             ))}

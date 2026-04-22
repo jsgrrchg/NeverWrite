@@ -68,6 +68,58 @@ describe("AIChatAgentControls", () => {
         expect(screen.queryByText("Very High")).not.toBeInTheDocument();
     });
 
+    it("hides reasoning efforts when the selected model has none", () => {
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="claude-acp"
+                modelId="claude-haiku-4-5"
+                modeId="default"
+                effortsByModel={{
+                    "claude-sonnet-4-5": ["low", "medium", "high"],
+                    "claude-haiku-4-5": [],
+                }}
+                models={[
+                    {
+                        id: "claude-haiku-4-5",
+                        runtimeId: "claude-acp",
+                        name: "Claude Haiku 4.5",
+                        description: "",
+                    },
+                ]}
+                modes={[
+                    {
+                        id: "default",
+                        runtimeId: "claude-acp",
+                        name: "Auto",
+                        description: "",
+                        disabled: false,
+                    },
+                ]}
+                configOptions={[
+                    {
+                        id: "effort",
+                        runtimeId: "claude-acp",
+                        category: "reasoning",
+                        label: "Effort",
+                        type: "select",
+                        value: "medium",
+                        options: [
+                            { value: "low", label: "Low" },
+                            { value: "medium", label: "Medium" },
+                            { value: "high", label: "High" },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        expect(screen.queryByTitle("Effort")).not.toBeInTheDocument();
+        expect(screen.queryByText("Medium")).not.toBeInTheDocument();
+    });
+
     it("uses the ACP model config option as the source of truth", () => {
         const onConfigOptionChange = vi.fn();
 

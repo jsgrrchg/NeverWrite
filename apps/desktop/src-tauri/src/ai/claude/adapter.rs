@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
 
 use super::{
-    client::{ClaudeRuntimeHandle, ClaudeSessionCache},
+    client::{apply_config_options_to_session, ClaudeRuntimeHandle, ClaudeSessionCache},
     process::ClaudeRuntime,
     setup::{
         clear_authenticated_method, clear_gateway_settings, launch_claude_login,
@@ -337,24 +337,13 @@ impl AiRuntimeAdapter for ClaudeRuntimeAdapter {
             ));
         }
 
-        self.handle_from_session(session_id)?
+        let config_options = self
+            .handle_from_session(session_id)?
             .set_config_option(session_id, option_id, value)?;
 
         self.session_cache
             .update(session_id, |session| {
-                if let Some(option) = session
-                    .config_options
-                    .iter_mut()
-                    .find(|item| item.id == option_id)
-                {
-                    option.value = value.to_string();
-                }
-
-                if option_id == "model" {
-                    session.model_id = value.to_string();
-                } else if option_id == "mode" {
-                    session.mode_id = value.to_string();
-                }
+                apply_config_options_to_session(session, config_options);
             })
             .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }

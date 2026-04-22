@@ -94,7 +94,7 @@ enum RuntimeCommand {
         session_id: String,
         option_id: String,
         value: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
+        response_tx: mpsc::Sender<Result<Vec<AiConfigOption>, String>>,
     },
     Prompt {
         session_id: String,
@@ -1162,7 +1162,7 @@ impl ClaudeRuntimeHandle {
         session_id: &str,
         option_id: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<AiConfigOption>, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(RuntimeCommand::SetConfigOption {
@@ -1806,7 +1806,7 @@ impl RuntimeActor {
         session_id: String,
         option_id: String,
         value: String,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<AiConfigOption>, String> {
         self.poll_connection_health()?;
         let connection = self
             .connection
@@ -1814,15 +1814,16 @@ impl RuntimeActor {
             .ok_or_else(|| "ACP runtime is not initialized.".to_string())?
             .clone();
 
-        connection
+        let response = connection
             .set_session_config_option(SetSessionConfigOptionRequest::new(
                 SessionId::new(session_id),
                 option_id,
                 value.as_str(),
             ))
             .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+
+        Ok(map_session_config_options(response.config_options))
     }
 
     fn enqueue_prompt(
@@ -2230,7 +2231,10 @@ fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
     }
 }
 
-fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<AiConfigOption>) {
+pub(crate) fn apply_config_options_to_session(
+    session: &mut AiSession,
+    config_options: Vec<AiConfigOption>,
+) {
     let mode_id = config_options
         .iter()
         .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
@@ -2902,6 +2906,43 @@ mod tests {
         assert_eq!(session.model_id, "claude-3-7-sonnet");
         assert_eq!(session.mode_id, "plan");
         assert_eq!(session.config_options, updated_options);
+    }
+
+    #[test]
+    fn apply_config_options_removes_stale_reasoning_option() {
+        let mut session = test_session();
+        session.config_options.push(test_config_option(
+            "effort",
+            AiConfigOptionCategory::Reasoning,
+            "high",
+            vec![test_select_option("medium"), test_select_option("high")],
+        ));
+
+        let updated_options = vec![
+            test_config_option(
+                "model",
+                AiConfigOptionCategory::Model,
+                "claude-haiku-4-5",
+                vec![
+                    test_select_option("claude-sonnet-4-5"),
+                    test_select_option("claude-haiku-4-5"),
+                ],
+            ),
+            test_config_option(
+                "mode",
+                AiConfigOptionCategory::Mode,
+                "default",
+                vec![test_select_option("default"), test_select_option("plan")],
+            ),
+        ];
+
+        apply_config_options_to_session(&mut session, updated_options);
+
+        assert_eq!(session.model_id, "claude-haiku-4-5");
+        assert!(session
+            .config_options
+            .iter()
+            .all(|option| !matches!(option.category, AiConfigOptionCategory::Reasoning)));
     }
 
     #[test]
