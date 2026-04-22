@@ -63,7 +63,8 @@ When developing against the local desktop API, unpacked extension origins are bl
 To authorize a local unpacked build explicitly, launch the desktop app with:
 
 ```bash
-NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" pnpm --dir apps/desktop dev
+cd apps/desktop
+NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
 ```
 
 Use exact origins only. Wildcards are intentionally unsupported.

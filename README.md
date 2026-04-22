@@ -5,9 +5,9 @@ NeverWrite is a local-first knowledge workspace for people who want AI on top of
 Today the repository combines:
 
 - A Tauri desktop app that opens a real local vault and keeps working state on disk
-- A serious Markdown and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking
+- A serious Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view
-- An ACP-based AI layer with Codex, Claude, and Gemini runtimes
+- An ACP-based AI layer with Codex, Claude, Gemini, and Kilo runtimes
 - An explicit AI change-review system with inline review inside the editor and a dedicated review surface
 - A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback
 
@@ -19,7 +19,7 @@ The current product already includes:
 
 - Local vault opening with progress reporting, persisted snapshots, filesystem watching, and incremental re-sync
 - A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and a developer terminal
-- Native-feeling editing for Markdown notes, PDFs, images, and generic text/code files
+- Native-feeling editing for Markdown notes, CSV files, PDFs, images, and generic text/code files
 - Embedded Excalidraw-based concept maps stored as `.excalidraw` files in the vault
 - A graph view with global, local, and overview modes plus 2D and 3D rendering
 - AI chat sessions with attachments from the vault, slash commands, transcript persistence, and runtime-specific capabilities
@@ -29,7 +29,7 @@ The current product already includes:
 
 - It works on a real local vault instead of a proprietary cloud document model.
 - AI edits stay reviewable through an accumulated action log, inline controls, and a dedicated review tab.
-- The desktop app is not limited to Markdown notes; it already handles PDFs, images, text/code files, and maps in the same workspace.
+- The desktop app is not limited to Markdown notes; it already handles CSV files, PDFs, images, text/code files, and maps in the same workspace.
 - The browser clipper is not a stub. It talks to a local desktop API, autocompletes folders and tags, and falls back to deep links when needed.
 
 ## Current Capabilities
@@ -49,6 +49,7 @@ The current product already includes:
 - Wikilink suggestions, resolution, and navigation
 - Live preview with tasks, tables, embeds, math, and YouTube previews
 - Frontmatter/properties editing
+- CSV editing with table and raw fallback views
 - Editable text/code files with syntax highlighting and autosave
 - PDF viewing with persistent zoom and visual filters
 - Internal image viewing with fit and zoom
@@ -65,7 +66,7 @@ The current product already includes:
 
 ### AI and change control
 
-- ACP runtime integration for Codex, Claude, and Gemini
+- ACP runtime integration for Codex, Claude, Gemini, and Kilo
 - Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
 - Session history, transcript viewing, session export, fork, resume, and rename flows
 - Inline review inside the editor when the tracked file has a reliable base
@@ -193,23 +194,26 @@ The repository already contains broad Vitest coverage in the desktop app and web
 
 ## AI Runtime Notes
 
-NeverWrite currently wires three ACP runtimes:
+NeverWrite currently wires four ACP runtimes:
 
 - `codex-acp`
 - `claude-acp`
 - `gemini`
+- `kilo-acp`
 
 Current packaging status:
 
 - Codex is intended to be bundled as a sidecar binary in desktop release builds.
 - Claude is intended to be bundled through an embedded Node runtime plus vendored runtime files.
 - Gemini is integrated in the app, but not bundled by default today.
+- Kilo is integrated in the app, but not bundled by default today.
 
 Useful runtime overrides during development:
 
 - `NEVERWRITE_CODEX_ACP_BIN`
 - `NEVERWRITE_CLAUDE_ACP_BIN`
 - `NEVERWRITE_GEMINI_ACP_BIN`
+- `NEVERWRITE_KILO_ACP_BIN`
 
 For release builds, `apps/desktop/src-tauri/binaries/README.md` documents how bundled runtime staging works.
 

@@ -14,7 +14,6 @@ CLAUDE.md
 .neverwrite/
 .neverwrite/sessions/
 .neverwrite-cache/
-.vaultai/
 .PERSONAL
 .trash/
 apps/desktop/src-tauri/binaries/*

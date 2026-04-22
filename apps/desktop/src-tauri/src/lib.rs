@@ -5190,7 +5190,7 @@ fn install_macos_dock_menu(app: &AppHandle) {
         );
         add_delegate_method_if_missing(
             delegate_class,
-            sel!(vaultAiOpenRecentVaultFromDock:),
+            sel!(neverWriteOpenRecentVaultFromDock:),
             std::mem::transmute::<unsafe extern "C-unwind" fn(&AnyObject, Sel, &CocoaMenuItem), Imp>(
                 macos_open_recent_vault_from_dock,
             ),
@@ -5305,7 +5305,7 @@ fn build_macos_vaults_submenu(
             CocoaMenuItem::initWithTitle_action_keyEquivalent(
                 CocoaMenuItem::alloc(mtm),
                 &NSString::from_str(&vault.name),
-                Some(sel!(vaultAiOpenRecentVaultFromDock:)),
+                Some(sel!(neverWriteOpenRecentVaultFromDock:)),
                 &NSString::from_str(""),
             )
         };

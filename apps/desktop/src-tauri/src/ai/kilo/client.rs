@@ -768,7 +768,7 @@ impl Drop for TurnCompletionGuard {
     }
 }
 
-struct VaultAiAcpClient {
+struct NeverWriteAcpClient {
     app: AppHandle,
     streaming: StreamingState,
     tools: ToolState,
@@ -882,7 +882,7 @@ impl KiloNegotiatedCapabilities {
 }
 
 #[async_trait::async_trait(?Send)]
-impl Client for VaultAiAcpClient {
+impl Client for NeverWriteAcpClient {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
@@ -1574,7 +1574,7 @@ impl RuntimeActor {
 
         spawn_stderr_reader(stderr, Arc::clone(&self.stderr_tail));
 
-        let client = Rc::new(VaultAiAcpClient {
+        let client = Rc::new(NeverWriteAcpClient {
             app: self.app.clone(),
             streaming: self.streaming.clone(),
             tools: self.tools.clone(),

@@ -113,7 +113,7 @@ function ensureInitialized() {
         },
     };
 
-    window.__vaultAiPerf = api;
+    window.__neverWritePerf = api;
 }
 
 export function initializePerfInstrumentation() {
@@ -220,7 +220,7 @@ export function perfCount(name: string, meta?: PerfMeta) {
 
 declare global {
     interface Window {
-        __vaultAiPerf?: PerfApi;
+        __neverWritePerf?: PerfApi;
     }
 }
 

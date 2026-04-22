@@ -52,12 +52,12 @@ test("collectVersionIssues reports mismatches and invalid semver", () => {
 test("collectReleaseIdentityIssues enforces the NeverWrite desktop identity", () => {
     assert.deepEqual(
         collectReleaseIdentityIssues({
-            productName: "VaultAI",
-            identifier: "com.vaultai",
+            productName: "OldProduct",
+            identifier: "com.oldproduct",
         }),
         [
-            'tauri.conf.json productName must be "NeverWrite", received "VaultAI".',
-            'tauri.conf.json identifier must be "com.neverwrite", received "com.vaultai".',
+            'tauri.conf.json productName must be "NeverWrite", received "OldProduct".',
+            'tauri.conf.json identifier must be "com.neverwrite", received "com.oldproduct".',
         ],
     );
 });

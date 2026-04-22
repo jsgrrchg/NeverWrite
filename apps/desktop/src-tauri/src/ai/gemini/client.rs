@@ -775,7 +775,7 @@ impl Drop for TurnCompletionGuard {
     }
 }
 
-struct VaultAiAcpClient {
+struct NeverWriteAcpClient {
     app: AppHandle,
     streaming: StreamingState,
     tools: ToolState,
@@ -799,7 +799,7 @@ pub struct GeminiSessionState {
 }
 
 #[async_trait::async_trait(?Send)]
-impl Client for VaultAiAcpClient {
+impl Client for NeverWriteAcpClient {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
@@ -1412,7 +1412,7 @@ impl RuntimeActor {
             .take()
             .ok_or_else(|| "Failed to acquire Gemini ACP stdout".to_string())?;
 
-        let client = Rc::new(VaultAiAcpClient {
+        let client = Rc::new(NeverWriteAcpClient {
             app: self.app.clone(),
             streaming: self.streaming.clone(),
             tools: self.tools.clone(),
