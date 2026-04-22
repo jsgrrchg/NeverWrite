@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
+import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeAcpAgent as ClaudeAcpAgentType } from "../acp-agent.js";
 
 const { registerHookCallbackSpy } = vi.hoisted(() => ({
@@ -58,6 +59,19 @@ const MOCK_CONFIG_OPTIONS = [
       description: m.description,
     })),
   },
+  {
+    id: "effort",
+    name: "Effort",
+    description: "Available effort levels for this model",
+    type: "select",
+    category: "effort",
+    currentValue: "high",
+    options: [
+      { value: "low", name: "Low" },
+      { value: "medium", name: "Medium" },
+      { value: "high", name: "High" },
+    ],
+  },
 ];
 
 describe("session config options", () => {
@@ -98,9 +112,16 @@ describe("session config options", () => {
       settingsManager: {},
       modes: structuredClone(MOCK_MODES),
       models: structuredClone(MOCK_MODELS),
+      modelInfos: MOCK_MODELS.availableModels.map(
+        (m): ModelInfo => ({
+          value: m.modelId,
+          displayName: m.name,
+          description: m.description,
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        }),
+      ),
       configOptions: structuredClone(MOCK_CONFIG_OPTIONS),
-      modelInfos: [],
-      effortLevel: "high",
       contextWindowSize: 200000,
     };
   }
@@ -230,166 +251,6 @@ describe("session config options", () => {
         (n) => n.update.sessionUpdate === "config_option_update",
       );
       expect(configUpdate).toBeUndefined();
-    });
-
-    it("changes effort_level and calls applyFlagSettings", async () => {
-      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
-      session.modelInfos = [
-        {
-          value: "claude-opus-4-5",
-          displayName: "Claude Opus",
-          description: "Most capable",
-          supportsEffort: true,
-          supportedEffortLevels: ["low", "medium", "high"],
-        },
-      ];
-      session.configOptions.push({
-        id: "effort_level",
-        name: "Effort",
-        type: "select",
-        category: "thought_level",
-        description: "How much the model thinks before responding",
-        currentValue: "high",
-        options: [
-          { value: "low", name: "Low" },
-          { value: "medium", name: "Medium" },
-          { value: "high", name: "High" },
-        ],
-      });
-
-      const response = await agent.setSessionConfigOption({
-        sessionId: SESSION_ID,
-        configId: "effort_level",
-        value: "medium",
-      });
-
-      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "medium" });
-      expect(session.effortLevel).toBe("medium");
-      expect(response.configOptions.find((o) => o.id === "effort_level")?.currentValue).toBe(
-        "medium",
-      );
-    });
-
-    it("accepts max for effort_level and calls applyFlagSettings", async () => {
-      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
-      session.modelInfos = [
-        {
-          value: "claude-opus-4-5",
-          displayName: "Claude Opus",
-          description: "Most capable",
-          supportsEffort: true,
-          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
-        },
-      ];
-      session.configOptions.push({
-        id: "effort_level",
-        name: "Effort",
-        type: "select",
-        category: "thought_level",
-        description: "How much the model thinks before responding",
-        currentValue: "high",
-        options: [
-          { value: "low", name: "Low" },
-          { value: "medium", name: "Medium" },
-          { value: "high", name: "High" },
-          { value: "xhigh", name: "Extra High" },
-          { value: "max", name: "Max" },
-        ],
-      });
-
-      const response = await agent.setSessionConfigOption({
-        sessionId: SESSION_ID,
-        configId: "effort_level",
-        value: "max",
-      });
-
-      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "max" });
-      expect(session.effortLevel).toBe("max");
-      expect(response.configOptions.find((o) => o.id === "effort_level")?.currentValue).toBe(
-        "max",
-      );
-    });
-
-    it("rebuilds config options when the selected model supports effort", async () => {
-      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
-      session.modelInfos = [
-        {
-          value: "claude-opus-4-5",
-          displayName: "Claude Opus",
-          description: "Most capable",
-        },
-        {
-          value: "claude-sonnet-4-5",
-          displayName: "Claude Sonnet",
-          description: "Balanced",
-          supportsEffort: true,
-          supportedEffortLevels: ["medium", "high", "xhigh"],
-        },
-      ];
-
-      const response = await agent.setSessionConfigOption({
-        sessionId: SESSION_ID,
-        configId: "model",
-        value: "claude-sonnet-4-5",
-      });
-
-      const effortOption = response.configOptions.find((o) => o.id === "effort_level") as
-        | {
-            category: string;
-            currentValue: string;
-            options: Array<{ value: string }>;
-          }
-        | undefined;
-      expect(effortOption).toMatchObject({
-        category: "thought_level",
-        currentValue: "high",
-      });
-      expect(effortOption?.options.map((option) => option.value)).toEqual(["medium", "high", "xhigh"]);
-      expect(applyFlagSettingsSpy).not.toHaveBeenCalled();
-    });
-
-    it("preserves max when the selected model supports it", async () => {
-      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
-      session.effortLevel = "max";
-      session.modelInfos = [
-        {
-          value: "claude-opus-4-5",
-          displayName: "Claude Opus",
-          description: "Most capable",
-        },
-        {
-          value: "claude-sonnet-4-5",
-          displayName: "Claude Sonnet",
-          description: "Balanced",
-          supportsEffort: true,
-          supportedEffortLevels: ["medium", "high", "xhigh", "max"],
-        },
-      ];
-
-      const response = await agent.setSessionConfigOption({
-        sessionId: SESSION_ID,
-        configId: "model",
-        value: "claude-sonnet-4-5",
-      });
-
-      const effortOption = response.configOptions.find((o) => o.id === "effort_level") as
-        | {
-            category: string;
-            currentValue: string;
-            options: Array<{ value: string }>;
-          }
-        | undefined;
-      expect(effortOption).toMatchObject({
-        category: "thought_level",
-        currentValue: "max",
-      });
-      expect(effortOption?.options.map((option) => option.value)).toEqual([
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-      ]);
-      expect(applyFlagSettingsSpy).not.toHaveBeenCalled();
     });
 
     it("resolves model alias 'opus' to full model ID", async () => {
@@ -552,6 +413,101 @@ describe("session config options", () => {
       const modelOption = session.configOptions.find((o) => o.id === "model");
       expect(modelOption?.currentValue).toBe("claude-sonnet-4-5");
     });
+
+    it("includes updated effort in config_option_update when model drops effort support", async () => {
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      session.modelInfos = [
+        {
+          value: "claude-opus-4-5",
+          displayName: "Claude Opus",
+          description: "Most capable",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        },
+        {
+          value: "claude-sonnet-4-5",
+          displayName: "Claude Sonnet",
+          description: "Balanced",
+          supportsEffort: false,
+        },
+      ];
+
+      await agent.unstable_setSessionModel({
+        sessionId: SESSION_ID,
+        modelId: "claude-sonnet-4-5",
+      });
+
+      const configUpdate = sessionUpdates.find(
+        (n) => n.update.sessionUpdate === "config_option_update",
+      );
+      expect(configUpdate).toBeDefined();
+      const effortOption = (configUpdate?.update as any).configOptions.find(
+        (o: any) => o.id === "effort",
+      );
+      expect(effortOption).toBeUndefined();
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: undefined });
+    });
+
+    it("clamps effort in config_option_update when new model has different supported levels", async () => {
+      // Set current effort to "max" which the new model won't support
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      const effortOpt = session.configOptions.find((o: any) => o.id === "effort");
+      if (effortOpt) effortOpt.currentValue = "max";
+
+      session.modelInfos = [
+        {
+          value: "claude-opus-4-5",
+          displayName: "Claude Opus",
+          description: "Most capable",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "max"],
+        },
+        {
+          value: "claude-sonnet-4-5",
+          displayName: "Claude Sonnet",
+          description: "Balanced",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        },
+      ];
+
+      await agent.unstable_setSessionModel({
+        sessionId: SESSION_ID,
+        modelId: "claude-sonnet-4-5",
+      });
+
+      const configUpdate = sessionUpdates.find(
+        (n) => n.update.sessionUpdate === "config_option_update",
+      );
+      const effortOption = (configUpdate?.update as any).configOptions.find(
+        (o: any) => o.id === "effort",
+      );
+      expect(effortOption).toBeDefined();
+      expect(effortOption.currentValue).toBe("high");
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "high" });
+    });
+
+    it("preserves effort in config_option_update when new model supports same level", async () => {
+      // Set effort to "low" first
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      const effortOpt = session.configOptions.find((o: any) => o.id === "effort");
+      if (effortOpt) effortOpt.currentValue = "low";
+
+      await agent.unstable_setSessionModel({
+        sessionId: SESSION_ID,
+        modelId: "claude-sonnet-4-5",
+      });
+
+      const configUpdate = sessionUpdates.find(
+        (n) => n.update.sessionUpdate === "config_option_update",
+      );
+      const effortOption = (configUpdate?.update as any).configOptions.find(
+        (o: any) => o.id === "effort",
+      );
+      expect(effortOption?.currentValue).toBe("low");
+      // Effort didn't change, so applyFlagSettings should NOT be called
+      expect(applyFlagSettingsSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("no config_option_update notification when using setSessionConfigOption", () => {
@@ -583,6 +539,223 @@ describe("session config options", () => {
         (n) => n.update.sessionUpdate === "config_option_update",
       );
       expect(configUpdates).toHaveLength(0);
+    });
+  });
+
+  describe("setSessionConfigOption for effort", () => {
+    beforeEach(() => {
+      populateSession();
+    });
+
+    it("calls applyFlagSettings with effortLevel", async () => {
+      await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "effort",
+        value: "low",
+      });
+
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "low" });
+    });
+
+    it("updates effort currentValue in returned configOptions", async () => {
+      const response = await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "effort",
+        value: "medium",
+      });
+
+      const effortOption = response.configOptions.find((o) => o.id === "effort");
+      expect(effortOption?.currentValue).toBe("medium");
+    });
+
+    it("throws for invalid effort value", async () => {
+      await expect(
+        agent.setSessionConfigOption({
+          sessionId: SESSION_ID,
+          configId: "effort",
+          value: "turbo",
+        }),
+      ).rejects.toThrow("Invalid value for config option effort: turbo");
+    });
+
+    it("does not send config_option_update notification", async () => {
+      await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "effort",
+        value: "low",
+      });
+
+      const configUpdates = sessionUpdates.filter(
+        (n) => n.update.sessionUpdate === "config_option_update",
+      );
+      expect(configUpdates).toHaveLength(0);
+    });
+
+    it("other options are unchanged when effort is updated", async () => {
+      const response = await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "effort",
+        value: "low",
+      });
+
+      const modeOption = response.configOptions.find((o) => o.id === "mode");
+      expect(modeOption?.currentValue).toBe("default");
+      const modelOption = response.configOptions.find((o) => o.id === "model");
+      expect(modelOption?.currentValue).toBe("claude-opus-4-5");
+    });
+  });
+
+  describe("effort level and model switch interactions", () => {
+    beforeEach(() => {
+      populateSession();
+    });
+
+    it("drops effort option when switching to a model without effort support", async () => {
+      // Make sonnet not support effort
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      session.modelInfos = [
+        {
+          value: "claude-opus-4-5",
+          displayName: "Claude Opus",
+          description: "Most capable",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        },
+        {
+          value: "claude-sonnet-4-5",
+          displayName: "Claude Sonnet",
+          description: "Balanced",
+          supportsEffort: false,
+        },
+      ];
+
+      const response = await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "model",
+        value: "claude-sonnet-4-5",
+      });
+
+      const effortOption = response.configOptions.find((o) => o.id === "effort");
+      expect(effortOption).toBeUndefined();
+    });
+
+    it("clears effort via applyFlagSettings when switching to a model without effort", async () => {
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      session.modelInfos = [
+        {
+          value: "claude-opus-4-5",
+          displayName: "Claude Opus",
+          description: "Most capable",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        },
+        {
+          value: "claude-sonnet-4-5",
+          displayName: "Claude Sonnet",
+          description: "Balanced",
+          supportsEffort: false,
+        },
+      ];
+
+      await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "model",
+        value: "claude-sonnet-4-5",
+      });
+
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: undefined });
+    });
+
+    it("adds effort option when switching to a model that supports effort", async () => {
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      // Start with sonnet (no effort) as current
+      session.models = { ...session.models, currentModelId: "claude-sonnet-4-5" };
+      session.modelInfos = [
+        {
+          value: "claude-opus-4-5",
+          displayName: "Claude Opus",
+          description: "Most capable",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        },
+        {
+          value: "claude-sonnet-4-5",
+          displayName: "Claude Sonnet",
+          description: "Balanced",
+          supportsEffort: false,
+        },
+      ];
+      // Remove effort from current config options
+      session.configOptions = session.configOptions.filter((o: any) => o.id !== "effort");
+
+      const response = await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "model",
+        value: "claude-opus-4-5",
+      });
+
+      const effortOption = response.configOptions.find((o) => o.id === "effort");
+      expect(effortOption).toBeDefined();
+      // No previous effort, so defaults to "high" (the API default)
+      expect(effortOption?.currentValue).toBe("high");
+    });
+
+    it("clamps effort to valid value when new model has different supported levels", async () => {
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      // Set current effort to "max" (not supported by sonnet in our mock)
+      const effortOpt = session.configOptions.find((o: any) => o.id === "effort");
+      if (effortOpt) effortOpt.currentValue = "max";
+
+      session.modelInfos = [
+        {
+          value: "claude-opus-4-5",
+          displayName: "Claude Opus",
+          description: "Most capable",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "max"],
+        },
+        {
+          value: "claude-sonnet-4-5",
+          displayName: "Claude Sonnet",
+          description: "Balanced",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+        },
+      ];
+
+      const response = await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "model",
+        value: "claude-sonnet-4-5",
+      });
+
+      const effortOption = response.configOptions.find((o) => o.id === "effort");
+      expect(effortOption).toBeDefined();
+      // "max" is not in sonnet's levels, so should fall back to "high" (the API default)
+      expect(effortOption?.currentValue).toBe("high");
+      // SDK should be told about the clamped value
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "high" });
+    });
+
+    it("preserves effort value when new model supports the same level", async () => {
+      // Set effort to "low"
+      await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "effort",
+        value: "low",
+      });
+
+      // Switch model — both support "low"
+      const response = await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "model",
+        value: "claude-sonnet-4-5",
+      });
+
+      const effortOption = response.configOptions.find((o) => o.id === "effort");
+      expect(effortOption?.currentValue).toBe("low");
+      // applyFlagSettings was called once for the effort change, but not again for the model switch
+      expect(applyFlagSettingsSpy).toHaveBeenCalledTimes(1);
     });
   });
 

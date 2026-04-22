@@ -138,6 +138,9 @@ export class SettingsManager {
             if (settings.model) {
                 merged.model = settings.model;
             }
+            if (settings.effortLevel !== undefined) {
+                merged.effortLevel = settings.effortLevel;
+            }
             if (settings.permissions?.defaultMode !== undefined) {
                 merged.permissions = {
                     ...merged.permissions,

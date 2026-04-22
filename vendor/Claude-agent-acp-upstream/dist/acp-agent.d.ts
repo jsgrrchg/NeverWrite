@@ -18,8 +18,6 @@ type AccumulatedUsage = {
     cachedReadTokens: number;
     cachedWriteTokens: number;
 };
-declare const SUPPORTED_EFFORT_LEVELS: readonly ["low", "medium", "high", "xhigh", "max"];
-type SupportedEffortLevel = (typeof SUPPORTED_EFFORT_LEVELS)[number];
 type Session = {
     query: Query;
     input: Pushable<SDKUserMessage>;
@@ -32,6 +30,7 @@ type Session = {
     accumulatedUsage: AccumulatedUsage;
     modes: SessionModeState;
     models: SessionModelState;
+    modelInfos: ModelInfo[];
     configOptions: SessionConfigOption[];
     promptRunning: boolean;
     pendingMessages: Map<string, {
@@ -41,8 +40,6 @@ type Session = {
     nextPendingOrder: number;
     abortController: AbortController;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
-    effortLevel: SupportedEffortLevel;
-    modelInfos: ModelInfo[];
     /** Context window size of the last top-level assistant model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
      *  before the turn's first result message arrives. Defaults to
@@ -178,7 +175,7 @@ export declare class ClaudeAcpAgent implements Agent {
     canUseTool(sessionId: string): CanUseTool;
     private sendAvailableCommandsUpdate;
     private updateConfigOption;
-    private syncSessionConfigState;
+    private applyConfigOptionValue;
     private getOrCreateSession;
     private createSession;
 }

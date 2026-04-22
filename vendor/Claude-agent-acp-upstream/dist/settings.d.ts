@@ -16,6 +16,7 @@ export interface ClaudeCodeSettings {
     permissions?: PermissionSettings;
     env?: Record<string, string>;
     model?: string;
+    effortLevel?: string;
 }
 /**
  * Gets the enterprise settings path based on the current platform

@@ -130,7 +130,7 @@ fn stage_embedded_claude_runtime() {
     ensure_npm_dependencies(&vendor_root);
     stage_embedded_node_runtime(&embedded_node_root);
     stage_embedded_claude_project(&vendor_root, &embedded_claude_root);
-    validate_embedded_claude_runtime(&embedded_node_root, &embedded_claude_root);
+    validate_embedded_claude_runtime(&vendor_root, &embedded_node_root, &embedded_claude_root);
 }
 
 fn stage_embedded_node_runtime(destination_root: &Path) {
@@ -352,7 +352,11 @@ fn stage_embedded_claude_project(source_root: &Path, destination_root: &Path) {
     codesign_tree(destination_root);
 }
 
-fn validate_embedded_claude_runtime(embedded_node_root: &Path, embedded_claude_root: &Path) {
+fn validate_embedded_claude_runtime(
+    source_root: &Path,
+    embedded_node_root: &Path,
+    embedded_claude_root: &Path,
+) {
     let required_paths = [
         embedded_node_root
             .join("bin")
@@ -381,7 +385,13 @@ fn validate_embedded_claude_runtime(embedded_node_root: &Path, embedded_claude_r
         }
     }
 
-    for path in target_optional_dependency_paths(embedded_claude_root) {
+    for (source_path, path) in target_optional_dependency_paths(source_root)
+        .into_iter()
+        .zip(target_optional_dependency_paths(embedded_claude_root))
+    {
+        if !source_path.exists() {
+            continue;
+        }
         if !path.exists() {
             panic!(
                 "embedded Claude runtime is missing target dependency {} for {}-{}",

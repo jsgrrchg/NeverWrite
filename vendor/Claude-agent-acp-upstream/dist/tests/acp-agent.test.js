@@ -150,7 +150,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
         const { client, connection, newSessionResponse } = await setupTestSession(__dirname);
         const commands = await client.availableCommandsPromise;
         expect(commands).toContainEqual({
-            description: "Clear conversation history but keep a summary in context. Optional: /compact [instructions for summarization]",
+            description: "Free up context by summarizing the conversation so far",
             input: {
                 hint: "<optional custom summarization instructions>",
             },
@@ -1004,7 +1004,7 @@ describe("prompt conversion", () => {
 describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("SDK behavior", () => {
     it("finds vendored cli path", async () => {
         const path = await claudeCliPath();
-        expect(path).toContain("@anthropic-ai/claude-agent-sdk/cli.js");
+        expect(path).toMatch(/@anthropic-ai\/claude-agent-sdk-[^/]+\/claude(\.exe)?$/);
     });
     it("query has a 'default' model", async () => {
         const q = query({ prompt: "hi" });
@@ -1149,6 +1149,7 @@ describe("stop reason propagation", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
+            modelInfos: [],
             settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
@@ -1162,8 +1163,6 @@ describe("stop reason propagation", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
-            effortLevel: "high",
-            modelInfos: [],
             contextWindowSize: 200000,
         };
     }
@@ -1274,6 +1273,7 @@ describe("stop reason propagation", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
+            modelInfos: [],
             settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
@@ -1287,8 +1287,6 @@ describe("stop reason propagation", () => {
             pendingMessages: new Map(),
             nextPendingOrder: 0,
             emitRawSDKMessages: false,
-            effortLevel: "high",
-            modelInfos: [],
             contextWindowSize: 200000,
         };
         const response = await agent.prompt({
@@ -1340,6 +1338,7 @@ describe("session/close", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
+            modelInfos: [],
             settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
@@ -1353,8 +1352,6 @@ describe("session/close", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
-            effortLevel: "high",
-            modelInfos: [],
             contextWindowSize: 200000,
         };
         return agent.sessions[sessionId];
@@ -1416,6 +1413,7 @@ describe("getOrCreateSession param change detection", () => {
             }),
             modes: { currentModeId: "default", availableModes: [] },
             models: { currentModelId: "default", availableModels: [] },
+            modelInfos: [],
             settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
@@ -1429,8 +1427,6 @@ describe("getOrCreateSession param change detection", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
-            effortLevel: "high",
-            modelInfos: [],
             contextWindowSize: 200000,
         };
         return agent.sessions[sessionId];
@@ -1597,6 +1593,7 @@ describe("usage_update computation", () => {
                 currentModelId: "default",
                 availableModels: [],
             },
+            modelInfos: [],
             settingsManager: {},
             accumulatedUsage: {
                 inputTokens: 0,
@@ -1610,8 +1607,6 @@ describe("usage_update computation", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
-            effortLevel: "high",
-            modelInfos: [],
             contextWindowSize: 200000,
         };
     }
@@ -1924,7 +1919,7 @@ describe("usage_update computation", () => {
         ]);
         const session = agent.sessions["test-session"];
         expect(session.contextWindowSize).toBe(200000);
-        agent.syncSessionConfigState(session, "model", "claude-opus-4-6-1m");
+        await agent.applyConfigOptionValue(session, "model", "claude-opus-4-6-1m");
         expect(session.contextWindowSize).toBe(1000000);
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
         const usageUpdates = updates.filter((u) => u.update?.sessionUpdate === "usage_update");
@@ -1969,7 +1964,7 @@ describe("usage_update computation", () => {
     it("switching the session's model invalidates the learned context window", async () => {
         // When the user switches models mid-session, the window learned for the
         // previous model would otherwise persist into the next prompt's first
-        // mid-stream update. syncSessionConfigState should reset it so the next
+        // mid-stream update. applyConfigOptionValue should reset it so the next
         // turn's first update falls back to the heuristic (here: 200k default).
         const { agent, updates } = createMockAgentWithCapture();
         injectSession(agent, [
@@ -2002,7 +1997,7 @@ describe("usage_update computation", () => {
         session.contextWindowSize = 1000000;
         session.models = { ...session.models, currentModelId: "claude-opus-4-6-1m" };
         // User flips the selector to a 200k model.
-        agent.syncSessionConfigState(session, "model", "claude-sonnet-4-6");
+        await agent.applyConfigOptionValue(session, "model", "claude-sonnet-4-6");
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
         const usageUpdates = updates.filter((u) => u.update?.sessionUpdate === "usage_update");
         expect(usageUpdates).toHaveLength(2);
@@ -2413,6 +2408,7 @@ describe("emitRawSDKMessages", () => {
             sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
             modes: { currentModeId: "default", availableModes: [] },
             models: { currentModelId: "default", availableModels: [] },
+            modelInfos: [],
             settingsManager: { dispose: vi.fn() },
             accumulatedUsage: {
                 inputTokens: 0,
@@ -2426,8 +2422,6 @@ describe("emitRawSDKMessages", () => {
             nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages,
-            effortLevel: "high",
-            modelInfos: [],
             contextWindowSize: 200000,
         };
     }
