@@ -53,6 +53,10 @@ export interface BookmarkStore extends BookmarkState {
         newRelativePath: string,
     ) => void;
     handleEntryDeleted: (relativePath: string) => void;
+    handleFolderRenamed: (
+        oldRelativePath: string,
+        newRelativePath: string,
+    ) => void;
 
     // Lifecycle
     loadForVault: (vaultPath: string) => void;
@@ -104,6 +108,16 @@ function persistBookmarks(state: BookmarkState) {
 function nextSortOrder(arr: { sortOrder: number }[]): number {
     if (arr.length === 0) return 0;
     return Math.max(...arr.map((a) => a.sortOrder)) + 1;
+}
+
+function movePathPrefix(
+    path: string,
+    sourcePrefix: string,
+    targetPrefix: string,
+) {
+    if (path === sourcePrefix) return targetPrefix;
+    if (!path.startsWith(`${sourcePrefix}/`)) return path;
+    return `${targetPrefix}/${path.slice(sourcePrefix.length + 1)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +250,28 @@ export const useBookmarkStore = create<BookmarkStore>((set, get) => ({
     handleEntryDeleted: (relativePath) => {
         set((s) => ({
             items: s.items.filter((i) => i.entryPath !== relativePath),
+        }));
+    },
+
+    handleFolderRenamed: (oldRelativePath, newRelativePath) => {
+        set((s) => ({
+            items: s.items.map((item) => ({
+                ...item,
+                noteId: item.noteId
+                    ? movePathPrefix(
+                          item.noteId,
+                          oldRelativePath,
+                          newRelativePath,
+                      )
+                    : item.noteId,
+                entryPath: item.entryPath
+                    ? movePathPrefix(
+                          item.entryPath,
+                          oldRelativePath,
+                          newRelativePath,
+                      )
+                    : item.entryPath,
+            })),
         }));
     },
 

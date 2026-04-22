@@ -8,7 +8,12 @@ import {
     safeStorageSetItem,
 } from "../utils/safeStorage";
 import { logError, logWarn } from "../utils/runtimeLog";
-import { useEditorStore } from "./editorStore";
+import {
+    isFileTab,
+    isNoteTab,
+    isPdfTab,
+    useEditorStore,
+} from "./editorStore";
 import { useBookmarkStore } from "./bookmarkStore";
 import { inferFileViewer } from "./editorTabs";
 
@@ -165,6 +170,62 @@ function wait(ms: number) {
     return new Promise<void>((resolve) => {
         window.setTimeout(resolve, ms);
     });
+}
+
+function movePathPrefix(
+    path: string,
+    sourcePrefix: string,
+    targetPrefix: string,
+) {
+    if (path === sourcePrefix) return targetPrefix;
+    if (!path.startsWith(`${sourcePrefix}/`)) return path;
+    return `${targetPrefix}/${path.slice(sourcePrefix.length + 1)}`;
+}
+
+function moveNoteFolderPath(
+    note: NoteDto,
+    oldRelativePath: string,
+    newRelativePath: string,
+    vaultPath: string,
+): NoteDto {
+    const oldAbsolutePath = `${vaultPath}/${oldRelativePath}`;
+    const newAbsolutePath = `${vaultPath}/${newRelativePath}`;
+
+    return {
+        ...note,
+        id: movePathPrefix(note.id, oldRelativePath, newRelativePath),
+        path: movePathPrefix(note.path, oldAbsolutePath, newAbsolutePath),
+    };
+}
+
+function moveEntryFolderPath(
+    entry: VaultEntryDto,
+    oldRelativePath: string,
+    newRelativePath: string,
+    vaultPath: string,
+): VaultEntryDto {
+    const oldAbsolutePath = `${vaultPath}/${oldRelativePath}`;
+    const newAbsolutePath = `${vaultPath}/${newRelativePath}`;
+    const relativePath = movePathPrefix(
+        entry.relative_path,
+        oldRelativePath,
+        newRelativePath,
+    );
+    const path = movePathPrefix(entry.path, oldAbsolutePath, newAbsolutePath);
+    const movedFolderItself =
+        entry.kind === "folder" && entry.relative_path === oldRelativePath;
+    const fileName = movedFolderItself
+        ? getPathBaseName(relativePath)
+        : entry.file_name;
+
+    return {
+        ...entry,
+        id: movePathPrefix(entry.id, oldRelativePath, newRelativePath),
+        path,
+        relative_path: relativePath,
+        title: movedFolderItself ? fileName : entry.title,
+        file_name: fileName,
+    };
 }
 
 async function loadVaultEntriesSnapshot(vaultPath: string) {
@@ -325,6 +386,10 @@ interface VaultStore {
     createNote: (name: string) => Promise<NoteDto | null>;
     createFolder: (path: string) => Promise<VaultEntryDto | null>;
     deleteFolder: (relativePath: string) => Promise<void>;
+    renameFolder: (
+        relativePath: string,
+        newRelativePath: string,
+    ) => Promise<boolean>;
     deleteNote: (noteId: string) => Promise<void>;
     renameNote: (noteId: string, newName: string) => Promise<NoteDto | null>;
     renameNoteAsFile: (
@@ -672,6 +737,137 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         } catch (e) {
             logError("vault-store", "Failed to delete folder", e);
             throw e;
+        }
+    },
+
+    renameFolder: async (relativePath, newRelativePath) => {
+        if (relativePath === newRelativePath) return true;
+
+        try {
+            const vaultPath = get().vaultPath ?? "";
+            await invoke("move_folder", {
+                vaultPath,
+                relativePath,
+                newRelativePath,
+            });
+
+            const movedNoteIds = new Map<string, string>();
+            set((state) => {
+                const notes = state.notes.map((note) => {
+                    const next = moveNoteFolderPath(
+                        note,
+                        relativePath,
+                        newRelativePath,
+                        vaultPath,
+                    );
+                    if (next.id !== note.id) {
+                        movedNoteIds.set(note.id, next.id);
+                    }
+                    return next;
+                });
+
+                const entries = state.entries.map((entry) =>
+                    moveEntryFolderPath(
+                        entry,
+                        relativePath,
+                        newRelativePath,
+                        vaultPath,
+                    ),
+                );
+
+                return {
+                    notes,
+                    entries,
+                    vaultRevision: state.vaultRevision + 1,
+                    structureRevision: state.structureRevision + 1,
+                    resolverRevision:
+                        movedNoteIds.size > 0
+                            ? state.resolverRevision + 1
+                            : state.resolverRevision,
+                    graphRevision:
+                        movedNoteIds.size > 0
+                            ? state.graphRevision + 1
+                            : state.graphRevision,
+                    tagsRevision:
+                        movedNoteIds.size > 0
+                            ? state.tagsRevision + 1
+                            : state.tagsRevision,
+                };
+            });
+
+            const oldAbsolutePath = `${vaultPath}/${relativePath}`;
+            const newAbsolutePath = `${vaultPath}/${newRelativePath}`;
+            useEditorStore.setState((state) => ({
+                tabs: state.tabs.map((tab) => {
+                    if (
+                        isNoteTab(tab) &&
+                        (tab.noteId === relativePath ||
+                            tab.noteId.startsWith(`${relativePath}/`))
+                    ) {
+                        return {
+                            ...tab,
+                            noteId: movePathPrefix(
+                                tab.noteId,
+                                relativePath,
+                                newRelativePath,
+                            ),
+                        };
+                    }
+
+                    if (
+                        isPdfTab(tab) &&
+                        (tab.path === oldAbsolutePath ||
+                            tab.path.startsWith(`${oldAbsolutePath}/`))
+                    ) {
+                        return {
+                            ...tab,
+                            entryId: movePathPrefix(
+                                tab.entryId,
+                                relativePath,
+                                newRelativePath,
+                            ),
+                            path: movePathPrefix(
+                                tab.path,
+                                oldAbsolutePath,
+                                newAbsolutePath,
+                            ),
+                        };
+                    }
+
+                    if (
+                        isFileTab(tab) &&
+                        (tab.relativePath === relativePath ||
+                            tab.relativePath.startsWith(`${relativePath}/`))
+                    ) {
+                        const nextRelativePath = movePathPrefix(
+                            tab.relativePath,
+                            relativePath,
+                            newRelativePath,
+                        );
+                        return {
+                            ...tab,
+                            relativePath: nextRelativePath,
+                            path: movePathPrefix(
+                                tab.path,
+                                oldAbsolutePath,
+                                newAbsolutePath,
+                            ),
+                            title:
+                                nextRelativePath.split("/").pop() ??
+                                tab.title,
+                        };
+                    }
+
+                    return tab;
+                }),
+            }));
+
+            const bookmarks = useBookmarkStore.getState();
+            bookmarks.handleFolderRenamed(relativePath, newRelativePath);
+            return true;
+        } catch (e) {
+            logError("vault-store", "Failed to rename folder", e);
+            return false;
         }
     },
 

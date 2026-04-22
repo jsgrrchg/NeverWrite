@@ -1564,6 +1564,7 @@ export function FileTree() {
     const createFolder = useVaultStore((s) => s.createFolder);
     const deleteNote = useVaultStore((s) => s.deleteNote);
     const deleteFolder = useVaultStore((s) => s.deleteFolder);
+    const renameFolder = useVaultStore((s) => s.renameFolder);
     const renameNote = useVaultStore((s) => s.renameNote);
     const renameNoteAsFile = useVaultStore((s) => s.renameNoteAsFile);
     const refreshStructure = useVaultStore((s) => s.refreshStructure);
@@ -2094,75 +2095,8 @@ export function FileTree() {
                 : nextFolderPath;
 
             try {
-                await vaultInvoke("move_folder", {
-                    relativePath: folderPath,
-                    newRelativePath: nextFolderPath,
-                });
-
-                useEditorStore.setState((state) => ({
-                    tabs: state.tabs.map((tab) => {
-                        if (
-                            isNoteTab(tab) &&
-                            (tab.noteId === folderPath ||
-                                tab.noteId.startsWith(`${folderPath}/`))
-                        ) {
-                            return {
-                                ...tab,
-                                noteId: movePathPrefix(
-                                    tab.noteId,
-                                    folderPath,
-                                    nextFolderPath,
-                                ),
-                            };
-                        }
-
-                        if (
-                            isPdfTab(tab) &&
-                            (tab.path === sourceAbsolutePath ||
-                                tab.path.startsWith(`${sourceAbsolutePath}/`))
-                        ) {
-                            return {
-                                ...tab,
-                                entryId: movePathPrefix(
-                                    tab.entryId,
-                                    folderPath,
-                                    nextFolderPath,
-                                ),
-                                path: movePathPrefix(
-                                    tab.path,
-                                    sourceAbsolutePath,
-                                    nextAbsolutePath,
-                                ),
-                            };
-                        }
-
-                        if (
-                            isFileTab(tab) &&
-                            (tab.relativePath === folderPath ||
-                                tab.relativePath.startsWith(`${folderPath}/`))
-                        ) {
-                            const nextRelativePath = movePathPrefix(
-                                tab.relativePath,
-                                folderPath,
-                                nextFolderPath,
-                            );
-                            return {
-                                ...tab,
-                                relativePath: nextRelativePath,
-                                path: movePathPrefix(
-                                    tab.path,
-                                    sourceAbsolutePath,
-                                    nextAbsolutePath,
-                                ),
-                                title:
-                                    nextRelativePath.split("/").pop() ??
-                                    tab.title,
-                            };
-                        }
-
-                        return tab;
-                    }),
-                }));
+                const moved = await renameFolder(folderPath, nextFolderPath);
+                if (!moved) return null;
 
                 setSelectedNoteIds((prev) => {
                     const next = new Set<string>();
@@ -2208,14 +2142,13 @@ export function FileTree() {
                     return next;
                 });
 
-                await refreshStructure();
                 return nextFolderPath;
             } catch (error) {
                 logError("file-tree", "Failed to move folder", error);
                 return null;
             }
         },
-        [refreshStructure, vaultPath],
+        [renameFolder, vaultPath],
     );
 
     const moveFolder = useCallback(
