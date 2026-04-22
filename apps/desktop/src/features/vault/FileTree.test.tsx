@@ -43,6 +43,17 @@ function getFileRow(label: string) {
     return row!;
 }
 
+function getFixedMenuElement(child: HTMLElement) {
+    let current = child.parentElement;
+    while (current && current !== document.body) {
+        if (current.style.position === "fixed") {
+            return current;
+        }
+        current = current.parentElement;
+    }
+    return null;
+}
+
 async function expandFolder(
     user: ReturnType<typeof userEvent.setup>,
     label: string,
@@ -842,6 +853,16 @@ describe("FileTree", () => {
                 name: "Move Selected Notes to…",
             }),
         );
+        const rootMoveTarget = await screen.findByRole("button", {
+            name: "/ Root",
+        });
+        const moveMenu = getFixedMenuElement(rootMoveTarget);
+        expect(moveMenu).not.toBeNull();
+        expect(moveMenu).toHaveStyle({
+            overflowY: "auto",
+        });
+        expect(moveMenu?.getAttribute("style")).toContain("max-height:");
+
         const archiveTargets = await screen.findAllByRole("button", {
             name: "archive",
         });

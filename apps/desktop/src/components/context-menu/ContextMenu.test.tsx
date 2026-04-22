@@ -79,6 +79,29 @@ describe("ContextMenu scroll-to-close behaviour", () => {
         document.body.removeChild(chatPanel);
     });
 
+    it("does NOT close when the menu scrolls internally", () => {
+        const onClose = vi.fn();
+        render(
+            <ContextMenu
+                menu={{ x: 100, y: 100, payload: undefined }}
+                entries={entries}
+                onClose={onClose}
+                maxHeight={32}
+            />,
+        );
+
+        const menuElement =
+            screen.getByRole("button", { name: "Copy" }).parentElement
+                ?.parentElement;
+        expect(menuElement).not.toBeNull();
+
+        const scrollEvent = new Event("scroll", { bubbles: false });
+        Object.defineProperty(scrollEvent, "target", { value: menuElement });
+        window.dispatchEvent(scrollEvent);
+
+        expect(onClose).not.toHaveBeenCalled();
+    });
+
     it("closes when the document itself scrolls", () => {
         const onClose = vi.fn();
         renderMenu(onClose);

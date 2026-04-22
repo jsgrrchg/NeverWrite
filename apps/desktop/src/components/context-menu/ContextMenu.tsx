@@ -119,6 +119,12 @@ export function ContextMenu<T>({
         };
         const handleScroll = (event: Event) => {
             const target = event.target;
+            if (
+                target instanceof Node &&
+                ref.current?.contains(target)
+            ) {
+                return;
+            }
             // Always close on document-level scroll
             if (target === document || target === document.documentElement) {
                 onClose();

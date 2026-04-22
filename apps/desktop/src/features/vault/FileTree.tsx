@@ -116,6 +116,8 @@ const TREE_STICKY_ROW_BACKGROUND = "var(--bg-secondary)";
 const TREE_STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
 const TREE_LABEL_CLASSNAME = "shrink-0 whitespace-nowrap";
 const TREE_GUIDE_COLOR = "color-mix(in srgb, var(--border) 82%, transparent)";
+const FILE_TREE_CONTEXT_MENU_VIEWPORT_MARGIN = 32;
+const FILE_TREE_CONTEXT_MENU_MIN_HEIGHT = 180;
 
 // --- Tree building ---
 
@@ -4525,6 +4527,11 @@ export function FileTree() {
                     onClose={() => setContextMenu(null)}
                     entries={contextMenuEntries}
                     minWidth={160}
+                    maxHeight={Math.max(
+                        FILE_TREE_CONTEXT_MENU_MIN_HEIGHT,
+                        window.innerHeight -
+                            FILE_TREE_CONTEXT_MENU_VIEWPORT_MARGIN,
+                    )}
                 />
             )}
         </div>
