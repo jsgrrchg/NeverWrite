@@ -32,6 +32,7 @@ const CENTER_PREVIEW_INSET_PX = 6;
 const STRIP_PREVIEW_INSET_Y_PX = 4;
 const SPLIT_PREVIEW_RATIO = 0.42;
 const MIN_SPLIT_PREVIEW_SIZE = 72;
+const PANE_DROP_TARGET_SLOP_PX = 12;
 
 function roundPreviewValue(value: number) {
     return Math.round(value * 1000) / 1000;
@@ -61,6 +62,49 @@ function isPointInsideRect(
         clientY >= rect.top &&
         clientY <= rect.bottom
     );
+}
+
+function getDistanceToRect(
+    clientX: number,
+    clientY: number,
+    rect: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+) {
+    const dx =
+        clientX < rect.left
+            ? rect.left - clientX
+            : clientX > rect.right
+              ? clientX - rect.right
+              : 0;
+    const dy =
+        clientY < rect.top
+            ? rect.top - clientY
+            : clientY > rect.bottom
+              ? clientY - rect.bottom
+              : 0;
+
+    return Math.hypot(dx, dy);
+}
+
+function resolveOutsidePaneDropPosition(
+    clientX: number,
+    clientY: number,
+    rect: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+): WorkspaceMovePosition {
+    const distances = [
+        { position: "left" as const, distance: Math.abs(clientX - rect.left) },
+        {
+            position: "right" as const,
+            distance: Math.abs(clientX - rect.right),
+        },
+        { position: "up" as const, distance: Math.abs(clientY - rect.top) },
+        {
+            position: "down" as const,
+            distance: Math.abs(clientY - rect.bottom),
+        },
+    ];
+
+    distances.sort((left, right) => left.distance - right.distance);
+    return distances[0]?.position ?? "left";
 }
 
 function rectFromDom(
@@ -369,21 +413,43 @@ export function resolveWorkspaceTabDropTarget({
         return { type: "none" };
     }
 
-    const paneNodes = Array.from(
+    const paneEntries = Array.from(
         document.querySelectorAll<HTMLElement>("[data-editor-pane-id]"),
+    )
+        .map((paneNode) => ({
+            paneNode,
+            paneId: paneNode.dataset.editorPaneId ?? null,
+            paneRect: paneNode.getBoundingClientRect(),
+        }))
+        .filter(
+            (
+                entry,
+            ): entry is {
+                paneNode: HTMLElement;
+                paneId: string;
+                paneRect: DOMRect;
+            } => Boolean(entry.paneId),
+        );
+
+    const exactPane = paneEntries.find(({ paneRect }) =>
+        isPointInsideRect(clientX, clientY, paneRect),
     );
+    const nearestPaneWithinSlop =
+        paneEntries
+            .map((entry) => ({
+                ...entry,
+                distance: getDistanceToRect(clientX, clientY, entry.paneRect),
+            }))
+            .filter(({ distance }) => distance <= PANE_DROP_TARGET_SLOP_PX)
+            .sort((left, right) => left.distance - right.distance)[0] ?? null;
+    const fallbackPane = exactPane ?? nearestPaneWithinSlop;
 
-    for (const paneNode of paneNodes) {
-        const paneId = paneNode.dataset.editorPaneId ?? null;
-        if (!paneId) {
-            continue;
-        }
+    if (!fallbackPane) {
+        return { type: "none" };
+    }
 
-        const paneRect = paneNode.getBoundingClientRect();
-        if (!isPointInsideRect(clientX, clientY, paneRect)) {
-            continue;
-        }
-
+    const { paneNode, paneId, paneRect } = fallbackPane;
+    if (exactPane) {
         const strip = paneNode.querySelector<HTMLElement>(
             `[data-pane-tab-strip="${paneId}"]`,
         );
@@ -417,7 +483,11 @@ export function resolveWorkspaceTabDropTarget({
         };
     }
 
-    return { type: "none" };
+    return {
+        type: "split",
+        paneId,
+        direction: resolveOutsidePaneDropPosition(clientX, clientY, paneRect),
+    };
 }
 
 export function toCrossPaneTabDropPreview(

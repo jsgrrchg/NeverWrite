@@ -184,6 +184,88 @@ describe("workspaceTabDropPreview", () => {
         });
     });
 
+    it("keeps a split target through the narrow divider gap between panes", () => {
+        document.body.innerHTML = `
+            <div data-editor-pane-id="primary">
+              <div data-pane-tab-strip="primary"></div>
+            </div>
+            <div data-editor-pane-id="secondary">
+              <div data-pane-tab-strip="secondary"></div>
+            </div>
+        `;
+
+        const primaryPane = document.querySelector(
+            '[data-editor-pane-id="primary"]',
+        ) as HTMLElement;
+        const primaryStrip = document.querySelector(
+            '[data-pane-tab-strip="primary"]',
+        ) as HTMLElement;
+        const secondaryPane = document.querySelector(
+            '[data-editor-pane-id="secondary"]',
+        ) as HTMLElement;
+        const secondaryStrip = document.querySelector(
+            '[data-pane-tab-strip="secondary"]',
+        ) as HTMLElement;
+
+        primaryPane.getBoundingClientRect = () =>
+            mockRect({ left: 0, top: 0, width: 180, height: 160 });
+        primaryStrip.getBoundingClientRect = () =>
+            mockRect({ left: 8, top: 8, width: 164, height: 30 });
+        secondaryPane.getBoundingClientRect = () =>
+            mockRect({ left: 190, top: 0, width: 220, height: 160 });
+        secondaryStrip.getBoundingClientRect = () =>
+            mockRect({ left: 198, top: 8, width: 204, height: 30 });
+
+        expect(
+            resolveWorkspaceTabDropTarget({
+                sourcePaneId: "primary",
+                tabId: "tab-a",
+                clientX: 184,
+                clientY: 90,
+            }),
+        ).toEqual({
+            type: "split",
+            paneId: "primary",
+            direction: "right",
+        });
+
+        expect(
+            resolveWorkspaceTabDropTarget({
+                sourcePaneId: "primary",
+                tabId: "tab-a",
+                clientX: 186,
+                clientY: 90,
+            }),
+        ).toEqual({
+            type: "split",
+            paneId: "secondary",
+            direction: "left",
+        });
+    });
+
+    it("still clears the workspace target when the pointer is outside pane slop", () => {
+        document.body.innerHTML = `
+            <div data-editor-pane-id="primary">
+              <div data-pane-tab-strip="primary"></div>
+            </div>
+        `;
+
+        const primaryPane = document.querySelector(
+            '[data-editor-pane-id="primary"]',
+        ) as HTMLElement;
+        primaryPane.getBoundingClientRect = () =>
+            mockRect({ left: 0, top: 0, width: 180, height: 160 });
+
+        expect(
+            resolveWorkspaceTabDropTarget({
+                sourcePaneId: "primary",
+                tabId: "tab-a",
+                clientX: 240,
+                clientY: 90,
+            }),
+        ).toEqual({ type: "none" });
+    });
+
     it("builds an inset center overlay for foreign pane drops", () => {
         document.body.innerHTML = `
             <div data-editor-pane-id="primary">
