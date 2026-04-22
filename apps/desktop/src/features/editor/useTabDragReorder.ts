@@ -130,6 +130,31 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             },
         ) => void
     >(() => {});
+    const onDragCancelRef = useRef(onDragCancel);
+    const processPointerMoveRef = useRef<
+        (
+            tabId: string,
+            pointerId: number,
+            coords: {
+                clientX: number;
+                clientY: number;
+                screenX: number;
+                screenY: number;
+                buttons?: number;
+            },
+        ) => void
+    >(() => {});
+    const processPointerUpRef = useRef<
+        (
+            pointerId?: number,
+            coords?: {
+                clientX: number;
+                clientY: number;
+                screenX: number;
+                screenY: number;
+            },
+        ) => void
+    >(() => {});
     const latestPointerXRef = useRef(0);
     const edgeScrollDirectionRef = useRef(-1 as -1 | 0 | 1);
     const edgeScrollFrameRef = useRef<number | null>(null);
@@ -175,6 +200,10 @@ export function useTabDragReorder<TTab extends DragTabLike>({
     useEffect(() => {
         previewOrderRef.current = previewOrder;
     }, [previewOrder]);
+
+    useEffect(() => {
+        onDragCancelRef.current = onDragCancel;
+    }, [onDragCancel]);
 
     const computeDragOffset = useCallback((clientX: number) => {
         const strip = tabStripRef.current;
@@ -410,13 +439,13 @@ export function useTabDragReorder<TTab extends DragTabLike>({
         return () => {
             const session = sessionRef.current;
             if (session?.dragging) {
-                onDragCancel?.(session.tabId);
+                onDragCancelRef.current?.(session.tabId);
             }
             stopEdgeScroll();
             document.body.classList.remove("dragging-tab");
             setDetachPreviewActive(false);
         };
-    }, [onDragCancel, stopEdgeScroll]);
+    }, [stopEdgeScroll]);
 
     useLayoutEffect(() => {
         if (!liveReorder) {
@@ -870,6 +899,14 @@ export function useTabDragReorder<TTab extends DragTabLike>({
     );
 
     useEffect(() => {
+        processPointerMoveRef.current = processPointerMove;
+    }, [processPointerMove]);
+
+    useEffect(() => {
+        processPointerUpRef.current = processPointerUp;
+    }, [processPointerUp]);
+
+    useEffect(() => {
         if (activePointerId === null) {
             globalPointerTrackingRef.current = false;
             return;
@@ -883,7 +920,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 return;
             }
 
-            processPointerMove(session.tabId, event.pointerId, {
+            processPointerMoveRef.current(session.tabId, event.pointerId, {
                 clientX: event.clientX,
                 clientY: event.clientY,
                 screenX: event.screenX,
@@ -892,7 +929,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             });
         };
         const handleWindowPointerUp = (event: PointerEvent) => {
-            processPointerUp(event.pointerId, {
+            processPointerUpRef.current(event.pointerId, {
                 clientX: event.clientX,
                 clientY: event.clientY,
                 screenX: event.screenX,
@@ -900,7 +937,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
             });
         };
         const handleWindowPointerCancel = (event: PointerEvent) => {
-            processPointerUp(event.pointerId, {
+            processPointerUpRef.current(event.pointerId, {
                 clientX: event.clientX,
                 clientY: event.clientY,
                 screenX: event.screenX,
@@ -921,7 +958,7 @@ export function useTabDragReorder<TTab extends DragTabLike>({
                 handleWindowPointerCancel,
             );
         };
-    }, [activePointerId, processPointerMove, processPointerUp]);
+    }, [activePointerId]);
 
     useEffect(() => {
         handlePointerUpRef.current = handlePointerUp;

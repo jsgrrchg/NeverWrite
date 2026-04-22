@@ -257,4 +257,94 @@ describe("useTabDragReorder", () => {
 
         expect(onActivate).not.toHaveBeenCalled();
     });
+
+    it("keeps an active drag alive when callback props change identity", () => {
+        const onCommitReorder = vi.fn();
+        const onDragCancel = vi.fn();
+        const onDragEnd = vi.fn();
+
+        const { result, rerender } = renderHook(
+            ({ cancelVersion }: { cancelVersion: number }) =>
+                useTabDragReorder({
+                    tabs: [{ id: "tab-a" }, { id: "tab-b" }],
+                    onCommitReorder,
+                    onDragEnd,
+                    onDragCancel: () => onDragCancel(cancelVersion),
+                    liveReorder: false,
+                }),
+            {
+                initialProps: { cancelVersion: 1 },
+            },
+        );
+
+        const strip = document.createElement("div");
+        const tabA = document.createElement("div");
+        const tabB = document.createElement("div");
+
+        setElementLayout(strip, { left: 0, top: 0, width: 120, height: 28 });
+        setElementLayout(tabA, { left: 0, top: 0, width: 60, height: 28 });
+        setElementLayout(tabB, { left: 60, top: 0, width: 60, height: 28 });
+        tabA.setPointerCapture = vi.fn();
+
+        act(() => {
+            result.current.tabStripRef.current = strip;
+            result.current.registerTabNode("tab-a", tabA);
+            result.current.registerTabNode("tab-b", tabB);
+        });
+
+        act(() => {
+            result.current.handlePointerDown(
+                "tab-a",
+                0,
+                createPointerDownEvent(tabA, {
+                    pointerId: 11,
+                    clientX: 12,
+                    clientY: 10,
+                    screenX: 112,
+                    screenY: 10,
+                }) as never,
+            );
+        });
+
+        const moveListeners = pointerListeners.get("pointermove");
+        expect(moveListeners?.size).toBe(1);
+
+        act(() => {
+            moveListeners?.forEach((listener) =>
+                listener({
+                    pointerId: 11,
+                    clientX: 92,
+                    clientY: 12,
+                    screenX: 192,
+                    screenY: 12,
+                    buttons: 1,
+                } as PointerEvent),
+            );
+        });
+
+        expect(result.current.draggingTabId).toBe("tab-a");
+
+        act(() => {
+            rerender({ cancelVersion: 2 });
+        });
+
+        expect(onDragCancel).not.toHaveBeenCalled();
+        expect(result.current.draggingTabId).toBe("tab-a");
+        expect(pointerListeners.get("pointermove")?.size).toBe(1);
+
+        act(() => {
+            pointerListeners.get("pointerup")?.forEach((listener) =>
+                listener({
+                    pointerId: 11,
+                    clientX: 92,
+                    clientY: 12,
+                    screenX: 192,
+                    screenY: 12,
+                } as PointerEvent),
+            );
+        });
+
+        expect(onDragEnd).toHaveBeenCalledTimes(1);
+        expect(onCommitReorder).toHaveBeenCalledWith(0, 1);
+    });
 });
