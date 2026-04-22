@@ -22,7 +22,13 @@ function hasVisibleAiComposerDropZone() {
     );
 }
 
-export function AIChatWorkspaceHost() {
+interface AIChatWorkspaceHostProps {
+    startupReady?: boolean;
+}
+
+export function AIChatWorkspaceHost({
+    startupReady = true,
+}: AIChatWorkspaceHostProps) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const { hasChatTabs, activeChatSessionId } = useEditorStore(
         useShallow((state) => {
@@ -47,13 +53,13 @@ export function AIChatWorkspaceHost() {
     const recoveringSessionIdRef = useRef<string | null>(null);
     const attachReplayCountsRef = useRef(new WeakMap<object, number>());
 
-    useAiChatEventBridge(Boolean(vaultPath) && hasChatTabs);
+    useAiChatEventBridge(Boolean(vaultPath) && hasChatTabs && startupReady);
 
     useEffect(() => {
-        if (!vaultPath || !hasChatTabs) return;
+        if (!startupReady || !vaultPath || !hasChatTabs) return;
 
         void chatActions.initialize({ createDefaultSession: false });
-    }, [chatActions, hasChatTabs, vaultPath]);
+    }, [chatActions, hasChatTabs, startupReady, vaultPath]);
 
     useEffect(() => {
         if (!activeChatSessionId) {
@@ -76,6 +82,7 @@ export function AIChatWorkspaceHost() {
         if (
             !vaultPath ||
             !hasChatTabs ||
+            !startupReady ||
             !activeChatSessionId ||
             isInitializing
         ) {
@@ -104,6 +111,7 @@ export function AIChatWorkspaceHost() {
         chatActions,
         hasChatTabs,
         isInitializing,
+        startupReady,
         vaultPath,
     ]);
 

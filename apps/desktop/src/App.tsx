@@ -1145,6 +1145,7 @@ export default function App() {
     const focusedWorkspaceTabId = useEditorStore(
         (state) => selectFocusedEditorTab(state)?.id ?? null,
     );
+    const chatTabsReady = useChatTabsStore((s) => s.isReady);
     const hydrateChatWorkspace = useChatTabsStore((s) => s.hydrateForVault);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
     const developerModeEnabled = useSettingsStore(
@@ -2044,7 +2045,7 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            <AIChatWorkspaceHost />
+            <AIChatWorkspaceHost startupReady={chatTabsReady} />
             <WorkspaceChromeBar />
 
             <div className="relative flex-1 flex overflow-hidden">
