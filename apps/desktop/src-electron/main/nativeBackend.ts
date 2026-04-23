@@ -13,6 +13,7 @@ const SUPPORTED_COMMANDS = new Set([
     "get_vault_open_state",
     "list_notes",
     "get_graph_revision",
+    "get_graph_snapshot",
     "list_vault_entries",
     "read_vault_entry",
     "read_vault_file",
