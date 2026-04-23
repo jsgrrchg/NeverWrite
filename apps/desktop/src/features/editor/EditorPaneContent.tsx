@@ -18,7 +18,6 @@ import {
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
-import { NewTabView } from "./NewTabView";
 import { SearchView } from "../search/SearchView";
 import { PdfTabView } from "../pdf/PdfTabView";
 import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
@@ -29,7 +28,6 @@ import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
 type EditorPanelView =
     | "pdf"
     | "file"
-    | "new"
     | "search"
     | "ai-review"
     | "ai-chat"
@@ -117,8 +115,6 @@ function renderEditorPanelView(
                     <LazyExcalidrawTabView />
                 </React.Suspense>
             );
-        case "new":
-            return <NewTabView />;
         case "search":
             return <SearchView />;
         case "graph":
@@ -153,7 +149,6 @@ export function EditorPaneContent({
         if (isMapTab(tab)) return "map";
         if (isGraphTab(tab)) return "graph";
         if (!isNoteTab(tab)) return "editor";
-        if (tab.noteId === "") return "new";
         if (tab.noteId === "__search__") return "search";
         return "editor";
     })();

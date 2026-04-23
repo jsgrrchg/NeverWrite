@@ -67,10 +67,6 @@ vi.mock("./features/ai/components/AIReviewView", () => ({
     AIReviewView: () => <div data-testid="review-view">Review view</div>,
 }));
 
-vi.mock("./features/editor/NewTabView", () => ({
-    NewTabView: () => <div data-testid="new-tab-view">New tab</div>,
-}));
-
 vi.mock("./features/search/SearchView", () => ({
     SearchView: () => <div data-testid="search-view">Search view</div>,
 }));
@@ -169,30 +165,6 @@ describe("App note window", () => {
             "flex",
             "flex-col",
         );
-    });
-
-    it("closes an active New Tab through the global close-tab command", async () => {
-        setEditorTabs([
-            {
-                id: "new-tab-1",
-                kind: "note",
-                noteId: "",
-                title: "New Tab",
-                content: "",
-            },
-        ]);
-
-        renderComponent(<App />);
-        await flushPromises();
-
-        await act(async () => {
-            useCommandStore.getState().execute("editor:close-tab");
-            await Promise.resolve();
-        });
-        await flushPromises();
-
-        expect(useEditorStore.getState().tabs).toHaveLength(0);
-        expect(useEditorStore.getState().activeTabId).toBeNull();
     });
 
     it("registers workspace split and focus commands", async () => {

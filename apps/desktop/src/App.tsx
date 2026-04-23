@@ -12,7 +12,6 @@ import { AppLayout } from "./components/layout/AppLayout";
 import { SidebarShell } from "./components/layout/SidebarShell";
 import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
-import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
@@ -151,14 +150,9 @@ function cycleEditorTabs(backward: boolean) {
 }
 
 function openEmptyTab() {
+    // Cmd+T opens the unified quick switcher palette instead of a blank draft tab.
     if (!useVaultStore.getState().vaultPath) return;
-
-    useEditorStore.getState().insertExternalTab({
-        id: crypto.randomUUID(),
-        noteId: "",
-        title: "New Tab",
-        content: "",
-    });
+    useCommandStore.getState().openQuickSwitcher();
 }
 
 function toggleLivePreviewSetting() {
@@ -182,7 +176,6 @@ function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     return (
         <>
-            {rightPanelView === "chat" && <AIChatPanel />}
             {rightPanelView === "outline" && <OutlineRightPanel />}
             {rightPanelView === "links" && <LinksPanel />}
         </>
@@ -545,7 +538,7 @@ function useRegisterCommands(
                 const activeTab = selectFocusedEditorTab(state);
                 if (!activeTab) return;
 
-                if (isNoteTab(activeTab) && activeTab.noteId !== "") {
+                if (isNoteTab(activeTab)) {
                     window.dispatchEvent(
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );

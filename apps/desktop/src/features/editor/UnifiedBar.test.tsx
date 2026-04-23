@@ -793,37 +793,6 @@ describe("UnifiedBar tab strip drop", () => {
         expect(closeMock).toHaveBeenCalledTimes(1);
     });
 
-    it("renders New Tab without a fake .md suffix and closes it from the tab strip", async () => {
-        useSettingsStore.setState({ fileTreeShowExtensions: true });
-        setEditorTabs([
-            {
-                id: "tab-new",
-                kind: "note",
-                noteId: "",
-                title: "New Tab",
-                content: "",
-            },
-        ]);
-
-        const { UnifiedBar } = await import("./UnifiedBar");
-        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
-        await flushPromises();
-
-        expect(container).toHaveTextContent("New Tab");
-        expect(container).not.toHaveTextContent(".md");
-
-        const closeButton = container.querySelector(
-            '[data-tab-id="tab-new"] button',
-        ) as HTMLElement | null;
-        expect(closeButton).not.toBeNull();
-
-        fireEvent.click(closeButton!);
-        await flushPromises();
-
-        expect(useEditorStore.getState().tabs).toHaveLength(0);
-        expect(useEditorStore.getState().activeTabId).toBeNull();
-    });
-
     it("does not render the ACP chat button next to the new-tab button", async () => {
         setEditorTabs([
             {

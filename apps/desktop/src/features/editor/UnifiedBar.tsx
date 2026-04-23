@@ -55,10 +55,8 @@ import {
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
-import {
-    buildNewTabContextMenuEntries,
-    openBlankDraftTabFromPlusButton,
-} from "./newTabMenuActions";
+import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
+import { useCommandStore } from "../command-palette/store/commandStore";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
@@ -1425,9 +1423,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         data-new-tab-button="true"
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={() => {
-                                            openBlankDraftTabFromPlusButton(
-                                                focusedPaneId ?? undefined,
-                                            );
+                                            useCommandStore
+                                                .getState()
+                                                .openQuickSwitcher();
                                         }}
                                         onContextMenu={(event) => {
                                             event.preventDefault();

@@ -28,10 +28,8 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { useTerminalRuntimeStore } from "../terminal/terminalRuntimeStore";
 import { getWindowMode } from "../../app/detachedWindows";
-import {
-    buildNewTabContextMenuEntries,
-    openBlankDraftTabFromPlusButton,
-} from "./newTabMenuActions";
+import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
+import { useCommandStore } from "../command-palette/store/commandStore";
 import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
@@ -713,7 +711,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             type="button"
                             data-new-tab-button="true"
                             onClick={() =>
-                                openBlankDraftTabFromPlusButton(paneId)
+                                useCommandStore.getState().openQuickSwitcher()
                             }
                             onContextMenu={(event) => {
                                 event.preventDefault();

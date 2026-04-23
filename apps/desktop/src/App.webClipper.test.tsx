@@ -55,8 +55,8 @@ vi.mock("./features/notes/OutlinePanel", () => ({
     OutlinePanel: () => <div data-testid="outline-panel" />,
 }));
 
-vi.mock("./features/ai/AIChatPanel", () => ({
-    AIChatPanel: () => <div data-testid="ai-chat-panel" />,
+vi.mock("./features/ai/AgentsSidebarPanel", () => ({
+    AgentsSidebarPanel: () => <div data-testid="agents-sidebar-panel" />,
 }));
 
 vi.mock("./features/editor/UnifiedBar", () => ({
@@ -88,10 +88,6 @@ vi.mock("./features/editor/FileTabView", () => ({
 
 vi.mock("./features/ai/components/AIReviewView", () => ({
     AIReviewView: () => <div data-testid="review-view">Review view</div>,
-}));
-
-vi.mock("./features/editor/NewTabView", () => ({
-    NewTabView: () => <div data-testid="new-tab-view">New tab</div>,
 }));
 
 vi.mock("./features/search/SearchView", () => ({

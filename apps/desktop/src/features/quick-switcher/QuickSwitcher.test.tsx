@@ -107,7 +107,7 @@ describe("QuickSwitcher", () => {
             await vi.runAllTimersAsync();
         });
 
-        const input = screen.getByPlaceholderText("Search files and notes...");
+        const input = screen.getByPlaceholderText(/Search files/);
         fireEvent.change(input, { target: { value: "Plan" } });
         fireEvent.keyDown(input, { key: "Enter" });
 
@@ -140,14 +140,14 @@ describe("QuickSwitcher", () => {
             await vi.runAllTimersAsync();
         });
 
-        const input = screen.getByPlaceholderText("Search files and notes...");
-        const list = input.parentElement?.querySelector("div.max-h-64");
+        const input = screen.getByPlaceholderText(/Search files/);
+        const list = screen.getByTestId("quick-switcher-list");
 
         expect(list).toBeInstanceOf(HTMLDivElement);
 
-        Object.defineProperty(list as HTMLDivElement, "clientHeight", {
+        Object.defineProperty(list, "clientHeight", {
             configurable: true,
-            value: 3 * 48,
+            value: 3 * 34,
         });
 
         for (let step = 0; step < 6; step += 1) {
@@ -217,7 +217,7 @@ describe("QuickSwitcher", () => {
 
         expect(screen.getByText("Research thread")).toBeInTheDocument();
 
-        const input = screen.getByPlaceholderText("Search files and notes...");
+        const input = screen.getByPlaceholderText(/Search files/);
         fireEvent.change(input, { target: { value: "Research" } });
         await act(async () => {
             await vi.runAllTimersAsync();
@@ -266,7 +266,7 @@ describe("QuickSwitcher", () => {
         expect(screen.getByText("History")).toBeInTheDocument();
         expect(screen.getByText("Chat history")).toBeInTheDocument();
 
-        const input = screen.getByPlaceholderText("Search files and notes...");
+        const input = screen.getByPlaceholderText(/Search files/);
         fireEvent.change(input, { target: { value: "History" } });
         await act(async () => {
             await vi.runAllTimersAsync();

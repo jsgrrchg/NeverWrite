@@ -5,6 +5,7 @@ import {
     useCallback,
     useMemo,
     useDeferredValue,
+    type ReactNode,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
@@ -35,7 +36,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { getSessionTitle } from "../ai/sessionPresentation";
 
-const QUICK_SWITCHER_ROW_HEIGHT = 48;
+const QUICK_SWITCHER_ROW_HEIGHT = 34;
 
 function fuzzyScore(query: string, text: string): number {
     const q = query.toLowerCase();
@@ -407,10 +408,24 @@ function QuickSwitcherDialog() {
             const maxIndex = Math.max(0, maxVisibleResults - 1);
             if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setSelectedIndex(Math.min(boundedSelectedIndex + 1, maxIndex));
+                setSelectedIndex(
+                    boundedSelectedIndex >= maxIndex
+                        ? 0
+                        : boundedSelectedIndex + 1,
+                );
             } else if (e.key === "ArrowUp") {
                 e.preventDefault();
-                setSelectedIndex(Math.max(boundedSelectedIndex - 1, 0));
+                setSelectedIndex(
+                    boundedSelectedIndex <= 0
+                        ? maxIndex
+                        : boundedSelectedIndex - 1,
+                );
+            } else if (e.key === "Home") {
+                e.preventDefault();
+                setSelectedIndex(0);
+            } else if (e.key === "End") {
+                e.preventDefault();
+                setSelectedIndex(maxIndex);
             } else if (e.key === "Enter") {
                 e.preventDefault();
                 const item = results[boundedSelectedIndex];
@@ -429,17 +444,36 @@ function QuickSwitcherDialog() {
         ],
     );
 
+    const vaultName = useVaultStore((s) => {
+        if (!s.vaultPath) return null;
+        const parts = s.vaultPath.split(/[\\/]/).filter(Boolean);
+        return parts.length > 0 ? parts[parts.length - 1] : s.vaultPath;
+    });
+    const placeholder = vaultName
+        ? `Search files in ${vaultName}\u2026`
+        : "Search files by name or path\u2026";
+    const isEmptyQuery = query.trim().length === 0;
+    const showLoader = !isEmptyQuery && query !== deferredQuery;
+
     return (
         <div
-            className="fixed inset-0 z-50 flex items-start justify-center"
-            style={{ paddingTop: "20vh" }}
+            className="fixed inset-0 z-50 flex items-start justify-center px-5 pt-[min(12vh,88px)]"
+            style={{
+                background:
+                    "color-mix(in srgb, var(--bg-primary) 72%, transparent)",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+            }}
             onClick={closeModal}
         >
             <div
-                className="w-full max-w-md rounded-lg shadow-2xl overflow-hidden"
+                className="flex w-full flex-col overflow-hidden rounded-xl"
                 style={{
-                    backgroundColor: "var(--bg-secondary)",
-                    border: "1px solid var(--border)",
+                    maxWidth: 620,
+                    background: "var(--bg-elevated)",
+                    border: "1px solid color-mix(in srgb, var(--border) 80%, transparent)",
+                    boxShadow:
+                        "0 24px 80px rgba(0, 0, 0, 0.22), 0 0 0 1px color-mix(in srgb, var(--border) 40%, transparent)",
                 }}
                 onClick={(e) => e.stopPropagation()}
             >
@@ -451,21 +485,29 @@ function QuickSwitcherDialog() {
                         setSelectedIndex(0);
                     }}
                     onKeyDown={handleKeyDown}
-                    placeholder="Search files and notes..."
-                    className="w-full px-4 py-3 text-sm outline-none"
+                    placeholder={placeholder}
+                    className="w-full bg-transparent px-3.5 py-2.5 text-[14px] outline-none"
                     style={{
-                        backgroundColor: "transparent",
                         color: "var(--text-primary)",
                         borderBottom: "1px solid var(--border)",
                     }}
                 />
-                <div ref={listRef} className="max-h-64 overflow-y-auto py-1">
+                <div
+                    ref={listRef}
+                    data-testid="quick-switcher-list"
+                    className="overflow-y-auto py-1"
+                    style={{ maxHeight: "min(56vh, 480px)" }}
+                >
                     {results.length === 0 ? (
                         <div
-                            className="px-4 py-3 text-sm"
+                            className="px-3.5 py-6 text-center text-[12px]"
                             style={{ color: "var(--text-secondary)" }}
                         >
-                            No files or notes found
+                            {isEmptyQuery
+                                ? vaultName
+                                    ? "Type to search your vault"
+                                    : "Open a vault to start searching"
+                                : "No matching items"}
                         </div>
                     ) : (
                         <div
@@ -484,40 +526,58 @@ function QuickSwitcherDialog() {
                             >
                                 {visibleResults.map((item, localIndex) => {
                                     const i = virtual.startIndex + localIndex;
+                                    const isSelected =
+                                        i === boundedSelectedIndex;
                                     return (
                                         <button
                                             key={item.key}
+                                            type="button"
+                                            onMouseEnter={() =>
+                                                setSelectedIndex(i)
+                                            }
                                             onClick={() =>
                                                 void openItemAndClose(item)
                                             }
-                                            className="w-full text-left px-4 py-2 text-sm"
+                                            className="flex w-full items-center gap-2.5 px-3.5 text-left"
                                             style={{
-                                                backgroundColor:
-                                                    i === boundedSelectedIndex
-                                                        ? "var(--accent)"
-                                                        : "transparent",
-                                                color:
-                                                    i === selectedIndex
-                                                        ? "#fff"
-                                                        : "var(--text-primary)",
-                                                minHeight:
-                                                    QUICK_SWITCHER_ROW_HEIGHT,
+                                                height: QUICK_SWITCHER_ROW_HEIGHT,
+                                                background: isSelected
+                                                    ? "color-mix(in srgb, var(--accent) 14%, var(--bg-primary))"
+                                                    : "transparent",
+                                                color: "var(--text-primary)",
                                             }}
                                         >
-                                            <div className="truncate">
-                                                {item.title}
-                                            </div>
-                                            <div
-                                                className="text-xs truncate"
+                                            <span
+                                                className="flex shrink-0 items-center justify-center"
                                                 style={{
-                                                    opacity:
-                                                        i === selectedIndex
-                                                            ? 0.7
-                                                            : 0.5,
+                                                    width: 15,
+                                                    height: 15,
+                                                    opacity: isSelected
+                                                        ? 0.92
+                                                        : 0.62,
+                                                    color: "var(--text-primary)",
                                                 }}
                                             >
-                                                {item.subtitle}
-                                            </div>
+                                                {renderQuickSwitcherIcon(item)}
+                                            </span>
+
+                                            <span
+                                                className="truncate text-[13px] font-medium"
+                                                style={{
+                                                    color: "var(--text-primary)",
+                                                }}
+                                            >
+                                                {item.title}
+                                            </span>
+
+                                            <span
+                                                className="min-w-0 flex-1 truncate font-mono text-[11px]"
+                                                style={{
+                                                    color: "color-mix(in srgb, var(--text-secondary) 70%, transparent)",
+                                                }}
+                                            >
+                                                {formatItemSubtitle(item)}
+                                            </span>
                                         </button>
                                     );
                                 })}
@@ -525,7 +585,100 @@ function QuickSwitcherDialog() {
                         </div>
                     )}
                 </div>
+                <div
+                    className="flex items-center justify-between px-3.5 py-1.5 text-[11px]"
+                    style={{
+                        borderTop: "1px solid var(--border)",
+                        color: "color-mix(in srgb, var(--text-secondary) 70%, transparent)",
+                    }}
+                >
+                    <span>
+                        {showLoader
+                            ? "Searching\u2026"
+                            : "\u2191\u2193 Navigate \u00b7 Enter Open \u00b7 Esc Close"}
+                    </span>
+                    {results.length > 0 && (
+                        <span>
+                            {boundedSelectedIndex + 1} / {results.length}
+                        </span>
+                    )}
+                </div>
             </div>
         </div>
+    );
+}
+
+function formatItemSubtitle(item: QuickSwitcherItem): string {
+    // Non-path subtitles (chat session id, "Chat history" label) stay as-is;
+    // path-like subtitles display the full path so the user sees where the
+    // item lives inside the vault.
+    return item.subtitle;
+}
+
+function renderQuickSwitcherIcon(item: QuickSwitcherItem): ReactNode {
+    const commonProps = {
+        width: 15,
+        height: 15,
+        viewBox: "0 0 16 16",
+        fill: "none" as const,
+        stroke: "currentColor",
+        strokeWidth: 1.1,
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+    };
+
+    if (item.kind === "pdf") {
+        return (
+            <svg {...commonProps} stroke="#e24b3b" strokeWidth={1}>
+                <path d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z" />
+                <path d="M9.5 1.5V5H13" strokeWidth={0.8} />
+                <text
+                    x="5"
+                    y="12"
+                    fontSize="4.5"
+                    fontWeight="700"
+                    fill="#e24b3b"
+                    stroke="none"
+                    fontFamily="sans-serif"
+                >
+                    PDF
+                </text>
+            </svg>
+        );
+    }
+
+    if (item.kind === "file") {
+        return (
+            <svg {...commonProps}>
+                <path d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z" />
+                <path d="M9.5 1.5V5H13" strokeWidth={0.85} />
+            </svg>
+        );
+    }
+
+    if (item.kind === "chat") {
+        return (
+            <svg {...commonProps}>
+                <path d="M2 3h12v8H5l-3 3V3z" />
+            </svg>
+        );
+    }
+
+    if (item.kind === "history") {
+        return (
+            <svg {...commonProps}>
+                <path d="M8 2.5a5.5 5.5 0 1 0 5.5 5.5" />
+                <path d="M8 5.2v3.1l2.1 1.2" />
+            </svg>
+        );
+    }
+
+    // note
+    return (
+        <svg {...commonProps}>
+            <path d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z" />
+            <path d="M9.5 1.5V5H13" strokeWidth={0.85} />
+            <path d="M5.5 8.5h5M5.5 10.8h3.2" strokeWidth={0.85} />
+        </svg>
     );
 }

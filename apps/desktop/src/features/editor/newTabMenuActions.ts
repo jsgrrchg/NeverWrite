@@ -16,26 +16,6 @@ interface SavedVaultFileDetail {
     content_truncated?: boolean | null;
 }
 
-function insertBlankDraftTab(paneId?: string) {
-    if (!useVaultStore.getState().vaultPath) return;
-
-    const tab = {
-        id: crypto.randomUUID(),
-        kind: "note" as const,
-        noteId: "",
-        title: "New Tab",
-        content: "",
-    };
-    const editor = useEditorStore.getState();
-
-    if (paneId) {
-        editor.insertExternalTabInPane(tab, paneId);
-        return;
-    }
-
-    editor.insertExternalTab(tab);
-}
-
 function getNextUntitledNoteName() {
     const notes = useVaultStore.getState().notes;
     let name = "Untitled";
@@ -237,10 +217,6 @@ export function buildNewTabContextMenuEntries(options?: {
     }
 
     return entries;
-}
-
-export function openBlankDraftTabFromPlusButton(paneId?: string) {
-    insertBlankDraftTab(paneId);
 }
 
 export async function openNewNoteInPane(paneId?: string) {
