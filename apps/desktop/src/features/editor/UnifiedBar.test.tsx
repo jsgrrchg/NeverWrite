@@ -1017,6 +1017,47 @@ describe("UnifiedBar tab strip drop", () => {
         });
     });
 
+    it("creates a workspace terminal from the plus-button context menu in developer terminal mode", async () => {
+        const user = userEvent.setup();
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+        setVaultEntries([]);
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: true,
+        });
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const newTabButton = container.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "New Terminal" }),
+        );
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(activeTab?.kind).toBe("terminal");
+        });
+    });
+
     it("shrinks editor tabs continuously and expands them again when space returns", async () => {
         const resizeCallbacks: ResizeObserverCallback[] = [];
         const originalResizeObserver = globalThis.ResizeObserver;

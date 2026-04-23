@@ -159,6 +159,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const developerModeEnabled = useSettingsStore(
         (s) => s.developerModeEnabled,
     );
+    const developerTerminalEnabled = useSettingsStore(
+        (s) => s.developerTerminalEnabled,
+    );
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
@@ -1627,6 +1630,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     entries={buildNewTabContextMenuEntries({
                         paneId: focusedPaneId ?? undefined,
                         developerModeEnabled,
+                        developerTerminalEnabled,
                     })}
                 />
             )}

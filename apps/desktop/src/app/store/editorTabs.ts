@@ -181,6 +181,14 @@ export interface GraphTab {
     title: string;
 }
 
+export interface TerminalTab {
+    id: string;
+    kind: "terminal";
+    terminalId: string;
+    title: string;
+    cwd: string | null;
+}
+
 export type Tab =
     | NoteTab
     | PdfTab
@@ -189,7 +197,8 @@ export type Tab =
     | ChatTab
     | ChatHistoryTab
     | MapTab
-    | GraphTab;
+    | GraphTab
+    | TerminalTab;
 
 export type NoteTabInput = Omit<
     NoteTab,
@@ -237,6 +246,12 @@ export type MapTabInput = Omit<MapTab, "kind" | "history" | "historyIndex"> & {
     historyIndex?: number;
 };
 
+export type TerminalTabInput = Omit<TerminalTab, "kind" | "title" | "cwd"> & {
+    kind?: "terminal";
+    title?: string | null;
+    cwd?: string | null;
+};
+
 export type TabInput =
     | NoteTabInput
     | PdfTabInput
@@ -245,7 +260,8 @@ export type TabInput =
     | ChatTab
     | ChatHistoryTab
     | MapTabInput
-    | GraphTab;
+    | GraphTab
+    | TerminalTabInput;
 
 export type HistoryTab = NoteTab | PdfTab | FileTab | MapTab;
 export type NavigableHistoryTab = NoteTab | PdfTab | FileTab;
@@ -281,6 +297,7 @@ function inferTabKind(tab: AnyTabLike | null | undefined): Tab["kind"] | null {
     if ("kind" in tab && typeof tab.kind === "string") {
         return tab.kind;
     }
+    if ("terminalId" in tab) return "terminal";
     if ("noteId" in tab) return "note";
     if ("entryId" in tab) return "pdf";
     if ("sessionId" in tab) return "ai-review";
@@ -368,6 +385,16 @@ export function isGraphTab(
     tab: Tab | TabInput | null | undefined,
 ): tab is GraphTab {
     return inferTabKind(tab) === "graph";
+}
+
+export function isTerminalTab(tab: Tab | null | undefined): tab is TerminalTab;
+export function isTerminalTab(
+    tab: TabInput | null | undefined,
+): tab is TerminalTabInput;
+export function isTerminalTab(
+    tab: Tab | TabInput | null | undefined,
+): tab is TerminalTab | TerminalTabInput {
+    return inferTabKind(tab) === "terminal";
 }
 
 export function isHistoryTab(tab: Tab | null | undefined): tab is HistoryTab;
@@ -783,6 +810,29 @@ export function createChatTab(
         sessionId,
         ...(historySessionId ? { historySessionId } : {}),
         title,
+    };
+}
+
+export function createTerminalTab(options?: {
+    title?: string | null;
+    cwd?: string | null;
+}): TerminalTab {
+    return {
+        id: crypto.randomUUID(),
+        kind: "terminal",
+        terminalId: crypto.randomUUID(),
+        title: options?.title?.trim() || "Terminal",
+        cwd: options?.cwd ?? null,
+    };
+}
+
+export function ensureTerminalTabDefaults(tab: TerminalTabInput): TerminalTab {
+    return {
+        id: tab.id,
+        kind: "terminal",
+        terminalId: tab.terminalId,
+        title: tab.title?.trim() || "Terminal",
+        cwd: tab.cwd ?? null,
     };
 }
 

@@ -7,6 +7,7 @@ type XtermMockInstance = {
     reset: () => void;
     clear: () => void;
     focus: () => void;
+    focusCalls: number;
     selectAll: () => void;
     getSelection: () => string;
     emitData: (data: string) => void;
@@ -37,6 +38,7 @@ vi.mock("@xterm/xterm", () => ({
         element: HTMLDivElement | null = null;
         screen: HTMLDivElement | null = null;
         textarea: HTMLTextAreaElement | undefined;
+        focusCalls = 0;
         options: Record<string, unknown>;
         private selection = "";
         private readonly dataListeners = new Set<(data: string) => void>();
@@ -83,6 +85,7 @@ vi.mock("@xterm/xterm", () => ({
         }
 
         focus() {
+            this.focusCalls += 1;
             this.textarea?.dispatchEvent(new FocusEvent("focus"));
         }
 

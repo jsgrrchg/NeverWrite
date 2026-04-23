@@ -5,6 +5,7 @@ import {
     getEditorSessionKey,
     restorePersistedSession,
 } from "./editorSession";
+import type { Tab } from "./editorTabs";
 import { normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useLayoutStore } from "./layoutStore";
@@ -111,6 +112,14 @@ describe("editorSession", () => {
                     title: "History",
                 },
                 {
+                    id: "terminal-1",
+                    kind: "terminal",
+                    terminalId: "runtime-1",
+                    title: "Terminal 1",
+                    cwd: "/vaults/project-alpha",
+                    rawOutput: "this must stay out of session payloads",
+                } as Tab & { rawOutput: string },
+                {
                     id: "review-1",
                     kind: "ai-review",
                     sessionId: "review-session",
@@ -132,6 +141,7 @@ describe("editorSession", () => {
                         "map-1",
                         "graph-1",
                         "history-1",
+                        "terminal-1",
                     ],
                     activeTabId: "file-1",
                 },
@@ -171,6 +181,16 @@ describe("editorSession", () => {
             kind: "ai-chat-history",
             title: "History",
         });
+        expect(session.tabsById["terminal-1"]).toEqual({
+            id: "terminal-1",
+            kind: "terminal",
+            terminalId: "runtime-1",
+            title: "Terminal 1",
+            cwd: "/vaults/project-alpha",
+        });
+        expect(session.tabsById["terminal-1"]).not.toHaveProperty(
+            "rawOutput",
+        );
         expect(session.tabsById["review-1"]).toBeUndefined();
     });
 
@@ -366,6 +386,72 @@ describe("editorSession", () => {
             }),
         ]);
         expect(restored?.activeTabId).toBe("history-1");
+    });
+
+    it("persists and restores workspace terminal tabs as first-class tabs", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "terminal-1",
+                            kind: "terminal",
+                            terminalId: "runtime-1",
+                            title: "Terminal 1",
+                            cwd: "/vaults/project-alpha",
+                        },
+                    ],
+                    activeTabId: "terminal-1",
+                    activationHistory: ["terminal-1"],
+                    tabNavigationHistory: ["terminal-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+            tabs: [
+                {
+                    id: "terminal-1",
+                    kind: "terminal",
+                    terminalId: "runtime-1",
+                    title: "Terminal 1",
+                    cwd: "/vaults/project-alpha",
+                },
+            ],
+            activeTabId: "terminal-1",
+        });
+
+        expect(session.tabsById["terminal-1"]).toEqual({
+            id: "terminal-1",
+            kind: "terminal",
+            terminalId: "runtime-1",
+            title: "Terminal 1",
+            cwd: "/vaults/project-alpha",
+        });
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.panes).toEqual([
+            expect.objectContaining({
+                id: "primary",
+                activeTabId: "terminal-1",
+                tabs: [
+                    expect.objectContaining({
+                        id: "terminal-1",
+                        kind: "terminal",
+                        terminalId: "runtime-1",
+                        title: "Terminal 1",
+                        cwd: "/vaults/project-alpha",
+                    }),
+                ],
+            }),
+        ]);
+        expect(restored?.activeTabId).toBe("terminal-1");
     });
 
     it("serializes and restores pane-aware workspace sessions", async () => {

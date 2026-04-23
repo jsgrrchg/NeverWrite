@@ -172,12 +172,19 @@ async function createNewBlankFile(paneId?: string) {
     }
 }
 
+function createNewTerminal(paneId?: string) {
+    useEditorStore.getState().openTerminal({ paneId });
+}
+
 export function buildNewTabContextMenuEntries(options?: {
     paneId?: string;
     developerModeEnabled?: boolean;
+    developerTerminalEnabled?: boolean;
 }): ContextMenuEntry[] {
     const paneId = options?.paneId;
     const developerModeEnabled = options?.developerModeEnabled ?? false;
+    const developerTerminalEnabled =
+        options?.developerTerminalEnabled ?? false;
     const chatState = useChatStore.getState();
     const runtimes = [...chatState.runtimes];
     const selectedRuntimeId = chatState.selectedRuntimeId;
@@ -214,6 +221,13 @@ export function buildNewTabContextMenuEntries(options?: {
     ];
 
     if (developerModeEnabled) {
+        if (developerTerminalEnabled) {
+            entries.push({
+                label: "New Terminal",
+                action: () => createNewTerminal(paneId),
+            });
+        }
+
         entries.push({
             label: "New blank file",
             action: () => {

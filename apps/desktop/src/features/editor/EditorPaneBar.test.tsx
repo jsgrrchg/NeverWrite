@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { EditorPaneBar } from "./EditorPaneBar";
@@ -156,6 +157,7 @@ describe("EditorPaneBar", () => {
             ],
             "primary",
         );
+        useSettingsStore.getState().reset();
         vi.mocked(confirm).mockReset();
         vi.mocked(confirm).mockResolvedValue(true);
     });
@@ -730,5 +732,44 @@ describe("EditorPaneBar", () => {
                 .panes.find((pane) => pane.id === "secondary")
                 ?.tabs.map((tab) => tab.id),
         ).toEqual(["tab-b"]);
+    });
+
+    it("creates a workspace terminal from the pane plus-button context menu", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: true,
+        });
+
+        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
+
+        const newTabButton = document.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        fireEvent.click(
+            await screen.findByRole("button", { name: "New Terminal" }),
+        );
+
+        await waitFor(() => {
+            const secondaryPane = useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "secondary");
+            expect(
+                secondaryPane?.tabs.some((tab) => tab.kind === "terminal"),
+            ).toBe(true);
+            expect(secondaryPane?.activeTabId).toBe(
+                secondaryPane?.tabs.find((tab) => tab.kind === "terminal")?.id,
+            );
+        });
+
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "primary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-a"]);
     });
 });

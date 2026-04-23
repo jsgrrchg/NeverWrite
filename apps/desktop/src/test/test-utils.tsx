@@ -109,6 +109,7 @@ export function getXtermMockInstances() {
         globalThis as typeof globalThis & {
             __xtermMockInstances: Array<{
                 emitData: (data: string) => void;
+                focusCalls: number;
             }>;
         }
     ).__xtermMockInstances;

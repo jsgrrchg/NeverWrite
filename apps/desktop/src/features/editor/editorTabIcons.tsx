@@ -238,6 +238,26 @@ export function renderEditorTabLeadingIcon(tab: Tab): ReactNode {
         );
     }
 
+    if (tab.kind === "terminal") {
+        return (
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.15"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 opacity-60"
+            >
+                <path d="M2.5 3.5h11v9h-11z" />
+                <path d="m5 6 2 2-2 2" />
+                <path d="M8.5 10h2.5" />
+            </svg>
+        );
+    }
+
     return (
         <svg
             width="12"

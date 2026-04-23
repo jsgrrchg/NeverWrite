@@ -9,8 +9,11 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
+    isTerminalTab,
     selectEditorPaneActiveTab,
     selectEditorPaneState,
+    selectFocusedPaneId,
+    type TerminalTab,
 } from "../../app/store/editorStore";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
@@ -21,6 +24,7 @@ import { PdfTabView } from "../pdf/PdfTabView";
 import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
 import { AIReviewView } from "../ai/components/AIReviewView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
+import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
 
 type EditorPanelView =
     | "pdf"
@@ -156,6 +160,12 @@ export function EditorPaneContent({
     const paneTabs = useEditorStore(
         (state) => selectEditorPaneState(state, paneId).tabs,
     );
+    const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const activePane = paneId ? focusedPaneId === paneId : true;
+    const terminalTabs = paneTabs.filter(
+        (tab): tab is TerminalTab => isTerminalTab(tab),
+    );
+    const isTerminalActive = activeTab ? isTerminalTab(activeTab) : false;
     const hasGraphTab = paneTabs.some((tab) => isGraphTab(tab));
     const isGraphActive = view === "graph";
     const keepGraphMounted = hasGraphTab;
@@ -182,7 +192,16 @@ export function EditorPaneContent({
                     </React.Suspense>
                 </div>
             )}
+            {terminalTabs.map((tab) => (
+                <WorkspaceTerminalView
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTab?.id}
+                    activePane={activePane}
+                />
+            ))}
             {!isGraphActive &&
+                !isTerminalActive &&
                 renderEditorPanelView(view, paneId, emptyStateMessage)}
         </div>
     );

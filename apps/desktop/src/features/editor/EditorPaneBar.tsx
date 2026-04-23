@@ -3,10 +3,12 @@ import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import {
     type Tab,
+    type TerminalTab,
     isChatTab,
     isFileTab,
     isNoteTab,
     isPdfTab,
+    isTerminalTab,
     selectEditorPaneState,
     selectEditorWorkspaceTabs,
     selectLeafPaneIds,
@@ -24,6 +26,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { useTerminalRuntimeStore } from "../terminal/terminalRuntimeStore";
 import { getWindowMode } from "../../app/detachedWindows";
 import {
     buildNewTabContextMenuEntries,
@@ -76,6 +79,14 @@ function getPaneHeaderActionButtonStyle(active = false) {
     };
 }
 
+function getDuplicateTerminalTitle(tab: TerminalTab) {
+    const title = tab.title.trim();
+    if (!title || /^Terminal(?: \d+)?$/.test(title)) {
+        return null;
+    }
+    return `${title} copy`;
+}
+
 export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     void isFocused;
     const pane = useEditorStore((state) =>
@@ -104,6 +115,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const tabOpenBehavior = useSettingsStore((state) => state.tabOpenBehavior);
     const developerModeEnabled = useSettingsStore(
         (state) => state.developerModeEnabled,
+    );
+    const developerTerminalEnabled = useSettingsStore(
+        (state) => state.developerTerminalEnabled,
     );
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
@@ -311,13 +325,31 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         },
         [chatSessionsById, startEditing, switchTab],
     );
-    const commitChatRename = useCallback(
+    const beginTerminalRename = useCallback(
+        (tab: Tab) => {
+            if (!isTerminalTab(tab)) return;
+            switchTab(tab.id);
+            startEditing(tab.id, tab.title);
+        },
+        [startEditing, switchTab],
+    );
+    const commitTabRename = useCallback(
         (tabId: string, value: string | null) => {
             const tab = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             ).find((candidate) => candidate.id === tabId);
-            if (!tab || !isChatTab(tab)) return;
-            renameChatSession(tab.sessionId, value);
+            if (!tab) return;
+
+            if (isChatTab(tab)) {
+                renameChatSession(tab.sessionId, value);
+                return;
+            }
+
+            if (isTerminalTab(tab)) {
+                useEditorStore
+                    .getState()
+                    .updateTabTitle(tab.id, value?.trim() || "Terminal");
+            }
         },
         [renameChatSession],
     );
@@ -570,7 +602,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                             "Enter"
                                                         ) {
                                                             commitEditing(
-                                                                commitChatRename,
+                                                                commitTabRename,
                                                             );
                                                         } else if (
                                                             event.key ===
@@ -581,7 +613,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                     }}
                                                     onBlur={() =>
                                                         commitEditing(
-                                                            commitChatRename,
+                                                            commitTabRename,
                                                         )
                                                     }
                                                     onPointerDown={(event) =>
@@ -769,6 +801,41 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             });
                         }
 
+                        if (isTerminalTab(targetTab)) {
+                            entries.push({
+                                label: "Restart Terminal",
+                                action: () => {
+                                    void useTerminalRuntimeStore
+                                        .getState()
+                                        .restart(targetTab.terminalId);
+                                },
+                            });
+                            entries.push({
+                                label: "Clear Terminal",
+                                action: () => {
+                                    useTerminalRuntimeStore
+                                        .getState()
+                                        .clear(targetTab.terminalId);
+                                },
+                            });
+                            entries.push({
+                                label: "Duplicate Terminal",
+                                action: () => {
+                                    useEditorStore.getState().openTerminal({
+                                        paneId,
+                                        cwd: targetTab.cwd,
+                                        title: getDuplicateTerminalTitle(
+                                            targetTab,
+                                        ),
+                                    });
+                                },
+                            });
+                            entries.push({
+                                label: "Rename Terminal",
+                                action: () => beginTerminalRename(targetTab),
+                            });
+                        }
+
                         entries.push({ type: "separator" });
                         entries.push({
                             label: "Move to New Right Split",
@@ -797,6 +864,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     entries={buildNewTabContextMenuEntries({
                         paneId,
                         developerModeEnabled,
+                        developerTerminalEnabled,
                     })}
                 />
             )}
