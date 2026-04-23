@@ -112,7 +112,7 @@ function renderEditorPanelView(
             }
             return (
                 <React.Suspense fallback={null}>
-                    <LazyExcalidrawTabView />
+                    <LazyExcalidrawTabView paneId={paneId} />
                 </React.Suspense>
             );
         case "search":
