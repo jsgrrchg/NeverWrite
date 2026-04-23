@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+    collectElectronBuildIssues,
     collectReleaseIdentityIssues,
     collectVersionIssues,
     getChangelogEntry,
@@ -37,14 +38,13 @@ test("collectVersionIssues reports mismatches and invalid semver", () => {
         collectVersionIssues(
             {
                 packageJson: "0.2.0",
-                tauriConf: "0.2",
-                cargoToml: "0.2.1",
+                nativeBackendCargo: "0.2",
             },
             "0.2.0",
         ),
         [
-            'tauriConf version "0.2" is not strict semver (X.Y.Z).',
-            "Desktop versions do not match: package.json=0.2.0, tauri.conf.json=0.2, Cargo.toml=0.2.1.",
+            'nativeBackendCargo version "0.2" is not strict semver (X.Y.Z).',
+            "Desktop versions do not match: package.json=0.2.0, native-backend/Cargo.toml=0.2.",
         ],
     );
 });
@@ -56,8 +56,56 @@ test("collectReleaseIdentityIssues enforces the NeverWrite desktop identity", ()
             identifier: "com.oldproduct",
         }),
         [
-            'tauri.conf.json productName must be "NeverWrite", received "OldProduct".',
-            'tauri.conf.json identifier must be "com.neverwrite", received "com.oldproduct".',
+            'electron-builder.config.mjs productName must be "NeverWrite", received "OldProduct".',
+            'electron-builder.config.mjs appId must be "com.neverwrite", received "com.oldproduct".',
+        ],
+    );
+});
+
+test("collectElectronBuildIssues validates the Electron release contract", () => {
+    assert.deepEqual(
+        collectElectronBuildIssues({
+            artifactName: "${productName}-${version}-${os}-${arch}.${ext}",
+            afterPack: "scripts/verify-electron-bundle.mjs",
+            protocols: [{ schemes: ["neverwrite"] }],
+            extraResources: [
+                {
+                    from: "out/native-backend",
+                    to: "native-backend",
+                },
+            ],
+            mac: {
+                minimumSystemVersion: "12.0",
+                target: [{ target: "dmg" }, { target: "zip" }],
+            },
+            win: {
+                target: [{ target: "nsis" }],
+            },
+        }),
+        [],
+    );
+
+    assert.deepEqual(
+        collectElectronBuildIssues({
+            artifactName: "${productName}-${version}.${ext}",
+            protocols: [],
+            extraResources: [],
+            mac: {
+                minimumSystemVersion: "11.0",
+                target: ["dmg"],
+            },
+            win: {
+                target: [],
+            },
+        }),
+        [
+            'electron-builder.config.mjs must register the "neverwrite" protocol.',
+            'electron-builder.config.mjs must stage "out/native-backend" into the packaged "native-backend" resources directory.',
+            'electron-builder.config.mjs mac.minimumSystemVersion must be "12.0".',
+            'electron-builder.config.mjs artifactName must include "${arch}" to avoid multi-architecture asset collisions.',
+            "electron-builder.config.mjs must configure afterPack bundle verification.",
+            'electron-builder.config.mjs mac.target must include "zip".',
+            'electron-builder.config.mjs win.target must include "nsis".',
         ],
     );
 });

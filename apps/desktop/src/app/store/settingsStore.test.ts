@@ -31,6 +31,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
+        expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(300);
     });
 
@@ -42,6 +43,7 @@ describe("settingsStore developer mode", () => {
             .getState()
             .setSetting("developerTerminalEnabled", false);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
 
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
@@ -49,6 +51,7 @@ describe("settingsStore developer mode", () => {
             false,
         );
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(750);
         expect(
             JSON.parse(
@@ -59,6 +62,7 @@ describe("settingsStore developer mode", () => {
                 developerModeEnabled: true,
                 developerTerminalEnabled: false,
                 inlineReviewEnabled: false,
+                fileTreeStickyFolders: false,
                 editorAutosaveDelayMs: 750,
             },
         });

@@ -7,7 +7,6 @@ members = [
     "crates/diff",
     "crates/ai",
     "apps/desktop/native-backend",
-    "apps/desktop/src-tauri",
 ]
 exclude = ["vendor/codex-acp"]
 

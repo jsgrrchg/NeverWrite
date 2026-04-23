@@ -1,5 +1,5 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "@neverwrite/runtime";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorSelection } from "@codemirror/state";
 import { undo } from "@codemirror/commands";

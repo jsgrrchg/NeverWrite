@@ -3,15 +3,13 @@ import path from "node:path";
 
 import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
-    normalizeAppcastChannel,
     normalizeReleaseVersion,
-} from "./appcast-lib.mjs";
+} from "./electron-release-lib.mjs";
 import {
     buildPlatformValidationMatrix,
-    createInvalidSignatureManifest,
     loadTargetMetadataEntries,
-    readJsonFile,
     renderPlatformValidationChecklist,
+    tamperFeedChecksum,
 } from "./platform-validation-lib.mjs";
 
 function parseArgs(argv) {
@@ -19,10 +17,10 @@ function parseArgs(argv) {
         version: null,
         tag: null,
         channel: "stable",
-        appcast: null,
         metadataDir: null,
+        feedsDir: null,
         outputDir: null,
-        appcastBaseUrl: CANONICAL_RELEASE_PAGES_BASE_URL,
+        pagesBaseUrl: CANONICAL_RELEASE_PAGES_BASE_URL,
     };
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -44,8 +42,8 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
-        if (arg === "--appcast") {
-            args.appcast = path.resolve(next);
+        if (arg === "--feeds-dir") {
+            args.feedsDir = path.resolve(next);
             index += 1;
             continue;
         }
@@ -60,13 +58,13 @@ function parseArgs(argv) {
             continue;
         }
         if (arg === "--pages-base-url") {
-            args.appcastBaseUrl = next;
+            args.pagesBaseUrl = next;
             index += 1;
             continue;
         }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --version, --tag, --channel, --appcast, --metadata-dir, --output-dir, --pages-base-url.`,
+            `Unknown argument "${arg}". Supported args: --version, --tag, --channel, --feeds-dir, --metadata-dir, --output-dir, --pages-base-url.`,
         );
     }
 
@@ -76,22 +74,19 @@ function parseArgs(argv) {
     if (!args.tag) {
         throw new Error("Missing required argument --tag <vX.Y.Z>.");
     }
-    if (!args.appcast) {
-        throw new Error(
-            "Missing required argument --appcast <path-to-latest.json>.",
-        );
-    }
     if (!args.metadataDir) {
         throw new Error(
             "Missing required argument --metadata-dir <directory>.",
         );
+    }
+    if (!args.feedsDir) {
+        throw new Error("Missing required argument --feeds-dir <directory>.");
     }
     if (!args.outputDir) {
         throw new Error("Missing required argument --output-dir <directory>.");
     }
 
     args.version = normalizeReleaseVersion(args.version);
-    args.channel = normalizeAppcastChannel(args.channel);
     return args;
 }
 
@@ -100,16 +95,19 @@ function writeJson(filePath, value) {
     fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+function copyFeedFixture(sourcePath, destinationPath) {
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
+    fs.copyFileSync(sourcePath, destinationPath);
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
-    const manifest = readJsonFile(args.appcast);
     const metadataEntries = loadTargetMetadataEntries(args.metadataDir);
     const rows = buildPlatformValidationMatrix({
         version: args.version,
         tag: args.tag,
         channel: args.channel,
-        appcastBaseUrl: args.appcastBaseUrl,
-        manifest,
+        pagesBaseUrl: args.pagesBaseUrl,
         metadataEntries,
     });
 
@@ -126,27 +124,31 @@ function main() {
         "utf8",
     );
 
-    const validFixturePath = path.join(
-        args.outputDir,
-        "fixtures",
-        "valid",
-        args.channel,
-        "latest.json",
-    );
-    writeJson(validFixturePath, manifest);
-
     for (const row of rows) {
-        const invalidSignaturePath = path.join(
+        const sourceFeedPath = path.join(args.feedsDir, row.feedRelativePath);
+        const validFeedPath = path.join(
             args.outputDir,
             "fixtures",
-            row.appcastKey,
-            "invalid-signature",
+            "valid",
             args.channel,
-            "latest.json",
+            row.feedTarget,
+            row.metadataFileName,
         );
-        writeJson(
-            invalidSignaturePath,
-            createInvalidSignatureManifest(manifest, row.appcastKey),
+        copyFeedFixture(sourceFeedPath, validFeedPath);
+
+        const invalidChecksumPath = path.join(
+            args.outputDir,
+            "fixtures",
+            row.feedTarget,
+            "invalid-checksum",
+            args.channel,
+            row.metadataFileName,
+        );
+        fs.mkdirSync(path.dirname(invalidChecksumPath), { recursive: true });
+        fs.writeFileSync(
+            invalidChecksumPath,
+            tamperFeedChecksum(fs.readFileSync(sourceFeedPath, "utf8")),
+            "utf8",
         );
     }
 

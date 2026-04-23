@@ -9,6 +9,11 @@ const executableName =
     process.platform === "win32"
         ? "neverwrite-native-backend.exe"
         : "neverwrite-native-backend";
+const outputRoot =
+    process.env.NEVERWRITE_ELECTRON_OUTPUT_DIR?.trim() ||
+    path.join(appRoot, "dist-electron");
+const distArch =
+    process.env.NEVERWRITE_ELECTRON_DIST_ARCH?.trim() || process.arch;
 
 function defaultPackagedSidecarCandidates() {
     if (process.platform === "darwin") {
@@ -20,12 +25,28 @@ function defaultPackagedSidecarCandidates() {
             executableName,
         );
         return [
-            path.join(appRoot, "dist-electron", `mac-${process.arch}`, appRelativePath),
-            path.join(appRoot, "dist-electron", "mac", appRelativePath),
+            path.join(outputRoot, `mac-${distArch}`, appRelativePath),
+            path.join(outputRoot, "mac", appRelativePath),
         ];
     }
 
-    return [path.join(appRoot, "dist-electron", "native-backend", executableName)];
+    return [
+        path.join(
+            outputRoot,
+            `win-${distArch}-unpacked`,
+            "resources",
+            "native-backend",
+            executableName,
+        ),
+        path.join(
+            outputRoot,
+            "win-unpacked",
+            "resources",
+            "native-backend",
+            executableName,
+        ),
+        path.join(outputRoot, "native-backend", executableName),
+    ];
 }
 
 async function findSidecarPath() {

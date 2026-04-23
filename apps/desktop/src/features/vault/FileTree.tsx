@@ -111,10 +111,13 @@ const TREE_ROW_BOX_STYLE = {
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
-// Translucent so sticky folders feel like a frosted divider over the
-// content that's scrolling underneath. Paired with backdrop-filter below.
-const TREE_STICKY_ROW_BACKGROUND =
-    "color-mix(in srgb, var(--bg-secondary) 65%, transparent)";
+// `--bg-tertiary` opaque gives a consistent, subtle delta against the
+// sidebar in both modes: a touch darker in light (sidebar is near-white,
+// bg-tertiary ≈ #ebebeb) and a touch lighter in dark (sidebar tint ≈ #1c1c1c,
+// bg-tertiary ≈ #2e2e2e). Avoids the light-mode wash-out that `bg-secondary`
+// at 65% produced, and the over-bright surface that `bg-primary` at high
+// alpha produced on light themes with warm vibrancy casts.
+const TREE_STICKY_ROW_BACKGROUND = "var(--bg-tertiary)";
 const TREE_STICKY_ROW_BACKDROP_FILTER = "saturate(180%) blur(14px)";
 // Drop shadow applied only to the deepest sticky folder wrapper,
 // not to individual rows — avoids stacking noise.
@@ -361,6 +364,20 @@ function getNoteDisplayName(note: NoteDto, showExtensions: boolean) {
 
 function getNoteRenameValue(note: NoteDto, showExtensions: boolean) {
     return getNoteDisplayName(note, showExtensions);
+}
+
+function getNoteFilterText(note: NoteDto) {
+    return [note.title, note.id, note.path.split("/").pop(), note.path]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase();
+}
+
+function getVaultEntryFilterText(entry: VaultEntryDto) {
+    return [entry.title, entry.file_name, entry.relative_path, entry.path]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase();
 }
 
 function isMarkdownLeafName(name: string) {
@@ -1597,6 +1614,9 @@ export function FileTree() {
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const bookmarkItems = useBookmarkStore((s) => s.items);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
+    const fileTreeStickyFolders = useSettingsStore(
+        (s) => s.fileTreeStickyFolders,
+    );
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
@@ -1745,12 +1765,12 @@ export function FileTree() {
             sortMode,
         );
         const rowNameLower = (row: FlatTreeRow): string => {
-            if (row.kind === "folder") return row.name.toLowerCase();
-            if (row.kind === "note") return row.note.title.toLowerCase();
+            if (row.kind === "folder") {
+                return `${row.name}\n${row.path}`.toLowerCase();
+            }
+            if (row.kind === "note") return getNoteFilterText(row.note);
             if (row.kind === "pdf" || row.kind === "file") {
-                return (
-                    row.entry.title ?? row.entry.relative_path
-                ).toLowerCase();
+                return getVaultEntryFilterText(row.entry);
             }
             return "";
         };
@@ -1882,6 +1902,10 @@ export function FileTree() {
 
     // Compute which folders should appear as sticky overlay headers
     const stickyFolders = useMemo(() => {
+        // Filtering already rewrites the visible hierarchy around matches;
+        // sticky headers add visual noise and can obscure filtered results.
+        if (normalizedFilter) return [];
+        if (!fileTreeStickyFolders) return [];
         if (displayRows.length === 0) return [];
 
         const result: {
@@ -1934,7 +1958,14 @@ export function FileTree() {
         }
 
         return result;
-    }, [displayRows, scrollTop, metrics.rowHeight, folderLastDescendant]);
+    }, [
+        displayRows,
+        fileTreeStickyFolders,
+        normalizedFilter,
+        scrollTop,
+        metrics.rowHeight,
+        folderLastDescendant,
+    ]);
 
     const stickyFolderPaths = useMemo(
         () => new Set(stickyFolders.map((f) => f.row.path)),

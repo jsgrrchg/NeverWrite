@@ -1,4 +1,4 @@
-export type RuntimeName = "tauri" | "electron";
+export type RuntimeName = "electron";
 
 export type UnlistenFn = () => void;
 

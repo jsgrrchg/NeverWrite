@@ -19,6 +19,7 @@ import {
     resolvePreviewFilePath,
 } from "./vaultBackend";
 import { createNativeBackendSidecar } from "./nativeBackend";
+import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -170,7 +171,11 @@ function registerInvokeHandler() {
         }
     };
     const nativeBackend = createNativeBackendSidecar(emitRuntimeEvent);
-    const backend = new ElectronVaultBackend(emitRuntimeEvent, nativeBackend);
+    const backend = new ElectronVaultBackend(
+        emitRuntimeEvent,
+        new ElectronAppUpdater(),
+        nativeBackend,
+    );
     installWebClipperRuntime(backend, emitRuntimeEvent);
 
     ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {

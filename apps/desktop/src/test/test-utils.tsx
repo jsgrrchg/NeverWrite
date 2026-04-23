@@ -1,6 +1,6 @@
 import { act, render } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import { vi } from "vitest";
 import {
     useCommandStore,
@@ -113,4 +113,36 @@ export function getXtermMockInstances() {
             }>;
         }
     ).__xtermMockInstances;
+}
+
+export function getMockCurrentWindow() {
+    return (
+        globalThis as typeof globalThis & {
+            __mockCurrentWindow: {
+                [key: string]: unknown;
+                label: string;
+            };
+        }
+    ).__mockCurrentWindow;
+}
+
+export function getMockCurrentWebviewWindow() {
+    return (
+        globalThis as typeof globalThis & {
+            __mockCurrentWebviewWindow: {
+                [key: string]: unknown;
+                label: string;
+            };
+        }
+    ).__mockCurrentWebviewWindow;
+}
+
+export function getMockCurrentWebview() {
+    return (
+        globalThis as typeof globalThis & {
+            __mockCurrentWebview: {
+                [key: string]: unknown;
+            };
+        }
+    ).__mockCurrentWebview;
 }

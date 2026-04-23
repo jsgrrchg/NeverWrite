@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { builtinModules } from "node:module";
 import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
@@ -5,13 +6,27 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, type UserConfig } from "vite";
 
 const target = process.env.NEVERWRITE_ELECTRON_TARGET ?? "renderer";
+const packageJson = JSON.parse(
+    fs.readFileSync(
+        fileURLToPath(new URL("./package.json", import.meta.url)),
+        "utf8",
+    ),
+) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+};
 const runtimeAlias = fileURLToPath(
     new URL("./src/app/runtime/index.ts", import.meta.url),
 );
+const dependencyExternal = [
+    ...Object.keys(packageJson.dependencies ?? {}),
+    ...Object.keys(packageJson.devDependencies ?? {}),
+];
 const nodeExternal = [
     "electron",
     ...builtinModules,
     ...builtinModules.map((moduleName) => `node:${moduleName}`),
+    ...dependencyExternal,
 ];
 
 function electronProcessConfig(kind: "main" | "preload"): UserConfig {

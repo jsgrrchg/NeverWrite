@@ -11,11 +11,15 @@ use sha2::{Digest, Sha256};
 use spellbook::Dictionary;
 
 const DEFAULT_GRAMMAR_SERVER_URL: &str = "https://api.languagetool.org";
-const CATALOG_JSON: &str = include_str!("../../src-tauri/src/spellcheck/catalog.json");
-const EN_US_AFF: &str = include_str!("../../src-tauri/src/spellcheck/bundled/en-US/dictionary.aff");
-const EN_US_DIC: &str = include_str!("../../src-tauri/src/spellcheck/bundled/en-US/dictionary.dic");
-const ES_ES_AFF: &str = include_str!("../../src-tauri/src/spellcheck/bundled/es-ES/dictionary.aff");
-const ES_ES_DIC: &str = include_str!("../../src-tauri/src/spellcheck/bundled/es-ES/dictionary.dic");
+const CATALOG_JSON: &str = include_str!("../resources/spellcheck/catalog.json");
+const EN_US_AFF: &str =
+    include_str!("../resources/spellcheck/bundled/en-US/dictionary.aff");
+const EN_US_DIC: &str =
+    include_str!("../resources/spellcheck/bundled/en-US/dictionary.dic");
+const ES_ES_AFF: &str =
+    include_str!("../resources/spellcheck/bundled/es-ES/dictionary.aff");
+const ES_ES_DIC: &str =
+    include_str!("../resources/spellcheck/bundled/es-ES/dictionary.dic");
 
 const LANGUAGE_DEFINITIONS: [(&str, &str); 2] =
     [("en-US", "English (US)"), ("es-ES", "Spanish (Spain)")];

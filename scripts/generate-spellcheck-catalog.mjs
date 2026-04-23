@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Generates apps/desktop/src-tauri/src/spellcheck/catalog.json
+ * Generates apps/desktop/native-backend/resources/spellcheck/catalog.json
  *
  * Sources:
  *   1. wooorm/dictionaries (primary, ~80 UTF-8 Hunspell dictionaries)
@@ -20,7 +20,7 @@ import { dirname, resolve } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CATALOG_OUTPUT = resolve(
     __dirname,
-    "../apps/desktop/src-tauri/src/spellcheck/catalog.json",
+    "../apps/desktop/native-backend/resources/spellcheck/catalog.json",
 );
 
 const WOOORM_BASE =

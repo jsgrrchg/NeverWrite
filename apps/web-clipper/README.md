@@ -64,7 +64,7 @@ To authorize a local unpacked build explicitly, launch the desktop app with:
 
 ```bash
 cd apps/desktop
-NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
+NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run dev
 ```
 
 Use exact origins only. Wildcards are intentionally unsupported.
@@ -109,5 +109,5 @@ If the local API is unavailable, the extension falls back to the deep-link hando
 
 On macOS, that deep-link fallback only works with an installed NeverWrite app bundle
 that has the `neverwrite://` scheme registered.
-`npm run tauri dev` does not register custom URI schemes with the OS, so the
+`npm run dev` does not register custom URI schemes with the OS, so the
 browser fallback cannot be validated end-to-end against a pure dev session there.

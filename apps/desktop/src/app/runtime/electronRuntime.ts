@@ -6,6 +6,10 @@ import type {
     RuntimeWebviewWindow,
     UnlistenFn,
 } from "./types";
+import {
+    DESKTOP_WINDOW_CREATED_EVENT,
+    DESKTOP_WINDOW_ERROR_EVENT,
+} from "./windowLifecycle";
 
 class ElectronLogicalPosition implements RuntimeLogicalPosition {
     x: number;
@@ -137,10 +141,10 @@ class ElectronWebviewWindowHandle
         void getElectronApi()
             .createWindow({ label, options })
             .then(() => {
-                this.emitLocal("tauri://created", null);
+                this.emitLocal(DESKTOP_WINDOW_CREATED_EVENT, null);
             })
             .catch((error: unknown) => {
-                this.emitLocal("tauri://error", String(error));
+                this.emitLocal(DESKTOP_WINDOW_ERROR_EVENT, String(error));
             });
     }
 

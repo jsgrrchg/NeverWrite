@@ -31,7 +31,6 @@ jobs:
             channel: ${{ steps.meta.outputs.channel }}
             repo_slug: ${{ steps.meta.outputs.repo_slug }}
             pages_base_url: ${{ steps.meta.outputs.pages_base_url }}
-            pub_date: ${{ steps.meta.outputs.pub_date }}
 
         steps:
             - uses: actions/checkout@v4
@@ -55,21 +54,6 @@ jobs:
             - name: Validate release metadata
               run: node scripts/validate-release-metadata.mjs --tag "$RELEASE_TAG"
 
-            - name: Validate updater signing secrets
-              shell: bash
-              env:
-                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-              run: |
-                  if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
-                    echo "TAURI_SIGNING_PRIVATE_KEY is required for signed updater artifacts." >&2
-                    exit 1
-                  fi
-                  if [[ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
-                    echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required for signed updater artifacts." >&2
-                    exit 1
-                  fi
-
             - name: Extract release notes
               run: node scripts/extract-changelog-release-notes.mjs "$RELEASE_TAG" > release-notes.md
 
@@ -87,12 +71,11 @@ jobs:
                   import {
                     CANONICAL_RELEASE_PAGES_BASE_URL,
                     CANONICAL_RELEASE_REPO_SLUG,
-                  } from "./scripts/appcast-lib.mjs";
+                  } from "./scripts/electron-release-lib.mjs";
 
                   console.log(`repo_slug=${CANONICAL_RELEASE_REPO_SLUG}`);
                   console.log(`pages_base_url=${CANONICAL_RELEASE_PAGES_BASE_URL}`);
                   EOF
-                  echo "pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
             - name: Create or update GitHub release
               env:
@@ -116,15 +99,23 @@ jobs:
             matrix:
                 include:
                     - runner: macos-latest
+                      platform: mac
+                      arch: arm64
                       target: aarch64-apple-darwin
                       node_dist: darwin-arm64
                     - runner: macos-latest
+                      platform: mac
+                      arch: x64
                       target: x86_64-apple-darwin
                       node_dist: darwin-x64
                     - runner: windows-latest
+                      platform: win
+                      arch: arm64
                       target: aarch64-pc-windows-msvc
                       node_dist: win-arm64
                     - runner: windows-latest
+                      platform: win
+                      arch: x64
                       target: x86_64-pc-windows-msvc
                       node_dist: win-x64
 
@@ -148,7 +139,7 @@ jobs:
               run: npm ci
 
             - name: Build target-specific Codex sidecar
-              run: cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }}
+              run: cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }}
 
             - name: Download embedded Node runtime
               shell: bash
@@ -176,28 +167,109 @@ jobs:
                   else
                     CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
                   fi
+
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
+
+            - name: Validate macOS signing configuration
+              if: runner.os == 'macOS'
+              shell: bash
+              env:
+                  CSC_LINK: ${{ secrets.CSC_LINK }}
+                  CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+                  APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+                  APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+                  APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+                  APPLE_ID: ${{ secrets.APPLE_ID }}
+                  APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+                  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+              run: |
+                  if [[ -z "$CSC_LINK" || -z "$CSC_KEY_PASSWORD" ]]; then
+                    echo "macOS releases require CSC_LINK and CSC_KEY_PASSWORD." >&2
+                    exit 1
+                  fi
+
+                  if [[ -n "$APPLE_API_KEY" || -n "$APPLE_API_KEY_ID" || -n "$APPLE_API_ISSUER" ]]; then
+                    if [[ -z "$APPLE_API_KEY" || -z "$APPLE_API_KEY_ID" || -z "$APPLE_API_ISSUER" ]]; then
+                      echo "APPLE_API_KEY, APPLE_API_KEY_ID, and APPLE_API_ISSUER must be provided together." >&2
+                      exit 1
+                    fi
+                    exit 0
+                  fi
+
+                  if [[ -z "$APPLE_ID" || -z "$APPLE_APP_SPECIFIC_PASSWORD" || -z "$APPLE_TEAM_ID" ]]; then
+                    echo "macOS notarization requires either the App Store Connect API key trio or APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, and APPLE_TEAM_ID." >&2
+                    exit 1
+                  fi
+
+            - name: Validate Windows signing configuration
+              if: runner.os == 'Windows'
+              shell: bash
+              env:
+                  WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+                  WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER }}
+              run: |
+                  HAS_PFX=false
+                  HAS_AZURE=false
+
+                  if [[ -n "$WIN_CSC_LINK" && -n "$WIN_CSC_KEY_PASSWORD" ]]; then
+                    HAS_PFX=true
+                  fi
+
+                  if [[ -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT" && -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT" && -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE" && -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER" ]]; then
+                    HAS_AZURE=true
+                  fi
+
+                  if [[ "$HAS_PFX" != true && "$HAS_AZURE" != true ]]; then
+                    echo "Windows releases require WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD or the NEVERWRITE_WINDOWS_AZURE_SIGN_* configuration." >&2
+                    exit 1
+                  fi
 
             - name: Build desktop release
               working-directory: apps/desktop
+              shell: bash
               env:
-                  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-                  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-                  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-                  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-                  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+                  CSC_LINK: ${{ secrets.CSC_LINK }}
+                  CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+                  APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+                  APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+                  APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
                   APPLE_ID: ${{ secrets.APPLE_ID }}
-                  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+                  APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
                   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-              run: npm run tauri -- build --target ${{ matrix.target }}
+                  WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+                  WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE }}
+                  NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER }}
+                  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+                  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+                  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+                  AZURE_CLIENT_CERTIFICATE_PATH: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PATH }}
+                  AZURE_CLIENT_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PASSWORD }}
+                  AZURE_CLIENT_SEND_CERTIFICATE_CHAIN: ${{ secrets.AZURE_CLIENT_SEND_CERTIFICATE_CHAIN }}
+                  AZURE_USERNAME: ${{ secrets.AZURE_USERNAME }}
+                  AZURE_PASSWORD: ${{ secrets.AZURE_PASSWORD }}
+              run: npm run electron:release:local -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+
+            - name: Smoke packaged sidecar
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+                  NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
+              run: npm run electron:sidecar:smoke:packaged
 
             - name: Stage release assets and target metadata
               shell: bash
               run: |
                   mkdir -p "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/target-metadata"
-                  node scripts/stage-tauri-release-assets.mjs \
-                    --manifest-dir apps/desktop/src-tauri \
-                    --bundle-root apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle \
+                  node apps/desktop/scripts/stage-electron-release-assets.mjs \
+                    --dist-dir "$RUNNER_TEMP/electron-dist" \
                     --target ${{ matrix.target }} \
                     --version "${{ needs.prepare.outputs.version }}" \
                     --tag "${{ needs.prepare.outputs.tag }}" \
@@ -209,7 +281,13 @@ jobs:
               shell: bash
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: gh release upload "${{ needs.prepare.outputs.tag }}" "$RUNNER_TEMP/release-assets"/* --clobber
+              run: |
+                  mapfile -d '' files < <(find "$RUNNER_TEMP/release-assets" -maxdepth 1 -type f -print0)
+                  if [[ "${#files[@]}" -eq 0 ]]; then
+                    echo "No staged release files found to upload." >&2
+                    exit 1
+                  fi
+                  gh release upload "${{ needs.prepare.outputs.tag }}" "${files[@]}" --clobber
 
             - name: Upload target metadata artifact
               uses: actions/upload-artifact@v4
@@ -218,8 +296,15 @@ jobs:
                   path: ${{ runner.temp }}/target-metadata/${{ matrix.target }}.json
                   if-no-files-found: error
 
-    publish-appcast:
-        name: Publish Appcast
+            - name: Upload target feed artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-target-feeds-${{ matrix.target }}
+                  path: ${{ runner.temp }}/release-assets/feeds
+                  if-no-files-found: error
+
+    publish-feeds:
+        name: Publish Release Feeds
         needs:
             - prepare
             - build-target
@@ -238,17 +323,12 @@ jobs:
                   path: .artifacts/release-targets
                   merge-multiple: true
 
-            - name: Build stable appcast manifest
-              run: |
-                  node scripts/build-appcast-from-target-metadata.mjs \
-                    --version "${{ needs.prepare.outputs.version }}" \
-                    --channel "${{ needs.prepare.outputs.channel }}" \
-                    --pub-date "${{ needs.prepare.outputs.pub_date }}" \
-                    --metadata-dir .artifacts/release-targets \
-                    --output dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json
-
-            - name: Validate generated appcast
-              run: node scripts/validate-appcast-manifest.mjs dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json
+            - name: Download target feeds
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-target-feeds-*
+                  path: .artifacts/feeds
+                  merge-multiple: true
 
             - name: Build platform validation pack
               run: |
@@ -256,10 +336,55 @@ jobs:
                     --version "${{ needs.prepare.outputs.version }}" \
                     --tag "${{ needs.prepare.outputs.tag }}" \
                     --channel "${{ needs.prepare.outputs.channel }}" \
-                    --appcast dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json \
+                    --feeds-dir .artifacts/feeds \
                     --metadata-dir .artifacts/release-targets \
                     --pages-base-url "${{ needs.prepare.outputs.pages_base_url }}" \
                     --output-dir dist/platform-validation/${{ needs.prepare.outputs.tag }}
+
+            - name: Build release asset size report
+              shell: bash
+              run: |
+                  mkdir -p "dist/release-asset-sizes/${{ needs.prepare.outputs.tag }}"
+                  node --input-type=module <<'EOF'
+                  import fs from "node:fs";
+                  import path from "node:path";
+
+                  const metadataDir = path.resolve(".artifacts/release-targets");
+                  const outputDir = path.resolve("dist/release-asset-sizes/${{ needs.prepare.outputs.tag }}");
+                  const entries = fs
+                    .readdirSync(metadataDir)
+                    .filter((fileName) => fileName.endsWith(".json"))
+                    .sort()
+                    .map((fileName) =>
+                      JSON.parse(fs.readFileSync(path.join(metadataDir, fileName), "utf8")),
+                    );
+
+                  const toMiB = (bytes) => `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+                  const markdown = [
+                    "# Electron Release Asset Sizes",
+                    "",
+                    `Release: ${{ needs.prepare.outputs.tag }}`,
+                    "",
+                    "| Build target | Manual installer | Updater asset | Blockmap |",
+                    "| --- | --- | --- | --- |",
+                    ...entries.map(
+                      (entry) =>
+                        `| \`${entry.buildTarget}\` | ${toMiB(entry.manualAssetSizeBytes)} | ${toMiB(entry.updaterAssetSizeBytes)} | ${toMiB(entry.updaterBlockmapSizeBytes)} |`,
+                    ),
+                    "",
+                  ].join("\n");
+
+                  fs.writeFileSync(
+                    path.join(outputDir, "sizes.json"),
+                    `${JSON.stringify(entries, null, 2)}\n`,
+                    "utf8",
+                  );
+                  fs.writeFileSync(
+                    path.join(outputDir, "sizes.md"),
+                    `${markdown}\n`,
+                    "utf8",
+                  );
+                  EOF
 
             - name: Upload platform validation pack
               uses: actions/upload-artifact@v4
@@ -268,10 +393,22 @@ jobs:
                   path: dist/platform-validation/${{ needs.prepare.outputs.tag }}
                   if-no-files-found: error
 
-            - name: Publish appcast to gh-pages
+            - name: Upload release asset size report
+              uses: actions/upload-artifact@v4
+              with:
+                  name: electron-release-asset-sizes-${{ needs.prepare.outputs.tag }}
+                  path: dist/release-asset-sizes/${{ needs.prepare.outputs.tag }}
+                  if-no-files-found: error
+
+            - name: Publish feeds to gh-pages
               shell: bash
+              env:
+                  CHANNEL: ${{ needs.prepare.outputs.channel }}
+                  FEEDS_DIR: .artifacts/feeds
+                  METADATA_DIR: .artifacts/release-targets
               run: |
                   PAGES_DIR="$RUNNER_TEMP/gh-pages"
+                  export PAGES_DIR
                   git fetch origin gh-pages || true
 
                   if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
@@ -285,22 +422,56 @@ jobs:
                     )
                   fi
 
-                  mkdir -p "$PAGES_DIR/${{ needs.prepare.outputs.channel }}"
-                  cp "dist/appcast/${{ needs.prepare.outputs.channel }}/latest.json" "$PAGES_DIR/${{ needs.prepare.outputs.channel }}/latest.json"
+                  node --input-type=module <<'EOF'
+                  import fs from "node:fs";
+                  import path from "node:path";
+
+                  const feedsDir = path.resolve(process.env.FEEDS_DIR);
+                  const metadataDir = path.resolve(process.env.METADATA_DIR);
+                  const pagesDir = path.resolve(process.env.PAGES_DIR);
+                  const channel = process.env.CHANNEL;
+
+                  for (const fileName of fs.readdirSync(metadataDir).filter((file) => file.endsWith(".json")).sort()) {
+                    const metadata = JSON.parse(
+                      fs.readFileSync(path.join(metadataDir, fileName), "utf8"),
+                    );
+                    const source = path.join(feedsDir, metadata.feedRelativePath);
+                    const destination = path.join(pagesDir, channel, metadata.feedRelativePath);
+                    fs.mkdirSync(path.dirname(destination), { recursive: true });
+                    fs.copyFileSync(source, destination);
+                  }
+                  EOF
+
                   touch "$PAGES_DIR/.nojekyll"
 
                   (
                     cd "$PAGES_DIR"
                     git config user.name "github-actions[bot]"
                     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                    git add "${{ needs.prepare.outputs.channel }}/latest.json" .nojekyll
+                    git add "${CHANNEL}" .nojekyll
                     if git diff --cached --quiet; then
-                      echo "No appcast changes to publish."
+                      echo "No feed changes to publish."
                     else
-                      git commit -m "Publish appcast for ${{ needs.prepare.outputs.tag }}"
+                      git commit -m "Publish Electron feeds for ${{ needs.prepare.outputs.tag }}"
                       git push origin HEAD:gh-pages
                     fi
                   )
 
-            - name: Print published appcast URL
-              run: echo "${{ needs.prepare.outputs.pages_base_url }}/${{ needs.prepare.outputs.channel }}/latest.json"
+            - name: Print published feed URLs
+              shell: bash
+              run: |
+                  node --input-type=module <<'EOF'
+                  import fs from "node:fs";
+                  import path from "node:path";
+
+                  const baseUrl = "${{ needs.prepare.outputs.pages_base_url }}".replace(/\/+$/, "");
+                  const channel = "${{ needs.prepare.outputs.channel }}";
+                  const metadataDir = path.resolve(".artifacts/release-targets");
+
+                  for (const fileName of fs.readdirSync(metadataDir).filter((file) => file.endsWith(".json")).sort()) {
+                    const metadata = JSON.parse(
+                      fs.readFileSync(path.join(metadataDir, fileName), "utf8"),
+                    );
+                    console.log(`${baseUrl}/${channel}/${metadata.feedRelativePath}`);
+                  }
+                  EOF

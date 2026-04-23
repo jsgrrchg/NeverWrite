@@ -13,7 +13,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
-import type { NeverWriteRuntime } from "./types";
+import type { NeverWriteRuntime } from "../../src/app/runtime/types";
 
 export const tauriRuntime = {
     name: "tauri",

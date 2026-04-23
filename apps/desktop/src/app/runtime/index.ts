@@ -1,5 +1,4 @@
 import { electronRuntime } from "./electronRuntime";
-import { tauriRuntime } from "./tauriRuntime";
 import type {
     ConfirmDialogOptions,
     NeverWriteRuntime,
@@ -37,10 +36,19 @@ declare global {
 }
 
 function selectRuntime(): NeverWriteRuntime {
-    if (typeof window !== "undefined" && window.neverwriteElectron) {
-        return electronRuntime;
+    if (typeof window === "undefined") {
+        throw new Error(
+            "NeverWrite desktop runtime is only available in a browser window.",
+        );
     }
-    return tauriRuntime;
+
+    if (!window.neverwriteElectron) {
+        throw new Error(
+            'NeverWrite now runs desktop flows through Electron only. Start the app with "npm run dev" or use "npm run renderer:dev" only for renderer-focused work.',
+        );
+    }
+
+    return electronRuntime;
 }
 
 export const runtime = selectRuntime();

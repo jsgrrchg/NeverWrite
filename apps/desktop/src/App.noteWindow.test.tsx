@@ -5,6 +5,8 @@ import {
     renderComponent,
     setEditorTabs,
     flushPromises,
+    getMockCurrentWebviewWindow,
+    getMockCurrentWindow,
 } from "./test/test-utils";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
 import { isTerminalTab, useEditorStore } from "./app/store/editorStore";
@@ -18,27 +20,6 @@ import {
 const detachedWindowMock = vi.hoisted(() => ({
     label: "note-test",
     mode: "note" as "main" | "note",
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-    emitTo: vi.fn(),
-    listen: vi.fn().mockResolvedValue(vi.fn()),
-}));
-
-vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => ({
-        listen: vi.fn().mockResolvedValue(vi.fn()),
-        once: vi.fn(),
-        onCloseRequested: vi.fn(),
-        onMoved: vi.fn().mockResolvedValue(vi.fn()),
-        onResized: vi.fn().mockResolvedValue(vi.fn()),
-        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-        setFocus: vi.fn(),
-        startDragging: vi.fn(),
-        emitTo: vi.fn(),
-        close: vi.fn(),
-        label: "note-test",
-    }),
 }));
 
 vi.mock("./features/editor/UnifiedBar", () => ({
@@ -115,6 +96,8 @@ describe("App note window", () => {
     beforeEach(() => {
         detachedWindowMock.label = "note-test";
         detachedWindowMock.mode = "note";
+        getMockCurrentWindow().label = "note-test";
+        getMockCurrentWebviewWindow().label = "note-test";
         window.history.replaceState({}, "", "/?window=note");
         resetTerminalRuntimeStoreForTests();
         useSettingsStore.getState().reset();

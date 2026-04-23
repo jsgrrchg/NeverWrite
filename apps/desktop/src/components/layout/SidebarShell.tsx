@@ -118,7 +118,7 @@ function SidebarTabButton({
             title={TAB_LABELS[view]}
             data-active={active || undefined}
             data-sidebar-tab={view}
-            className="no-drag flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
+            className="no-drag ub-sidebar-tab flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
             style={{
                 flex: compact ? "0 0 auto" : 1,
                 minWidth: 0,
@@ -137,7 +137,7 @@ function SidebarTabButton({
                     ? "0 1px 2px rgb(0 0 0 / 0.12)"
                     : "none",
                 transition:
-                    "background-color 120ms ease, color 120ms ease, border-color 120ms ease",
+                    "background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease",
             }}
         >
             <SidebarTabIcon view={view} />

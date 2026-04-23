@@ -8,15 +8,12 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TAURI_CONF="$ROOT/apps/desktop/src-tauri/tauri.conf.json"
-CARGO_TOML="$ROOT/apps/desktop/src-tauri/Cargo.toml"
+CARGO_TOML="$ROOT/apps/desktop/native-backend/Cargo.toml"
 PACKAGE_JSON="$ROOT/apps/desktop/package.json"
 
-sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" "$TAURI_CONF"
 sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" "$PACKAGE_JSON"
 sed -i '' "1,/^version = / s/^version = \".*\"/version = \"$VERSION\"/" "$CARGO_TOML"
 
 echo "Bumped to $VERSION:"
-echo "  $TAURI_CONF"
 echo "  $CARGO_TOML"
 echo "  $PACKAGE_JSON"

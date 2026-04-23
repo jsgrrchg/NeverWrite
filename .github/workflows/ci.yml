@@ -28,13 +28,6 @@ jobs:
             build-essential \
             curl \
             file \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            libsecret-1-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
             pkg-config \
             wget
 
@@ -63,6 +56,12 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+
       - name: Install desktop dependencies
         working-directory: apps/desktop
         run: npm ci
@@ -74,6 +73,17 @@ jobs:
       - name: Run desktop tests
         working-directory: apps/desktop
         run: npm test
+
+      - name: Build native desktop sidecar
+        run: cargo build -p neverwrite-native-backend
+
+      - name: Run vault/editor smoke
+        working-directory: apps/desktop
+        run: npm run electron:vault-editor:smoke
+
+      - name: Run AI runtime smoke
+        working-directory: apps/desktop
+        run: npm run electron:ai-runtime:smoke
 
   web-clipper:
     name: Web Clipper

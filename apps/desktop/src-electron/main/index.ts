@@ -27,7 +27,7 @@ function configureAppIdentity() {
     if (process.platform === "darwin") {
         app.setAboutPanelOptions({
             applicationName: "NeverWrite",
-            applicationVersion: "0.1.0",
+            applicationVersion: app.getVersion(),
         });
     }
 }

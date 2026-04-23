@@ -6,8 +6,7 @@ import {
     within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { invoke } from "@tauri-apps/api/core";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, invoke } from "@neverwrite/runtime";
 import { describe, expect, it, vi } from "vitest";
 import {
     useEditorStore,
@@ -217,9 +216,6 @@ describe("FileTree", () => {
             .closest("button");
         expect(stickyRootFolder).not.toBeNull();
         expect(stickyNestedFolder).not.toBeNull();
-        expect(stickyRootFolder).toHaveStyle({
-            backgroundColor: "var(--bg-secondary)",
-        });
         const stickyRootChromeStyle =
             stickyRootFolder?.parentElement?.getAttribute("style") ?? "";
         expect(stickyRootChromeStyle).toContain("left: -4px;");
@@ -234,6 +230,133 @@ describe("FileTree", () => {
         expect(stickyNestedChromeStyle).toContain(
             "box-shadow: 0 2px 6px rgba(0,0,0,0.18);",
         );
+    });
+
+    it("does not render sticky folders when the appearance setting is disabled", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "root/folder/alpha",
+                path: "/vault/root/folder/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "root/folder/beta",
+                path: "/vault/root/folder/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "root/folder/gamma",
+                path: "/vault/root/folder/gamma.md",
+                title: "Gamma",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeStickyFolders", false);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "root");
+        await expandFolder(user, "folder");
+
+        const viewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(viewport, "clientHeight", {
+            configurable: true,
+            value: 48,
+        });
+        viewport.scrollTop = 40;
+        fireEvent.scroll(viewport);
+        fireEvent(window, new Event("resize"));
+
+        expect(screen.queryByTestId("file-tree-sticky-layer")).toBeNull();
+    });
+
+    it("does not render sticky folders while filtering the tree", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "root/folder/alpha",
+                path: "/vault/root/folder/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "root/folder/beta",
+                path: "/vault/root/folder/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "root/folder/gamma",
+                path: "/vault/root/folder/gamma.md",
+                title: "Gamma",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await user.type(screen.getByPlaceholderText("Filter files..."), "a");
+
+        const viewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(viewport, "clientHeight", {
+            configurable: true,
+            value: 48,
+        });
+        viewport.scrollTop = 40;
+        fireEvent.scroll(viewport);
+        fireEvent(window, new Event("resize"));
+
+        expect(screen.queryByTestId("file-tree-sticky-layer")).toBeNull();
+    });
+
+    it("matches markdown notes by their hidden file extension while filtering", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "CLAUDE",
+                path: "/vault/CLAUDE.md",
+                title: "CLAUDE",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await user.type(
+            screen.getByPlaceholderText("Filter files..."),
+            "claude.md",
+        );
+
+        expect(screen.queryByText('No files match "claude.md"')).toBeNull();
+        expect(screen.getByText("CLAUDE")).toBeInTheDocument();
+    });
+
+    it("matches vault files by their hidden file extension while filtering", async () => {
+        const user = userEvent.setup();
+
+        setVaultEntries([buildFileEntry("src/runtime.ts", "text/typescript")]);
+        useSettingsStore.setState({ fileTreeContentMode: "all_files" });
+
+        renderComponent(<FileTree />);
+        await user.type(
+            screen.getByPlaceholderText("Filter files..."),
+            "runtime.ts",
+        );
+
+        expect(screen.queryByText('No files match "runtime.ts"')).toBeNull();
+        expect(screen.getByText("runtime")).toBeInTheDocument();
     });
 
     it("renders indent guides for nested rows without affecting root rows", async () => {

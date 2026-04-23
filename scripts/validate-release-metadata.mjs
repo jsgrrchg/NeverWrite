@@ -1,9 +1,11 @@
 import {
     CHANGELOG_PATH,
+    collectElectronBuildIssues,
     collectReleaseIdentityIssues,
     collectVersionIssues,
     getChangelogEntry,
     normalizeReleaseTag,
+    readElectronBuilderConfig,
     readDesktopReleaseIdentity,
     readDesktopVersions,
     readFile,
@@ -28,14 +30,16 @@ function parseArgs(argv) {
     return args;
 }
 
-function main() {
+async function main() {
     const { tag } = parseArgs(process.argv.slice(2));
     const tagVersion = tag ? normalizeReleaseTag(tag) : null;
     const versions = readDesktopVersions();
-    const releaseIdentity = readDesktopReleaseIdentity();
+    const releaseIdentity = await readDesktopReleaseIdentity();
+    const electronBuilderConfig = await readElectronBuilderConfig();
     const issues = [
         ...collectVersionIssues(versions, tagVersion),
         ...collectReleaseIdentityIssues(releaseIdentity),
+        ...collectElectronBuildIssues(electronBuilderConfig),
     ];
     const changelog = readFile(CHANGELOG_PATH);
     const expectedVersion = tagVersion ?? versions.packageJson;
@@ -62,4 +66,4 @@ function main() {
     console.log(`CHANGELOG.md contains an entry for ${expectedVersion}.`);
 }
 
-main();
+await main();

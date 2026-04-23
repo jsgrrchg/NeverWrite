@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore, isMapTab } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";

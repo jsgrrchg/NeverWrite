@@ -14,6 +14,121 @@ type XtermMockInstance = {
 };
 
 const xtermMockInstances: XtermMockInstance[] = [];
+const runtimeMocks = vi.hoisted(() => {
+    const createWindowListener = () => vi.fn().mockResolvedValue(vi.fn());
+    const createWindowHandle = (label: string) => ({
+        listen: createWindowListener(),
+        once: createWindowListener(),
+        onCloseRequested: vi.fn(),
+        onMoved: vi.fn().mockResolvedValue(vi.fn()),
+        onResized: vi.fn().mockResolvedValue(vi.fn()),
+        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
+        setFocus: vi.fn().mockResolvedValue(undefined),
+        startDragging: vi.fn().mockResolvedValue(undefined),
+        minimize: vi.fn().mockResolvedValue(undefined),
+        maximize: vi.fn().mockResolvedValue(undefined),
+        unmaximize: vi.fn().mockResolvedValue(undefined),
+        toggleMaximize: vi.fn().mockResolvedValue(undefined),
+        isMaximized: vi.fn().mockResolvedValue(false),
+        isMinimized: vi.fn().mockResolvedValue(false),
+        isVisible: vi.fn().mockResolvedValue(true),
+        show: vi.fn().mockResolvedValue(undefined),
+        emitTo: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        destroy: vi.fn().mockResolvedValue(undefined),
+        setIgnoreCursorEvents: vi.fn().mockResolvedValue(undefined),
+        setPosition: vi.fn().mockResolvedValue(undefined),
+        innerPosition: vi.fn().mockResolvedValue({ x: 0, y: 0 }),
+        scaleFactor: vi.fn().mockResolvedValue(1),
+        setTrafficLightsVisible: vi.fn().mockResolvedValue(undefined),
+        label,
+    });
+
+    const mockCurrentWindow = createWindowHandle("main");
+    const mockCurrentWebviewWindow = createWindowHandle("main");
+    const mockCurrentWebview = {
+        setZoom: vi.fn().mockResolvedValue(undefined),
+        onDragDropEvent: vi.fn().mockResolvedValue(vi.fn()),
+    };
+
+    class MockLogicalPosition {
+        x: number;
+        y: number;
+
+        constructor(x: number, y: number) {
+            this.x = x;
+            this.y = y;
+        }
+    }
+
+    class MockWebviewWindow {
+        label: string;
+        readonly listen = createWindowListener();
+        readonly once = vi
+            .fn()
+            .mockImplementation(async (eventName: string, handler: (event: { event: string; payload: unknown; windowLabel: string }) => void) => {
+                if (eventName === "neverwrite:window-created") {
+                    queueMicrotask(() => {
+                        handler({
+                            event: eventName,
+                            payload: null,
+                            windowLabel: this.label,
+                        });
+                    });
+                }
+                return vi.fn();
+            });
+        readonly onCloseRequested = vi.fn();
+        readonly onMoved = vi.fn().mockResolvedValue(vi.fn());
+        readonly onResized = vi.fn().mockResolvedValue(vi.fn());
+        readonly onScaleChanged = vi.fn().mockResolvedValue(vi.fn());
+        readonly show = vi.fn().mockResolvedValue(undefined);
+        readonly setFocus = vi.fn().mockResolvedValue(undefined);
+        readonly destroy = vi.fn().mockResolvedValue(undefined);
+        readonly close = vi.fn().mockResolvedValue(undefined);
+        readonly setIgnoreCursorEvents = vi.fn().mockResolvedValue(undefined);
+        readonly setPosition = vi.fn().mockResolvedValue(undefined);
+        readonly outerPosition = vi.fn().mockResolvedValue({ x: 0, y: 0 });
+        readonly outerSize = vi
+            .fn()
+            .mockResolvedValue({ width: 1200, height: 800 });
+        readonly isMinimized = vi.fn().mockResolvedValue(false);
+        readonly isVisible = vi.fn().mockResolvedValue(true);
+        readonly minimize = vi.fn().mockResolvedValue(undefined);
+        readonly toggleMaximize = vi.fn().mockResolvedValue(undefined);
+        readonly isMaximized = vi.fn().mockResolvedValue(false);
+        readonly emitTo = vi.fn().mockResolvedValue(undefined);
+        readonly startDragging = vi.fn().mockResolvedValue(undefined);
+
+        constructor(label: string) {
+            this.label = label;
+        }
+    }
+
+    const getCurrentWindow = vi.fn(() => mockCurrentWindow);
+    const getCurrentWebview = vi.fn(() => mockCurrentWebview);
+    const getCurrentWebviewWindow = vi.fn(() => mockCurrentWebviewWindow);
+
+    return {
+        invoke: vi.fn(),
+        listen: vi.fn().mockResolvedValue(vi.fn()),
+        emitTo: vi.fn().mockResolvedValue(undefined),
+        open: vi.fn(),
+        confirm: vi.fn().mockResolvedValue(true),
+        openPath: vi.fn().mockResolvedValue(undefined),
+        revealItemInDir: vi.fn().mockResolvedValue(undefined),
+        openUrl: vi.fn().mockResolvedValue(undefined),
+        getCurrentWindow,
+        getCurrentWebview,
+        getCurrentWebviewWindow,
+        getAllWebviewWindows: vi.fn().mockResolvedValue([]),
+        mockCurrentWindow,
+        mockCurrentWebview,
+        mockCurrentWebviewWindow,
+        MockLogicalPosition,
+        MockWebviewWindow,
+    };
+});
 
 Object.defineProperty(globalThis, "__xtermMockInstances", {
     value: xtermMockInstances,
@@ -21,14 +136,39 @@ Object.defineProperty(globalThis, "__xtermMockInstances", {
     configurable: true,
 });
 
-vi.mock("@tauri-apps/api/core", () => ({
-    invoke: vi.fn(),
-    convertFileSrc: vi.fn((path: string) => `asset://${path}`),
-}));
-
-vi.mock("@tauri-apps/api/event", () => ({
-    listen: vi.fn().mockResolvedValue(vi.fn()),
-    emitTo: vi.fn().mockResolvedValue(undefined),
+vi.mock("@neverwrite/runtime", () => ({
+    runtimeName: "electron",
+    runtime: {
+        name: "electron",
+        invoke: runtimeMocks.invoke,
+        listen: runtimeMocks.listen,
+        emitTo: runtimeMocks.emitTo,
+        open: runtimeMocks.open,
+        confirm: runtimeMocks.confirm,
+        openPath: runtimeMocks.openPath,
+        revealItemInDir: runtimeMocks.revealItemInDir,
+        openUrl: runtimeMocks.openUrl,
+        getCurrentWindow: runtimeMocks.getCurrentWindow,
+        getCurrentWebview: runtimeMocks.getCurrentWebview,
+        getCurrentWebviewWindow: runtimeMocks.getCurrentWebviewWindow,
+        getAllWebviewWindows: runtimeMocks.getAllWebviewWindows,
+        WebviewWindow: runtimeMocks.MockWebviewWindow,
+        LogicalPosition: runtimeMocks.MockLogicalPosition,
+    },
+    invoke: runtimeMocks.invoke,
+    listen: runtimeMocks.listen,
+    emitTo: runtimeMocks.emitTo,
+    open: runtimeMocks.open,
+    confirm: runtimeMocks.confirm,
+    openPath: runtimeMocks.openPath,
+    revealItemInDir: runtimeMocks.revealItemInDir,
+    openUrl: runtimeMocks.openUrl,
+    getCurrentWindow: runtimeMocks.getCurrentWindow,
+    getCurrentWebview: runtimeMocks.getCurrentWebview,
+    getCurrentWebviewWindow: runtimeMocks.getCurrentWebviewWindow,
+    getAllWebviewWindows: runtimeMocks.getAllWebviewWindows,
+    WebviewWindow: runtimeMocks.MockWebviewWindow,
+    LogicalPosition: runtimeMocks.MockLogicalPosition,
 }));
 
 vi.mock("@xterm/xterm", () => ({
@@ -346,111 +486,23 @@ vi.mock("react-resize-detector", () => ({
     }),
 }));
 
-const mockCurrentWindow = {
-    listen: vi.fn(),
-    once: vi.fn(),
-    onCloseRequested: vi.fn(),
-    onMoved: vi.fn().mockResolvedValue(vi.fn()),
-    onResized: vi.fn().mockResolvedValue(vi.fn()),
-    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-    setFocus: vi.fn(),
-    startDragging: vi.fn(),
-    minimize: vi.fn().mockResolvedValue(undefined),
-    maximize: vi.fn().mockResolvedValue(undefined),
-    unmaximize: vi.fn().mockResolvedValue(undefined),
-    toggleMaximize: vi.fn().mockResolvedValue(undefined),
-    isMaximized: vi.fn().mockResolvedValue(false),
-    emitTo: vi.fn(),
-    close: vi.fn().mockResolvedValue(undefined),
-    label: "main",
-};
-
-const mockCurrentWebviewWindow = {
-    listen: vi.fn(),
-    once: vi.fn(),
-    onCloseRequested: vi.fn(),
-    onMoved: vi.fn().mockResolvedValue(vi.fn()),
-    onResized: vi.fn().mockResolvedValue(vi.fn()),
-    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-    setFocus: vi.fn(),
-    startDragging: vi.fn(),
-    minimize: vi.fn().mockResolvedValue(undefined),
-    maximize: vi.fn().mockResolvedValue(undefined),
-    unmaximize: vi.fn().mockResolvedValue(undefined),
-    toggleMaximize: vi.fn().mockResolvedValue(undefined),
-    isMaximized: vi.fn().mockResolvedValue(false),
-    emitTo: vi.fn(),
-    close: vi.fn().mockResolvedValue(undefined),
-    label: "main",
-};
-
 Object.defineProperty(globalThis, "__mockCurrentWindow", {
-    value: mockCurrentWindow,
+    value: runtimeMocks.mockCurrentWindow,
     writable: true,
     configurable: true,
 });
 
 Object.defineProperty(globalThis, "__mockCurrentWebviewWindow", {
-    value: mockCurrentWebviewWindow,
+    value: runtimeMocks.mockCurrentWebviewWindow,
     writable: true,
     configurable: true,
 });
 
-vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => mockCurrentWindow,
-}));
-
-vi.mock("@tauri-apps/api/webview", () => ({
-    getCurrentWebview: () => ({
-        onDragDropEvent: vi.fn().mockResolvedValue(vi.fn()),
-    }),
-}));
-
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-    WebviewWindow: class MockWebviewWindow {
-        label: string;
-
-        constructor(label: string) {
-            this.label = label;
-        }
-
-        once = vi.fn();
-        show = vi.fn();
-        setFocus = vi.fn();
-        destroy = vi.fn();
-        setIgnoreCursorEvents = vi.fn();
-        setPosition = vi.fn();
-        outerPosition = vi.fn().mockResolvedValue({ x: 0, y: 0 });
-        outerSize = vi.fn().mockResolvedValue({ width: 1200, height: 800 });
-        isMinimized = vi.fn().mockResolvedValue(false);
-        isVisible = vi.fn().mockResolvedValue(true);
-    },
-    getAllWebviewWindows: vi.fn().mockResolvedValue([]),
-    getCurrentWebviewWindow: vi.fn(() => mockCurrentWebviewWindow),
-}));
-
-vi.mock("@tauri-apps/api/dpi", () => ({
-    LogicalPosition: class LogicalPosition {
-        x: number;
-        y: number;
-
-        constructor(x: number, y: number) {
-            this.x = x;
-            this.y = y;
-        }
-    },
-}));
-
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-    confirm: vi.fn().mockResolvedValue(true),
-    open: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/plugin-opener", () => ({
-    openUrl: vi.fn(),
-    openPath: vi.fn(),
-    revealItemInDir: vi.fn(),
-}));
+Object.defineProperty(globalThis, "__mockCurrentWebview", {
+    value: runtimeMocks.mockCurrentWebview,
+    writable: true,
+    configurable: true,
+});
 
 function createStorageMock(): Storage {
     const store = new Map<string, string>();
@@ -610,6 +662,163 @@ beforeEach(async () => {
     xtermMockInstances.length = 0;
     vi.clearAllMocks();
     vi.useRealTimers();
+
+    runtimeMocks.invoke.mockReset();
+    runtimeMocks.listen.mockReset().mockResolvedValue(vi.fn());
+    runtimeMocks.emitTo.mockReset().mockResolvedValue(undefined);
+    runtimeMocks.open.mockReset();
+    runtimeMocks.confirm.mockReset().mockResolvedValue(true);
+    runtimeMocks.openPath.mockReset().mockResolvedValue(undefined);
+    runtimeMocks.revealItemInDir.mockReset().mockResolvedValue(undefined);
+    runtimeMocks.openUrl.mockReset().mockResolvedValue(undefined);
+    runtimeMocks.getCurrentWindow.mockReset().mockReturnValue(
+        runtimeMocks.mockCurrentWindow,
+    );
+    runtimeMocks.getCurrentWebview.mockReset().mockReturnValue(
+        runtimeMocks.mockCurrentWebview,
+    );
+    runtimeMocks.getCurrentWebviewWindow
+        .mockReset()
+        .mockReturnValue(runtimeMocks.mockCurrentWebviewWindow);
+    runtimeMocks.getAllWebviewWindows.mockReset().mockResolvedValue([]);
+    runtimeMocks.mockCurrentWindow.label = "main";
+    runtimeMocks.mockCurrentWebviewWindow.label = "main";
+    runtimeMocks.mockCurrentWindow.listen.mockReset().mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWindow.once.mockReset().mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWindow.onMoved
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWindow.onResized
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWindow.onScaleChanged
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWindow.setFocus
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.startDragging
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.minimize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.maximize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.unmaximize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.toggleMaximize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.isMaximized
+        .mockReset()
+        .mockResolvedValue(false);
+    runtimeMocks.mockCurrentWindow.isMinimized
+        .mockReset()
+        .mockResolvedValue(false);
+    runtimeMocks.mockCurrentWindow.isVisible
+        .mockReset()
+        .mockResolvedValue(true);
+    runtimeMocks.mockCurrentWindow.show.mockReset().mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.emitTo
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.close.mockReset().mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.destroy
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.setIgnoreCursorEvents
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.setPosition
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWindow.innerPosition
+        .mockReset()
+        .mockResolvedValue({ x: 0, y: 0 });
+    runtimeMocks.mockCurrentWindow.scaleFactor
+        .mockReset()
+        .mockResolvedValue(1);
+    runtimeMocks.mockCurrentWindow.setTrafficLightsVisible
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.listen
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWebviewWindow.once
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWebviewWindow.onMoved
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWebviewWindow.onResized
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWebviewWindow.onScaleChanged
+        .mockReset()
+        .mockResolvedValue(vi.fn());
+    runtimeMocks.mockCurrentWebviewWindow.setFocus
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.startDragging
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.minimize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.maximize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.unmaximize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.toggleMaximize
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.isMaximized
+        .mockReset()
+        .mockResolvedValue(false);
+    runtimeMocks.mockCurrentWebviewWindow.isMinimized
+        .mockReset()
+        .mockResolvedValue(false);
+    runtimeMocks.mockCurrentWebviewWindow.isVisible
+        .mockReset()
+        .mockResolvedValue(true);
+    runtimeMocks.mockCurrentWebviewWindow.show
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.emitTo
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.close
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.destroy
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.setIgnoreCursorEvents
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.setPosition
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebviewWindow.innerPosition
+        .mockReset()
+        .mockResolvedValue({ x: 0, y: 0 });
+    runtimeMocks.mockCurrentWebviewWindow.scaleFactor
+        .mockReset()
+        .mockResolvedValue(1);
+    runtimeMocks.mockCurrentWebviewWindow.setTrafficLightsVisible
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebview.setZoom
+        .mockReset()
+        .mockResolvedValue(undefined);
+    runtimeMocks.mockCurrentWebview.onDragDropEvent
+        .mockReset()
+        .mockResolvedValue(vi.fn());
 
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
         matches: false,

@@ -111,7 +111,7 @@ export function createTestRuntime(
 ): NeverWriteRuntime {
     const currentWindow = new TestWindow("main");
     return {
-        name: "tauri",
+        name: "electron",
         invoke: invokeHandler,
         listen: async () => () => {},
         emitTo: async () => {},

@@ -37,9 +37,9 @@ export function SidebarFilterInput({
                 gap: 6,
                 padding: "4px 8px",
                 backgroundColor:
-                    "color-mix(in srgb, var(--bg-tertiary) 65%, transparent)",
+                    "color-mix(in srgb, var(--bg-tertiary) 85%, transparent)",
                 border:
-                    "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
+                    "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
                 transition:
                     "background-color 120ms ease, border-color 120ms ease",
             }}

@@ -51,15 +51,6 @@ No GPL or strong-copyleft dependencies are used in this project.
 | vite, @vitejs/plugin-react     | MIT                |
 | typescript                     | Apache-2.0         |
 
-### Tauri
-
-| Package                        | License               |
-| ------------------------------ | --------------------- |
-| @tauri-apps/api                | Apache-2.0 OR MIT     |
-| @tauri-apps/cli                | Apache-2.0 OR MIT     |
-| @tauri-apps/plugin-dialog      | MIT OR Apache-2.0     |
-| @tauri-apps/plugin-opener      | MIT OR Apache-2.0     |
-
 ### Editor (CodeMirror 6)
 
 | Package                        | License |

@@ -5,8 +5,16 @@ on:
         paths:
             - CHANGELOG.md
             - apps/desktop/package.json
-            - apps/desktop/src-tauri/Cargo.toml
-            - apps/desktop/src-tauri/tauri.conf.json
+            - apps/desktop/electron-builder.config.mjs
+            - apps/desktop/scripts/build-electron-release.mjs
+            - apps/desktop/scripts/stage-electron-release-assets.mjs
+            - apps/desktop/scripts/stage-electron-release-assets.test.mjs
+            - apps/desktop/scripts/stage-electron-sidecar.mjs
+            - apps/desktop/scripts/verify-electron-bundle.mjs
+            - apps/desktop/src-electron/main/window.ts
+            - apps/desktop/src-electron/main/window.test.ts
+            - apps/desktop/src/features/settings/SettingsPanel.test.tsx
+            - apps/desktop/native-backend/Cargo.toml
             - scripts/extract-changelog-release-notes.mjs
             - scripts/appcast-lib.mjs
             - scripts/appcast.test.mjs
@@ -14,6 +22,7 @@ on:
             - scripts/build-appcast-from-target-metadata.mjs
             - scripts/build-platform-validation-pack.mjs
             - scripts/build-release-body.mjs
+            - scripts/electron-release-lib.mjs
             - scripts/platform-validation-lib.mjs
             - scripts/platform-validation.test.mjs
             - scripts/serve-static-directory.mjs
@@ -21,7 +30,6 @@ on:
             - scripts/release-assets-lib.mjs
             - scripts/release-assets.test.mjs
             - scripts/release-metadata.test.mjs
-            - scripts/stage-tauri-release-assets.mjs
             - scripts/validate-appcast-manifest.mjs
             - scripts/validate-release-metadata.mjs
             - release/appcast/README.md
@@ -51,11 +59,18 @@ jobs:
             - name: Run appcast tests
               run: node --test scripts/appcast.test.mjs
 
+            - name: Run Electron release helper tests
+              run: node --test apps/desktop/scripts/stage-electron-release-assets.test.mjs
+
             - name: Run platform validation tests
               run: node --test scripts/platform-validation.test.mjs
 
             - name: Run release asset tests
               run: node --test scripts/release-assets.test.mjs
+
+            - name: Run Electron updater UI tests
+              working-directory: apps/desktop
+              run: npx vitest run src-electron/main/window.test.ts src/features/settings/SettingsPanel.test.tsx
 
             - name: Validate desktop version sources
               run: node scripts/validate-release-metadata.mjs

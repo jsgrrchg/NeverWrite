@@ -19,6 +19,7 @@ CLAUDE.md
 apps/desktop/src-tauri/binaries/*
 !apps/desktop/src-tauri/binaries/README.md
 apps/desktop/src-tauri/embedded/
+apps/desktop/embedded/
 # Vendored runtimes are committed intentionally. Ignore only local build/install
 # byproducts inside vendor/, not the vendored source trees themselves.
 vendor/**/target/
@@ -27,13 +28,12 @@ vendor/**/.vite/
 vendor/**/.vite-temp/
 apps/desktop/dist/
 apps/desktop/dist-electron/
+apps/desktop/dist-electron*/
 apps/desktop/out/
 apps/desktop/node_modules/
 assets/
 !apps/desktop/src/assets/
 !apps/desktop/src/assets/fonts/
 !apps/desktop/src/assets/fonts/**
-!apps/desktop/src-tauri/icons/sources/**/Assets/
-!apps/desktop/src-tauri/icons/sources/**/Assets/**
 /package-lock.json
 node_modules/

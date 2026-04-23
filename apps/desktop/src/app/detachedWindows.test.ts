@@ -1,5 +1,4 @@
-import { emitTo } from "@tauri-apps/api/event";
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { emitTo, getAllWebviewWindows } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createDetachedWindowPayload,

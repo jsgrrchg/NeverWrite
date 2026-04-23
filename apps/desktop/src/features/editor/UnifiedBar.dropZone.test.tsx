@@ -1,28 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { renderComponent, flushPromises } from "../../test/test-utils";
+import {
+    flushPromises,
+    getMockCurrentWindow,
+    renderComponent,
+} from "../../test/test-utils";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
 
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
-
-vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => ({
-        listen: vi.fn(),
-        once: vi.fn(),
-        onCloseRequested: vi.fn(),
-        onMoved: vi.fn().mockResolvedValue(vi.fn()),
-        onResized: vi.fn().mockResolvedValue(vi.fn()),
-        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-        innerPosition: innerPositionMock,
-        scaleFactor: scaleFactorMock,
-        setFocus: vi.fn(),
-        startDragging: vi.fn(),
-        emitTo: vi.fn(),
-        close: vi.fn(),
-        label: "main",
-    }),
-}));
 
 vi.mock("../../app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
@@ -40,6 +26,18 @@ vi.mock("../../app/detachedWindows", () => ({
 
 describe("UnifiedBar drop zone publishing", () => {
     it("publishes a drop zone even when the window has no open tabs", async () => {
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+            }
+        ).innerPosition = innerPositionMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+            }
+        ).scaleFactor = scaleFactorMock;
         useVaultStore.setState((state) => ({
             ...state,
             vaultPath: "/vaults/main",

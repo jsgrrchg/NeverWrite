@@ -21,9 +21,9 @@ NeverWrite now uses a single app-owned spellcheck system.
 
 ## Main Files
 
-- `apps/desktop/src-tauri/src/spellcheck/mod.rs`
-- `apps/desktop/src-tauri/src/spellcheck/language.rs`
-- `apps/desktop/src-tauri/src/spellcheck/storage.rs`
+- `apps/desktop/native-backend/src/spellcheck.rs`
+- `apps/desktop/native-backend/resources/spellcheck/catalog.json`
+- `apps/desktop/native-backend/resources/spellcheck/bundled/en-US/dictionary.aff`
 - `apps/desktop/src/features/spellcheck/api.ts`
 - `apps/desktop/src/features/spellcheck/store.ts`
 - `apps/desktop/src/features/spellcheck/contextMenu.ts`

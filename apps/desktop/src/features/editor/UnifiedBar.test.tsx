@@ -1,11 +1,13 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "@neverwrite/runtime";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import {
-    renderComponent,
     flushPromises,
+    getMockCurrentWebview,
+    getMockCurrentWindow,
+    renderComponent,
     setEditorTabs,
     setVaultEntries,
     setVaultNotes,
@@ -23,25 +25,6 @@ const minimizeMock = vi.fn().mockResolvedValue(undefined);
 const toggleMaximizeMock = vi.fn().mockResolvedValue(undefined);
 const isMaximizedMock = vi.fn().mockResolvedValue(false);
 const closeMock = vi.fn().mockResolvedValue(undefined);
-
-const mockCurrentWindow = {
-    listen: vi.fn(),
-    once: vi.fn(),
-    onCloseRequested: vi.fn(),
-    onMoved: vi.fn().mockResolvedValue(vi.fn()),
-    onResized: vi.fn().mockResolvedValue(vi.fn()),
-    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-    innerPosition: innerPositionMock,
-    scaleFactor: scaleFactorMock,
-    setFocus: vi.fn(),
-    startDragging: vi.fn(),
-    minimize: minimizeMock,
-    toggleMaximize: toggleMaximizeMock,
-    isMaximized: isMaximizedMock,
-    emitTo: vi.fn(),
-    close: closeMock,
-    label: "main",
-};
 
 function createChatSession(
     sessionId: string,
@@ -70,16 +53,6 @@ function createChatSession(
         attachments: [],
     };
 }
-
-vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => mockCurrentWindow,
-}));
-
-vi.mock("@tauri-apps/api/webview", () => ({
-    getCurrentWebview: () => ({
-        onDragDropEvent: onDragDropEventMock,
-    }),
-}));
 
 vi.mock("../../app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
@@ -147,6 +120,71 @@ function resizeObserverEntry(
 
 describe("UnifiedBar tab strip drop", () => {
     beforeEach(() => {
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).innerPosition = innerPositionMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).scaleFactor = scaleFactorMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).minimize = minimizeMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).toggleMaximize = toggleMaximizeMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).isMaximized = isMaximizedMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).close = closeMock;
+        (
+            getMockCurrentWebview() as {
+                onDragDropEvent: typeof onDragDropEventMock;
+            }
+        ).onDragDropEvent = onDragDropEventMock;
         if (typeof window.PointerEvent === "undefined") {
             class MockPointerEvent extends MouseEvent {
                 pointerId: number;

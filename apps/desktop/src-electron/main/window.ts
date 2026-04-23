@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 import { ELECTRON_IPC } from "../shared/ipc";
 import { removeWindowVaultRoute } from "./shellState";
 
@@ -27,6 +27,41 @@ function rendererHtmlPath() {
     return fileURLToPath(
         new URL(/* @vite-ignore */ "../renderer/index.html", import.meta.url),
     );
+}
+
+export function resolveRendererDevUrl(
+    rendererUrl: string | undefined,
+    isPackaged: boolean,
+    search: string,
+) {
+    const normalizedRendererUrl = rendererUrl?.trim();
+    if (!normalizedRendererUrl || isPackaged) {
+        return null;
+    }
+
+    const url = new URL(normalizedRendererUrl);
+    url.search = search;
+    return url.toString();
+}
+
+function resolveRendererEntry(search: string) {
+    const rendererUrl = resolveRendererDevUrl(
+        process.env.ELECTRON_RENDERER_URL,
+        app.isPackaged,
+        search,
+    );
+    if (!rendererUrl) {
+        return {
+            kind: "file",
+            path: rendererHtmlPath(),
+            search,
+        } as const;
+    }
+
+    return {
+        kind: "url",
+        url: rendererUrl,
+    } as const;
 }
 
 function normalizeSearch(search: string | undefined) {
@@ -176,12 +211,13 @@ export function createAppWindow(
 
     bindWindowLifecycle(label, window);
 
-    if (process.env.ELECTRON_RENDERER_URL) {
-        const url = new URL(process.env.ELECTRON_RENDERER_URL);
-        url.search = search;
-        void window.loadURL(url.toString());
+    const rendererEntry = resolveRendererEntry(search);
+    if (rendererEntry.kind === "url") {
+        void window.loadURL(rendererEntry.url);
     } else {
-        void window.loadFile(rendererHtmlPath(), { search });
+        void window.loadFile(rendererEntry.path, {
+            search: rendererEntry.search,
+        });
     }
 
     return window;

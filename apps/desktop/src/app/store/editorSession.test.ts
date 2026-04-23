@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import {
     buildPersistedSession,
     getEditorSessionKey,
@@ -11,10 +11,6 @@ import { safeStorageClear } from "../utils/safeStorage";
 import { useLayoutStore } from "./layoutStore";
 import { useVaultStore } from "./vaultStore";
 import { createInitialLayout, splitPane } from "./workspaceLayoutTree";
-
-vi.mock("@tauri-apps/api/core", () => ({
-    invoke: vi.fn(),
-}));
 
 describe("editorSession", () => {
     beforeEach(() => {

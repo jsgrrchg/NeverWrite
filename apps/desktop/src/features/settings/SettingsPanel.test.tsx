@@ -1,6 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { listen } from "@tauri-apps/api/event";
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows, listen } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
@@ -464,7 +463,8 @@ describe("SettingsPanel", () => {
                     enabled: true,
                     currentVersion: "0.1.0",
                     channel: "stable",
-                    endpoint: "https://updates.example.com/stable/latest.json",
+                    endpoint:
+                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
                     message: null,
                     update: null,
                 };
@@ -475,7 +475,8 @@ describe("SettingsPanel", () => {
                     enabled: true,
                     currentVersion: "0.1.0",
                     channel: "stable",
-                    endpoint: "https://updates.example.com/stable/latest.json",
+                    endpoint:
+                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
                     message: null,
                     update: {
                         currentVersion: "0.1.0",
@@ -483,9 +484,9 @@ describe("SettingsPanel", () => {
                         date: "2026-04-04T12:00:00Z",
                         body: "## Improvements\n- Added multi-target updater metadata.",
                         rawJson: {},
-                        target: "darwin-aarch64",
+                        target: "darwin-arm64",
                         downloadUrl:
-                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
                     },
                 };
             }
@@ -498,18 +499,18 @@ describe("SettingsPanel", () => {
         fireEvent.click(screen.getByRole("button", { name: "Updates" }));
 
         expect(
-            await screen.findByRole("button", { name: "Check for updates" }),
+            await screen.findByRole("button", {
+                name: "download and install",
+            }),
         ).toBeInTheDocument();
-        expect(screen.getByText("Update available")).toBeInTheDocument();
-
-        fireEvent.click(
-            screen.getByRole("button", { name: "Check for updates" }),
-        );
-
-        expect(await screen.findByText("0.2.0")).toBeInTheDocument();
+        expect(await screen.findByText("v0.2.0")).toBeInTheDocument();
         expect(
             screen.getByText(/Added multi-target updater metadata\./),
         ).toBeInTheDocument();
+        expect(mockInvoke()).not.toHaveBeenCalledWith(
+            "download_and_install_app_update",
+            expect.anything(),
+        );
     });
 
     it("requires explicit confirmation before install when sensitive state exists", async () => {
@@ -547,7 +548,8 @@ describe("SettingsPanel", () => {
                     enabled: true,
                     currentVersion: "0.1.0",
                     channel: "stable",
-                    endpoint: "https://updates.example.com/stable/latest.json",
+                    endpoint:
+                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
                     message: null,
                     update: null,
                 };
@@ -558,7 +560,8 @@ describe("SettingsPanel", () => {
                     enabled: true,
                     currentVersion: "0.1.0",
                     channel: "stable",
-                    endpoint: "https://updates.example.com/stable/latest.json",
+                    endpoint:
+                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
                     message: null,
                     update: {
                         currentVersion: "0.1.0",
@@ -566,9 +569,9 @@ describe("SettingsPanel", () => {
                         date: "2026-04-04T12:00:00Z",
                         body: "## Added\n\n- In-app install flow.",
                         rawJson: {},
-                        target: "darwin-aarch64",
+                        target: "darwin-arm64",
                         downloadUrl:
-                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
                     },
                 };
             }
@@ -584,10 +587,10 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "Updates" }));
 
-        expect(await screen.findByText("0.2.0")).toBeInTheDocument();
+        expect(await screen.findByText("v0.2.0")).toBeInTheDocument();
 
         fireEvent.click(
-            screen.getByRole("button", { name: "Download and install" }),
+            screen.getByRole("button", { name: "download and install" }),
         );
 
         expect(
@@ -604,7 +607,7 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(
             screen.getByRole("button", {
-                name: "Install anyway",
+                name: "install anyway",
             }),
         );
 
@@ -613,7 +616,7 @@ describe("SettingsPanel", () => {
                 "download_and_install_app_update",
                 {
                     version: "0.2.0",
-                    target: "darwin-aarch64",
+                    target: "darwin-arm64",
                 },
             );
         });
@@ -629,7 +632,8 @@ describe("SettingsPanel", () => {
                     enabled: true,
                     currentVersion: "0.1.0",
                     channel: "stable",
-                    endpoint: "https://updates.example.com/stable/latest.json",
+                    endpoint:
+                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
                     message: null,
                     update: null,
                 };
@@ -640,7 +644,8 @@ describe("SettingsPanel", () => {
                     enabled: true,
                     currentVersion: "0.1.0",
                     channel: "stable",
-                    endpoint: "https://updates.example.com/stable/latest.json",
+                    endpoint:
+                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
                     message: null,
                     update: {
                         currentVersion: "0.1.0",
@@ -648,9 +653,9 @@ describe("SettingsPanel", () => {
                         date: "2026-04-04T12:00:00Z",
                         body: "## Added\n\n- In-app install flow.",
                         rawJson: {},
-                        target: "darwin-aarch64",
+                        target: "darwin-arm64",
                         downloadUrl:
-                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite.app.tar.gz",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
                     },
                 };
             }
@@ -666,7 +671,7 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "Updates" }));
 
-        expect(await screen.findByText("0.2.0")).toBeInTheDocument();
+        expect(await screen.findByText("v0.2.0")).toBeInTheDocument();
 
         localStorage.setItem(
             "neverwrite:window-operational-state:main",
@@ -682,7 +687,7 @@ describe("SettingsPanel", () => {
         );
 
         fireEvent.click(
-            screen.getByRole("button", { name: "Download and install" }),
+            screen.getByRole("button", { name: "download and install" }),
         );
 
         expect(

@@ -949,7 +949,6 @@ export function AIChatComposer({
     onFileMentionAttach,
     onFolderAttach,
     onToggleExpanded,
-    onAttachFile,
     onPasteImage,
     onFocus,
     onSubmit,
@@ -960,7 +959,6 @@ export function AIChatComposer({
         (s) => s.fileTreeShowExtensions,
     );
     const fallbackEntries = useVaultStore((state) => state.entries);
-    const [attachMenuOpen, setAttachMenuOpen] = useState(false);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
     const [composerElement, setComposerElement] =
@@ -2014,117 +2012,6 @@ export function AIChatComposer({
                         ) : null}
                         {footer}
                     </div>
-                    {onAttachFile && (
-                        <div className="relative">
-                            <button
-                                type="button"
-                                tabIndex={-1}
-                                onClick={() => setAttachMenuOpen((v) => !v)}
-                                onMouseDown={(e) => e.preventDefault()}
-                                className="flex shrink-0 items-center justify-center rounded-md"
-                                style={{
-                                    width: 28,
-                                    height: 28,
-                                    color: "var(--text-secondary)",
-                                    backgroundColor: attachMenuOpen
-                                        ? "color-mix(in srgb, var(--text-secondary) 12%, transparent)"
-                                        : "transparent",
-                                    border: "none",
-                                    outline: "none",
-                                    appearance: "none",
-                                    WebkitAppearance: "none",
-                                }}
-                                title="Attach file"
-                                aria-label="Attach file"
-                                disabled={disabled}
-                            >
-                                <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 16 16"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <path d="M13.5 7.5l-5.8 5.8a3.2 3.2 0 0 1-4.5-4.5l5.8-5.8a2.1 2.1 0 0 1 3 3L6.2 11.8a1.1 1.1 0 0 1-1.5-1.5L10 5" />
-                                </svg>
-                            </button>
-                            {attachMenuOpen && (
-                                <>
-                                    <div
-                                        style={{
-                                            position: "fixed",
-                                            inset: 0,
-                                            zIndex: 50,
-                                        }}
-                                        onClick={() => setAttachMenuOpen(false)}
-                                    />
-                                    <div
-                                        className="absolute rounded-lg border"
-                                        style={{
-                                            bottom: "100%",
-                                            left: 0,
-                                            marginBottom: 4,
-                                            minWidth: 160,
-                                            zIndex: 51,
-                                            backgroundColor:
-                                                "var(--bg-elevated, var(--bg-secondary))",
-                                            borderColor: "var(--border)",
-                                            boxShadow:
-                                                "var(--shadow-soft, 0 2px 8px rgba(0,0,0,0.15))",
-                                            padding: "4px 0",
-                                        }}
-                                    >
-                                        {onAttachFile && (
-                                            <button
-                                                type="button"
-                                                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm"
-                                                style={{
-                                                    color: "var(--text-primary)",
-                                                    backgroundColor:
-                                                        "transparent",
-                                                    border: "none",
-                                                }}
-                                                onMouseEnter={(e) => {
-                                                    (
-                                                        e.currentTarget as HTMLElement
-                                                    ).style.backgroundColor =
-                                                        "color-mix(in srgb, var(--text-secondary) 10%, transparent)";
-                                                }}
-                                                onMouseLeave={(e) => {
-                                                    (
-                                                        e.currentTarget as HTMLElement
-                                                    ).style.backgroundColor =
-                                                        "transparent";
-                                                }}
-                                                onClick={() => {
-                                                    setAttachMenuOpen(false);
-                                                    onAttachFile();
-                                                }}
-                                            >
-                                                <svg
-                                                    width="14"
-                                                    height="14"
-                                                    viewBox="0 0 16 16"
-                                                    fill="none"
-                                                    stroke="currentColor"
-                                                    strokeWidth="1.5"
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                >
-                                                    <path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5L9 1Z" />
-                                                    <path d="M9 1v4h4" />
-                                                </svg>
-                                                File
-                                            </button>
-                                        )}
-                                    </div>
-                                </>
-                            )}
-                        </div>
-                    )}
                     <button
                         type="button"
                         onClick={onSubmit}

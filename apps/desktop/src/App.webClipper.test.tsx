@@ -1,8 +1,11 @@
 import { act, screen } from "@testing-library/react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import {
+    getAllWebviewWindows,
+    getCurrentWindow,
+    invoke,
+    listen,
+    type UnlistenFn,
+} from "@neverwrite/runtime";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";

@@ -5,6 +5,7 @@ import {
     getCurrentWebviewWindow,
 } from "@neverwrite/runtime";
 import { LogicalPosition } from "@neverwrite/runtime";
+import { waitForWindowReady } from "./runtime/windowLifecycle";
 import type { Tab, TabInput } from "./store/editorStore";
 import type { WorkspaceDropTarget } from "./store/workspaceContracts";
 import { getPathBaseName } from "./utils/path";
@@ -470,10 +471,7 @@ export async function openSettingsWindow(
         focus: true,
         ...getWebviewWindowChromeOptions(),
     });
-    await new Promise<void>((resolve, reject) => {
-        void win.once("tauri://created", () => resolve());
-        void win.once("tauri://error", (e) => reject(e.payload));
-    });
+    await waitForWindowReady(win);
 }
 
 export async function openVaultWindow(vaultPath: string) {
@@ -490,10 +488,7 @@ export async function openVaultWindow(vaultPath: string) {
         ...getWebviewWindowChromeOptions(),
     });
 
-    return await new Promise<void>((resolve, reject) => {
-        void win.once("tauri://created", () => resolve());
-        void win.once("tauri://error", (e) => reject(e.payload));
-    });
+    await waitForWindowReady(win);
 }
 
 export async function openDetachedNoteWindow(
@@ -524,15 +519,13 @@ export async function openDetachedNoteWindow(
         ...getWebviewWindowChromeOptions(),
     });
 
-    return await new Promise<WebviewWindow>((resolve, reject) => {
-        void detachedWindow.once("tauri://created", () => {
-            resolve(detachedWindow);
-        });
-        void detachedWindow.once("tauri://error", (event) => {
-            safeStorageRemoveItem(getDetachedWindowStorageKey(label));
-            reject(event.payload);
-        });
-    });
+    try {
+        await waitForWindowReady(detachedWindow);
+        return detachedWindow;
+    } catch (error) {
+        safeStorageRemoveItem(getDetachedWindowStorageKey(label));
+        throw error;
+    }
 }
 
 export function getDetachedWindowPosition(screenX: number, screenY: number) {
@@ -584,10 +577,7 @@ export async function createGhostWindow(
         y: pos.y,
     });
 
-    await new Promise<void>((resolve, reject) => {
-        void ghost.once("tauri://created", () => resolve());
-        void ghost.once("tauri://error", (e) => reject(e.payload));
-    });
+    await waitForWindowReady(ghost);
 
     await ghost.setIgnoreCursorEvents(true);
     await ghost.show();

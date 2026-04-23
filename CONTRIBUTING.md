@@ -9,19 +9,18 @@ Thanks for your interest in contributing to NeverWrite. This guide covers everyt
 | **npm** | 11+ | Package manager for `apps/desktop` |
 | **pnpm** | 10.33+ | Package manager for `apps/web-clipper` |
 | **Rust** | 1.94+ | Edition 2021 across all crates |
-| **Tauri CLI** | 2.x | Install via `cargo install tauri-cli` |
 
 ### Platform-specific
 
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
 - **Windows**: MSVC Build Tools, WebView2
-- **Linux**: See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+- **Linux**: Standard build essentials for Rust and Electron packaging (`build-essential`, `pkg-config`, `curl`, `wget`)
 
 ## Repository structure
 
 ```
 apps/
-  desktop/            Tauri + React desktop app (npm)
+  desktop/            Electron + React desktop app (npm)
   web-clipper/        WXT browser extension (pnpm)
 crates/
   types/              Shared DTOs and domain models
@@ -42,10 +41,10 @@ cd apps/desktop
 npm install
 
 # Frontend only (Vite dev server)
-npm run dev
+npm run renderer:dev
 
-# Full Tauri app with Rust backend
-npm run tauri -- dev
+# Full Electron app with Rust sidecar
+npm run dev
 ```
 
 ### Web clipper
@@ -181,7 +180,7 @@ pnpm test:run         # Run once
 - Test files live next to the code they test: `MyComponent.test.tsx`
 - Use `describe()`, `it()`, `expect()` from Vitest
 - Use Testing Library for component tests (`@testing-library/react`)
-- Mock Tauri APIs with `vi.mocked()`
+- Mock desktop runtime APIs through `@neverwrite/runtime` helpers and `vi.mocked()`
 
 ### Rust
 
@@ -201,7 +200,7 @@ cargo test -p neverwrite-vault      # Single crate
 
 ### Backend
 
-- **Tauri 2** — desktop runtime with IPC commands
+- **Electron** — desktop shell and IPC bridge
 - **Tokio** — async runtime
 - **notify** — filesystem watching
 - **tiny_http** — local API server for web clipper communication (port 32145)
@@ -229,21 +228,20 @@ We follow [Semantic Versioning](https://semver.org/). During the `0.x` phase, mi
 
 Versions are kept in sync across:
 - `apps/desktop/package.json`
-- `apps/desktop/src-tauri/Cargo.toml`
-- `apps/desktop/src-tauri/tauri.conf.json`
+- `apps/desktop/native-backend/Cargo.toml`
 - `CHANGELOG.md`
 
 Use `scripts/bump-version.sh` to update all locations at once.
 
 ## Release automation
 
-Desktop releases are maintainer-driven and run manually from GitHub Actions.
+Desktop releases are maintainer-driven and run through the Electron release workflow in GitHub Actions.
 
 Before triggering [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml):
 
 - Create and push the release tag first, for example `v0.2.0`
 - Ensure the required signing secrets are configured in the GitHub repository settings
-- If you want signed macOS artifacts, also configure the Apple signing and notarization secrets documented in [`release/appcast/README.md`](release/appcast/README.md)
+- Review the Electron release topology and signing requirements documented in [`release/appcast/README.md`](release/appcast/README.md)
 
 ## Reporting issues
 

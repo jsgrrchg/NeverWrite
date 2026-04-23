@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,13 +11,13 @@ export const DESKTOP_PACKAGE_JSON_PATH = path.join(
     REPO_ROOT,
     "apps/desktop/package.json",
 );
-export const DESKTOP_TAURI_CONF_PATH = path.join(
+export const DESKTOP_ELECTRON_BUILDER_CONFIG_PATH = path.join(
     REPO_ROOT,
-    "apps/desktop/src-tauri/tauri.conf.json",
+    "apps/desktop/electron-builder.config.mjs",
 );
-export const DESKTOP_CARGO_TOML_PATH = path.join(
+export const DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH = path.join(
     REPO_ROOT,
-    "apps/desktop/src-tauri/Cargo.toml",
+    "apps/desktop/native-backend/Cargo.toml",
 );
 export const CHANGELOG_PATH = path.join(REPO_ROOT, "CHANGELOG.md");
 
@@ -51,23 +51,29 @@ export function readFile(filePath) {
 
 export function readDesktopVersions() {
     const packageJson = readJsonFile(DESKTOP_PACKAGE_JSON_PATH);
-    const tauriConf = readJsonFile(DESKTOP_TAURI_CONF_PATH);
-    const cargoToml = readFile(DESKTOP_CARGO_TOML_PATH);
+    const nativeBackendCargoToml = readFile(
+        DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH,
+    );
 
     return {
         packageJson: packageJson.version,
-        tauriConf: tauriConf.version,
-        cargoToml: readCargoPackageVersion(cargoToml),
+        nativeBackendCargo: readCargoPackageVersion(nativeBackendCargoToml),
     };
 }
 
-export function readDesktopReleaseIdentity() {
-    const tauriConf = readJsonFile(DESKTOP_TAURI_CONF_PATH);
+export async function readDesktopReleaseIdentity() {
+    const electronBuilder = await readElectronBuilderConfig();
 
     return {
-        productName: tauriConf.productName,
-        identifier: tauriConf.identifier,
+        productName: electronBuilder.productName,
+        identifier: electronBuilder.appId,
     };
+}
+
+export async function readElectronBuilderConfig() {
+    const moduleUrl = `${pathToFileURL(DESKTOP_ELECTRON_BUILDER_CONFIG_PATH).href}?cacheBust=${fs.statSync(DESKTOP_ELECTRON_BUILDER_CONFIG_PATH).mtimeMs}`;
+    const module = await import(moduleUrl);
+    return module.default;
 }
 
 export function readCargoPackageVersion(cargoTomlText) {
@@ -96,21 +102,20 @@ export function readCargoPackageVersion(cargoTomlText) {
     }
 
     throw new Error(
-        `Could not find [package] version in ${DESKTOP_CARGO_TOML_PATH}.`,
+        `Could not find [package] version in ${DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH}.`,
     );
 }
 
 export function collectVersionIssues(
-    { packageJson, tauriConf, cargoToml },
+    { packageJson, nativeBackendCargo },
     tagVersion,
 ) {
     const issues = [];
-    const versions = [packageJson, tauriConf, cargoToml];
+    const versions = [packageJson, nativeBackendCargo];
 
     for (const [sourceName, value] of Object.entries({
         packageJson,
-        tauriConf,
-        cargoToml,
+        nativeBackendCargo,
     })) {
         if (!isStrictSemver(value)) {
             issues.push(
@@ -121,7 +126,7 @@ export function collectVersionIssues(
 
     if (new Set(versions).size !== 1) {
         issues.push(
-            `Desktop versions do not match: package.json=${packageJson}, tauri.conf.json=${tauriConf}, Cargo.toml=${cargoToml}.`,
+            `Desktop versions do not match: package.json=${packageJson}, native-backend/Cargo.toml=${nativeBackendCargo}.`,
         );
     }
 
@@ -139,13 +144,91 @@ export function collectReleaseIdentityIssues({ productName, identifier }) {
 
     if (productName !== EXPECTED_DESKTOP_PRODUCT_NAME) {
         issues.push(
-            `tauri.conf.json productName must be "${EXPECTED_DESKTOP_PRODUCT_NAME}", received "${productName}".`,
+            `electron-builder.config.mjs productName must be "${EXPECTED_DESKTOP_PRODUCT_NAME}", received "${productName}".`,
         );
     }
 
     if (identifier !== EXPECTED_DESKTOP_IDENTIFIER) {
         issues.push(
-            `tauri.conf.json identifier must be "${EXPECTED_DESKTOP_IDENTIFIER}", received "${identifier}".`,
+            `electron-builder.config.mjs appId must be "${EXPECTED_DESKTOP_IDENTIFIER}", received "${identifier}".`,
+        );
+    }
+
+    return issues;
+}
+
+export function collectElectronBuildIssues(config) {
+    const issues = [];
+
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+        return ["electron-builder.config.mjs must export a configuration object."];
+    }
+
+    const protocols = Array.isArray(config.protocols) ? config.protocols : [];
+    const hasNeverWriteProtocol = protocols.some((entry) =>
+        Array.isArray(entry?.schemes) && entry.schemes.includes("neverwrite"),
+    );
+    if (!hasNeverWriteProtocol) {
+        issues.push(
+            'electron-builder.config.mjs must register the "neverwrite" protocol.',
+        );
+    }
+
+    const extraResources = Array.isArray(config.extraResources)
+        ? config.extraResources
+        : [];
+    const hasNativeBackendResource = extraResources.some(
+        (entry) =>
+            entry?.from === "out/native-backend" && entry?.to === "native-backend",
+    );
+    if (!hasNativeBackendResource) {
+        issues.push(
+            'electron-builder.config.mjs must stage "out/native-backend" into the packaged "native-backend" resources directory.',
+        );
+    }
+
+    if (config.mac?.minimumSystemVersion !== "12.0") {
+        issues.push(
+            'electron-builder.config.mjs mac.minimumSystemVersion must be "12.0".',
+        );
+    }
+
+    if (
+        typeof config.artifactName !== "string" ||
+        !config.artifactName.includes("${arch}")
+    ) {
+        issues.push(
+            'electron-builder.config.mjs artifactName must include "${arch}" to avoid multi-architecture asset collisions.',
+        );
+    }
+
+    if (typeof config.afterPack !== "string" || !config.afterPack.trim()) {
+        issues.push(
+            "electron-builder.config.mjs must configure afterPack bundle verification.",
+        );
+    }
+
+    const macTargets = new Set(
+        (config.mac?.target ?? []).flatMap((entry) =>
+            typeof entry === "string" ? [entry] : [entry?.target].filter(Boolean),
+        ),
+    );
+    for (const expectedTarget of ["dmg", "zip"]) {
+        if (!macTargets.has(expectedTarget)) {
+            issues.push(
+                `electron-builder.config.mjs mac.target must include "${expectedTarget}".`,
+            );
+        }
+    }
+
+    const winTargets = new Set(
+        (config.win?.target ?? []).flatMap((entry) =>
+            typeof entry === "string" ? [entry] : [entry?.target].filter(Boolean),
+        ),
+    );
+    if (!winTargets.has("nsis")) {
+        issues.push(
+            'electron-builder.config.mjs win.target must include "nsis".',
         );
     }
 

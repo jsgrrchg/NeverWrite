@@ -778,7 +778,8 @@ function GeneralSettings() {
 
 function AppearanceSettings() {
     const { mode, setMode, themeName, setThemeName } = useThemeStore();
-    const { fileTreeScale, setSetting } = useSettingsStore();
+    const { fileTreeScale, fileTreeStickyFolders, setSetting } =
+        useSettingsStore();
 
     return (
         <div>
@@ -812,6 +813,18 @@ function AppearanceSettings() {
                         min={90}
                         max={140}
                         onChange={(v) => setSetting("fileTreeScale", v)}
+                    />
+                }
+            />
+            <Row
+                label="Sticky folders"
+                description="Keep parent folders pinned at the top while scrolling the file tree."
+                control={
+                    <Toggle
+                        value={fileTreeStickyFolders}
+                        onChange={(v) =>
+                            setSetting("fileTreeStickyFolders", v)
+                        }
                     />
                 }
             />

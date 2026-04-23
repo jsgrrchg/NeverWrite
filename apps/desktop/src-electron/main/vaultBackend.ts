@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { app } from "electron";
 import type { NativeBackendBridge } from "./nativeBackend";
+import type { AppUpdaterBackend } from "./updater";
 import { syncRecentVaultsForElectron } from "./menu";
 import {
     registerWindowVaultRoute,
@@ -825,13 +826,16 @@ async function listMaps(vaultPath: string): Promise<MapEntryDto[]> {
 export class ElectronVaultBackend {
     private readonly emitEvent: (eventName: string, payload: unknown) => void;
     private readonly nativeBackend: NativeBackendBridge | null;
+    private readonly appUpdater: AppUpdaterBackend;
 
     constructor(
         emitEvent: (eventName: string, payload: unknown) => void,
+        appUpdater: AppUpdaterBackend,
         nativeBackend: NativeBackendBridge | null = null,
     ) {
         this.emitEvent = emitEvent;
         this.nativeBackend = nativeBackend;
+        this.appUpdater = appUpdater;
     }
 
     async invoke(command: string, args: Record<string, unknown> = {}) {
@@ -926,17 +930,14 @@ export class ElectronVaultBackend {
             case "unregister_window_vault_route":
                 return null;
             case "get_app_update_configuration":
+                return this.appUpdater.getConfiguration();
             case "check_for_app_update":
-                return {
-                    enabled: false,
-                    currentVersion: "0.1.0",
-                    channel: "electron-spike",
-                    endpoint: null,
-                    message: "Updates are disabled in the Electron spike.",
-                    update: null,
-                };
+                return this.appUpdater.checkForUpdates();
             case "download_and_install_app_update":
-                return null;
+                return this.appUpdater.downloadAndInstallUpdate(
+                    String(args.version ?? ""),
+                    String(args.target ?? ""),
+                );
             case "web_clipper_ready_vaults":
                 return this.webClipperReadyVaults();
             case "web_clipper_list_folders":
