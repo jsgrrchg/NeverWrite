@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { AppLayout } from "./AppLayout";
 import { useLayoutStore } from "../../app/store/layoutStore";
@@ -37,14 +37,21 @@ class MockResizeObserver {
     disconnect() {}
 }
 
-describe("AppLayout bottom panel", () => {
+describe("AppLayout", () => {
     const originalResizeObserver = globalThis.ResizeObserver;
+    const originalSetPointerCapture = HTMLElement.prototype.setPointerCapture;
+    const originalReleasePointerCapture =
+        HTMLElement.prototype.releasePointerCapture;
+    const originalHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
 
     beforeAll(() => {
         Object.defineProperty(globalThis, "ResizeObserver", {
             value: MockResizeObserver,
             configurable: true,
         });
+        HTMLElement.prototype.setPointerCapture = () => {};
+        HTMLElement.prototype.releasePointerCapture = () => {};
+        HTMLElement.prototype.hasPointerCapture = () => true;
     });
 
     afterAll(() => {
@@ -52,23 +59,24 @@ describe("AppLayout bottom panel", () => {
             value: originalResizeObserver,
             configurable: true,
         });
+        HTMLElement.prototype.setPointerCapture = originalSetPointerCapture;
+        HTMLElement.prototype.releasePointerCapture =
+            originalReleasePointerCapture;
+        HTMLElement.prototype.hasPointerCapture = originalHasPointerCapture;
     });
 
     beforeEach(() => {
         useLayoutStore.setState({
             sidebarCollapsed: false,
-            sidebarWidth: 240,
+            sidebarWidth: 280,
             rightPanelCollapsed: false,
             rightPanelExpanded: false,
             rightPanelWidth: 280,
             rightPanelView: "outline",
-            bottomPanelCollapsed: false,
-            bottomPanelHeight: 240,
-            bottomPanelView: "terminal",
         });
     });
 
-    it("renders without a bottom panel", () => {
+    it("renders the left, center, and right regions", () => {
         render(
             <AppLayout
                 left={<div>Left</div>}
@@ -80,42 +88,57 @@ describe("AppLayout bottom panel", () => {
         expect(screen.getByText("Left")).toBeInTheDocument();
         expect(screen.getByText("Center")).toBeInTheDocument();
         expect(screen.getByText("Right")).toBeInTheDocument();
-        expect(screen.queryByText("Bottom")).not.toBeInTheDocument();
     });
 
-    it("renders the bottom panel when provided", () => {
+    it("keeps the right panel outside the center column", () => {
         render(
             <AppLayout
                 left={<div>Left</div>}
                 center={<div>Center</div>}
                 right={<div>Right</div>}
-                bottom={<div>Bottom</div>}
-            />,
-        );
-
-        expect(screen.getByText("Bottom")).toBeInTheDocument();
-    });
-
-    it("keeps the right panel outside the bottom-panel column", () => {
-        render(
-            <AppLayout
-                left={<div>Left</div>}
-                center={<div>Center</div>}
-                right={<div>Right</div>}
-                bottom={<div>Bottom</div>}
             />,
         );
 
         const centerColumn = screen.getByTestId("app-layout-center-column");
         const rightPanel = screen.getByTestId("app-layout-right-panel");
-        const bottomPanel = screen.getByTestId("app-layout-bottom-panel");
 
-        expect(within(centerColumn).getByText("Bottom")).toBe(
-            bottomPanel.firstChild,
+        expect(centerColumn).toContainElement(screen.getByText("Center"));
+        expect(rightPanel).toContainElement(screen.getByText("Right"));
+        expect(rightPanel).not.toContainElement(screen.getByText("Center"));
+    });
+
+    it("clamps left resize to the minimum width without collapsing", () => {
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
         );
-        expect(within(rightPanel).getByText("Right")).toBeInTheDocument();
-        expect(
-            within(rightPanel).queryByText("Bottom"),
-        ).not.toBeInTheDocument();
+
+        const leftPanel = screen.getByText("Left").parentElement;
+        const leftResizer = leftPanel?.nextElementSibling;
+
+        expect(leftPanel).toBeInstanceOf(HTMLElement);
+        expect(leftResizer).toBeInstanceOf(HTMLElement);
+
+        fireEvent.pointerDown(leftResizer as Element, {
+            button: 0,
+            clientX: 280,
+            pointerId: 1,
+        });
+        fireEvent.pointerMove(leftResizer as Element, {
+            clientX: 10,
+            pointerId: 1,
+        });
+
+        expect((leftPanel as HTMLElement).style.width).toBe("280px");
+
+        fireEvent.pointerUp(leftResizer as Element, {
+            pointerId: 1,
+        });
+
+        expect(useLayoutStore.getState().sidebarCollapsed).toBe(false);
+        expect(useLayoutStore.getState().sidebarWidth).toBe(280);
     });
 });

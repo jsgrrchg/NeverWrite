@@ -8,6 +8,12 @@ const DEFAULT_HEIGHT = 960;
 const MIN_WIDTH = 700;
 const MIN_HEIGHT = 560;
 
+// Custom traffic-light position on macOS. Kept in one place so both the
+// BrowserWindow constructor and `setWindowButtonVisibility` callers can
+// re-apply it — Electron resets the position back to the macOS default when
+// the buttons are hidden and shown again, so we re-assert it on show.
+const MAC_TRAFFIC_LIGHT_POSITION = { x: 14, y: 20 } as const;
+
 const windowsByLabel = new Map<string, BrowserWindow>();
 const labelsByWebContentsId = new Map<number, string>();
 
@@ -157,7 +163,7 @@ export function createAppWindow(
                   symbolColor: "#f4f4f5",
               }
             : undefined,
-        trafficLightPosition: isMac ? { x: 14, y: 20 } : undefined,
+        trafficLightPosition: isMac ? MAC_TRAFFIC_LIGHT_POSITION : undefined,
         vibrancy: isMac ? "sidebar" : undefined,
         visualEffectState: isMac ? "active" : undefined,
         webPreferences: {
@@ -231,6 +237,20 @@ export function windowCommand(
             window.setIgnoreMouseEvents(Boolean(args?.ignore), {
                 forward: true,
             });
+            return null;
+        case "setTrafficLightsVisible":
+            // macOS only: hide/show the native window buttons. No-op elsewhere.
+            if (process.platform === "darwin") {
+                const visible = Boolean(args?.visible);
+                window.setWindowButtonVisibility(visible);
+                // Electron drops the custom trafficLightPosition when the
+                // buttons are hidden and shown again, so we re-apply it here
+                // whenever we bring them back. Otherwise the overlay reveal
+                // flashes them at the macOS default offset.
+                if (visible) {
+                    window.setWindowButtonPosition(MAC_TRAFFIC_LIGHT_POSITION);
+                }
+            }
             return null;
         default:
             throw new Error(`Unsupported window command: ${command}`);

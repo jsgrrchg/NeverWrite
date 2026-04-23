@@ -1,61 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-    DEFAULT_BOTTOM_PANEL_HEIGHT,
-    MAX_BOTTOM_PANEL_HEIGHT_RATIO,
-    MIN_BOTTOM_PANEL_HEIGHT,
-    useLayoutStore,
-} from "./layoutStore";
+import { MIN_SIDEBAR_WIDTH, useLayoutStore } from "./layoutStore";
 
-describe("layoutStore bottom panel", () => {
+describe("layoutStore", () => {
     beforeEach(() => {
-        Object.defineProperty(window, "innerHeight", {
-            value: 1000,
-            configurable: true,
-        });
         useLayoutStore.setState({
-            bottomPanelCollapsed: true,
-            bottomPanelHeight: DEFAULT_BOTTOM_PANEL_HEIGHT,
-            bottomPanelView: "terminal",
+            editorPaneSizes: [1],
         });
-    });
-
-    it("shows the bottom panel and persists its height", () => {
-        useLayoutStore.getState().showBottomPanelAtHeight(320);
-
-        expect(useLayoutStore.getState()).toMatchObject({
-            bottomPanelCollapsed: false,
-            bottomPanelHeight: 320,
-            bottomPanelView: "terminal",
-        });
-        expect(localStorage.getItem("neverwrite.bottompanel.height")).toBe(
-            "320",
-        );
-        expect(localStorage.getItem("neverwrite.bottompanel.collapsed")).toBe(
-            "false",
-        );
-    });
-
-    it("clamps and persists collapsed bottom panel height", () => {
-        useLayoutStore.getState().collapseBottomPanelToHeight(9999);
-
-        expect(useLayoutStore.getState().bottomPanelCollapsed).toBe(true);
-        expect(useLayoutStore.getState().bottomPanelHeight).toBe(
-            Math.round(1000 * MAX_BOTTOM_PANEL_HEIGHT_RATIO),
-        );
-    });
-
-    it("activates the bottom view and expands the panel", () => {
-        useLayoutStore.getState().collapseBottomPanelToHeight(40);
-        useLayoutStore.getState().activateBottomView("terminal");
-
-        expect(useLayoutStore.getState()).toMatchObject({
-            bottomPanelCollapsed: false,
-            bottomPanelHeight: MIN_BOTTOM_PANEL_HEIGHT,
-            bottomPanelView: "terminal",
-        });
-        expect(localStorage.getItem("neverwrite.bottompanel.view")).toBe(
-            "terminal",
-        );
     });
 
     it("normalizes and persists editor pane proportions", () => {
@@ -82,6 +32,15 @@ describe("layoutStore bottom panel", () => {
         ]);
         expect(localStorage.getItem("neverwrite.editor-pane.sizes")).toBe(
             JSON.stringify([3 / 8, 1 / 8, 1 / 8, 1 / 8, 1 / 8, 1 / 8]),
+        );
+    });
+
+    it("clamps the sidebar width to its minimum", () => {
+        useLayoutStore.getState().setSidebarWidth(120);
+
+        expect(useLayoutStore.getState().sidebarWidth).toBe(MIN_SIDEBAR_WIDTH);
+        expect(localStorage.getItem("neverwrite.sidebar.width")).toBe(
+            String(MIN_SIDEBAR_WIDTH),
         );
     });
 });

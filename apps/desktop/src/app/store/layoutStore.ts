@@ -1,13 +1,17 @@
 import { create } from "zustand";
-import { type SidebarView } from "../../components/layout/ActivityBar";
 import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { logWarn } from "../utils/runtimeLog";
+
+// Canonical list of left-sidebar views. Lives in the layout store (instead
+// of an obsolete component file) so renderer components can import the type
+// without coupling to a specific shell implementation.
+export type SidebarView = "files" | "tags" | "bookmarks" | "maps";
 
 const SIDEBAR_WIDTH_KEY = "neverwrite.sidebar.width";
 const SIDEBAR_COLLAPSED_KEY = "neverwrite.sidebar.collapsed";
 const SIDEBAR_VIEW_KEY = "neverwrite.sidebar.view";
-export const DEFAULT_SIDEBAR_WIDTH = 240;
-export const MIN_SIDEBAR_WIDTH = 180;
+export const DEFAULT_SIDEBAR_WIDTH = 280;
+export const MIN_SIDEBAR_WIDTH = 280;
 export const MAX_SIDEBAR_WIDTH = 2000;
 
 const RIGHT_PANEL_WIDTH_KEY = "neverwrite.rightpanel.width";
@@ -16,27 +20,13 @@ const RIGHT_PANEL_VIEW_KEY = "neverwrite.rightpanel.view";
 export const DEFAULT_RIGHT_PANEL_WIDTH = 280;
 export const MIN_RIGHT_PANEL_WIDTH = 200;
 export const MAX_RIGHT_PANEL_WIDTH = 2000;
-export const DEFAULT_BOTTOM_PANEL_HEIGHT = 240;
-export const MIN_BOTTOM_PANEL_HEIGHT = 160;
-export const MAX_BOTTOM_PANEL_HEIGHT_RATIO = 0.45;
 
-const BOTTOM_PANEL_HEIGHT_KEY = "neverwrite.bottompanel.height";
-const BOTTOM_PANEL_COLLAPSED_KEY = "neverwrite.bottompanel.collapsed";
-const BOTTOM_PANEL_VIEW_KEY = "neverwrite.bottompanel.view";
 const EDITOR_PANE_SIZES_KEY = "neverwrite.editor-pane.sizes";
 
-const SIDEBAR_VIEWS: SidebarView[] = [
-    "files",
-    "search",
-    "tags",
-    "bookmarks",
-    "maps",
-];
+const SIDEBAR_VIEWS: SidebarView[] = ["files", "tags", "bookmarks", "maps"];
 const RIGHT_PANEL_VIEWS = ["links", "outline", "chat"] as const;
-const BOTTOM_PANEL_VIEWS = ["terminal"] as const;
 
 type RightPanelView = (typeof RIGHT_PANEL_VIEWS)[number];
-type BottomPanelView = (typeof BOTTOM_PANEL_VIEWS)[number];
 
 const DEFAULT_EDITOR_PANE_SIZES = [1];
 
@@ -77,14 +67,7 @@ interface LayoutStore {
     activateRightView: (view: "links" | "outline" | "chat") => void;
     showRightPanelAtWidth: (width: number) => void;
     collapseRightPanelToWidth: (width: number) => void;
-    bottomPanelCollapsed: boolean;
-    bottomPanelHeight: number;
-    bottomPanelView: BottomPanelView;
     editorPaneSizes: number[];
-    toggleBottomPanel: () => void;
-    showBottomPanelAtHeight: (height: number) => void;
-    collapseBottomPanelToHeight: (height: number) => void;
-    activateBottomView: (view: BottomPanelView) => void;
     ensureEditorPaneSizeCount: (count: number) => void;
     setEditorPaneSizes: (count: number, sizes: number[]) => void;
 }
@@ -97,9 +80,6 @@ type LayoutSnapshot = Pick<
     | "rightPanelCollapsed"
     | "rightPanelWidth"
     | "rightPanelView"
-    | "bottomPanelCollapsed"
-    | "bottomPanelHeight"
-    | "bottomPanelView"
     | "editorPaneSizes"
 >;
 
@@ -111,21 +91,6 @@ function clampRightPanelWidth(width: number) {
     return Math.max(
         MIN_RIGHT_PANEL_WIDTH,
         Math.min(MAX_RIGHT_PANEL_WIDTH, width),
-    );
-}
-
-function getMaxBottomPanelHeight() {
-    if (typeof window === "undefined") return 2000;
-    return Math.max(
-        MIN_BOTTOM_PANEL_HEIGHT,
-        Math.round(window.innerHeight * MAX_BOTTOM_PANEL_HEIGHT_RATIO),
-    );
-}
-
-function clampBottomPanelHeight(height: number) {
-    return Math.max(
-        MIN_BOTTOM_PANEL_HEIGHT,
-        Math.min(getMaxBottomPanelHeight(), Math.round(height)),
     );
 }
 
@@ -144,10 +109,6 @@ function parseStoredNumber(
 function readHydratedLayoutSnapshot(): LayoutSnapshot {
     const sidebarViewRaw = safeStorageGetItem(SIDEBAR_VIEW_KEY);
     const rightPanelViewRaw = safeStorageGetItem(RIGHT_PANEL_VIEW_KEY);
-    const bottomPanelViewRaw = safeStorageGetItem(BOTTOM_PANEL_VIEW_KEY);
-    const bottomPanelCollapsedRaw = safeStorageGetItem(
-        BOTTOM_PANEL_COLLAPSED_KEY,
-    );
 
     return {
         sidebarCollapsed: safeStorageGetItem(SIDEBAR_COLLAPSED_KEY) === "true",
@@ -171,20 +132,6 @@ function readHydratedLayoutSnapshot(): LayoutSnapshot {
         )
             ? (rightPanelViewRaw as RightPanelView)
             : "outline",
-        bottomPanelCollapsed:
-            bottomPanelCollapsedRaw === null
-                ? true
-                : bottomPanelCollapsedRaw === "true",
-        bottomPanelHeight: parseStoredNumber(
-            BOTTOM_PANEL_HEIGHT_KEY,
-            DEFAULT_BOTTOM_PANEL_HEIGHT,
-            clampBottomPanelHeight,
-        ),
-        bottomPanelView: BOTTOM_PANEL_VIEWS.includes(
-            bottomPanelViewRaw as BottomPanelView,
-        )
-            ? (bottomPanelViewRaw as BottomPanelView)
-            : "terminal",
         editorPaneSizes: (() => {
             try {
                 const raw = safeStorageGetItem(EDITOR_PANE_SIZES_KEY);
@@ -220,9 +167,6 @@ function createDefaultState(): LayoutSnapshot {
         rightPanelCollapsed: false,
         rightPanelWidth: DEFAULT_RIGHT_PANEL_WIDTH,
         rightPanelView: "outline",
-        bottomPanelCollapsed: true,
-        bottomPanelHeight: DEFAULT_BOTTOM_PANEL_HEIGHT,
-        bottomPanelView: "terminal",
         editorPaneSizes: DEFAULT_EDITOR_PANE_SIZES,
     };
 }
@@ -326,38 +270,6 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
             rightPanelWidth: nextWidth,
             rightPanelCollapsed: true,
             rightPanelExpanded: false,
-        });
-    },
-    toggleBottomPanel: () =>
-        set((state) => {
-            const collapsed = !state.bottomPanelCollapsed;
-            persistBoolean(BOTTOM_PANEL_COLLAPSED_KEY, collapsed);
-            return { bottomPanelCollapsed: collapsed };
-        }),
-    showBottomPanelAtHeight: (height) => {
-        const nextHeight = clampBottomPanelHeight(height);
-        persistNumber(BOTTOM_PANEL_HEIGHT_KEY, nextHeight);
-        persistBoolean(BOTTOM_PANEL_COLLAPSED_KEY, false);
-        set({
-            bottomPanelHeight: nextHeight,
-            bottomPanelCollapsed: false,
-        });
-    },
-    collapseBottomPanelToHeight: (height) => {
-        const nextHeight = clampBottomPanelHeight(height);
-        persistNumber(BOTTOM_PANEL_HEIGHT_KEY, nextHeight);
-        persistBoolean(BOTTOM_PANEL_COLLAPSED_KEY, true);
-        set({
-            bottomPanelHeight: nextHeight,
-            bottomPanelCollapsed: true,
-        });
-    },
-    activateBottomView: (view) => {
-        safeStorageSetItem(BOTTOM_PANEL_VIEW_KEY, view);
-        persistBoolean(BOTTOM_PANEL_COLLAPSED_KEY, false);
-        set({
-            bottomPanelView: view,
-            bottomPanelCollapsed: false,
         });
     },
     ensureEditorPaneSizeCount: (count) =>

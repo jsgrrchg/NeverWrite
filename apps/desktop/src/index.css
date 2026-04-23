@@ -389,6 +389,41 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* macOS: let BrowserWindow vibrancy show through the sidebar region.
+   html, body and #root must be transparent so the native material reaches
+   the sidebar. Opaque surfaces (editor, right panel, bottom panel) paint
+   their own backgrounds, so the rest of the app still looks solid. */
+html[data-desktop-platform="macos"],
+html[data-desktop-platform="macos"] body,
+html[data-desktop-platform="macos"] #root {
+    background-color: transparent;
+}
+
+/* Sidebar vibrancy tint — matches Comando's muted frosted look instead of
+   leaving the sidebar fully transparent. 82% in light, 85% in dark mode. */
+html[data-desktop-platform="macos"] {
+    --sidebar-vibrancy-tint: color-mix(
+        in srgb,
+        var(--bg-primary) 82%,
+        transparent
+    );
+}
+html[data-desktop-platform="macos"].dark {
+    --sidebar-vibrancy-tint: color-mix(
+        in srgb,
+        var(--bg-primary) 85%,
+        transparent
+    );
+}
+
+/* Tree indent guide color — matches Comando's theme-agnostic guide. */
+:root {
+    --tree-guide-color: rgba(0, 0, 0, 0.2);
+}
+.dark {
+    --tree-guide-color: rgba(255, 255, 255, 0.2);
+}
+
 .cm-static-code {
     color: inherit;
 }

@@ -63,6 +63,9 @@ export interface RuntimeWindow {
         toLogical?: (scaleFactor: number) => { x: number; y: number };
     }>;
     scaleFactor?: () => Promise<number>;
+    // macOS-only on Electron. Tauri has no equivalent at runtime, so this is
+    // optional and callers should treat a missing method as a no-op.
+    setTrafficLightsVisible?: (visible: boolean) => Promise<void>;
 }
 
 export interface RuntimeWebview {

@@ -7,9 +7,21 @@ import {
     flushPromises,
 } from "./test/test-utils";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
-import { useEditorStore } from "./app/store/editorStore";
+import { isTerminalTab, useEditorStore } from "./app/store/editorStore";
+import { useSettingsStore } from "./app/store/settingsStore";
+import { useVaultStore } from "./app/store/vaultStore";
+import {
+    resetTerminalRuntimeStoreForTests,
+    useTerminalRuntimeStore,
+} from "./features/terminal/terminalRuntimeStore";
+
+const detachedWindowMock = vi.hoisted(() => ({
+    label: "note-test",
+    mode: "note" as "main" | "note",
+}));
 
 vi.mock("@tauri-apps/api/event", () => ({
+    emitTo: vi.fn(),
     listen: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
@@ -81,19 +93,14 @@ vi.mock("./features/ai/AIChatDetachedWindowHost", () => ({
     ),
 }));
 
-vi.mock("./features/devtools/DeveloperPanel", () => ({
-    DEVELOPER_PANEL_NEW_TAB_EVENT: "developer-panel:new-tab",
-    DEVELOPER_PANEL_RESTART_EVENT: "developer-panel:restart",
-    DeveloperPanel: () => <div data-testid="developer-panel" />,
-}));
-
 vi.mock("./app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
-    getCurrentWindowLabel: () => "note-test",
-    getWindowMode: () => "note",
+    getCurrentWindowLabel: () => detachedWindowMock.label,
+    getWindowMode: () => detachedWindowMock.mode,
     openDetachedNoteWindow: vi.fn(),
     openSettingsWindow: vi.fn(),
     openVaultWindow: vi.fn(),
+    publishWindowTabDropZone: vi.fn(),
     readDetachedWindowPayload: vi.fn(() => null),
 }));
 
@@ -110,7 +117,11 @@ vi.mock("./app/windowSession", () => ({
 
 describe("App note window", () => {
     beforeEach(() => {
+        detachedWindowMock.label = "note-test";
+        detachedWindowMock.mode = "note";
         window.history.replaceState({}, "", "/?window=note");
+        resetTerminalRuntimeStoreForTests();
+        useSettingsStore.getState().reset();
         setEditorTabs([
             {
                 id: "file-tab-1",
@@ -123,6 +134,7 @@ describe("App note window", () => {
                 content: "hello",
             },
         ]);
+        useVaultStore.setState({ vaultPath: "/vault" });
     });
 
     it("preserves the min-size constrained layout chain for detached file tabs", async () => {
@@ -206,5 +218,92 @@ describe("App note window", () => {
         await flushPromises();
 
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
+    });
+
+    it("opens workspace terminals from the developer terminal command", async () => {
+        detachedWindowMock.label = "main";
+        detachedWindowMock.mode = "main";
+        window.history.replaceState({}, "", "/");
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: true,
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        expect(
+            useCommandStore
+                .getState()
+                .search("terminal")
+                .some((command) => command.label === "New Terminal"),
+        ).toBe(true);
+
+        await act(async () => {
+            useCommandStore.getState().execute("developer:new-terminal-tab");
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        const activeTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) => tab.id === useEditorStore.getState().activeTabId,
+            );
+        expect(activeTab && isTerminalTab(activeTab)).toBe(true);
+    });
+
+    it("only restarts the active workspace terminal command for terminal tabs", async () => {
+        detachedWindowMock.label = "main";
+        detachedWindowMock.mode = "main";
+        window.history.replaceState({}, "", "/");
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: true,
+        });
+        const restartSpy = vi
+            .spyOn(useTerminalRuntimeStore.getState(), "restart")
+            .mockResolvedValue(undefined);
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        expect(
+            useCommandStore
+                .getState()
+                .search("")
+                .some(
+                    (command) => command.id === "developer:restart-terminal",
+                ),
+        ).toBe(false);
+
+        await act(async () => {
+            useEditorStore.getState().openTerminal();
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        const activeTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) => tab.id === useEditorStore.getState().activeTabId,
+            );
+        expect(activeTab && isTerminalTab(activeTab)).toBe(true);
+
+        expect(
+            useCommandStore
+                .getState()
+                .search("")
+                .some((command) => command.id === "developer:restart-terminal"),
+        ).toBe(true);
+
+        await act(async () => {
+            useCommandStore.getState().execute("developer:restart-terminal");
+            await Promise.resolve();
+        });
+
+        expect(restartSpy).toHaveBeenCalledWith(
+            isTerminalTab(activeTab) ? activeTab.terminalId : "",
+        );
     });
 });

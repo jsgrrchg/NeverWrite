@@ -21,7 +21,6 @@ import {
 } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
-import { useLayoutStore } from "../../app/store/layoutStore";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -328,11 +327,6 @@ export function NewTabView() {
                 content: "",
             });
         }
-    };
-
-    const handleOpenSearch = () => {
-        useLayoutStore.getState().setSidebarView("search");
-        useLayoutStore.getState().expandSidebar();
     };
 
     const handleOpenInNewTab = async (id: string, title: string) => {
@@ -656,54 +650,6 @@ export function NewTabView() {
                                     </span>
                                 </button>
 
-                                <button
-                                    onClick={handleOpenSearch}
-                                    className="rounded-xl px-4 py-3 text-left"
-                                    style={{
-                                        border: "1px solid var(--border)",
-                                        backgroundColor: "var(--bg-secondary)",
-                                    }}
-                                    onMouseEnter={(e) =>
-                                        (e.currentTarget.style.borderColor =
-                                            "var(--accent)")
-                                    }
-                                    onMouseLeave={(e) =>
-                                        (e.currentTarget.style.borderColor =
-                                            "var(--border)")
-                                    }
-                                >
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <svg
-                                            width="14"
-                                            height="14"
-                                            viewBox="0 0 16 16"
-                                            fill="none"
-                                            stroke="var(--accent)"
-                                            strokeWidth="1.5"
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                        >
-                                            <circle cx="7" cy="7" r="4.5" />
-                                            <path d="M10.5 10.5L14 14" />
-                                        </svg>
-                                        <span
-                                            className="text-sm font-medium"
-                                            style={{
-                                                color: "var(--text-primary)",
-                                            }}
-                                        >
-                                            Search
-                                        </span>
-                                    </div>
-                                    <span
-                                        className="text-xs"
-                                        style={{
-                                            color: "var(--text-secondary)",
-                                        }}
-                                    >
-                                        Search across all notes
-                                    </span>
-                                </button>
                             </div>
 
                             {/* Recent notes */}

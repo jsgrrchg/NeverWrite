@@ -112,6 +112,12 @@ class ElectronWindowHandle {
         return Promise.resolve(window.devicePixelRatio || 1);
     }
 
+    setTrafficLightsVisible(visible: boolean): Promise<void> {
+        return this.windowCommand("setTrafficLightsVisible", { visible }).then(
+            () => undefined,
+        );
+    }
+
     protected windowCommand(
         command: string,
         args?: Record<string, unknown>,

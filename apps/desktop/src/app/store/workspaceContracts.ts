@@ -155,8 +155,11 @@ export const WORKSPACE_PHASE0_INVENTORY = [
     {
         id: "workspace-chrome-global-navigation",
         role: "chrome-navigation",
-        file: "apps/desktop/src/features/editor/WorkspaceChromeBar.tsx",
-        symbols: ["WorkspaceChromeBar", "goBack", "goForward"],
+        // The horizontal WorkspaceChromeBar was retired in favour of a
+        // sidebar-integrated layout; goBack/goForward now live exclusively
+        // in UnifiedBar and will migrate to pane headers in Phase 2b.
+        file: "apps/desktop/src/features/editor/UnifiedBar.tsx",
+        symbols: ["UnifiedBar", "goBack", "goForward"],
         reads: [
             "tabs",
             "activeTabId",
@@ -405,7 +408,6 @@ export const WORKSPACE_PHASE0_INCONSISTENCIES = [
     {
         id: "global-navigation-still-lives-in-window-chrome",
         files: [
-            "apps/desktop/src/features/editor/WorkspaceChromeBar.tsx",
             "apps/desktop/src/features/editor/UnifiedBar.tsx",
             "apps/desktop/src/App.tsx",
         ],
