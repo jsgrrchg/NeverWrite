@@ -348,6 +348,19 @@ textarea,
     -webkit-app-region: no-drag;
 }
 
+.drag :is(
+    a,
+    button,
+    input,
+    select,
+    textarea,
+    [contenteditable="true"],
+    [role="button"],
+    .no-drag
+) {
+    -webkit-app-region: no-drag;
+}
+
 [data-tauri-drag-region] {
     -webkit-app-region: drag;
 }

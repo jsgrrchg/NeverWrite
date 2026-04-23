@@ -3,6 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { app } from "electron";
 import type { NativeBackendBridge } from "./nativeBackend";
+import { syncRecentVaultsForElectron } from "./menu";
+import {
+    registerWindowVaultRoute,
+    unregisterWindowVaultRoute,
+} from "./shellState";
 
 type VaultEntryKind = "note" | "pdf" | "file" | "folder";
 
@@ -630,6 +635,7 @@ function buildChange(args: {
     note: NoteDto | null;
     entry: VaultEntryDto | null;
     relativePath: string | null;
+    origin?: VaultNoteChange["origin"];
     opId?: string | null;
     content?: string | null;
 }): VaultNoteChange {
@@ -640,12 +646,82 @@ function buildChange(args: {
         note_id: args.note?.id ?? (args.kind === "delete" ? args.relativePath : null),
         entry: args.entry,
         relative_path: args.relativePath,
-        origin: "user",
+        origin: args.origin ?? "user",
         op_id: args.opId ?? null,
         revision: nextRevision(args.vaultPath),
         content_hash: args.content == null ? null : contentHash(args.content),
         graph_revision: 1,
     };
+}
+
+function clipperVaultName(vaultPath: string) {
+    return path.basename(vaultPath) || vaultPath;
+}
+
+function resolveWebClipperVaultPath(
+    readyVaults: string[],
+    vaultPathHint?: string | null,
+    vaultNameHint?: string | null,
+) {
+    if (readyVaults.length === 0) {
+        throw new Error("No ready vault is available in NeverWrite.");
+    }
+
+    const normalizedPathHint = vaultPathHint?.trim();
+    if (normalizedPathHint) {
+        const resolved = path.resolve(normalizedPathHint);
+        const found = readyVaults.find((vaultPath) => vaultPath === resolved);
+        if (found) return found;
+    }
+
+    const normalizedNameHint = vaultNameHint?.trim().toLowerCase();
+    if (normalizedNameHint) {
+        const matches = readyVaults.filter(
+            (vaultPath) => clipperVaultName(vaultPath).toLowerCase() === normalizedNameHint,
+        );
+        if (matches.length === 1) return matches[0];
+    }
+
+    if (readyVaults.length === 1) return readyVaults[0];
+    throw new Error(
+        "NeverWrite has multiple open vaults. Provide a more specific vault hint.",
+    );
+}
+
+function normalizeWebClipperFolder(folder: string) {
+    const normalized = ensureRelativePath(folder || "", true);
+    return normalized;
+}
+
+function sanitizeWebClipperTitle(title: string) {
+    const sanitized = title
+        .trim()
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+        .replace(/\./g, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+        .join(" ");
+    return sanitized.slice(0, 96).trim();
+}
+
+async function buildWebClipperRelativeNotePath(
+    vaultPath: string,
+    folder: string,
+    title: string,
+) {
+    const normalizedFolder = normalizeWebClipperFolder(folder);
+    const base = sanitizeWebClipperTitle(title) || "untitled-clip";
+    for (let index = 1; index < 10_000; index += 1) {
+        const fileName = index === 1 ? `${base}.md` : `${base}-${index}.md`;
+        const relativePath = normalizedFolder
+            ? `${normalizedFolder}/${fileName}`
+            : fileName;
+        const resolved = resolveVaultScopedPath(vaultPath, relativePath);
+        if (!(await fs.stat(resolved.absolutePath).then(() => true).catch(() => false))) {
+            return resolved.relativePath;
+        }
+    }
+    throw new Error("Could not find a free filename for the clip.");
 }
 
 function emptyTrackedPatch() {
@@ -758,6 +834,12 @@ export class ElectronVaultBackend {
     }
 
     async invoke(command: string, args: Record<string, unknown> = {}) {
+        const shellCommandResult = await this.invokeElectronShellCommand(
+            command,
+            args,
+        );
+        if (shellCommandResult.handled) return shellCommandResult.result;
+
         if (this.nativeBackend?.supports(command)) {
             return this.nativeBackend.invoke(command, args);
         }
@@ -854,8 +936,129 @@ export class ElectronVaultBackend {
                 };
             case "download_and_install_app_update":
                 return null;
+            case "web_clipper_ready_vaults":
+                return this.webClipperReadyVaults();
+            case "web_clipper_list_folders":
+                return this.webClipperListFolders(args);
+            case "web_clipper_list_tags":
+                return this.webClipperListTags(args);
+            case "web_clipper_save_note":
+                return this.webClipperSaveNote(args);
             default:
                 throw new Error(`Electron runtime command is not implemented yet: ${command}`);
+        }
+    }
+
+    async webClipperReadyVaults() {
+        const vaults = [...openStates.entries()]
+            .filter(([, state]) => state.stage === "ready")
+            .map(([vaultPath]) => ({
+                path: vaultPath,
+                name: clipperVaultName(vaultPath),
+            }))
+            .sort((left, right) => left.path.localeCompare(right.path));
+        return vaults;
+    }
+
+    async resolveWebClipperVaultPath(args: Record<string, unknown>) {
+        const readyVaults = (await this.webClipperReadyVaults()).map(
+            (vault) => vault.path,
+        );
+        return resolveWebClipperVaultPath(
+            readyVaults,
+            typeof args.vaultPathHint === "string"
+                ? args.vaultPathHint
+                : typeof args.vault_path_hint === "string"
+                  ? args.vault_path_hint
+                  : null,
+            typeof args.vaultNameHint === "string"
+                ? args.vaultNameHint
+                : typeof args.vault_name_hint === "string"
+                  ? args.vault_name_hint
+                  : null,
+        );
+    }
+
+    async webClipperListFolders(args: Record<string, unknown>) {
+        const vaultPath = await this.resolveWebClipperVaultPath(args);
+        const snapshot = await getSnapshot(vaultPath);
+        return snapshot.entries
+            .filter((entry) => entry.kind === "folder")
+            .map((entry) => entry.relative_path)
+            .sort((left, right) => left.localeCompare(right));
+    }
+
+    async webClipperListTags(args: Record<string, unknown>) {
+        const vaultPath = await this.resolveWebClipperVaultPath(args);
+        return (await this.getTags(vaultPath)).map((entry) => entry.tag);
+    }
+
+    async webClipperSaveNote(args: Record<string, unknown>) {
+        const requestId = String(args.requestId ?? args.request_id ?? "");
+        const title = String(args.title ?? "").trim();
+        const folder = String(args.folder ?? "");
+        const content = String(args.content ?? "");
+        if (!requestId) throw new Error("Missing argument: requestId");
+        if (!title) throw new Error("Missing argument: title");
+        if (!content.trim()) throw new Error("Clip content is empty.");
+
+        const vaultPath = await this.resolveWebClipperVaultPath(args);
+        const relativePath = await buildWebClipperRelativeNotePath(
+            vaultPath,
+            folder,
+            title,
+        );
+        const resolved = resolveVaultScopedPath(vaultPath, relativePath);
+        await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+        await fs.writeFile(resolved.absolutePath, content, { flag: "wx" });
+        const snapshot = await refreshSnapshot(vaultPath);
+        const note = await readNoteDetail(vaultPath, withoutExtension(relativePath));
+        const entry =
+            snapshot.entries.find(
+                (candidate) => candidate.relative_path === relativePath,
+            ) ?? null;
+
+        this.emitEvent(
+            "vault://note-changed",
+            buildChange({
+                vaultPath,
+                kind: "upsert",
+                note,
+                entry,
+                relativePath,
+                origin: "external",
+                opId: `web-clipper-${requestId}`,
+                content,
+            }),
+        );
+
+        return {
+            requestId,
+            vaultPath,
+            targetWindowLabel: null,
+            noteId: note.id,
+            title: note.title,
+            relativePath,
+            content,
+        };
+    }
+
+    private async invokeElectronShellCommand(
+        command: string,
+        args: Record<string, unknown>,
+    ): Promise<{ handled: true; result: unknown } | { handled: false }> {
+        switch (command) {
+            case "sync_recent_vaults":
+                await syncRecentVaultsForElectron(args.vaults);
+                return { handled: true, result: null };
+            case "register_window_vault_route":
+                registerWindowVaultRoute(args);
+                return { handled: true, result: null };
+            case "unregister_window_vault_route":
+                unregisterWindowVaultRoute(args);
+                return { handled: true, result: null };
+            default:
+                return { handled: false };
         }
     }
 

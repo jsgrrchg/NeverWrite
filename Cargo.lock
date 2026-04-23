@@ -2839,6 +2839,9 @@ name = "neverwrite-ai"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
@@ -2904,14 +2907,23 @@ dependencies = [
 name = "neverwrite-native-backend"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
+ "async-trait",
+ "neverwrite-ai",
  "neverwrite-diff",
  "neverwrite-index",
  "neverwrite-types",
  "neverwrite-vault",
  "notify",
+ "portable-pty",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2",
+ "spellbook",
  "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

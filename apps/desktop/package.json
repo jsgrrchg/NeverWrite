@@ -22,6 +22,7 @@
         "electron:sidecar:stage": "node scripts/stage-electron-sidecar.mjs",
         "electron:sidecar:smoke:packaged": "node scripts/smoke-packaged-sidecar.mjs",
         "electron:vault-editor:smoke": "node scripts/smoke-electron-vault-editor.mjs",
+        "electron:ai-runtime:smoke": "node scripts/smoke-electron-ai-runtime.mjs",
         "electron:package": "npm run electron:sidecar:stage && electron-builder --dir",
         "electron:package:unsigned": "npm run electron:sidecar:stage && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --dir",
         "tauri": "node scripts/run-tauri.mjs"

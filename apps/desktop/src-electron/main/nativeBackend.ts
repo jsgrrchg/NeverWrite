@@ -49,6 +49,63 @@ const SUPPORTED_COMMANDS = new Set([
     "get_app_update_configuration",
     "check_for_app_update",
     "download_and_install_app_update",
+    "ai_list_runtimes",
+    "ai_get_setup_status",
+    "ai_get_environment_diagnostics",
+    "ai_update_setup",
+    "ai_start_auth",
+    "ai_list_sessions",
+    "ai_load_session",
+    "ai_load_runtime_session",
+    "ai_resume_runtime_session",
+    "ai_fork_runtime_session",
+    "ai_create_session",
+    "ai_set_model",
+    "ai_set_mode",
+    "ai_set_config_option",
+    "ai_send_message",
+    "ai_cancel_turn",
+    "ai_respond_permission",
+    "ai_respond_user_input",
+    "ai_save_session_history",
+    "ai_load_session_histories",
+    "ai_load_session_history_page",
+    "ai_search_session_content",
+    "ai_fork_session_history",
+    "ai_delete_session_history",
+    "ai_delete_all_session_histories",
+    "ai_delete_runtime_session",
+    "ai_delete_runtime_sessions_for_vault",
+    "ai_prune_session_histories",
+    "ai_register_file_baseline",
+    "ai_get_text_file_hash",
+    "ai_restore_text_file",
+    "ai_start_auth_terminal_session",
+    "ai_write_auth_terminal_session",
+    "ai_resize_auth_terminal_session",
+    "ai_close_auth_terminal_session",
+    "ai_get_auth_terminal_session_snapshot",
+    "devtools_create_terminal_session",
+    "devtools_write_terminal_session",
+    "devtools_resize_terminal_session",
+    "devtools_restart_terminal_session",
+    "devtools_close_terminal_session",
+    "devtools_get_terminal_session_snapshot",
+    "spellcheck_list_languages",
+    "spellcheck_list_catalog",
+    "spellcheck_check_text",
+    "spellcheck_suggest",
+    "spellcheck_add_to_dictionary",
+    "spellcheck_remove_from_dictionary",
+    "spellcheck_ignore_word",
+    "spellcheck_get_runtime_directory",
+    "spellcheck_install_dictionary",
+    "spellcheck_remove_installed_dictionary",
+    "spellcheck_check_grammar",
+    "web_clipper_ready_vaults",
+    "web_clipper_list_folders",
+    "web_clipper_list_tags",
+    "web_clipper_save_note",
 ]);
 
 interface SidecarMessage {
@@ -123,6 +180,12 @@ function resolveNativeBackendPath(): NativeBackendResolution {
     };
 }
 
+function resolveWorkspaceRoot() {
+    return app.isPackaged
+        ? null
+        : path.resolve(app.getAppPath(), "..", "..");
+}
+
 class UnavailableNativeBackendBridge implements NativeBackendBridge {
     private readonly message: string;
 
@@ -158,8 +221,15 @@ class NativeBackendSidecar implements NativeBackendBridge {
         emitEvent: (eventName: string, payload: unknown) => void,
     ) {
         this.emitEvent = emitEvent;
+        const workspaceRoot = resolveWorkspaceRoot();
         this.child = spawn(executablePath, [], {
             stdio: ["pipe", "pipe", "pipe"],
+            env: {
+                ...process.env,
+                NEVERWRITE_APP_DATA_DIR: app.getPath("userData"),
+                NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR: path.dirname(executablePath),
+                ...(workspaceRoot ? { NEVERWRITE_WORKSPACE_ROOT: workspaceRoot } : {}),
+            },
         });
 
         readline
@@ -289,13 +359,14 @@ class NativeBackendSidecar implements NativeBackendBridge {
 export function createNativeBackendSidecar(
     emitEvent: (eventName: string, payload: unknown) => void,
 ): NativeBackendBridge | null {
+    const resolution = resolveNativeBackendPath();
     const explicitlyEnabled =
         process.env.NEVERWRITE_ELECTRON_BACKEND === "sidecar" ||
         Boolean(process.env.NEVERWRITE_NATIVE_BACKEND_PATH);
-    const shouldUseSidecar = app.isPackaged || explicitlyEnabled;
+    const shouldUseSidecar =
+        app.isPackaged || explicitlyEnabled || resolution.executablePath != null;
     if (!shouldUseSidecar) return null;
 
-    const resolution = resolveNativeBackendPath();
     const executablePath = resolution.executablePath;
     if (!executablePath) {
         console.error(

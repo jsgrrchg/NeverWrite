@@ -1,5 +1,6 @@
 import { type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 
 const ACCEPTED_MIME_RE =
@@ -73,6 +74,7 @@ async function saveAndInsert(
         fileName,
         bytes,
     });
+    await useVaultStore.getState().refreshEntries();
 
     const markup = `![[/assets/${fileName}]]`;
     view.dispatch({

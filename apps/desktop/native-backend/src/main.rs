@@ -9,6 +9,15 @@ use std::sync::{
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod ai;
+mod devtools;
+mod spellcheck;
+
+use ai::NativeAi;
+use devtools::DevTerminalManager;
+use neverwrite_ai::persistence::{
+    self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
+};
 use neverwrite_index::VaultIndex;
 use neverwrite_types::{
     AdvancedSearchParams, BacklinkDto, NoteDetailDto, NoteDocument, NoteDto, NoteId, NoteMetadata,
@@ -19,8 +28,10 @@ use neverwrite_vault::{start_watcher, ScopedPathIntent, Vault, VaultEvent, Write
 use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use spellcheck::SpellcheckState;
 
 const VAULT_CHANGE_ORIGIN_USER: &str = "user";
+const VAULT_CHANGE_ORIGIN_AGENT: &str = "agent";
 const VAULT_CHANGE_ORIGIN_EXTERNAL: &str = "external";
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +45,7 @@ struct RpcRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(tag = "type")]
-enum RpcOutput {
+pub(crate) enum RpcOutput {
     #[serde(rename = "response")]
     Response {
         id: Value,
@@ -106,6 +117,9 @@ struct VaultRuntimeState {
 
 struct NativeBackend {
     vaults: HashMap<String, VaultRuntimeState>,
+    ai: NativeAi,
+    devtools: DevTerminalManager,
+    spellcheck: SpellcheckState,
     event_tx: Sender<RpcOutput>,
 }
 
@@ -113,6 +127,9 @@ impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
         Self {
             vaults: HashMap::new(),
+            ai: NativeAi::new(event_tx.clone()),
+            devtools: DevTerminalManager::new(event_tx.clone()),
+            spellcheck: SpellcheckState::new(),
             event_tx,
         }
     }
@@ -256,6 +273,81 @@ impl NativeBackend {
             }
             "create_map" => self.create_map(args),
             "delete_map" => self.delete_map(args),
+            "ai_list_runtimes" => Ok(self.ai.list_runtimes()),
+            "ai_get_setup_status" => self.ai.get_setup_status(&args),
+            "ai_get_environment_diagnostics" => Ok(self.ai.get_environment_diagnostics()),
+            "ai_update_setup" => self.ai.update_setup(&args),
+            "ai_start_auth" => self.ai.start_auth(&args),
+            "ai_list_sessions" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.list_sessions(vault_root)
+            }
+            "ai_load_session" => self.ai.load_session(&args),
+            "ai_load_runtime_session" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.load_runtime_session(&args, vault_root)
+            }
+            "ai_resume_runtime_session" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.resume_runtime_session(&args, vault_root)
+            }
+            "ai_fork_runtime_session" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.fork_runtime_session(&args, vault_root)
+            }
+            "ai_create_session" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.create_session(&args, vault_root)
+            }
+            "ai_set_model" => self.ai.set_model(&args),
+            "ai_set_mode" => self.ai.set_mode(&args),
+            "ai_set_config_option" => self.ai.set_config_option(&args),
+            "ai_send_message" => self.ai.send_message(&args),
+            "ai_cancel_turn" => self.ai.cancel_turn(&args),
+            "ai_respond_permission" => self.ai.respond_permission(&args),
+            "ai_respond_user_input" => self.ai.respond_user_input(&args),
+            "ai_delete_runtime_session" => self.ai.delete_runtime_session(&args),
+            "ai_delete_runtime_sessions_for_vault" => {
+                let vault_root = self.optional_open_vault_root(&args)?;
+                self.ai.delete_runtime_sessions_for_vault(vault_root)
+            }
+            "ai_register_file_baseline" => self.ai.register_file_baseline(&args),
+            "ai_save_session_history" => self.ai_save_session_history(args),
+            "ai_load_session_histories" => self.ai_load_session_histories(args),
+            "ai_load_session_history_page" => self.ai_load_session_history_page(args),
+            "ai_search_session_content" => self.ai_search_session_content(args),
+            "ai_fork_session_history" => self.ai_fork_session_history(args),
+            "ai_delete_session_history" => self.ai_delete_session_history(args),
+            "ai_delete_all_session_histories" => self.ai_delete_all_session_histories(args),
+            "ai_prune_session_histories" => self.ai_prune_session_histories(args),
+            "ai_get_text_file_hash" => self.ai_get_text_file_hash(args),
+            "ai_restore_text_file" => self.ai_restore_text_file(args),
+            "ai_start_auth_terminal_session"
+            | "ai_write_auth_terminal_session"
+            | "ai_resize_auth_terminal_session"
+            | "ai_close_auth_terminal_session"
+            | "ai_get_auth_terminal_session_snapshot" => self.ai.auth_terminal_unavailable(),
+            "devtools_create_terminal_session"
+            | "devtools_write_terminal_session"
+            | "devtools_resize_terminal_session"
+            | "devtools_restart_terminal_session"
+            | "devtools_close_terminal_session"
+            | "devtools_get_terminal_session_snapshot" => self.devtools.invoke(command, args),
+            "spellcheck_list_languages"
+            | "spellcheck_list_catalog"
+            | "spellcheck_check_text"
+            | "spellcheck_suggest"
+            | "spellcheck_add_to_dictionary"
+            | "spellcheck_remove_from_dictionary"
+            | "spellcheck_ignore_word"
+            | "spellcheck_get_runtime_directory"
+            | "spellcheck_install_dictionary"
+            | "spellcheck_remove_installed_dictionary"
+            | "spellcheck_check_grammar" => self.spellcheck.invoke(command, args),
+            "web_clipper_ready_vaults" => self.web_clipper_ready_vaults(),
+            "web_clipper_list_folders" => self.web_clipper_list_folders(args),
+            "web_clipper_list_tags" => self.web_clipper_list_tags(args),
+            "web_clipper_save_note" => self.web_clipper_save_note(args),
             "sync_recent_vaults"
             | "delete_vault_snapshot"
             | "register_window_vault_route"
@@ -291,6 +383,391 @@ impl NativeBackend {
             .get_mut(&root)
             .ok_or_else(|| "Vault not open".to_string())?;
         Ok((root, state))
+    }
+
+    fn optional_open_vault_root(&self, args: &Value) -> Result<Option<PathBuf>, String> {
+        let Some(vault_path) = optional_nullable_string(args, &["vaultPath", "vault_path"]) else {
+            return Ok(None);
+        };
+        let root = normalize_vault_path(&vault_path)?;
+        let state = self
+            .vaults
+            .get(&root)
+            .ok_or_else(|| "Vault not open".to_string())?;
+        Ok(Some(state.vault.root.clone()))
+    }
+
+    fn required_open_vault_root(&self, args: &Value) -> Result<(String, PathBuf), String> {
+        let vault_path = required_string(args, &["vaultPath", "vault_path"])?;
+        let root = normalize_vault_path(&vault_path)?;
+        let state = self
+            .vaults
+            .get(&root)
+            .ok_or_else(|| "Vault not open".to_string())?;
+        Ok((root, state.vault.root.clone()))
+    }
+
+    fn ai_save_session_history(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let history: PersistedSessionHistory = serde_json::from_value(
+            args.get("history")
+                .cloned()
+                .ok_or_else(|| "Missing argument: history".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        persistence::save_session_history(&vault_root, &history)?;
+        Ok(json!(null))
+    }
+
+    fn ai_load_session_histories(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let include_messages = bool_arg(&args, "includeMessages")
+            .or_else(|| bool_arg(&args, "include_messages"))
+            .unwrap_or(true);
+        let histories: Vec<PersistedSessionHistory> =
+            persistence::load_all_session_histories(&vault_root, include_messages)?;
+        Ok(json!(histories))
+    }
+
+    fn ai_load_session_history_page(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let session_id = required_string(&args, &["sessionId", "session_id"])?;
+        let start_index = required_usize(&args, &["startIndex", "start_index"])?;
+        let limit = required_usize(&args, &["limit"])?;
+        let page: PersistedSessionHistoryPage =
+            persistence::load_session_history_page(&vault_root, &session_id, start_index, limit)?;
+        Ok(json!(page))
+    }
+
+    fn ai_search_session_content(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let query = required_string(&args, &["query"])?;
+        let results: Vec<SessionSearchResult> =
+            persistence::search_session_content(&vault_root, &query)?;
+        Ok(json!(results))
+    }
+
+    fn ai_fork_session_history(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let source_session_id = required_string(&args, &["sourceSessionId", "source_session_id"])?;
+        Ok(json!(persistence::fork_session_history(
+            &vault_root,
+            &source_session_id
+        )?))
+    }
+
+    fn ai_delete_session_history(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let session_id = required_string(&args, &["sessionId", "session_id"])?;
+        persistence::delete_session_history(&vault_root, &session_id)?;
+        Ok(json!(null))
+    }
+
+    fn ai_delete_all_session_histories(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        persistence::delete_all_session_histories(&vault_root)?;
+        Ok(json!(null))
+    }
+
+    fn ai_prune_session_histories(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let max_age_days = required_u32(&args, &["maxAgeDays", "max_age_days"])?;
+        Ok(json!(persistence::prune_expired_session_histories(
+            &vault_root,
+            max_age_days
+        )?))
+    }
+
+    fn ai_get_text_file_hash(&self, args: Value) -> Result<Value, String> {
+        let state = self.state(&args)?;
+        let relative_path = required_string(&args, &["path"])?;
+        let resolved_path = state
+            .vault
+            .resolve_scoped_path(&relative_path, ScopedPathIntent::ReadExisting)
+            .map_err(|error| error.to_string())?;
+        match fs::read(&resolved_path) {
+            Ok(bytes) => Ok(json!(Some(content_hash_bytes(&bytes)))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!(null)),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn ai_restore_text_file(&mut self, args: Value) -> Result<Value, String> {
+        let relative_path = required_string(&args, &["path"])?;
+        let previous_path = optional_nullable_string(&args, &["previousPath", "previous_path"]);
+        let content = optional_nullable_string(&args, &["content"]);
+        let op_id = Some(format!("ai-restore-{}", now_ms()));
+        let (vault_path, state) = self.state_mut(&args)?;
+        let current_path = state
+            .vault
+            .resolve_scoped_path(&relative_path, ScopedPathIntent::CreateTarget)
+            .map_err(|error| error.to_string())?;
+        let restore_path = previous_path
+            .as_deref()
+            .map(|value| {
+                state
+                    .vault
+                    .resolve_scoped_path(value, ScopedPathIntent::CreateTarget)
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        let final_path = restore_path.clone().unwrap_or_else(|| current_path.clone());
+
+        state.write_tracker.track_any(current_path.clone());
+        if let Some(path) = restore_path.as_ref() {
+            state.write_tracker.track_any(path.clone());
+        }
+
+        let change = if let Some(text) = content {
+            if let Some(parent) = final_path.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            state.write_tracker.track_content(final_path.clone(), &text);
+            fs::write(&final_path, &text).map_err(|error| error.to_string())?;
+            if final_path != current_path && current_path.exists() {
+                fs::remove_file(&current_path).map_err(|error| error.to_string())?;
+            }
+            Self::refresh_vault_state(state)?;
+            let final_relative_path = state.vault.path_to_relative_path(&final_path);
+            if path_has_extension(&final_path, "md") {
+                let note = state
+                    .vault
+                    .read_note_from_path(&final_path)
+                    .map_err(|error| error.to_string())?;
+                let previous_note_id = (final_path != current_path
+                    && path_has_extension(&current_path, "md"))
+                .then(|| state.vault.path_to_id(&current_path));
+                let revision = advance_revision(
+                    &mut state.note_revisions,
+                    &note.id.0,
+                    previous_note_id.as_deref(),
+                )
+                .max(1);
+                build_vault_note_change_with_origin(
+                    &vault_path,
+                    "upsert",
+                    Some(note_document_to_dto(&note)),
+                    Some(note.id.0.clone()),
+                    None,
+                    Some(final_relative_path),
+                    VAULT_CHANGE_ORIGIN_AGENT,
+                    op_id,
+                    revision,
+                    Some(note_content_hash(&note.raw_markdown)),
+                    state.graph_revision.max(1),
+                )
+            } else {
+                let entry = state.vault.read_vault_entry_from_path(&final_path).ok();
+                let current_relative_path = state.vault.path_to_relative_path(&current_path);
+                let previous_key = (current_relative_path != final_relative_path)
+                    .then_some(current_relative_path.as_str());
+                let revision = advance_revision(
+                    &mut state.file_revisions,
+                    &final_relative_path,
+                    previous_key,
+                )
+                .max(1);
+                build_vault_note_change_with_origin(
+                    &vault_path,
+                    "upsert",
+                    None,
+                    None,
+                    entry,
+                    Some(final_relative_path),
+                    VAULT_CHANGE_ORIGIN_AGENT,
+                    op_id,
+                    revision,
+                    Some(note_content_hash(&text)),
+                    state.graph_revision.max(1),
+                )
+            }
+        } else {
+            if current_path.exists() {
+                fs::remove_file(&current_path).map_err(|error| error.to_string())?;
+            }
+            if let Some(path) = restore_path.as_ref() {
+                if path.exists() {
+                    fs::remove_file(path).map_err(|error| error.to_string())?;
+                }
+            }
+            let current_relative_path = state.vault.path_to_relative_path(&current_path);
+            let target_relative_path = restore_path
+                .as_ref()
+                .map(|path| state.vault.path_to_relative_path(path));
+            Self::refresh_vault_state(state)?;
+            if path_has_extension(&current_path, "md") {
+                let note_id = markdown_note_id_from_relative_path(&current_relative_path)
+                    .unwrap_or_else(|| state.vault.path_to_id(&current_path));
+                let revision = advance_revision(&mut state.note_revisions, &note_id, None).max(1);
+                build_vault_note_change_with_origin(
+                    &vault_path,
+                    "delete",
+                    None,
+                    Some(note_id),
+                    None,
+                    Some(current_relative_path),
+                    VAULT_CHANGE_ORIGIN_AGENT,
+                    op_id,
+                    revision,
+                    None,
+                    state.graph_revision.max(1),
+                )
+            } else {
+                let revision = advance_revision(
+                    &mut state.file_revisions,
+                    &current_relative_path,
+                    target_relative_path.as_deref(),
+                )
+                .max(1);
+                build_vault_note_change_with_origin(
+                    &vault_path,
+                    "delete",
+                    None,
+                    None,
+                    None,
+                    Some(current_relative_path),
+                    VAULT_CHANGE_ORIGIN_AGENT,
+                    op_id,
+                    revision,
+                    None,
+                    state.graph_revision.max(1),
+                )
+            }
+        };
+
+        self.emit_vault_change(change.clone());
+        Ok(json!(change))
+    }
+
+    fn web_clipper_ready_vaults(&self) -> Result<Value, String> {
+        let mut vaults = self
+            .vaults
+            .iter()
+            .filter(|(_, state)| state.open_state.stage == "ready")
+            .map(|(path, _)| {
+                json!({
+                    "path": path,
+                    "name": clipper_vault_name(path),
+                })
+            })
+            .collect::<Vec<_>>();
+        vaults.sort_by(|left, right| {
+            left.get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(
+                    right
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+        });
+        Ok(json!(vaults))
+    }
+
+    fn web_clipper_list_folders(&self, args: Value) -> Result<Value, String> {
+        let vault_key = self.resolve_web_clipper_vault_key(&args)?;
+        let state = self
+            .vaults
+            .get(&vault_key)
+            .ok_or_else(|| "Vault not found".to_string())?;
+        let mut folders = state
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == "folder")
+            .map(|entry| entry.relative_path.clone())
+            .collect::<Vec<_>>();
+        folders.sort();
+        Ok(json!(folders))
+    }
+
+    fn web_clipper_list_tags(&self, args: Value) -> Result<Value, String> {
+        let vault_key = self.resolve_web_clipper_vault_key(&args)?;
+        let state = self
+            .vaults
+            .get(&vault_key)
+            .ok_or_else(|| "Vault not found".to_string())?;
+        let mut tags = state.index.tags.keys().cloned().collect::<Vec<_>>();
+        tags.sort();
+        Ok(json!(tags))
+    }
+
+    fn web_clipper_save_note(&mut self, args: Value) -> Result<Value, String> {
+        let request_id = required_string(&args, &["requestId", "request_id"])?;
+        let title = required_string(&args, &["title"])?;
+        let folder = optional_string(&args, &["folder"]).unwrap_or_default();
+        let content = required_string(&args, &["content"])?;
+        if content.trim().is_empty() {
+            return Err("Clip content is empty.".to_string());
+        }
+
+        let vault_key = self.resolve_web_clipper_vault_key(&args)?;
+        let op_id = Some(format!("web-clipper-{request_id}"));
+        let (note, relative_path, change) = {
+            let state = self
+                .vaults
+                .get_mut(&vault_key)
+                .ok_or_else(|| "Vault not found".to_string())?;
+            let relative_path =
+                build_web_clipper_relative_note_path(&state.vault, &folder, &title)?;
+            let target_path = state
+                .vault
+                .resolve_note_relative_markdown_path(&relative_path)
+                .map_err(|error| error.to_string())?;
+            state.write_tracker.track_content(target_path, &content);
+            let note = state
+                .vault
+                .create_note(&relative_path, &content)
+                .map_err(|error| error.to_string())?;
+            let entry = state
+                .vault
+                .read_vault_entry_from_path(&note.path.0)
+                .map_err(|error| error.to_string())?;
+            let revision = advance_revision(&mut state.note_revisions, &note.id.0, None).max(1);
+            let change = build_vault_note_change_with_origin(
+                &vault_key,
+                "upsert",
+                Some(note_document_to_dto(&note)),
+                Some(note.id.0.clone()),
+                Some(entry),
+                Some(relative_path.clone()),
+                VAULT_CHANGE_ORIGIN_EXTERNAL,
+                op_id,
+                revision,
+                Some(note_content_hash(&content)),
+                state.graph_revision.max(1),
+            );
+            Self::refresh_vault_state(state)?;
+            (note, relative_path, change)
+        };
+
+        self.emit_vault_change(change);
+        Ok(json!({
+            "requestId": request_id,
+            "vaultPath": vault_key,
+            "targetWindowLabel": Value::Null,
+            "noteId": note.id.0,
+            "title": note.title,
+            "relativePath": relative_path,
+            "content": content,
+        }))
+    }
+
+    fn resolve_web_clipper_vault_key(&self, args: &Value) -> Result<String, String> {
+        let vault_path_hint = optional_string(args, &["vaultPathHint", "vault_path_hint"]);
+        let vault_name_hint = optional_string(args, &["vaultNameHint", "vault_name_hint"]);
+        let ready_keys = self
+            .vaults
+            .iter()
+            .filter(|(_, state)| state.open_state.stage == "ready")
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+
+        resolve_web_clipper_vault_key_from_ready_keys(
+            &ready_keys,
+            vault_path_hint.as_deref(),
+            vault_name_hint.as_deref(),
+        )
     }
 
     fn open_vault(
@@ -398,19 +875,40 @@ impl NativeBackend {
         let relative_dir = required_string(&args, &["relativeDir", "relative_dir"])?;
         let file_name = required_string(&args, &["fileName", "file_name"])?;
         let bytes = bytes_arg(&args, "bytes")?;
-        let (_vault_path, state) = self.state_mut(&args)?;
-        let (path, entry) = state
+        let op_id = optional_string(&args, &["opId", "op_id"]);
+        let (vault_path, state) = self.state_mut(&args)?;
+        let path = state
             .vault
-            .save_binary_file(&relative_dir, &file_name, &bytes)
+            .prepare_binary_file_target(&relative_dir, &file_name)
             .map_err(|error| error.to_string())?;
-        state.write_tracker.track_any(path);
+        state.write_tracker.track_any(path.clone());
+        fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+        let entry = state
+            .vault
+            .read_vault_entry_from_path(&path)
+            .map_err(|error| error.to_string())?;
         let detail = SavedBinaryFileDetail {
             path: entry.path.clone(),
             relative_path: entry.relative_path.clone(),
             file_name: entry.file_name.clone(),
             mime_type: entry.mime_type.clone(),
         };
+        let revision =
+            advance_revision(&mut state.file_revisions, &entry.relative_path, None).max(1);
         Self::refresh_vault_state(state)?;
+        let change = build_vault_note_change(
+            &vault_path,
+            "upsert",
+            None,
+            None,
+            Some(entry),
+            Some(detail.relative_path.clone()),
+            op_id,
+            revision,
+            None,
+            state.graph_revision.max(1),
+        );
+        self.emit_vault_change(change);
         Ok(json!(detail))
     }
 
@@ -950,13 +1448,37 @@ impl NativeBackend {
             .vaults
             .get_mut(vault_path)
             .ok_or_else(|| "Vault not open".to_string())?;
-        if !path.exists() || !path.is_file() {
+        if !path.exists() {
             return Ok(());
         }
 
         let relative_path = state.vault.path_to_relative_path(&path);
         Self::refresh_vault_state(state)?;
         let graph_revision = state.graph_revision.max(1);
+        if path.is_dir() {
+            let entry = state
+                .entries
+                .iter()
+                .find(|entry| entry.relative_path == relative_path)
+                .cloned();
+            let revision = advance_revision(&mut state.file_revisions, &relative_path, None).max(1);
+            let change = build_vault_note_change_with_origin(
+                vault_path,
+                "upsert",
+                None,
+                None,
+                entry,
+                Some(relative_path),
+                VAULT_CHANGE_ORIGIN_EXTERNAL,
+                None,
+                revision,
+                None,
+                graph_revision,
+            );
+            self.emit_vault_change(change);
+            return Ok(());
+        }
+
         if let Some(note_id) = markdown_note_id_from_relative_path(&relative_path) {
             let Some(note) = state
                 .index
@@ -1102,6 +1624,160 @@ fn optional_string(args: &Value, names: &[&str]) -> Option<String> {
     })
 }
 
+fn optional_nullable_string(args: &Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| match args.get(*name) {
+        Some(Value::String(value)) if !value.is_empty() => Some(value.to_string()),
+        _ => None,
+    })
+}
+
+fn clipper_vault_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn resolve_web_clipper_vault_key_from_ready_keys(
+    ready_keys: &[String],
+    vault_path_hint: Option<&str>,
+    vault_name_hint: Option<&str>,
+) -> Result<String, String> {
+    if ready_keys.is_empty() {
+        return Err("No ready vault is available in NeverWrite.".to_string());
+    }
+
+    if let Some(path_hint) = vault_path_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(found) = ready_keys.iter().find(|path| path.as_str() == path_hint) {
+            return Ok(found.clone());
+        }
+    }
+
+    if let Some(name_hint) = vault_name_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let lower = name_hint.to_lowercase();
+        let mut matches = ready_keys
+            .iter()
+            .filter(|path| clipper_vault_name(path).to_lowercase() == lower)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if matches.len() == 1 {
+            return Ok(matches.remove(0));
+        }
+    }
+
+    if ready_keys.len() == 1 {
+        return Ok(ready_keys[0].clone());
+    }
+
+    Err("NeverWrite has multiple open vaults. Provide a more specific vault hint.".to_string())
+}
+
+fn normalize_web_clipper_folder(folder: &str) -> Result<String, String> {
+    let mut normalized = PathBuf::new();
+
+    for component in Path::new(folder).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => normalized.push(value),
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err("Folder hint must stay inside the vault.".to_string())
+            }
+        }
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
+}
+
+fn sanitize_web_clipper_title(title: &str) -> String {
+    let sanitized = title
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => ' ',
+            value if value.is_control() => ' ',
+            value => value,
+        })
+        .collect::<String>()
+        .replace('.', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    sanitized
+        .chars()
+        .take(96)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn build_web_clipper_relative_note_path(
+    vault: &Vault,
+    folder: &str,
+    title: &str,
+) -> Result<String, String> {
+    let normalized_folder = normalize_web_clipper_folder(folder)?;
+    let stem = sanitize_web_clipper_title(title);
+    let base = if stem.is_empty() {
+        "untitled-clip".to_string()
+    } else {
+        stem
+    };
+
+    for index in 1..10_000 {
+        let file_name = if index == 1 {
+            format!("{base}.md")
+        } else {
+            format!("{base}-{index}.md")
+        };
+        let relative_path = if normalized_folder.is_empty() {
+            file_name
+        } else {
+            format!("{normalized_folder}/{file_name}")
+        };
+        let path = vault
+            .resolve_scoped_path(&relative_path, ScopedPathIntent::CreateTarget)
+            .map_err(|error| error.to_string())?;
+        if !path.exists() {
+            return Ok(relative_path);
+        }
+    }
+
+    Err("Could not find a free filename for the clip.".to_string())
+}
+
+fn required_usize(args: &Value, names: &[&str]) -> Result<usize, String> {
+    names
+        .iter()
+        .find_map(|name| args.get(*name).and_then(Value::as_u64))
+        .map(|value| {
+            usize::try_from(value).map_err(|_| format!("Argument out of range: {}", names[0]))
+        })
+        .transpose()?
+        .ok_or_else(|| format!("Missing argument: {}", names[0]))
+}
+
+fn required_u32(args: &Value, names: &[&str]) -> Result<u32, String> {
+    names
+        .iter()
+        .find_map(|name| args.get(*name).and_then(Value::as_u64))
+        .map(|value| {
+            u32::try_from(value).map_err(|_| format!("Argument out of range: {}", names[0]))
+        })
+        .transpose()?
+        .ok_or_else(|| format!("Missing argument: {}", names[0]))
+}
+
 fn bool_arg(args: &Value, name: &str) -> Option<bool> {
     args.get(name).and_then(Value::as_bool)
 }
@@ -1204,12 +1880,22 @@ fn build_vault_file_detail(vault: &Vault, relative_path: &str) -> Result<VaultFi
 }
 
 fn note_content_hash(content: &str) -> String {
+    content_hash_bytes(content.as_bytes())
+}
+
+fn content_hash_bytes(bytes: &[u8]) -> String {
     let mut hash = 0xcbf29ce484222325_u64;
-    for byte in content.as_bytes() {
+    for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+fn path_has_extension(path: &Path, extension: &str) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
 }
 
 fn advance_revision(

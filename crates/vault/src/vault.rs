@@ -315,6 +315,17 @@ impl Vault {
         file_name: &str,
         bytes: &[u8],
     ) -> Result<(PathBuf, VaultEntryDto), VaultError> {
+        let target = self.prepare_binary_file_target(relative_dir, file_name)?;
+        std::fs::write(&target, bytes)?;
+        let entry = self.read_vault_entry_from_path(&target)?;
+        Ok((target, entry))
+    }
+
+    pub fn prepare_binary_file_target(
+        &self,
+        relative_dir: &str,
+        file_name: &str,
+    ) -> Result<PathBuf, VaultError> {
         let dir_path =
             self.resolve_scoped_path(relative_dir, ScopedPathIntent::CreateDirectoryTarget)?;
         if path_is_ignored(&self.root, &dir_path) {
@@ -344,9 +355,7 @@ impl Vault {
             target = dir_path.join(format!("{stem}-{ts}{ext}"));
         }
 
-        std::fs::write(&target, bytes)?;
-        let entry = self.read_vault_entry_from_path(&target)?;
-        Ok((target, entry))
+        Ok(target)
     }
 
     pub fn create_folder(&self, relative_path: &str) -> Result<VaultEntryDto, VaultError> {
@@ -817,14 +826,6 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), VaultError> {
     }
 
     Ok(())
-}
-
-pub(crate) fn is_supported_image_path(path: &Path) -> bool {
-    let Some(mime_type) = guess_mime_type(path) else {
-        return false;
-    };
-
-    mime_type.starts_with("image/")
 }
 
 pub(crate) fn path_is_ignored(root: &Path, path: &Path) -> bool {

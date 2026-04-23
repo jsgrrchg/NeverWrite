@@ -664,6 +664,64 @@ function ProviderExpandedPanel({
     );
 }
 
+function ProviderSetupUnavailablePanel({
+    error,
+    loading,
+    onRetry,
+}: {
+    error: string | null;
+    loading: boolean;
+    onRetry: () => void;
+}) {
+    return (
+        <div
+            style={{
+                padding: "0 14px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+            }}
+        >
+            <div
+                style={{
+                    padding: "10px 12px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    border: "1px solid var(--border)",
+                    backgroundColor: "var(--bg-primary)",
+                    color: "var(--text-secondary)",
+                    lineHeight: 1.45,
+                }}
+            >
+                {loading
+                    ? "Loading provider setup…"
+                    : (error ??
+                      "Provider setup status is not available yet. Check diagnostics or retry loading this provider.")}
+            </div>
+            {!loading && (
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button
+                        type="button"
+                        onClick={onRetry}
+                        style={{
+                            padding: "7px 12px",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: "var(--text-primary)",
+                            border: "1px solid var(--border)",
+                            backgroundColor: "var(--bg-primary)",
+                            cursor: "pointer",
+                        }}
+                    >
+                        Retry
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* ── Main component ─────────────────────────────────────────────── */
 
 export function AIProvidersSettings() {
@@ -1019,6 +1077,7 @@ export function AIProvidersSettings() {
                                     {/* Header row */}
                                     <div
                                         role="button"
+                                        aria-expanded={isExpanded}
                                         tabIndex={0}
                                         onClick={() =>
                                             setExpandedId((prev) =>
@@ -1118,24 +1177,39 @@ export function AIProvidersSettings() {
                                     </div>
 
                                     {/* Expanded content */}
-                                    {isExpanded && provider.setupStatus && (
-                                        <ProviderExpandedPanel
-                                            setupStatus={provider.setupStatus}
-                                            error={provider.error}
-                                            saving={isSaving}
-                                            onAuth={(input) => {
-                                                void handleAuth(input);
-                                            }}
-                                            onClearGateway={() => {
-                                                void handleClearGateway(
-                                                    provider.id,
-                                                );
-                                            }}
-                                            onLogout={() => {
-                                                void handleLogout(provider.id);
-                                            }}
-                                        />
-                                    )}
+                                    {isExpanded &&
+                                        (provider.setupStatus ? (
+                                            <ProviderExpandedPanel
+                                                setupStatus={
+                                                    provider.setupStatus
+                                                }
+                                                error={provider.error}
+                                                saving={isSaving}
+                                                onAuth={(input) => {
+                                                    void handleAuth(input);
+                                                }}
+                                                onClearGateway={() => {
+                                                    void handleClearGateway(
+                                                        provider.id,
+                                                    );
+                                                }}
+                                                onLogout={() => {
+                                                    void handleLogout(
+                                                        provider.id,
+                                                    );
+                                                }}
+                                            />
+                                        ) : (
+                                            <ProviderSetupUnavailablePanel
+                                                error={provider.error}
+                                                loading={isLoading}
+                                                onRetry={() => {
+                                                    void refreshRuntime(
+                                                        provider.id,
+                                                    );
+                                                }}
+                                            />
+                                        ))}
                                 </div>
                             </Fragment>
                         );

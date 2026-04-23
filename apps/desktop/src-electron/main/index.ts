@@ -1,5 +1,10 @@
 import { app, BrowserWindow, protocol } from "electron";
-import { createAppWindow } from "./window";
+import { installNativeMenus, refreshDockMenu } from "./menu";
+import { createAppWindow, getWindowByLabel } from "./window";
+import {
+    extractWebClipperDeepLinksFromArgv,
+    handleWebClipperDeepLink,
+} from "./webClipper";
 import {
     registerIpcHandlers,
     registerPreviewProtocolHandler,
@@ -28,33 +33,56 @@ function configureAppIdentity() {
 }
 
 configureAppIdentity();
+app.setAsDefaultProtocolClient("neverwrite");
+
+app.on("open-url", (event, url) => {
+    event.preventDefault();
+    focusOrCreateMainWindow();
+    handleWebClipperDeepLink(url);
+});
+
+function focusOrCreateMainWindow() {
+    const existing =
+        BrowserWindow.getFocusedWindow() ??
+        getWindowByLabel("main") ??
+        BrowserWindow.getAllWindows()[0];
+
+    if (existing) {
+        if (existing.isMinimized()) existing.restore();
+        existing.show();
+        existing.focus();
+        return existing;
+    }
+
+    return createAppWindow("main");
+}
 
 const hasLock = app.requestSingleInstanceLock();
 
 if (!hasLock) {
     app.quit();
 } else {
-    app.on("second-instance", () => {
-        const existing =
-            BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-        if (existing) {
-            if (existing.isMinimized()) existing.restore();
-            existing.show();
-            existing.focus();
-            return;
+    app.on("second-instance", (_event, argv) => {
+        focusOrCreateMainWindow();
+        for (const url of extractWebClipperDeepLinksFromArgv(argv)) {
+            handleWebClipperDeepLink(url);
         }
-        createAppWindow("main");
     });
 
     void app.whenReady().then(() => {
         protocol.handle("neverwrite-file", registerPreviewProtocolHandler());
         registerIpcHandlers();
+        void installNativeMenus();
         createAppWindow("main");
+        for (const url of extractWebClipperDeepLinksFromArgv(process.argv)) {
+            handleWebClipperDeepLink(url);
+        }
 
         app.on("activate", () => {
             if (BrowserWindow.getAllWindows().length === 0) {
                 createAppWindow("main");
             }
+            void refreshDockMenu();
         });
     });
 }

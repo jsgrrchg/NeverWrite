@@ -10,9 +10,7 @@ use notify::{
 };
 
 use crate::error::VaultError;
-use crate::vault::{
-    is_markdown_path, is_pdf_path, is_supported_image_path, is_supported_text_path, path_is_ignored,
-};
+use crate::vault::path_is_ignored;
 
 /// Tracks files written by the app to distinguish them from external changes.
 #[derive(Debug, Clone)]
@@ -143,17 +141,13 @@ pub fn start_watcher(
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         let Ok(event) = res else { return };
 
-        // We only care about notes, PDFs, supported images, and editable text files.
+        // Any non-ignored vault path can affect the tree. File-type specific
+        // handling happens in the sidecar after it refreshes the vault state.
         let paths: Vec<&PathBuf> = event
             .paths
             .iter()
             .filter(|path| !path_is_ignored(&watch_root, path))
-            .filter(|path| {
-                is_markdown_path(path)
-                    || is_pdf_path(path)
-                    || is_supported_image_path(path)
-                    || is_supported_text_path(path)
-            })
+            .filter(|path| path != &&watch_root)
             .collect();
 
         if paths.is_empty() {

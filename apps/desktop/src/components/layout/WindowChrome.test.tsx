@@ -81,6 +81,9 @@ describe("WindowChrome", () => {
         expect(root).toHaveAttribute("data-window-platform", "macos");
         expect(root).toHaveAttribute("data-window-controls-side", "left");
         expect(
+            root?.querySelector(".drag.flex.items-stretch"),
+        ).not.toBeNull();
+        expect(
             root?.querySelector('[data-window-chrome-leading-inset="true"]'),
         ).not.toBeNull();
         expect(

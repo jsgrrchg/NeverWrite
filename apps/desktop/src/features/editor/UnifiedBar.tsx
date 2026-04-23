@@ -1453,7 +1453,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 <div
                                     onMouseDown={startWindowDrag}
                                     onDoubleClick={() => toggleWindowMaximize()}
-                                    className="min-w-2 flex-1"
+                                    className="drag min-w-2 flex-1"
                                 />
                             </div>
                             {tabStripOverflowState.showLeadingFade && (

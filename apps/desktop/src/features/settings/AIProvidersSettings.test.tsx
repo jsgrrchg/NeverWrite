@@ -330,6 +330,26 @@ describe("AIProvidersSettings", () => {
         );
     });
 
+    it("expands a provider row even when setup status failed to load", async () => {
+        const providers = createDefaultProviders();
+        apiMocks.aiListRuntimes.mockResolvedValue(providers.descriptors);
+        apiMocks.aiGetSetupStatus.mockImplementation(async (runtimeId: string) => {
+            if (runtimeId === "codex-acp") return providers.statuses[runtimeId];
+            throw new Error("Native backend is unavailable.");
+        });
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Claude");
+
+        expect(
+            await screen.findByText("Native backend is unavailable."),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Retry" }),
+        ).toBeInTheDocument();
+    });
+
     it("opens integrated terminal auth for Kilo providers", async () => {
         const providers = createDefaultProviders();
         providers.descriptors.push(

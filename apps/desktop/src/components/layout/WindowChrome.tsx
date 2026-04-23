@@ -276,7 +276,7 @@ export function WindowChrome({
             }}
         >
             <div
-                className="flex items-stretch select-none"
+                className="drag flex items-stretch select-none"
                 style={{
                     height: 34,
                     cursor: "default",

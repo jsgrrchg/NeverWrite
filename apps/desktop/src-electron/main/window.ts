@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { BrowserWindow } from "electron";
 import { ELECTRON_IPC } from "../shared/ipc";
+import { removeWindowVaultRoute } from "./shellState";
 
 const DEFAULT_WIDTH = 1480;
 const DEFAULT_HEIGHT = 960;
@@ -69,8 +70,9 @@ function getNumberOption(
 }
 
 function bindWindowLifecycle(label: string, window: BrowserWindow) {
+    const webContentsId = window.webContents.id;
     windowsByLabel.set(label, window);
-    labelsByWebContentsId.set(window.webContents.id, label);
+    labelsByWebContentsId.set(webContentsId, label);
 
     const forwardWindowEvent = (eventName: string) => {
         if (window.isDestroyed()) return;
@@ -90,7 +92,8 @@ function bindWindowLifecycle(label: string, window: BrowserWindow) {
     });
     window.on("closed", () => {
         windowsByLabel.delete(label);
-        labelsByWebContentsId.delete(window.webContents.id);
+        labelsByWebContentsId.delete(webContentsId);
+        removeWindowVaultRoute(label);
     });
 }
 
