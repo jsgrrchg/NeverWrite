@@ -28,6 +28,7 @@ type LanguageKey =
     | "javascript-jsx"
     | "json"
     | "julia"
+    | "lockfile"
     | "lua"
     | "makefile"
     | "pascal"
@@ -80,6 +81,7 @@ const markdownFenceAliases: Record<LanguageKey, readonly string[]> = {
     "javascript-jsx": ["jsx"],
     json: ["json", "jsonc"],
     julia: ["julia", "jl"],
+    lockfile: ["lock", "lockfile"],
     lua: ["lua"],
     makefile: ["make", "makefile", "mk"],
     pascal: ["pascal", "delphi"],
@@ -137,12 +139,44 @@ function getPathFileName(path: string) {
     return (path.split("/").pop() ?? path).toLowerCase();
 }
 
+function resolveLockfileLanguageKey(
+    fileName: string,
+    extension: string,
+): LanguageKey | null {
+    switch (fileName) {
+        case "cargo.lock":
+        case "poetry.lock":
+        case "uv.lock":
+            return "toml";
+        case "pipfile.lock":
+        case "composer.lock":
+        case "deno.lock":
+        case "flake.lock":
+            return "json";
+        case "pubspec.lock":
+            return "yaml";
+        case "gemfile.lock":
+        case "yarn.lock":
+            return "lockfile";
+        default:
+            return extension === "lock" ? "lockfile" : null;
+    }
+}
+
 export function resolveCodeLanguageKey(
     path: string,
     mimeType: string | null,
 ): LanguageKey | null {
     const extension = getPathExtension(path);
     const fileName = getPathFileName(path);
+    const lockfileLanguageKey = resolveLockfileLanguageKey(
+        fileName,
+        extension,
+    );
+
+    if (lockfileLanguageKey) {
+        return lockfileLanguageKey;
+    }
 
     switch (extension) {
         case "c":
@@ -412,6 +446,41 @@ function loadLanguageByKey(key: LanguageKey): Promise<Extension | null> {
                                     token: "string",
                                 },
                                 { regex: /[:=]/, token: "operator" },
+                            ],
+                        }),
+                    ),
+            );
+        case "lockfile":
+            return import("@codemirror/legacy-modes/mode/simple-mode").then(
+                ({ simpleMode }) =>
+                    StreamLanguage.define(
+                        simpleMode({
+                            start: [
+                                { regex: /#.*/, token: "comment" },
+                                {
+                                    regex: /^\s{2,}[A-Za-z0-9_.@/+~-]+(?=:)/,
+                                    token: "propertyName",
+                                },
+                                {
+                                    regex: /^[A-Za-z0-9_.@/+~-]+(?=\s|:|$)/,
+                                    token: "definition",
+                                },
+                                {
+                                    regex: /\b(?:version|resolved|integrity|checksum|dependencies|specs|platforms|bundled|remote|revision|branch|ref)\b(?=:)/,
+                                    token: "keyword",
+                                },
+                                {
+                                    regex: /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/,
+                                    token: "string",
+                                },
+                                {
+                                    regex: /\b(?:[0-9]+(?:\.[0-9A-Za-z-]+)+|[a-f0-9]{32,})\b/,
+                                    token: "number",
+                                },
+                                {
+                                    regex: /[:=,()[\]{}]/,
+                                    token: "operator",
+                                },
                             ],
                         }),
                     ),
