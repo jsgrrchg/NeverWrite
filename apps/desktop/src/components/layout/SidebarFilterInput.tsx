@@ -27,35 +27,40 @@ export function SidebarFilterInput({
         }
     };
 
+    // Mirrors Comando's `.sidebar-search` (styles.css:626): padding-based
+    // sizing (no fixed height), 12px/18px text, 12px icon, 6px gap. Keeps
+    // the bar quietly translucent so it blends into the sidebar vibrancy.
     return (
         <div
-            className="flex items-center gap-1 px-1.5 rounded-md focus-within:ring-1"
+            className="flex items-center rounded-md"
             style={{
-                height: 22,
+                gap: 6,
+                padding: "4px 8px",
                 backgroundColor:
-                    "color-mix(in srgb, var(--bg-tertiary) 55%, transparent)",
+                    "color-mix(in srgb, var(--bg-tertiary) 65%, transparent)",
                 border:
-                    "1px solid color-mix(in srgb, var(--border) 40%, transparent)",
+                    "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
+                transition:
+                    "background-color 120ms ease, border-color 120ms ease",
             }}
             onClick={() => inputRef.current?.focus()}
         >
             <svg
-                width="10"
-                height="10"
+                width="12"
+                height="12"
                 viewBox="0 0 16 16"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="1.6"
+                strokeWidth="1.3"
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 style={{
                     color: "var(--text-secondary)",
-                    opacity: 0.6,
                     flexShrink: 0,
                 }}
             >
-                <circle cx="7" cy="7" r="4" />
-                <path d="M10 10L13.5 13.5" />
+                <circle cx="7" cy="7" r="4.5" />
+                <path d="M10.5 10.5L14 14" />
             </svg>
             <input
                 ref={inputRef}
@@ -65,8 +70,15 @@ export function SidebarFilterInput({
                 onKeyDown={handleKeyDown}
                 placeholder={placeholder}
                 aria-label={ariaLabel ?? placeholder}
-                className="flex-1 bg-transparent text-[11px] outline-none"
-                style={{ color: "var(--text-primary)", minWidth: 0 }}
+                autoCapitalize="off"
+                autoCorrect="off"
+                className="flex-1 bg-transparent outline-none border-0"
+                style={{
+                    color: "var(--text-primary)",
+                    minWidth: 0,
+                    fontSize: 12,
+                    lineHeight: "18px",
+                }}
                 spellCheck={false}
             />
             {value && (
@@ -79,21 +91,21 @@ export function SidebarFilterInput({
                     }}
                     title="Clear filter"
                     aria-label="Clear filter"
-                    className="flex items-center justify-center opacity-50 hover:opacity-100 transition-opacity"
+                    className="flex items-center justify-center rounded-[3px] transition-colors"
                     style={{
                         color: "var(--text-secondary)",
-                        width: 12,
-                        height: 12,
+                        width: 16,
+                        height: 16,
                         flexShrink: 0,
                     }}
                 >
                     <svg
-                        width="9"
-                        height="9"
+                        width="10"
+                        height="10"
                         viewBox="0 0 16 16"
                         fill="none"
                         stroke="currentColor"
-                        strokeWidth="1.8"
+                        strokeWidth="1.6"
                         strokeLinecap="round"
                     >
                         <path d="M4 4l8 8M4 12l8-8" />

@@ -1037,11 +1037,9 @@ impl NativeBackend {
 
     fn ai_get_text_file_hash(&self, args: Value) -> Result<Value, String> {
         let state = self.state(&args)?;
-        let relative_path = required_string(&args, &["path"])?;
-        let resolved_path = state
-            .vault
-            .resolve_scoped_path(&relative_path, ScopedPathIntent::ReadExisting)
-            .map_err(|error| error.to_string())?;
+        let path = required_string(&args, &["path"])?;
+        let resolved_path =
+            resolve_vault_scoped_path(&state.vault, &path, ScopedPathIntent::ReadExisting)?;
         match fs::read(&resolved_path) {
             Ok(bytes) => Ok(json!(Some(content_hash_bytes(&bytes)))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!(null)),
@@ -1055,17 +1053,15 @@ impl NativeBackend {
         let content = optional_nullable_string(&args, &["content"]);
         let op_id = Some(format!("ai-restore-{}", now_ms()));
         let (vault_path, state) = self.state_mut(&args)?;
-        let current_path = state
-            .vault
-            .resolve_scoped_path(&relative_path, ScopedPathIntent::CreateTarget)
-            .map_err(|error| error.to_string())?;
+        let current_path = resolve_vault_scoped_path(
+            &state.vault,
+            &relative_path,
+            ScopedPathIntent::CreateTarget,
+        )?;
         let restore_path = previous_path
             .as_deref()
             .map(|value| {
-                state
-                    .vault
-                    .resolve_scoped_path(value, ScopedPathIntent::CreateTarget)
-                    .map_err(|error| error.to_string())
+                resolve_vault_scoped_path(&state.vault, value, ScopedPathIntent::CreateTarget)
             })
             .transpose()?;
         let final_path = restore_path.clone().unwrap_or_else(|| current_path.clone());
@@ -2277,17 +2273,41 @@ impl NativeBackend {
     ) -> Result<(), String> {
         match event {
             VaultEvent::FileCreated(path) | VaultEvent::FileModified(path) => {
-                self.emit_external_upsert(vault_path, path)
+                let origin = self.vault_change_origin_for_path(&path);
+                self.emit_external_upsert(vault_path, path, origin)
             }
-            VaultEvent::FileDeleted(path) => self.emit_external_delete(vault_path, path),
+            VaultEvent::FileDeleted(path) => {
+                let origin = self.vault_change_origin_for_path(&path);
+                self.emit_external_delete(vault_path, path, origin)
+            }
             VaultEvent::FileRenamed { from, to } => {
-                self.emit_external_delete(vault_path, from)?;
-                self.emit_external_upsert(vault_path, to)
+                let origin = if self.ai.has_recent_agent_write(&from)
+                    || self.ai.has_recent_agent_write(&to)
+                {
+                    VAULT_CHANGE_ORIGIN_AGENT
+                } else {
+                    VAULT_CHANGE_ORIGIN_EXTERNAL
+                };
+                self.emit_external_delete(vault_path, from, origin)?;
+                self.emit_external_upsert(vault_path, to, origin)
             }
         }
     }
 
-    fn emit_external_delete(&mut self, vault_path: &str, path: PathBuf) -> Result<(), String> {
+    fn vault_change_origin_for_path(&self, path: &Path) -> &'static str {
+        if self.ai.has_recent_agent_write(path) {
+            VAULT_CHANGE_ORIGIN_AGENT
+        } else {
+            VAULT_CHANGE_ORIGIN_EXTERNAL
+        }
+    }
+
+    fn emit_external_delete(
+        &mut self,
+        vault_path: &str,
+        path: PathBuf,
+        origin: &'static str,
+    ) -> Result<(), String> {
         let state = self
             .vaults
             .get_mut(vault_path)
@@ -2308,7 +2328,7 @@ impl NativeBackend {
             note_id,
             None,
             Some(relative_path),
-            VAULT_CHANGE_ORIGIN_EXTERNAL,
+            origin,
             None,
             revision,
             None,
@@ -2318,7 +2338,12 @@ impl NativeBackend {
         Ok(())
     }
 
-    fn emit_external_upsert(&mut self, vault_path: &str, path: PathBuf) -> Result<(), String> {
+    fn emit_external_upsert(
+        &mut self,
+        vault_path: &str,
+        path: PathBuf,
+        origin: &'static str,
+    ) -> Result<(), String> {
         let state = self
             .vaults
             .get_mut(vault_path)
@@ -2344,7 +2369,7 @@ impl NativeBackend {
                 None,
                 entry,
                 Some(relative_path),
-                VAULT_CHANGE_ORIGIN_EXTERNAL,
+                origin,
                 None,
                 revision,
                 None,
@@ -2374,7 +2399,7 @@ impl NativeBackend {
                 Some(note_id),
                 None,
                 Some(relative_path),
-                VAULT_CHANGE_ORIGIN_EXTERNAL,
+                origin,
                 None,
                 revision,
                 content_hash,
@@ -2400,7 +2425,7 @@ impl NativeBackend {
             None,
             entry,
             Some(relative_path),
-            VAULT_CHANGE_ORIGIN_EXTERNAL,
+            origin,
             None,
             revision,
             content_hash,
@@ -2685,6 +2710,51 @@ fn system_time_to_secs(value: SystemTime) -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+fn normalize_vault_scoped_input(vault: &Vault, path: &str) -> String {
+    let input_path = Path::new(path);
+    if !input_path.is_absolute() {
+        return path.to_string();
+    }
+
+    if let Some(relative_path) = strip_vault_root(input_path, &vault.root) {
+        return relative_path;
+    }
+
+    if let Ok(canonical_input) = input_path.canonicalize() {
+        if let Some(relative_path) = strip_vault_root(&canonical_input, &vault.root) {
+            return relative_path;
+        }
+    }
+
+    if let (Some(parent), Some(file_name)) = (input_path.parent(), input_path.file_name()) {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            let canonical_candidate = canonical_parent.join(file_name);
+            if let Some(relative_path) = strip_vault_root(&canonical_candidate, &vault.root) {
+                return relative_path;
+            }
+        }
+    }
+
+    path.to_string()
+}
+
+fn strip_vault_root(path: &Path, vault_root: &Path) -> Option<String> {
+    path.strip_prefix(vault_root)
+        .ok()
+        .map(|relative_path| relative_path.to_string_lossy().replace('\\', "/"))
+}
+
+fn resolve_vault_scoped_path(
+    vault: &Vault,
+    path: &str,
+    intent: ScopedPathIntent,
+) -> Result<PathBuf, String> {
+    let normalized_input = normalize_vault_scoped_input(vault, path);
+    vault
+        .resolve_scoped_path(&normalized_input, intent)
+        .map_err(|error| error.to_string())
 }
 
 fn note_to_dto(note: &NoteMetadata) -> NoteDto {
@@ -3132,5 +3202,46 @@ mod tests {
             .unwrap()
             .iter()
             .any(|note| note.get("id").and_then(Value::as_str) == Some("Notes/B")));
+    }
+
+    #[test]
+    fn ai_review_file_ops_accept_absolute_paths_inside_vault() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let notes_dir = vault_dir.path().join("Notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        let note_path = notes_dir.join("A.md");
+        fs::write(&note_path, "# Alpha\n").unwrap();
+
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        let absolute_note_path = note_path.to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let hash = invoke(
+            &backend,
+            "ai_get_text_file_hash",
+            json!({
+                "vaultPath": vault_path,
+                "path": absolute_note_path,
+            }),
+        )
+        .unwrap();
+        let expected_hash = content_hash_bytes(b"# Alpha\n");
+        assert_eq!(hash.as_str(), Some(expected_hash.as_str()));
+
+        let change = invoke(
+            &backend,
+            "ai_restore_text_file",
+            json!({
+                "vaultPath": vault_path,
+                "path": absolute_note_path,
+                "previousPath": null,
+                "content": "# Beta\n",
+            }),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&note_path).unwrap(), "# Beta\n");
+        assert_eq!(change.get("origin").and_then(Value::as_str), Some("agent"));
     }
 }

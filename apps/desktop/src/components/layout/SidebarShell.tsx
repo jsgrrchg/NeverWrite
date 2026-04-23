@@ -14,6 +14,7 @@ import { FileTree } from "../../features/vault/FileTree";
 import { TagsPanel } from "../../features/tags/TagsPanel";
 import { BookmarksPanel } from "../../features/bookmarks/BookmarksPanel";
 import { MapsPanel } from "../../features/maps/MapsPanel";
+import { AgentsSidebarPanel } from "../../features/ai/AgentsSidebarPanel";
 import { VaultSwitcher } from "../../features/vault/VaultSwitcher";
 
 // A single unified translucent left pane that replaces both the horizontal
@@ -27,7 +28,7 @@ const IS_MACOS = getDesktopPlatform() === "macos";
 
 // Primary tabs are labeled; secondary ones stay compact (icon-only) so all
 // fit on a single row without truncation at default sidebar width.
-const PRIMARY_TABS: SidebarView[] = ["files"];
+const PRIMARY_TABS: SidebarView[] = ["files", "agents"];
 const SECONDARY_TABS: SidebarView[] = ["tags", "bookmarks", "maps"];
 
 const TAB_LABELS: Record<SidebarView, string> = {
@@ -35,6 +36,7 @@ const TAB_LABELS: Record<SidebarView, string> = {
     tags: "Tags",
     bookmarks: "Bookmarks",
     maps: "Maps",
+    agents: "Agents",
 };
 
 function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
@@ -82,6 +84,16 @@ function SidebarTabIcon({ view }: { view: SidebarView }) {
                     <circle cx="17" cy="7" r="2.5" />
                     <circle cx="17" cy="17" r="2.5" />
                     <path d="M9.5 12L14.5 7.5M9.5 12L14.5 16.5" />
+                </svg>
+            );
+        case "agents":
+            return (
+                <svg {...common}>
+                    <path d="M12 3v2" />
+                    <rect x="5" y="7" width="14" height="11" rx="3" />
+                    <circle cx="9.5" cy="12" r="1" />
+                    <circle cx="14.5" cy="12" r="1" />
+                    <path d="M9 18v2M15 18v2M3 12h2M19 12h2" />
                 </svg>
             );
     }
@@ -231,43 +243,6 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
                         onSelect={handleSelectView}
                     />
                 ))}
-                {/* Agents: labeled primary-style button — visual only, no view wired. */}
-                <button
-                    type="button"
-                    onMouseDown={(event) => event.stopPropagation()}
-                    title="Agents"
-                    aria-label="Agents"
-                    className="no-drag flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
-                    style={{
-                        flex: 1,
-                        minWidth: 0,
-                        height: 28,
-                        padding: "0 6px",
-                        border: "1px solid transparent",
-                        background: "transparent",
-                        color: "var(--text-secondary)",
-                        transition:
-                            "background-color 120ms ease, color 120ms ease, border-color 120ms ease",
-                    }}
-                >
-                    <svg
-                        width={14}
-                        height={14}
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={1.6}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <path d="M12 3v2" />
-                        <rect x="5" y="7" width="14" height="11" rx="3" />
-                        <circle cx="9.5" cy="12" r="1" />
-                        <circle cx="14.5" cy="12" r="1" />
-                        <path d="M9 18v2M15 18v2M3 12h2M19 12h2" />
-                    </svg>
-                    <span className="truncate">Agents</span>
-                </button>
                 {SECONDARY_TABS.map((view) => (
                     <SidebarTabButton
                         key={view}
@@ -287,6 +262,8 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
                     <TagsPanel />
                 ) : currentView === "bookmarks" ? (
                     <BookmarksPanel />
+                ) : currentView === "agents" ? (
+                    <AgentsSidebarPanel />
                 ) : (
                     <MapsPanel />
                 )}

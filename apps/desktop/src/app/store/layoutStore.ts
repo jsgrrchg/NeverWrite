@@ -5,7 +5,12 @@ import { logWarn } from "../utils/runtimeLog";
 // Canonical list of left-sidebar views. Lives in the layout store (instead
 // of an obsolete component file) so renderer components can import the type
 // without coupling to a specific shell implementation.
-export type SidebarView = "files" | "tags" | "bookmarks" | "maps";
+export type SidebarView =
+    | "files"
+    | "tags"
+    | "bookmarks"
+    | "maps"
+    | "agents";
 
 const SIDEBAR_WIDTH_KEY = "neverwrite.sidebar.width";
 const SIDEBAR_COLLAPSED_KEY = "neverwrite.sidebar.collapsed";
@@ -23,8 +28,14 @@ export const MAX_RIGHT_PANEL_WIDTH = 2000;
 
 const EDITOR_PANE_SIZES_KEY = "neverwrite.editor-pane.sizes";
 
-const SIDEBAR_VIEWS: SidebarView[] = ["files", "tags", "bookmarks", "maps"];
-const RIGHT_PANEL_VIEWS = ["links", "outline", "chat"] as const;
+const SIDEBAR_VIEWS: SidebarView[] = [
+    "files",
+    "tags",
+    "bookmarks",
+    "maps",
+    "agents",
+];
+const RIGHT_PANEL_VIEWS = ["links", "outline"] as const;
 
 type RightPanelView = (typeof RIGHT_PANEL_VIEWS)[number];
 
@@ -64,7 +75,7 @@ interface LayoutStore {
     toggleRightPanel: () => void;
     setRightPanelExpanded: (expanded: boolean) => void;
     toggleRightPanelExpanded: () => void;
-    activateRightView: (view: "links" | "outline" | "chat") => void;
+    activateRightView: (view: RightPanelView) => void;
     showRightPanelAtWidth: (width: number) => void;
     collapseRightPanelToWidth: (width: number) => void;
     editorPaneSizes: number[];
@@ -248,8 +259,7 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
             safeStorageSetItem(RIGHT_PANEL_VIEW_KEY, view);
             return {
                 rightPanelView: view,
-                rightPanelExpanded:
-                    view === "chat" ? state.rightPanelExpanded : false,
+                rightPanelExpanded: false,
             };
         }),
     showRightPanelAtWidth: (width) => {

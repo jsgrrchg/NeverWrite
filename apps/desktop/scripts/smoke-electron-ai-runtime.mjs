@@ -266,6 +266,28 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       params: {
         sessionId: message.params.sessionId,
         update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool-edit-1",
+          title: "Edit Notes/A.md",
+          kind: "edit",
+          status: "completed",
+          content: [
+            {
+              type: "diff",
+              path: "Notes/A.md",
+              oldText: "# Alpha\\n",
+              newText: "# Alpha changed\\n"
+            }
+          ],
+          locations: [{ path: "Notes/A.md" }]
+        }
+      }
+    });
+    send({
+      method: "session/update",
+      params: {
+        sessionId: message.params.sessionId,
+        update: {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "Smoke reply with real ACP stream" }
         }
@@ -391,6 +413,26 @@ async function main() {
         },
       ],
     });
+    const toolActivity = await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://tool-activity" &&
+        event.payload?.tool_call_id === "tool-edit-1",
+      "tool activity with file diff",
+    );
+    const [fileDiff] = toolActivity.payload?.diffs ?? [];
+    assert(fileDiff, "tool activity should include file diffs");
+    assert(fileDiff.path === "Notes/A.md", "tool activity diff path mismatch");
+    assert(fileDiff.kind === "update", "tool activity diff kind mismatch");
+    assert(
+      fileDiff.old_text === "# Alpha\n" &&
+        fileDiff.new_text === "# Alpha changed\n",
+      "tool activity should preserve old/new text",
+    );
+    assert(
+      String(toolActivity.payload?.summary ?? "").includes("Notes/A.md"),
+      "tool activity should include a visible snippet summary",
+    );
     await client.waitEventAfter(
       cursor,
       (event) =>
@@ -437,14 +479,15 @@ async function main() {
       maxAgeDays: 1,
     });
 
+    const noteAbsolutePath = path.join(vaultPath, "Notes", "A.md");
     const originalHash = await client.invoke("ai_get_text_file_hash", {
       vaultPath,
-      path: "Notes/A.md",
+      path: noteAbsolutePath,
     });
     cursor = client.eventCursor();
     const restoreChange = await client.invoke("ai_restore_text_file", {
       vaultPath,
-      path: "Notes/A.md",
+      path: noteAbsolutePath,
       previousPath: null,
       content: "# Alpha restored\n",
     });
@@ -461,7 +504,7 @@ async function main() {
     );
     const restoredHash = await client.invoke("ai_get_text_file_hash", {
       vaultPath,
-      path: "Notes/A.md",
+      path: noteAbsolutePath,
     });
     assert(originalHash !== restoredHash, "restore should change file hash");
 

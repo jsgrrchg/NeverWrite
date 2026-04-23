@@ -293,7 +293,6 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         file: "apps/desktop/src/App.tsx",
         symbols: [
             "RightPanel",
-            "AIChatPanel",
             "cycleEditorTabs",
             "tabs",
             "activeTabId",
@@ -301,25 +300,24 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: ["tabs", "activeTabId", "panes", "focusedPaneId"],
         writes: [],
         summary:
-            "The app shell still owns the auxiliary chat sidebar, while workspace chat tabs remain the primary chat surface.",
+            "The app shell no longer hosts the chat sidebar — that moved to the left SidebarShell. The right panel only exposes Outline/Links as contextual support.",
         migrationIntent:
-            "Phase 2c keeps the right panel as contextual support and leaves future shortcut cleanup to focused-pane-aware commands.",
+            "Phase 2c keeps the right panel contextual and leaves future shortcut cleanup to focused-pane-aware commands.",
     },
     {
         id: "ai-chat-panel-sidebar-primary-surface",
         role: "chat-sidebar-bridge",
-        file: "apps/desktop/src/features/ai/AIChatPanel.tsx",
+        file: "apps/desktop/src/features/ai/AgentsSidebarPanel.tsx",
         symbols: [
-            "AIChatPanel",
-            "AIChatPanel",
-            "AIChatSessionList",
+            "AgentsSidebarPanel",
+            "AgentsSidebarItem",
             "openChatSessionInWorkspace",
             "createNewChatInWorkspace",
         ],
         reads: [],
         writes: [],
         summary:
-            "AIChatPanel now acts as a launcher and inspector for workspace-owned chat sessions instead of rendering the primary composer surface itself.",
+            "AgentsSidebarPanel acts as a Comando-style launcher for workspace-owned chat sessions inside the left sidebar, without rendering the primary composer surface itself.",
         migrationIntent:
             "Keep this panel auxiliary and resist reintroducing a second primary chat surface here.",
     },

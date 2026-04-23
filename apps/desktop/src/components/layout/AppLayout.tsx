@@ -14,6 +14,10 @@ import {
     useLayoutStore,
 } from "../../app/store/layoutStore";
 import { getDesktopPlatform } from "../../app/utils/platform";
+import {
+    FILE_TREE_NOTE_DRAG_EVENT,
+    type FileTreeNoteDragDetail,
+} from "../../features/ai/dragEvents";
 
 // On macOS we let BrowserWindow "sidebar" vibrancy show through the left pane,
 // so the sidebar region must stay transparent and not paint its own background
@@ -74,6 +78,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // stable while the cursor crosses gaps.
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const overlayDismissTimerRef = useRef<number | null>(null);
+    const sidebarDragActiveRef = useRef(false);
 
     const clearOverlayDismissTimer = useCallback(() => {
         if (overlayDismissTimerRef.current !== null) {
@@ -88,12 +93,73 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     }, [clearOverlayDismissTimer]);
 
     const scheduleHideSidebarOverlay = useCallback(() => {
+        if (sidebarDragActiveRef.current) return;
         if (overlayDismissTimerRef.current !== null) return;
         overlayDismissTimerRef.current = window.setTimeout(() => {
             overlayDismissTimerRef.current = null;
             setSidebarOverlayVisible(false);
         }, 200);
     }, []);
+
+    useEffect(() => {
+        const handleFileTreeDrag = (event: Event) => {
+            const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
+                .detail;
+            if (!detail) return;
+
+            if (detail.phase === "start" || detail.phase === "move") {
+                const rootRect = rootRef.current?.getBoundingClientRect();
+                const overlayLeft = rootRect?.left ?? 0;
+                const startedInsideSidebarOverlay =
+                    detail.phase === "start" &&
+                    sidebarCollapsed &&
+                    sidebarOverlayVisible &&
+                    detail.origin?.kind !== "workspace-tab" &&
+                    detail.x >= overlayLeft &&
+                    detail.x <= overlayLeft + sidebarWidth;
+
+                if (
+                    !sidebarDragActiveRef.current &&
+                    !startedInsideSidebarOverlay
+                ) {
+                    return;
+                }
+
+                sidebarDragActiveRef.current = true;
+                if (sidebarCollapsed) {
+                    showSidebarOverlay();
+                }
+                return;
+            }
+
+            if (
+                detail.phase === "end" ||
+                detail.phase === "cancel" ||
+                detail.phase === "attach"
+            ) {
+                if (!sidebarDragActiveRef.current) return;
+                sidebarDragActiveRef.current = false;
+                if (sidebarCollapsed) {
+                    scheduleHideSidebarOverlay();
+                }
+            }
+        };
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleFileTreeDrag);
+        return () => {
+            sidebarDragActiveRef.current = false;
+            window.removeEventListener(
+                FILE_TREE_NOTE_DRAG_EVENT,
+                handleFileTreeDrag,
+            );
+        };
+    }, [
+        scheduleHideSidebarOverlay,
+        showSidebarOverlay,
+        sidebarCollapsed,
+        sidebarOverlayVisible,
+        sidebarWidth,
+    ]);
 
     // Tear down the timer on unmount; also retract the overlay as soon as the
     // sidebar goes back to docked mode so we never leak a floating copy.

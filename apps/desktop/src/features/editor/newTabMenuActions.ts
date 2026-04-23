@@ -1,20 +1,12 @@
 import type { ContextMenuEntry } from "../../components/context-menu/ContextMenu";
-import { inferFileViewer } from "../../app/store/editorTabs";
-import { useEditorStore } from "../../app/store/editorStore";
+import { createGraphTab, isGraphTab } from "../../app/store/editorTabs";
+import {
+    selectEditorWorkspaceTabs,
+    useEditorStore,
+} from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
-import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { createNewChatInWorkspace } from "../ai/chatPaneMovement";
 import { useChatStore } from "../ai/store/chatStore";
-
-interface SavedVaultFileDetail {
-    path: string;
-    relative_path: string;
-    file_name: string;
-    mime_type: string | null;
-    content: string;
-    size_bytes?: number | null;
-    content_truncated?: boolean | null;
-}
 
 function getNextUntitledNoteName() {
     const notes = useVaultStore.getState().notes;
@@ -28,22 +20,6 @@ function getNextUntitledNoteName() {
     }
 
     return name;
-}
-
-function getNextBlankFilePath() {
-    const entries = useVaultStore.getState().entries;
-    const usedPaths = new Set(
-        entries.map((entry) => entry.relative_path.toLowerCase()),
-    );
-
-    let relativePath = "untitled";
-    let index = 1;
-
-    while (usedPaths.has(relativePath.toLowerCase())) {
-        relativePath = `untitled-${index++}`;
-    }
-
-    return relativePath;
 }
 
 async function createNewNote(paneId?: string) {
@@ -91,69 +67,25 @@ async function createNewChat(runtimeId?: string, paneId?: string) {
     }
 }
 
-async function createNewBlankFile(paneId?: string) {
-    const vault = useVaultStore.getState();
-    if (!vault.vaultPath) return;
-
-    try {
-        const detail = await vaultInvoke<SavedVaultFileDetail>(
-            "save_vault_file",
-            {
-                relativePath: getNextBlankFilePath(),
-                content: "",
-            },
-        );
-
-        try {
-            await vault.refreshEntries();
-        } catch (error) {
-            console.error(
-                "Failed to refresh entries after creating a blank file:",
-                error,
-            );
-        }
-
-        const editor = useEditorStore.getState();
-        const nextTab = {
-            id: crypto.randomUUID(),
-            kind: "file" as const,
-            relativePath: detail.relative_path,
-            title: detail.file_name,
-            path: detail.path,
-            mimeType: detail.mime_type,
-            viewer: inferFileViewer(detail.path, detail.mime_type),
-            content: detail.content,
-            sizeBytes: detail.size_bytes ?? null,
-            contentTruncated: Boolean(detail.content_truncated),
-        };
-
-        if (paneId) {
-            editor.insertExternalTabInPane(nextTab, paneId);
-            return;
-        }
-
-        editor.openFile(
-            detail.relative_path,
-            detail.file_name,
-            detail.path,
-            detail.content,
-            detail.mime_type,
-            inferFileViewer(detail.path, detail.mime_type),
-            {
-                sizeBytes: detail.size_bytes ?? null,
-                contentTruncated: Boolean(detail.content_truncated),
-            },
-        );
-    } catch (error) {
-        console.error(
-            "Failed to create a new blank file from the tab menu:",
-            error,
-        );
-    }
-}
-
 function createNewTerminal(paneId?: string) {
     useEditorStore.getState().openTerminal({ paneId });
+}
+
+function openGraph(paneId?: string) {
+    const editor = useEditorStore.getState();
+    const existingGraphTab = selectEditorWorkspaceTabs(editor).find(isGraphTab);
+    if (existingGraphTab || !paneId) {
+        editor.openGraph();
+        return;
+    }
+
+    const paneExists = editor.panes.some((pane) => pane.id === paneId);
+    if (!paneExists) {
+        editor.openGraph();
+        return;
+    }
+
+    editor.insertExternalTabInPane(createGraphTab(), paneId);
 }
 
 export function buildNewTabContextMenuEntries(options?: {
@@ -198,6 +130,10 @@ export function buildNewTabContextMenuEntries(options?: {
                           },
                       ],
         },
+        {
+            label: "Open Graph",
+            action: () => openGraph(paneId),
+        },
     ];
 
     if (developerModeEnabled) {
@@ -207,13 +143,6 @@ export function buildNewTabContextMenuEntries(options?: {
                 action: () => createNewTerminal(paneId),
             });
         }
-
-        entries.push({
-            label: "New blank file",
-            action: () => {
-                void createNewBlankFile(paneId);
-            },
-        });
     }
 
     return entries;

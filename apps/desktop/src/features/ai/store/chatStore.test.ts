@@ -6907,7 +6907,7 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
+            path: "src/watcher.rs",
             previousPath: null,
             content: "old line",
         });
@@ -7019,7 +7019,7 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
+            path: "src/watcher.rs",
             previousPath: null,
             content: "aaXa\nbbb\nccc\nddd",
         });
@@ -7316,7 +7316,7 @@ describe("chatStore", () => {
         expect(hashCalls).toBeGreaterThan(1);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
+            path: "src/watcher.rs",
             previousPath: null,
             content: "old line",
         });
@@ -7358,7 +7358,7 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                return path === "/vault/src/watcher-final.rs"
+                return path === "src/watcher-final.rs"
                     ? hashTextContent(entry.currentText)
                     : "origin-reused-hash";
             }
@@ -7640,7 +7640,7 @@ describe("chatStore", () => {
         expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
-            path: "/vault/notes/file.md",
+            path: "notes/file.md",
             previousPath: null,
             content: "before\nold line\nafter",
         });
@@ -7702,7 +7702,7 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                return path === "/vault/src/watcher.rs"
+                return path === "src/watcher.rs"
                     ? hashTextContent(safeEntry.currentText)
                     : "different-hash";
             }
@@ -7734,7 +7734,7 @@ describe("chatStore", () => {
         expect(session.visibleWorkCycleId).toBe(workCycleId);
         expect(invokeMock).toHaveBeenCalledWith("ai_restore_text_file", {
             vaultPath: "/vault",
-            path: "/vault/src/watcher.rs",
+            path: "src/watcher.rs",
             previousPath: null,
             content: "old line",
         });
@@ -7861,7 +7861,7 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                return path === "/vault/src/watcher.rs"
+                return path === "src/watcher.rs"
                     ? hashTextContent(entry.currentText)
                     : null;
             }
@@ -7952,10 +7952,10 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                if (path === "/vault/src/watcher.rs") {
+                if (path === "src/watcher.rs") {
                     return hashTextContent(watcherEntry.currentText);
                 }
-                if (path === "/vault/src/parser.rs") {
+                if (path === "src/parser.rs") {
                     return hashTextContent(parserEntry.currentText);
                 }
                 return null;
@@ -7966,7 +7966,7 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                if (path === "/vault/src/parser.rs") {
+                if (path === "src/parser.rs") {
                     throw new Error("disk failure");
                 }
                 return undefined;
@@ -8062,10 +8062,10 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                if (path === "/vault/src/watcher.rs") {
+                if (path === "src/watcher.rs") {
                     return hashTextContent(watcherEntry.currentText);
                 }
-                if (path === "/vault/src/parser.rs") {
+                if (path === "src/parser.rs") {
                     return hashTextContent(parserEntry.currentText);
                 }
                 return null;
@@ -8094,10 +8094,10 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                if (path === "/vault/src/watcher.rs") {
+                if (path === "src/watcher.rs") {
                     return hashTextContent("old line");
                 }
-                if (path === "/vault/src/parser.rs") {
+                if (path === "src/parser.rs") {
                     return hashTextContent("old parser");
                 }
                 return null;
@@ -8108,7 +8108,7 @@ describe("chatStore", () => {
                     typeof args === "object" && args !== null && "path" in args
                         ? String(args.path)
                         : "";
-                if (path === "/vault/src/parser.rs") {
+                if (path === "src/parser.rs") {
                     throw new Error("undo failure");
                 }
                 return undefined;
@@ -11662,6 +11662,72 @@ describe("chatStore", () => {
             path: "/notes/file.md",
             previousPath: null,
             content: "aaXa\nbbb\nccc\nDDD",
+        });
+    });
+
+    it("resolveReviewHunks uses the session vault when the current vault has changed", async () => {
+        useVaultStore.setState({ vaultPath: "/current-vault", notes: [] });
+        const file = createTrackedFile(
+            "/session-vault/notes/file.md",
+            "alpha\nbeta\ngamma",
+            "alpha\nBETA\ngamma",
+            { reviewState: "finalized" },
+        );
+        const session = {
+            ...createSessionWithTrackedFiles("session-vault-scoped", [file]),
+            vaultPath: "/session-vault",
+        };
+        const projection = buildReviewProjection(file);
+        const hashArgs: unknown[] = [];
+        let restoreArgs: unknown = null;
+
+        useChatStore.setState({
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                hashArgs.push(args);
+                return hashTextContent(file.currentText);
+            }
+
+            if (command === "ai_restore_text_file") {
+                restoreArgs = args;
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                session.sessionId,
+                file.identityKey,
+                "rejected",
+                file.version,
+                [projection.hunks[0]!.id],
+            );
+
+        expect(hashArgs).toContainEqual({
+            vaultPath: "/session-vault",
+            path: "notes/file.md",
+        });
+        expect(restoreArgs).toEqual({
+            vaultPath: "/session-vault",
+            path: "notes/file.md",
+            previousPath: null,
+            content: "alpha\nbeta\ngamma",
         });
     });
 

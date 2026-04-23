@@ -6,7 +6,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::{
     Agent, Client, ClientCapabilities, ClientSideConnection, ContentBlock, ContentChunk,
@@ -14,20 +14,21 @@ use agent_client_protocol::{
     PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
     SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest,
-    ToolCallStatus,
+    ToolCall, ToolCallContent, ToolCallStatus,
 };
 use neverwrite_ai::{
-    AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption,
+    AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
     AiMessageCompletedPayload, AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption,
     AiModelOption, AiPermissionOptionPayload, AiPermissionRequestPayload, AiRuntimeBinarySource,
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
-    AiSession, AiSessionErrorPayload, AiSessionStatus, AiTokenUsageCostPayload,
-    AiTokenUsagePayload, AiToolActivityPayload, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
-    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_RUNTIME_CONNECTION_EVENT,
-    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT,
-    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
-    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
-    GEMINI_RUNTIME_ID, KILO_RUNTIME_ID,
+    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
+    AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityPayload, ToolDiffState,
+    AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
+    AI_PERMISSION_REQUEST_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
+    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
+    AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
+    KILO_RUNTIME_ID,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -41,6 +42,45 @@ const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str =
     "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const ELECTRON_AI_USER_INPUT_UNAVAILABLE: &str =
     "Interactive AI user input prompts are not available in Electron yet.";
+const AGENT_WRITE_ORIGIN_WINDOW: Duration = Duration::from_secs(15);
+const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
+const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
+const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
+const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
+
+#[derive(Debug, Clone)]
+struct TerminalExitMeta {
+    exit_code: Option<i64>,
+    signal: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AgentWriteTracker {
+    paths: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+}
+
+impl AgentWriteTracker {
+    fn mark_path(&self, path: PathBuf) {
+        if let Ok(mut guard) = self.paths.lock() {
+            Self::prune_expired(&mut guard);
+            guard.insert(path, Instant::now());
+        }
+    }
+
+    fn has_recent_match(&self, path: &Path) -> bool {
+        self.paths
+            .lock()
+            .map(|mut guard| {
+                Self::prune_expired(&mut guard);
+                guard.contains_key(path)
+            })
+            .unwrap_or(false)
+    }
+
+    fn prune_expired(paths: &mut HashMap<PathBuf, Instant>) {
+        paths.retain(|_, marked_at| marked_at.elapsed() <= AGENT_WRITE_ORIGIN_WINDOW);
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct AiSecretPatch {
@@ -136,7 +176,6 @@ struct ManagedAiSession {
     session: AiSession,
     vault_root: Option<PathBuf>,
     additional_roots: Vec<PathBuf>,
-    baselines: HashMap<String, String>,
     runtime_handle: Option<AcpSessionHandle>,
 }
 
@@ -199,6 +238,8 @@ enum AcpCommand {
 pub(crate) struct NativeAi {
     inner: Arc<Mutex<NativeAiInner>>,
     event_tx: Sender<RpcOutput>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
 }
 
 impl NativeAi {
@@ -206,6 +247,8 @@ impl NativeAi {
         Self {
             inner: Arc::new(Mutex::new(NativeAiInner::default())),
             event_tx,
+            tool_diffs: ToolDiffState::default(),
+            agent_writes: AgentWriteTracker::default(),
         }
     }
 
@@ -391,7 +434,12 @@ impl NativeAi {
                 .unwrap_or_default()
         };
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-        let created = start_acp_session(spec, self.event_tx.clone())?;
+        let created = start_acp_session(
+            spec,
+            self.event_tx.clone(),
+            self.tool_diffs.clone(),
+            self.agent_writes.clone(),
+        )?;
         let mut session = created.session;
         let handle = created.handle;
 
@@ -406,7 +454,6 @@ impl NativeAi {
                 session: session.clone(),
                 vault_root,
                 additional_roots,
-                baselines: HashMap::new(),
                 runtime_handle: Some(handle),
             },
         );
@@ -434,7 +481,6 @@ impl NativeAi {
                 session: session.clone(),
                 vault_root,
                 additional_roots: vec![],
-                baselines: HashMap::new(),
                 runtime_handle: None,
             },
         );
@@ -469,7 +515,6 @@ impl NativeAi {
                 session: session.clone(),
                 vault_root,
                 additional_roots: vec![],
-                baselines: HashMap::new(),
                 runtime_handle: None,
             },
         );
@@ -613,6 +658,7 @@ impl NativeAi {
             .remove(&session_id)
             .ok_or_else(|| format!("AI session not found: {session_id}"))?;
         state.session_order.retain(|id| id != &session_id);
+        self.tool_diffs.clear_session(&session_id);
         Ok(json!(null))
     }
 
@@ -633,6 +679,7 @@ impl NativeAi {
         for session_id in session_ids {
             state.sessions.remove(&session_id);
             state.session_order.retain(|id| id != &session_id);
+            self.tool_diffs.clear_session(&session_id);
         }
         Ok(json!(null))
     }
@@ -641,16 +688,21 @@ impl NativeAi {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let display_path = required_string(args, &["displayPath", "display_path"])?;
         let content = required_string(args, &["content"])?;
-        let mut state = self
+        let state = self
             .inner
             .lock()
             .map_err(|error| format!("Internal AI state error: {error}"))?;
-        let managed = state
+        state
             .sessions
-            .get_mut(&session_id)
+            .get(&session_id)
             .ok_or_else(|| format!("AI session not found: {session_id}"))?;
-        managed.baselines.insert(display_path, content);
+        self.tool_diffs
+            .register_file_baseline(&session_id, &display_path, content);
         Ok(json!(null))
+    }
+
+    pub(crate) fn has_recent_agent_write(&self, path: &Path) -> bool {
+        self.agent_writes.has_recent_match(path)
     }
 
     pub(crate) fn auth_terminal_unavailable(&self) -> Result<Value, String> {
@@ -800,12 +852,101 @@ struct NativeAcpClient {
     message_ids: Arc<Mutex<HashMap<String, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    terminal_output: Arc<Mutex<HashMap<String, String>>>,
+    terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
 }
 
 impl NativeAcpClient {
     fn emit<T: serde::Serialize>(&self, event_name: &str, payload: T) {
         if let Ok(value) = serde_json::to_value(payload) {
             emit_event(&self.event_tx, event_name, value);
+        }
+    }
+
+    fn emit_tool_activity(&self, session_id: &str, tool_call: &ToolCall) {
+        if let Some(payload) = map_status_event(session_id, tool_call) {
+            self.emit(AI_STATUS_EVENT, payload);
+            return;
+        }
+
+        let diffs = self
+            .tool_diffs
+            .normalized_diffs_for_tool_call(session_id, tool_call);
+        if tool_call.status != ToolCallStatus::Failed {
+            self.mark_agent_write_paths(session_id, &diffs);
+        }
+        self.emit(
+            AI_TOOL_ACTIVITY_EVENT,
+            map_tool_call(
+                session_id,
+                tool_call,
+                self.terminal_summary(session_id, &tool_call.tool_call_id.0),
+                diffs,
+            ),
+        );
+    }
+
+    fn record_terminal_meta(
+        &self,
+        session_id: &str,
+        tool_call_id: &str,
+        meta: Option<&agent_client_protocol::Meta>,
+    ) {
+        let Some(meta) = meta else {
+            return;
+        };
+        let key = call_state_key(session_id, tool_call_id);
+
+        if let Some(delta) = terminal_output_from_meta(meta) {
+            if let Ok(mut guard) = self.terminal_output.lock() {
+                let buffer = guard.entry(key.clone()).or_default();
+                buffer.push_str(&delta);
+                trim_terminal_buffer(buffer);
+            }
+        }
+
+        if let Some(exit) = terminal_exit_from_meta(meta) {
+            if let Ok(mut guard) = self.terminal_exit.lock() {
+                guard.insert(key, exit);
+            }
+        }
+    }
+
+    fn terminal_summary(&self, session_id: &str, tool_call_id: &str) -> Option<String> {
+        let key = call_state_key(session_id, tool_call_id);
+        let output = self
+            .terminal_output
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key).cloned());
+        let exit = self
+            .terminal_exit
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key).cloned());
+
+        match (output, exit) {
+            (Some(output), Some(exit)) => Some(format_terminal_summary(&output, Some(&exit))),
+            (Some(output), None) => Some(format_terminal_summary(&output, None)),
+            (None, Some(exit)) => Some(format_terminal_exit_only(&exit)),
+            (None, None) => None,
+        }
+    }
+
+    fn mark_agent_write_paths(&self, session_id: &str, diffs: &[AiFileDiffPayload]) {
+        for diff in diffs {
+            self.agent_writes.mark_path(
+                self.tool_diffs
+                    .absolute_path_for_display_path(session_id, &diff.path),
+            );
+            if let Some(previous_path) = diff.previous_path.as_deref() {
+                self.agent_writes.mark_path(
+                    self.tool_diffs
+                        .absolute_path_for_display_path(session_id, previous_path),
+                );
+            }
         }
     }
 
@@ -916,6 +1057,28 @@ impl Client for NativeAcpClient {
             .as_ref()
             .and_then(|locations| locations.first())
             .map(|location| location.path.display().to_string());
+        let pending_tool_call = ToolCall::try_from(args.tool_call.clone())
+            .unwrap_or_else(|_| ToolCall::new(args.tool_call.tool_call_id.clone(), title.clone()));
+        self.record_terminal_meta(
+            &session_id,
+            &pending_tool_call.tool_call_id.0,
+            args.tool_call.meta.as_ref(),
+        );
+        let registered = self
+            .tool_diffs
+            .upsert_tool_call(&session_id, pending_tool_call);
+        let diffs = self
+            .tool_diffs
+            .normalized_diffs_for_tool_call(&session_id, &registered);
+        self.emit(
+            AI_TOOL_ACTIVITY_EVENT,
+            map_tool_call(
+                &session_id,
+                &registered,
+                self.terminal_summary(&session_id, &registered.tool_call_id.0),
+                diffs.clone(),
+            ),
+        );
         let options = args
             .options
             .into_iter()
@@ -934,7 +1097,7 @@ impl Client for NativeAcpClient {
                 title,
                 target,
                 options,
-                diffs: vec![],
+                diffs,
             },
         );
         let outcome = rx.await.unwrap_or(RequestPermissionOutcome::Cancelled);
@@ -978,22 +1141,23 @@ impl Client for NativeAcpClient {
                 );
             }
             SessionUpdate::ToolCall(tool_call) => {
-                self.emit(
-                    AI_TOOL_ACTIVITY_EVENT,
-                    AiToolActivityPayload {
-                        session_id,
-                        tool_call_id: tool_call.tool_call_id.0.to_string(),
-                        title: tool_call.title,
-                        kind: tool_kind_label(&tool_call.kind),
-                        status: tool_status_label(&tool_call.status),
-                        target: tool_call
-                            .locations
-                            .first()
-                            .map(|location| location.path.display().to_string()),
-                        summary: None,
-                        diffs: None,
-                    },
+                self.record_terminal_meta(
+                    &session_id,
+                    &tool_call.tool_call_id.0,
+                    tool_call.meta.as_ref(),
                 );
+                let tool_call = self.tool_diffs.upsert_tool_call(&session_id, tool_call);
+                self.emit_tool_activity(&session_id, &tool_call);
+            }
+            SessionUpdate::ToolCallUpdate(update) => {
+                self.record_terminal_meta(
+                    &session_id,
+                    &update.tool_call_id.0,
+                    update.meta.as_ref(),
+                );
+                if let Some(tool_call) = self.tool_diffs.apply_tool_update(&session_id, update) {
+                    self.emit_tool_activity(&session_id, &tool_call);
+                }
             }
             SessionUpdate::UsageUpdate(update) => {
                 self.emit(
@@ -1018,6 +1182,8 @@ impl Client for NativeAcpClient {
 fn start_acp_session(
     spec: AcpProcessSpec,
     event_tx: Sender<RpcOutput>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
@@ -1034,7 +1200,15 @@ fn start_acp_session(
         };
         let local = LocalSet::new();
         local.block_on(&runtime, async move {
-            run_acp_actor(spec, event_tx, command_rx, created_tx).await;
+            run_acp_actor(
+                spec,
+                event_tx,
+                tool_diffs,
+                agent_writes,
+                command_rx,
+                created_tx,
+            )
+            .await;
         });
     });
     let session = created_rx.recv().map_err(|error| error.to_string())??;
@@ -1044,10 +1218,20 @@ fn start_acp_session(
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     event_tx: Sender<RpcOutput>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
-    let result = run_acp_actor_inner(spec, event_tx, &mut command_rx, created_tx.clone()).await;
+    let result = run_acp_actor_inner(
+        spec,
+        event_tx,
+        tool_diffs,
+        agent_writes,
+        &mut command_rx,
+        created_tx.clone(),
+    )
+    .await;
     if let Err(error) = result {
         let _ = created_tx.send(Err(error));
     }
@@ -1056,6 +1240,8 @@ async fn run_acp_actor(
 async fn run_acp_actor_inner(
     spec: AcpProcessSpec,
     event_tx: Sender<RpcOutput>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -1086,6 +1272,10 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        tool_diffs,
+        agent_writes,
+        terminal_output: Arc::new(Mutex::new(HashMap::new())),
+        terminal_exit: Arc::new(Mutex::new(HashMap::new())),
     };
     let permission_waiters = client.permission_waiters.clone();
     let (connection, io_task) = ClientSideConnection::new(
@@ -1148,6 +1338,9 @@ async fn run_acp_actor_inner(
         response.modes,
         response.config_options,
     );
+    client
+        .tool_diffs
+        .register_session_cwd(&session.session_id, spec.cwd.clone());
     let _ = created_tx.send(Ok(session));
     tokio::task::spawn_local(async move {
         let _ = child.wait().await;
@@ -1423,6 +1616,121 @@ fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload 
             _ => "other".to_string(),
         },
     }
+}
+
+fn map_tool_call(
+    session_id: &str,
+    tool_call: &ToolCall,
+    summary: Option<String>,
+    diffs: Vec<AiFileDiffPayload>,
+) -> AiToolActivityPayload {
+    AiToolActivityPayload {
+        session_id: session_id.to_string(),
+        tool_call_id: tool_call.tool_call_id.0.to_string(),
+        title: tool_call.title.clone(),
+        kind: tool_kind_label(&tool_call.kind),
+        status: tool_status_label(&tool_call.status),
+        target: tool_call
+            .locations
+            .first()
+            .map(|location| location.path.display().to_string()),
+        summary: summary.or_else(|| summarize_tool_content(tool_call)),
+        diffs: (!diffs.is_empty()).then_some(diffs),
+    }
+}
+
+fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEventPayload> {
+    let meta = tool_call.meta.as_ref()?;
+    let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    if event_type != "status" {
+        return None;
+    }
+
+    Some(AiStatusEventPayload {
+        session_id: session_id.to_string(),
+        event_id: tool_call.tool_call_id.0.to_string(),
+        kind: meta
+            .get(ACP_STATUS_KIND_KEY)
+            .and_then(|value| value.as_str())
+            .unwrap_or("status")
+            .to_string(),
+        status: tool_status_label(&tool_call.status),
+        title: tool_call.title.clone(),
+        detail: summarize_tool_content(tool_call),
+        emphasis: meta
+            .get(ACP_STATUS_EMPHASIS_KEY)
+            .and_then(|value| value.as_str())
+            .unwrap_or("info")
+            .to_string(),
+    })
+}
+
+fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
+    tool_call.content.iter().find_map(|item| match item {
+        ToolCallContent::Content(content) => match &content.content {
+            ContentBlock::Text(text) => Some(text.text.clone()),
+            _ => None,
+        },
+        ToolCallContent::Diff(diff) => Some(format!("Updated {}", diff.path.display())),
+        ToolCallContent::Terminal(_) => Some("Terminal output available.".to_string()),
+        _ => None,
+    })
+}
+
+fn terminal_output_from_meta(meta: &agent_client_protocol::Meta) -> Option<String> {
+    meta.get("terminal_output")
+        .and_then(|value| value.as_object())
+        .and_then(|object| object.get("data"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn terminal_exit_from_meta(meta: &agent_client_protocol::Meta) -> Option<TerminalExitMeta> {
+    let object = meta.get("terminal_exit")?.as_object()?;
+    let exit_code = object.get("exit_code").and_then(|value| value.as_i64());
+    let signal = object
+        .get("signal")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    Some(TerminalExitMeta { exit_code, signal })
+}
+
+fn trim_terminal_buffer(buffer: &mut String) {
+    if buffer.len() <= MAX_TERMINAL_SUMMARY_CHARS {
+        return;
+    }
+
+    let keep_from = buffer.len().saturating_sub(MAX_TERMINAL_SUMMARY_CHARS);
+    let trimmed = buffer
+        .get(keep_from..)
+        .unwrap_or(buffer.as_str())
+        .to_string();
+    *buffer = format!("...[truncated]\n{trimmed}");
+}
+
+fn format_terminal_summary(output: &str, exit: Option<&TerminalExitMeta>) -> String {
+    let mut summary = output.trim_end_matches('\0').to_string();
+    if let Some(exit) = exit {
+        let suffix = format_terminal_exit_only(exit);
+        if !summary.is_empty() {
+            summary.push_str("\n\n");
+        }
+        summary.push_str(&suffix);
+    }
+    summary
+}
+
+fn format_terminal_exit_only(exit: &TerminalExitMeta) -> String {
+    match (exit.exit_code, exit.signal.as_deref()) {
+        (Some(code), Some(signal)) => format!("[process exited: code {code}, signal {signal}]"),
+        (Some(code), None) => format!("[process exited: code {code}]"),
+        (None, Some(signal)) => format!("[process exited: signal {signal}]"),
+        (None, None) => "[process exited]".to_string(),
+    }
+}
+
+fn call_state_key(session_id: &str, tool_call_id: &str) -> String {
+    format!("{session_id}::{tool_call_id}")
 }
 
 fn tool_kind_label(kind: &agent_client_protocol::ToolKind) -> String {
@@ -1791,7 +2099,9 @@ fn resolve_packaged_acp_command(runtime_id: &str) -> Option<ResolvedAcpCommand> 
     let resource_dir = acp_resource_dir()?;
     match runtime_id {
         CODEX_RUNTIME_ID => {
-            let binary = resource_dir.join("binaries").join(runtime_binary_name("codex-acp"));
+            let binary = resource_dir
+                .join("binaries")
+                .join(runtime_binary_name("codex-acp"));
             binary.is_file().then(|| ResolvedAcpCommand {
                 display: Some(binary.display().to_string()),
                 program: Some(binary),
@@ -2405,8 +2715,37 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::{
+        Meta, PermissionOptionKind, SessionNotification, SessionUpdate, ToolCallContent,
+        ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    };
     use std::fs;
     use std::sync::mpsc;
+    use std::time::Duration as StdDuration;
+
+    fn test_client(event_tx: mpsc::Sender<RpcOutput>) -> NativeAcpClient {
+        NativeAcpClient {
+            event_tx,
+            message_ids: Arc::new(Mutex::new(HashMap::new())),
+            thinking_ids: Arc::new(Mutex::new(HashMap::new())),
+            permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            tool_diffs: ToolDiffState::default(),
+            agent_writes: AgentWriteTracker::default(),
+            terminal_output: Arc::new(Mutex::new(HashMap::new())),
+            terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn run_client_future<F>(future: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
 
     #[test]
     fn setup_status_accepts_custom_acp_binary_and_auth_env() {
@@ -2465,5 +2804,285 @@ mod tests {
         .expect_err("outside attachment should be blocked");
 
         assert!(error.contains("outside the vault"));
+    }
+
+    #[test]
+    fn session_tool_call_completed_emits_reconstructed_diffs() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("note.md");
+        fs::write(&file_path, "old text").unwrap();
+        client
+            .tool_diffs
+            .register_session_cwd("session-1", temp.path().to_path_buf());
+
+        let tool_call = ToolCall::new(ToolCallId::from("tool-1"), "Write note.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .raw_input(json!({
+                "file_path": "note.md",
+                "content": "new text",
+            }));
+
+        run_client_future(Client::session_notification(
+            &client,
+            SessionNotification::new("session-1", SessionUpdate::ToolCall(tool_call)),
+        ))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        let diff = payload
+            .get("diffs")
+            .and_then(Value::as_array)
+            .and_then(|diffs| diffs.first())
+            .expect("diff payload");
+        assert_eq!(diff.get("path").and_then(Value::as_str), Some("note.md"));
+        assert_eq!(diff.get("kind").and_then(Value::as_str), Some("update"));
+        assert_eq!(
+            diff.get("old_text").and_then(Value::as_str),
+            Some("old text")
+        );
+        assert_eq!(
+            diff.get("new_text").and_then(Value::as_str),
+            Some("new text")
+        );
+        assert!(client.agent_writes.has_recent_match(&file_path));
+    }
+
+    #[test]
+    fn session_tool_call_update_preserves_cached_diffs_on_completion() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("note.md");
+        fs::write(&file_path, "before").unwrap();
+        client
+            .tool_diffs
+            .register_session_cwd("session-1", temp.path().to_path_buf());
+
+        let pending = ToolCall::new(ToolCallId::from("tool-1"), "Write note.md")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Pending)
+            .raw_input(json!({
+                "file_path": "note.md",
+                "content": "after",
+            }));
+        run_client_future(Client::session_notification(
+            &client,
+            SessionNotification::new("session-1", SessionUpdate::ToolCall(pending)),
+        ))
+        .unwrap();
+        let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
+
+        let completed = ToolCallUpdate::new(
+            "tool-1",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from("File updated")]),
+        );
+        run_client_future(Client::session_notification(
+            &client,
+            SessionNotification::new("session-1", SessionUpdate::ToolCallUpdate(completed)),
+        ))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("completion tool activity event");
+        let RpcOutput::Event { payload, .. } = event else {
+            panic!("expected event");
+        };
+        let diff = payload
+            .get("diffs")
+            .and_then(Value::as_array)
+            .and_then(|diffs| diffs.first())
+            .expect("diff payload");
+        assert_eq!(diff.get("old_text").and_then(Value::as_str), Some("before"));
+        assert_eq!(diff.get("new_text").and_then(Value::as_str), Some("after"));
+    }
+
+    #[test]
+    fn tool_activity_uses_content_summary_when_no_diffs_exist() {
+        let payload = map_tool_call(
+            "session-1",
+            &ToolCall::new(ToolCallId::from("tool-1"), "Read README.md")
+                .kind(ToolKind::Read)
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from("README.md")]),
+            None,
+            vec![],
+        );
+
+        assert_eq!(payload.summary.as_deref(), Some("README.md"));
+        assert!(payload.diffs.is_none());
+    }
+
+    #[test]
+    fn session_tool_call_terminal_meta_updates_summary() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let started = ToolCall::new(ToolCallId::from("tool-1"), "Run tests")
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::InProgress);
+        run_client_future(Client::session_notification(
+            &client,
+            SessionNotification::new("session-1", SessionUpdate::ToolCall(started)),
+        ))
+        .unwrap();
+        let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
+
+        let update =
+            ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new()).meta(Meta::from_iter([(
+                "terminal_output".to_string(),
+                json!({ "data": "running tests\n" }),
+            )]));
+        run_client_future(Client::session_notification(
+            &client,
+            SessionNotification::new("session-1", SessionUpdate::ToolCallUpdate(update)),
+        ))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event { payload, .. } = event else {
+            panic!("expected event");
+        };
+        assert_eq!(
+            payload.get("summary").and_then(Value::as_str),
+            Some("running tests\n")
+        );
+    }
+
+    #[test]
+    fn session_tool_call_status_meta_emits_status_event() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(ToolCallId::from("neverwrite:status:1"), "Review mode")
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::Completed)
+            .meta(Meta::from_iter([
+                (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
+                (ACP_STATUS_KIND_KEY.to_string(), json!("review_mode")),
+                (ACP_STATUS_EMPHASIS_KEY.to_string(), json!("info")),
+            ]));
+
+        run_client_future(Client::session_notification(
+            &client,
+            SessionNotification::new("session-1", SessionUpdate::ToolCall(tool_call)),
+        ))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("status event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_STATUS_EVENT);
+        assert_eq!(
+            payload.get("kind").and_then(Value::as_str),
+            Some("review_mode")
+        );
+    }
+
+    #[test]
+    fn permission_request_emits_tool_activity_and_permission_diffs() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("note.md"), "before").unwrap();
+        client
+            .tool_diffs
+            .register_session_cwd("session-1", temp.path().to_path_buf());
+
+        let waiters = client.permission_waiters.clone();
+        let event_thread = std::thread::spawn(move || {
+            let mut saw_tool_activity_diffs = false;
+            let mut saw_permission_diffs = false;
+            let mut request_id = None;
+
+            for _ in 0..2 {
+                let event = event_rx
+                    .recv_timeout(StdDuration::from_secs(1))
+                    .expect("permission events");
+                let RpcOutput::Event {
+                    event_name,
+                    payload,
+                } = event
+                else {
+                    continue;
+                };
+
+                let has_diffs = payload
+                    .get("diffs")
+                    .and_then(Value::as_array)
+                    .map(|diffs| !diffs.is_empty())
+                    .unwrap_or(false);
+                if event_name == AI_TOOL_ACTIVITY_EVENT {
+                    saw_tool_activity_diffs = has_diffs;
+                }
+                if event_name == AI_PERMISSION_REQUEST_EVENT {
+                    saw_permission_diffs = has_diffs;
+                    request_id = payload
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                }
+            }
+
+            let request_id = request_id.expect("permission request id");
+            let sender = waiters
+                .lock()
+                .unwrap()
+                .remove(&request_id)
+                .expect("permission waiter");
+            sender.send(RequestPermissionOutcome::Cancelled).unwrap();
+            (saw_tool_activity_diffs, saw_permission_diffs)
+        });
+
+        let request = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new()
+                    .title("Write note.md".to_string())
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Pending)
+                    .raw_input(json!({
+                        "file_path": "note.md",
+                        "content": "after",
+                    })),
+            ),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+        run_client_future(Client::request_permission(&client, request)).unwrap();
+
+        let (saw_tool_activity_diffs, saw_permission_diffs) = event_thread.join().unwrap();
+        assert!(saw_tool_activity_diffs);
+        assert!(saw_permission_diffs);
     }
 }

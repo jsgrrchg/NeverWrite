@@ -1608,7 +1608,6 @@ export function FileTree() {
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
     const setSetting = useSettingsStore((s) => s.setSetting);
-    const openGraph = useEditorStore((s) => s.openGraph);
 
     const [sortMode, setSortMode] = useState<SortMode>(
         () => (safeStorageGetItem(SORT_KEY) as SortMode | null) ?? "name_asc",
@@ -4339,41 +4338,6 @@ export function FileTree() {
                         {!lineWrapping && (
                             <line x1="5" y1="5" x2="19" y2="19" />
                         )}
-                    </svg>
-                </ToolbarBtn>
-
-                <ToolbarBtn
-                    title="Graph View"
-                    onClick={openGraph}
-                    size={metrics.toolbarButton}
-                    iconScale={metrics.toolbarIconScale}
-                >
-                    <svg
-                        width="15"
-                        height="15"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <circle cx="12" cy="12" r="2.5" />
-                        <ellipse cx="12" cy="12" rx="9" ry="3.5" />
-                        <ellipse
-                            cx="12"
-                            cy="12"
-                            rx="9"
-                            ry="3.5"
-                            transform="rotate(60 12 12)"
-                        />
-                        <ellipse
-                            cx="12"
-                            cy="12"
-                            rx="9"
-                            ry="3.5"
-                            transform="rotate(120 12 12)"
-                        />
                     </svg>
                 </ToolbarBtn>
 

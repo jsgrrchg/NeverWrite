@@ -1973,7 +1973,10 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            <AIChatWorkspaceHost startupReady={chatTabsReady} />
+            <AIChatWorkspaceHost
+                startupReady={chatTabsReady}
+                listenWithoutChatTabs
+            />
             <WorkspaceTerminalHost />
 
             {/* No horizontal chrome bar: the sidebar carries the traffic-light

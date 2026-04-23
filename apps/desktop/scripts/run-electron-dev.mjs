@@ -51,6 +51,11 @@ function waitForRenderer() {
 }
 
 await runOnce(
+    "cargo",
+    ["build", "-p", "neverwrite-native-backend"],
+);
+
+await runOnce(
     "npx",
     ["vite", "build", "--config", "electron.vite.config.ts"],
     { NEVERWRITE_ELECTRON_TARGET: "main" },

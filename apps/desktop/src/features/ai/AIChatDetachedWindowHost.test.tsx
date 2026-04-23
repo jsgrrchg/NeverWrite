@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AIChatDetachedWindowHost } from "./AIChatDetachedWindowHost";
+import { AIChatWorkspaceHost } from "./AIChatWorkspaceHost";
 import { renderComponent, flushPromises } from "../../test/test-utils";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useEditorStore } from "../../app/store/editorStore";
 
+const eventBridgeMock = vi.hoisted(() => vi.fn());
+
 vi.mock("./useAiChatEventBridge", () => ({
-    useAiChatEventBridge: () => {},
+    useAiChatEventBridge: eventBridgeMock,
 }));
 
 describe("AIChatDetachedWindowHost", () => {
@@ -17,6 +20,8 @@ describe("AIChatDetachedWindowHost", () => {
             notes: [],
             entries: [],
         });
+        useEditorStore.getState().hydrateTabs([], null);
+        eventBridgeMock.mockClear();
     });
 
     it("initializes detached chat support without auto-creating a default session and loads the active chat", async () => {
@@ -82,5 +87,17 @@ describe("AIChatDetachedWindowHost", () => {
             createDefaultSession: false,
         });
         expect(loadSession).not.toHaveBeenCalled();
+    });
+
+    it("keeps the main-window event bridge active before any chat tab mounts", () => {
+        renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+
+        expect(eventBridgeMock).toHaveBeenCalledWith(true);
+    });
+
+    it("keeps detached windows quiet until they have a chat tab", () => {
+        renderComponent(<AIChatDetachedWindowHost />);
+
+        expect(eventBridgeMock).toHaveBeenCalledWith(false);
     });
 });

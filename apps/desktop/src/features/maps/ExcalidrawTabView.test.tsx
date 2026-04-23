@@ -31,12 +31,16 @@ describe("ExcalidrawTabView", () => {
         const invokeMock = mockInvoke();
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "read_map") {
+                const payload =
+                    args && typeof args === "object" && !Array.isArray(args)
+                        ? (args as { relativePath?: unknown })
+                        : {};
                 return JSON.stringify({
                     elements: [],
                     appState: {
                         viewBackgroundColor:
-                            typeof args?.relativePath === "string"
-                                ? args.relativePath
+                            typeof payload.relativePath === "string"
+                                ? payload.relativePath
                                 : "",
                     },
                     files: {},

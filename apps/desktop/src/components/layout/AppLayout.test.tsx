@@ -1,7 +1,21 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+import { act } from "react";
+import {
+    beforeAll,
+    afterAll,
+    afterEach,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    vi,
+} from "vitest";
 import { AppLayout } from "./AppLayout";
 import { useLayoutStore } from "../../app/store/layoutStore";
+import {
+    FILE_TREE_NOTE_DRAG_EVENT,
+    type FileTreeNoteDragDetail,
+} from "../../features/ai/dragEvents";
 
 class MockResizeObserver {
     private callback: ResizeObserverCallback;
@@ -63,6 +77,10 @@ describe("AppLayout", () => {
         HTMLElement.prototype.releasePointerCapture =
             originalReleasePointerCapture;
         HTMLElement.prototype.hasPointerCapture = originalHasPointerCapture;
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
     });
 
     beforeEach(() => {
@@ -140,5 +158,78 @@ describe("AppLayout", () => {
 
         expect(useLayoutStore.getState().sidebarCollapsed).toBe(false);
         expect(useLayoutStore.getState().sidebarWidth).toBe(280);
+    });
+
+    it("keeps the collapsed sidebar peek overlay mounted during file-tree drags", () => {
+        vi.useFakeTimers();
+        useLayoutStore.setState({ sidebarCollapsed: true });
+
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        fireEvent.mouseEnter(screen.getByTestId("sidebar-peek-hotspot"));
+        const overlay = screen.getByTestId("sidebar-peek-overlay");
+        expect(overlay).toContainElement(screen.getByText("Left"));
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent<FileTreeNoteDragDetail>(
+                    FILE_TREE_NOTE_DRAG_EVENT,
+                    {
+                        detail: {
+                            phase: "start",
+                            x: 40,
+                            y: 40,
+                            notes: [
+                                {
+                                    id: "note-1",
+                                    title: "Dragged note",
+                                    path: "Dragged note.md",
+                                },
+                            ],
+                        },
+                    },
+                ),
+            );
+        });
+
+        fireEvent.mouseLeave(overlay);
+        act(() => {
+            vi.advanceTimersByTime(250);
+        });
+
+        expect(screen.getByTestId("sidebar-peek-overlay")).toBeInTheDocument();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent<FileTreeNoteDragDetail>(
+                    FILE_TREE_NOTE_DRAG_EVENT,
+                    {
+                        detail: {
+                            phase: "end",
+                            x: 600,
+                            y: 400,
+                            notes: [
+                                {
+                                    id: "note-1",
+                                    title: "Dragged note",
+                                    path: "Dragged note.md",
+                                },
+                            ],
+                        },
+                    },
+                ),
+            );
+            vi.advanceTimersByTime(200);
+        });
+
+        expect(
+            screen.queryByTestId("sidebar-peek-overlay"),
+        ).not.toBeInTheDocument();
     });
 });

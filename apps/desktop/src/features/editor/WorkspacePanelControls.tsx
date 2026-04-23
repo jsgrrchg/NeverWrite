@@ -5,8 +5,8 @@ import {
 
 interface WorkspacePanelControlsProps {
     rightPanelCollapsed: boolean;
-    rightPanelView: "links" | "outline" | "chat";
-    activateRightView: (view: "links" | "outline" | "chat") => void;
+    rightPanelView: "links" | "outline";
+    activateRightView: (view: "links" | "outline") => void;
 }
 
 export function WorkspacePanelControls({
@@ -16,33 +16,6 @@ export function WorkspacePanelControls({
 }: WorkspacePanelControlsProps) {
     return (
         <div style={chromeControlsGroupStyle}>
-            <button
-                type="button"
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => activateRightView("chat")}
-                title="AI Chat"
-                className="no-drag flex items-center justify-center shrink-0 ub-chrome-btn"
-                data-active={
-                    (!rightPanelCollapsed && rightPanelView === "chat") ||
-                    undefined
-                }
-                style={getChromeIconButtonStyle(
-                    !rightPanelCollapsed && rightPanelView === "chat",
-                )}
-            >
-                <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <path d="M14 10a2 2 0 0 1-2 2H5l-3 3V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z" />
-                </svg>
-            </button>
             <button
                 type="button"
                 onMouseDown={(event) => event.stopPropagation()}
