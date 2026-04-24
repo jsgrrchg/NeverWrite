@@ -60,6 +60,7 @@ const UPDATER_ALLOWED_DOWNLOAD_HOSTS_ENV_VARS = [
 const UPDATER_ALLOW_PROD_ENDPOINTS_IN_NON_PROD_ENV_VARS = [
     "NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD",
 ];
+const DEFAULT_UPDATER_BASE_URL = "https://jsgrrchg.github.io/NeverWrite";
 
 function readFirstNonEmptyEnv(keys: readonly string[]) {
     for (const key of keys) {
@@ -253,7 +254,7 @@ function currentUpdaterRuntimeMode(): UpdaterRuntimeMode {
 
 function resolveFeedTarget() {
     if (process.platform === "darwin") {
-        return `darwin-${process.arch}`;
+        return "darwin-universal";
     }
     if (process.platform === "win32") {
         return `windows-${process.arch}`;
@@ -280,13 +281,16 @@ function resolveEndpointFromEnv(
     channel: string,
     feedTarget: string | null,
     metadataFileName: string | null,
+    runtimeMode: UpdaterRuntimeMode,
 ) {
     const explicitEndpoint = readFirstNonEmptyEnv(UPDATER_ENDPOINT_ENV_VARS);
     if (explicitEndpoint) {
         return explicitEndpoint;
     }
 
-    const baseUrl = readFirstNonEmptyEnv(UPDATER_BASE_URL_ENV_VARS);
+    const baseUrl =
+        readFirstNonEmptyEnv(UPDATER_BASE_URL_ENV_VARS) ??
+        (runtimeMode === "production" ? DEFAULT_UPDATER_BASE_URL : null);
     if (!baseUrl || !feedTarget || !metadataFileName) {
         return null;
     }
@@ -312,6 +316,7 @@ function loadUpdaterRuntimeConfig(): UpdaterRuntimeConfig {
         channel,
         feedTarget,
         metadataFileName,
+        runtimeMode,
     );
 
     if (!feedTarget || !metadataFileName) {

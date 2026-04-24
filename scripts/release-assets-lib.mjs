@@ -14,14 +14,9 @@ import {
 
 export const PUBLIC_DOWNLOAD_VARIANTS = [
     {
-        buildTarget: "aarch64-apple-darwin",
+        buildTarget: "universal-apple-darwin",
         platformLabel: "macOS",
-        architectureLabel: "Apple Silicon",
-    },
-    {
-        buildTarget: "x86_64-apple-darwin",
-        platformLabel: "macOS",
-        architectureLabel: "Intel",
+        architectureLabel: "Universal",
     },
     {
         buildTarget: "aarch64-pc-windows-msvc",

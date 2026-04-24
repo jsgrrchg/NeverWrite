@@ -584,7 +584,10 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                     "background 150ms, color 150ms",
                                             }}
                                         >
-                                            {renderEditorTabLeadingIcon(tab)}
+                                            {renderEditorTabLeadingIcon(
+                                                tab,
+                                                chatSessionsById,
+                                            )}
                                             {isEditing ? (
                                                 <input
                                                     ref={inputRef}
@@ -907,7 +910,10 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                               willChange: "transform",
                           }}
                       >
-                          {renderEditorTabLeadingIcon(draggedPreviewTab)}
+                          {renderEditorTabLeadingIcon(
+                              draggedPreviewTab,
+                              chatSessionsById,
+                          )}
                           <span
                               style={{
                                   flex: 1,

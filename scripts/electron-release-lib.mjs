@@ -17,15 +17,13 @@ export {
 };
 
 export const ELECTRON_BUILD_TARGETS = [
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
+    "universal-apple-darwin",
     "aarch64-pc-windows-msvc",
     "x86_64-pc-windows-msvc",
 ];
 
 export const BUILD_TARGET_TO_FEED_TARGET = {
-    "aarch64-apple-darwin": "darwin-arm64",
-    "x86_64-apple-darwin": "darwin-x64",
+    "universal-apple-darwin": "darwin-universal",
     "aarch64-pc-windows-msvc": "windows-arm64",
     "x86_64-pc-windows-msvc": "windows-x64",
 };
@@ -52,10 +50,8 @@ export function buildElectronUpdaterAssetName(version, buildTarget) {
     const normalizedVersion = normalizeReleaseVersion(version);
 
     switch (buildTarget) {
-        case "aarch64-apple-darwin":
-            return `NeverWrite_${normalizedVersion}_macOS_AppleSilicon.zip`;
-        case "x86_64-apple-darwin":
-            return `NeverWrite_${normalizedVersion}_macOS_Intel.zip`;
+        case "universal-apple-darwin":
+            return `NeverWrite_${normalizedVersion}_macOS_Universal.zip`;
         case "aarch64-pc-windows-msvc":
             return `NeverWrite_${normalizedVersion}_Windows_ARM64_Setup.exe`;
         case "x86_64-pc-windows-msvc":
@@ -81,15 +77,10 @@ export function buildPublishedFeedUrl(baseUrl, channel, buildTarget) {
 
 export function describeBuildTarget(buildTarget) {
     switch (buildTarget) {
-        case "aarch64-apple-darwin":
+        case "universal-apple-darwin":
             return {
                 platformLabel: "macOS",
-                architectureLabel: "Apple Silicon",
-            };
-        case "x86_64-apple-darwin":
-            return {
-                platformLabel: "macOS",
-                architectureLabel: "Intel",
+                architectureLabel: "Universal",
             };
         case "aarch64-pc-windows-msvc":
             return {

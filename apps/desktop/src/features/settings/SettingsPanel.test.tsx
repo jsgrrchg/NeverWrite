@@ -467,7 +467,7 @@ describe("SettingsPanel", () => {
                     currentVersion: "0.1.0",
                     channel: "stable",
                     endpoint:
-                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
+                        "https://updates.example.com/stable/darwin-universal/latest-mac.yml",
                     message: null,
                     update: null,
                 };
@@ -479,7 +479,7 @@ describe("SettingsPanel", () => {
                     currentVersion: "0.1.0",
                     channel: "stable",
                     endpoint:
-                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
+                        "https://updates.example.com/stable/darwin-universal/latest-mac.yml",
                     message: null,
                     update: {
                         currentVersion: "0.1.0",
@@ -487,9 +487,9 @@ describe("SettingsPanel", () => {
                         date: "2026-04-04T12:00:00Z",
                         body: "## Improvements\n- Added multi-target updater metadata.",
                         rawJson: {},
-                        target: "darwin-arm64",
+                        target: "darwin-universal",
                         downloadUrl:
-                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Universal.zip",
                     },
                 };
             }
@@ -552,7 +552,7 @@ describe("SettingsPanel", () => {
                     currentVersion: "0.1.0",
                     channel: "stable",
                     endpoint:
-                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
+                        "https://updates.example.com/stable/darwin-universal/latest-mac.yml",
                     message: null,
                     update: null,
                 };
@@ -564,7 +564,7 @@ describe("SettingsPanel", () => {
                     currentVersion: "0.1.0",
                     channel: "stable",
                     endpoint:
-                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
+                        "https://updates.example.com/stable/darwin-universal/latest-mac.yml",
                     message: null,
                     update: {
                         currentVersion: "0.1.0",
@@ -572,9 +572,9 @@ describe("SettingsPanel", () => {
                         date: "2026-04-04T12:00:00Z",
                         body: "## Added\n\n- In-app install flow.",
                         rawJson: {},
-                        target: "darwin-arm64",
+                        target: "darwin-universal",
                         downloadUrl:
-                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Universal.zip",
                     },
                 };
             }
@@ -619,7 +619,7 @@ describe("SettingsPanel", () => {
                 "download_and_install_app_update",
                 {
                     version: "0.2.0",
-                    target: "darwin-arm64",
+                    target: "darwin-universal",
                 },
             );
         });
@@ -636,7 +636,7 @@ describe("SettingsPanel", () => {
                     currentVersion: "0.1.0",
                     channel: "stable",
                     endpoint:
-                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
+                        "https://updates.example.com/stable/darwin-universal/latest-mac.yml",
                     message: null,
                     update: null,
                 };
@@ -648,7 +648,7 @@ describe("SettingsPanel", () => {
                     currentVersion: "0.1.0",
                     channel: "stable",
                     endpoint:
-                        "https://updates.example.com/stable/darwin-arm64/latest-mac.yml",
+                        "https://updates.example.com/stable/darwin-universal/latest-mac.yml",
                     message: null,
                     update: {
                         currentVersion: "0.1.0",
@@ -656,9 +656,9 @@ describe("SettingsPanel", () => {
                         date: "2026-04-04T12:00:00Z",
                         body: "## Added\n\n- In-app install flow.",
                         rawJson: {},
-                        target: "darwin-arm64",
+                        target: "darwin-universal",
                         downloadUrl:
-                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
+                            "https://github.com/example/neverwrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Universal.zip",
                     },
                 };
             }

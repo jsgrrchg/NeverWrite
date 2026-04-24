@@ -1,0 +1,167 @@
+name: Electron Package Smoke
+
+on:
+    pull_request:
+        paths:
+            - apps/desktop/package.json
+            - apps/desktop/package-lock.json
+            - apps/desktop/electron-builder.config.mjs
+            - apps/desktop/electron.vite.config.ts
+            - apps/desktop/build/**
+            - apps/desktop/embedded/**
+            - apps/desktop/scripts/**
+            - apps/desktop/src-electron/**
+            - apps/desktop/native-backend/**
+            - vendor/codex-acp/**
+            - vendor/Claude-agent-acp-upstream/**
+            - .github/workflows/electron-package-smoke.yml
+            - .github/workflows/release-desktop.yml
+    workflow_dispatch:
+
+concurrency:
+    group: electron-package-smoke-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    macos-universal:
+        name: macOS Universal
+        runs-on: macos-latest
+        timeout-minutes: 45
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: npm
+                  cache-dependency-path: apps/desktop/package-lock.json
+
+            - name: Setup Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install desktop dependencies
+              working-directory: apps/desktop
+              run: npm ci
+
+            - name: Download embedded Node runtimes
+              shell: bash
+              run: |
+                  NODE_VERSION="$(node -p "process.version.replace(/^v/, '')")"
+                  DEST="$RUNNER_TEMP/node-dist"
+                  mkdir -p "$DEST"
+
+                  for NODE_DIST in darwin-arm64 darwin-x64; do
+                    DIST="node-v${NODE_VERSION}-${NODE_DIST}"
+                    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.tar.gz" -o "$RUNNER_TEMP/${NODE_DIST}.tar.gz"
+                    tar -xzf "$RUNNER_TEMP/${NODE_DIST}.tar.gz" -C "$DEST"
+                  done
+
+                  echo "NEVERWRITE_EMBEDDED_NODE_BIN_ARM64=$DEST/node-v${NODE_VERSION}-darwin-arm64/bin/node" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_EMBEDDED_NODE_BIN_X64=$DEST/node-v${NODE_VERSION}-darwin-x64/bin/node" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
+
+            - name: Package unsigned Electron app
+              working-directory: apps/desktop
+              run: npm run electron:package:unsigned -- --platform mac --arch universal
+
+            - name: Smoke packaged sidecar
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_DIST_ARCH: universal
+              run: npm run electron:sidecar:smoke:packaged
+
+            - name: Verify universal runtime binaries
+              shell: bash
+              run: |
+                  APP_PATH=""
+                  for candidate in \
+                    "$NEVERWRITE_ELECTRON_OUTPUT_DIR/mac-universal/NeverWrite.app" \
+                    "$NEVERWRITE_ELECTRON_OUTPUT_DIR/mac/NeverWrite.app"; do
+                    if [[ -d "$candidate" ]]; then
+                      APP_PATH="$candidate"
+                      break
+                    fi
+                  done
+
+                  if [[ -z "$APP_PATH" ]]; then
+                    echo "Could not find packaged NeverWrite.app in $NEVERWRITE_ELECTRON_OUTPUT_DIR." >&2
+                    exit 1
+                  fi
+
+                  verify_universal() {
+                    local binary_path="$1"
+                    local archs
+                    archs="$(lipo -archs "$binary_path")"
+                    echo "$binary_path: $archs"
+                    if [[ "$archs" != *"arm64"* || "$archs" != *"x86_64"* ]]; then
+                      echo "Expected universal arm64/x86_64 binary: $binary_path" >&2
+                      exit 1
+                    fi
+                  }
+
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/neverwrite-native-backend"
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
+
+    windows-x64:
+        name: Windows x64
+        runs-on: windows-latest
+        timeout-minutes: 45
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: npm
+                  cache-dependency-path: apps/desktop/package-lock.json
+
+            - name: Setup Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: x86_64-pc-windows-msvc
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install desktop dependencies
+              working-directory: apps/desktop
+              run: npm ci
+
+            - name: Download embedded Node runtime
+              shell: bash
+              run: |
+                  NODE_VERSION="$(node -p "process.version.replace(/^v/, '')")"
+                  DIST="node-v${NODE_VERSION}-win-x64"
+                  DEST="$RUNNER_TEMP/node-dist"
+                  mkdir -p "$DEST"
+                  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
+                  powershell -NoProfile -Command "Expand-Archive -Path '$env:RUNNER_TEMP/node.zip' -DestinationPath '$env:RUNNER_TEMP/node-dist'"
+                  echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
+
+            - name: Package unsigned Electron app
+              working-directory: apps/desktop
+              env:
+                  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+              run: npm run electron:package:unsigned -- --platform win --arch x64
+
+            - name: Smoke packaged sidecar
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_DIST_ARCH: x64
+              run: npm run electron:sidecar:smoke:packaged

@@ -12,28 +12,16 @@ import {
 function buildMetadataEntries() {
     return [
         {
-            buildTarget: "aarch64-apple-darwin",
-            feedTarget: "darwin-arm64",
+            buildTarget: "universal-apple-darwin",
+            feedTarget: "darwin-universal",
             metadataFileName: "latest-mac.yml",
-            feedRelativePath: "darwin-arm64/latest-mac.yml",
-            manualAssetName: "NeverWrite_0.2.0_macOS_AppleSilicon.dmg",
-            updaterAssetName: "NeverWrite_0.2.0_macOS_AppleSilicon.zip",
+            feedRelativePath: "darwin-universal/latest-mac.yml",
+            manualAssetName: "NeverWrite_0.2.0_macOS_Universal.dmg",
+            updaterAssetName: "NeverWrite_0.2.0_macOS_Universal.zip",
             updaterBlockmapAssetName:
-                "NeverWrite_0.2.0_macOS_AppleSilicon.zip.blockmap",
+                "NeverWrite_0.2.0_macOS_Universal.zip.blockmap",
             updaterUrl:
-                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_AppleSilicon.zip",
-        },
-        {
-            buildTarget: "x86_64-apple-darwin",
-            feedTarget: "darwin-x64",
-            metadataFileName: "latest-mac.yml",
-            feedRelativePath: "darwin-x64/latest-mac.yml",
-            manualAssetName: "NeverWrite_0.2.0_macOS_Intel.dmg",
-            updaterAssetName: "NeverWrite_0.2.0_macOS_Intel.zip",
-            updaterBlockmapAssetName:
-                "NeverWrite_0.2.0_macOS_Intel.zip.blockmap",
-            updaterUrl:
-                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Intel.zip",
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Universal.zip",
         },
         {
             buildTarget: "aarch64-pc-windows-msvc",
@@ -63,12 +51,12 @@ function buildMetadataEntries() {
 }
 
 test("resolveValidationTarget accepts build targets and feed targets", () => {
-    assert.deepEqual(resolveValidationTarget("aarch64-apple-darwin"), {
-        buildTarget: "aarch64-apple-darwin",
-        feedTarget: "darwin-arm64",
+    assert.deepEqual(resolveValidationTarget("universal-apple-darwin"), {
+        buildTarget: "universal-apple-darwin",
+        feedTarget: "darwin-universal",
         metadataFileName: "latest-mac.yml",
         platformLabel: "macOS",
-        architectureLabel: "Apple Silicon",
+        architectureLabel: "Universal",
         updaterArtifactKind: "macOS updater archive (.zip)",
     });
     assert.equal(
@@ -92,7 +80,7 @@ test("validateTargetMetadataEntries rejects duplicate updater URLs", () => {
 
 test("validateTargetMetadataEntries rejects incomplete target coverage", () => {
     assert.throws(
-        () => validateTargetMetadataEntries(buildMetadataEntries().slice(0, 3)),
+        () => validateTargetMetadataEntries(buildMetadataEntries().slice(0, 2)),
         /missing required build targets/i,
     );
 });
@@ -106,15 +94,15 @@ test("buildPlatformValidationMatrix aligns feed URLs with target metadata", () =
         metadataEntries: buildMetadataEntries(),
     });
 
-    assert.equal(rows.length, 4);
-    assert.equal(rows[0].buildTarget, "aarch64-apple-darwin");
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].buildTarget, "universal-apple-darwin");
     assert.equal(
         rows[0].feedUrl,
-        "https://jsgrrchg.github.io/NeverWrite/stable/darwin-arm64/latest-mac.yml",
+        "https://jsgrrchg.github.io/NeverWrite/stable/darwin-universal/latest-mac.yml",
     );
-    assert.equal(rows[3].feedTarget, "windows-x64");
+    assert.equal(rows[2].feedTarget, "windows-x64");
     assert.equal(
-        rows[3].updaterAssetName,
+        rows[2].updaterAssetName,
         "NeverWrite_0.2.0_Windows_x64_Setup.exe",
     );
 });
@@ -147,7 +135,7 @@ test("renderPlatformValidationChecklist includes invalid-checksum fixtures", () 
 
     assert.match(
         markdown,
-        /fixtures\/darwin-arm64\/invalid-checksum\/stable\/latest-mac\.yml/,
+        /fixtures\/darwin-universal\/invalid-checksum\/stable\/latest-mac\.yml/,
     );
     assert.match(
         markdown,

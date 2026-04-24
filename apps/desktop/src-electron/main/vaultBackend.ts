@@ -698,7 +698,26 @@ function normalizeWebClipperFolder(folder: string) {
 function sanitizeWebClipperTitle(title: string) {
     const sanitized = title
         .trim()
-        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ")
+        .split("")
+        .map((character) => {
+            const charCode = character.charCodeAt(0);
+            if (
+                charCode < 32 ||
+                character === "<" ||
+                character === ">" ||
+                character === ":" ||
+                character === '"' ||
+                character === "/" ||
+                character === "\\" ||
+                character === "|" ||
+                character === "?" ||
+                character === "*"
+            ) {
+                return " ";
+            }
+            return character;
+        })
+        .join("")
         .replace(/\./g, " ")
         .split(/\s+/)
         .filter(Boolean)

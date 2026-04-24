@@ -41,8 +41,8 @@ test("buildChannelAppcastUrl joins the public base url and channel path", () => 
 
 test("buildPublicReleaseAssetName uses the human-facing naming convention", () => {
     assert.equal(
-        buildPublicReleaseAssetName("0.2.0", "aarch64-apple-darwin"),
-        "NeverWrite_0.2.0_macOS_AppleSilicon.dmg",
+        buildPublicReleaseAssetName("0.2.0", "universal-apple-darwin"),
+        "NeverWrite_0.2.0_macOS_Universal.dmg",
     );
     assert.equal(
         buildPublicReleaseAssetName("0.2.0", "x86_64-pc-windows-msvc"),
@@ -52,7 +52,7 @@ test("buildPublicReleaseAssetName uses the human-facing naming convention", () =
 
 test("describeUpdaterArtifactKind documents updater archive families", () => {
     assert.equal(
-        describeUpdaterArtifactKind("x86_64-apple-darwin"),
+        describeUpdaterArtifactKind("universal-apple-darwin"),
         "macOS updater archive (.app.tar.gz)",
     );
     assert.equal(
@@ -68,7 +68,7 @@ test("describeUpdaterArtifactKind documents updater archive families", () => {
 test("canonical bundle and updater artifact names are fixed for v1 release automation", () => {
     assert.equal(getCanonicalAppBundleName(), "NeverWrite.app");
     assert.equal(
-        getBundledUpdaterArtifactName("aarch64-apple-darwin"),
+        getBundledUpdaterArtifactName("universal-apple-darwin"),
         "NeverWrite.app.tar.gz",
     );
     assert.equal(
@@ -76,8 +76,8 @@ test("canonical bundle and updater artifact names are fixed for v1 release autom
         "NeverWrite-setup.nsis.zip",
     );
     assert.equal(
-        buildUpdaterReleaseAssetName("0.2.0", "aarch64-apple-darwin"),
-        "NeverWrite_0.2.0_macOS_AppleSilicon.app.tar.gz",
+        buildUpdaterReleaseAssetName("0.2.0", "universal-apple-darwin"),
+        "NeverWrite_0.2.0_macOS_Universal.app.tar.gz",
     );
     assert.equal(
         buildUpdaterReleaseAssetName("0.2.0", "x86_64-pc-windows-msvc"),
@@ -88,8 +88,8 @@ test("canonical bundle and updater artifact names are fixed for v1 release autom
 test("normalizePlatformEntries accepts build targets and emits appcast keys", () => {
     assert.deepEqual(
         normalizePlatformEntries({
-            "aarch64-apple-darwin": {
-                url: "https://example.com/macos-arm64.tar.gz",
+            "universal-apple-darwin": {
+                url: "https://example.com/macos-universal.tar.gz",
                 signature: "sig-a",
             },
             "x86_64-pc-windows-msvc": {
@@ -98,8 +98,8 @@ test("normalizePlatformEntries accepts build targets and emits appcast keys", ()
             },
         }),
         {
-            "darwin-aarch64": {
-                url: "https://example.com/macos-arm64.tar.gz",
+            "darwin-universal": {
+                url: "https://example.com/macos-universal.tar.gz",
                 signature: "sig-a",
             },
             "windows-x86_64": {
@@ -120,24 +120,19 @@ test("createStaticAppcastManifest requires all v1 platform keys and preserves or
                 url: "https://example.com/windows-x64.zip",
                 signature: "sig-wx64",
             },
-            "aarch64-apple-darwin": {
-                url: "https://example.com/macos-arm64.tar.gz",
-                signature: "sig-marm",
+            "universal-apple-darwin": {
+                url: "https://example.com/macos-universal.tar.gz",
+                signature: "sig-muniv",
             },
             "aarch64-pc-windows-msvc": {
                 url: "https://example.com/windows-arm64.zip",
                 signature: "sig-warm",
             },
-            "x86_64-apple-darwin": {
-                url: "https://example.com/macos-x64.tar.gz",
-                signature: "sig-mx64",
-            },
         },
     });
 
     assert.deepEqual(Object.keys(manifest.platforms), [
-        "darwin-aarch64",
-        "darwin-x86_64",
+        "darwin-universal",
         "windows-aarch64",
         "windows-x86_64",
     ]);
@@ -153,8 +148,8 @@ test("createStaticAppcastManifest rejects missing v1 platforms", () => {
                 notes: "- notes",
                 pubDate: "2026-04-04T18:00:00Z",
                 platforms: {
-                    "darwin-aarch64": {
-                        url: "https://example.com/macos-arm64.tar.gz",
+                    "darwin-universal": {
+                        url: "https://example.com/macos-universal.tar.gz",
                         signature: "sig",
                     },
                 },

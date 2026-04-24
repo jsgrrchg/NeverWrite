@@ -74,6 +74,10 @@ jobs:
         working-directory: apps/desktop
         run: npm test
 
+      - name: Build Electron bundles
+        working-directory: apps/desktop
+        run: npm run electron:build
+
       - name: Build native desktop sidecar
         run: cargo build -p neverwrite-native-backend
 

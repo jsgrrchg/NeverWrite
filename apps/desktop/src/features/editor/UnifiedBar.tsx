@@ -196,6 +196,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
     const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
+    const chatSessionsById = useChatStore((s) => s.sessionsById);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
@@ -1353,6 +1354,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                 >
                                                     {renderEditorTabLeadingIcon(
                                                         tab,
+                                                        chatSessionsById,
                                                     )}
                                                     <span
                                                         className="flex-1 truncate font-medium"
@@ -1532,6 +1534,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                   >
                                       {renderEditorTabLeadingIcon(
                                           draggedPreviewTab,
+                                          chatSessionsById,
                                       )}
                                       <span
                                           style={{

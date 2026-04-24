@@ -14,20 +14,17 @@ export const APPCAST_CHANNELS = ["stable", "beta", "nightly"];
 export const PUBLIC_PRODUCT_NAME = "NeverWrite";
 export const CANONICAL_RELEASE_REPO_SLUG = "jsgrrchg/NeverWrite";
 export const V1_BUILD_TARGETS = [
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
+    "universal-apple-darwin",
     "aarch64-pc-windows-msvc",
     "x86_64-pc-windows-msvc",
 ];
 export const V1_APPCAST_KEYS = [
-    "darwin-aarch64",
-    "darwin-x86_64",
+    "darwin-universal",
     "windows-aarch64",
     "windows-x86_64",
 ];
 export const BUILD_TARGET_TO_APPCAST_KEY = {
-    "aarch64-apple-darwin": "darwin-aarch64",
-    "x86_64-apple-darwin": "darwin-x86_64",
+    "universal-apple-darwin": "darwin-universal",
     "aarch64-pc-windows-msvc": "windows-aarch64",
     "x86_64-pc-windows-msvc": "windows-x86_64",
 };
@@ -107,10 +104,8 @@ export function buildGitHubReleaseAssetUrl(repoSlug, tag, assetName) {
 export function buildPublicReleaseAssetName(version, buildTarget) {
     const normalizedVersion = normalizeReleaseVersion(version);
     switch (buildTarget) {
-        case "aarch64-apple-darwin":
-            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_AppleSilicon.dmg`;
-        case "x86_64-apple-darwin":
-            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_Intel.dmg`;
+        case "universal-apple-darwin":
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_Universal.dmg`;
         case "aarch64-pc-windows-msvc":
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64_Setup.exe`;
         case "x86_64-pc-windows-msvc":
@@ -126,8 +121,7 @@ export function getCanonicalAppBundleName() {
 
 export function getBundledUpdaterArtifactName(buildTarget) {
     switch (buildTarget) {
-        case "aarch64-apple-darwin":
-        case "x86_64-apple-darwin":
+        case "universal-apple-darwin":
             return `${PUBLIC_PRODUCT_NAME}.app.tar.gz`;
         case "aarch64-pc-windows-msvc":
         case "x86_64-pc-windows-msvc":
@@ -141,10 +135,8 @@ export function buildUpdaterReleaseAssetName(version, buildTarget) {
     const normalizedVersion = normalizeReleaseVersion(version);
 
     switch (buildTarget) {
-        case "aarch64-apple-darwin":
-            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_AppleSilicon.app.tar.gz`;
-        case "x86_64-apple-darwin":
-            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_Intel.app.tar.gz`;
+        case "universal-apple-darwin":
+            return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_macOS_Universal.app.tar.gz`;
         case "aarch64-pc-windows-msvc":
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64.nsis.zip`;
         case "x86_64-pc-windows-msvc":
@@ -156,8 +148,7 @@ export function buildUpdaterReleaseAssetName(version, buildTarget) {
 
 export function describeUpdaterArtifactKind(buildTarget) {
     switch (buildTarget) {
-        case "aarch64-apple-darwin":
-        case "x86_64-apple-darwin":
+        case "universal-apple-darwin":
             return "macOS updater archive (.app.tar.gz)";
         case "aarch64-pc-windows-msvc":
         case "x86_64-pc-windows-msvc":

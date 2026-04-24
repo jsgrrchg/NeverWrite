@@ -23,21 +23,6 @@ const DEFAULT_MAC_BINARY_RELATIVE_PATHS = [
 
 const outputDir =
     process.env.NEVERWRITE_ELECTRON_OUTPUT_DIR?.trim() || "dist-electron";
-const windowsAzureSignOptions =
-    process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT?.trim() &&
-    process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT?.trim() &&
-    process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE?.trim() &&
-    process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER?.trim()
-        ? {
-              endpoint: process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT.trim(),
-              codeSigningAccountName:
-                  process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT.trim(),
-              certificateProfileName:
-                  process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE.trim(),
-              publisherName:
-                  process.env.NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER.trim(),
-          }
-        : undefined;
 
 function toPosixPath(value) {
     return value.split(path.sep).join(path.posix.sep);
@@ -187,6 +172,7 @@ export default {
             "entitlements.mac.inherit.plist",
         ),
         binaries: macAdditionalBinaries,
+        x64ArchFiles: "Contents/Resources/native-backend/**/*",
         target: ["dmg", "zip"],
     },
     dmg: {
@@ -194,8 +180,7 @@ export default {
     },
     win: {
         icon: path.join("build", "icons", "icon.ico"),
-        verifyUpdateCodeSignature: true,
-        azureSignOptions: windowsAzureSignOptions,
+        verifyUpdateCodeSignature: false,
         target: ["nsis"],
     },
     nsis: {

@@ -123,8 +123,8 @@ export function getAllWebviewWindows(): Promise<RuntimeWindow[]> {
     return runtime.getAllWebviewWindows();
 }
 
-export interface WebviewWindow extends RuntimeWebviewWindow {}
+export type WebviewWindow = RuntimeWebviewWindow;
 export const WebviewWindow = runtime.WebviewWindow;
 
-export interface LogicalPosition extends RuntimeLogicalPosition {}
+export type LogicalPosition = RuntimeLogicalPosition;
 export const LogicalPosition = runtime.LogicalPosition;

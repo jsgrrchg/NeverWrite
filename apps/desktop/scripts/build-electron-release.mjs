@@ -38,7 +38,7 @@ function parseArgs(argv) {
         }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --platform <mac|win>, --arch <x64|arm64>, --publish <mode>, --dir, --unsigned.`,
+            `Unknown argument "${arg}". Supported args: --platform <mac|win>, --arch <universal|x64|arm64>, --publish <mode>, --dir, --unsigned.`,
         );
     }
 
@@ -62,9 +62,13 @@ function normalizePlatform(platform) {
     );
 }
 
-function normalizeArch(arch) {
+function normalizeArch(platform, arch) {
     if (arch) {
         return arch;
+    }
+
+    if (platform === "mac") {
+        return "universal";
     }
 
     if (process.arch === "arm64" || process.arch === "x64") {
@@ -77,6 +81,9 @@ function normalizeArch(arch) {
 }
 
 function resolveRustTarget(platform, arch) {
+    if (platform === "mac" && arch === "universal") {
+        return "universal-apple-darwin";
+    }
     if (platform === "mac" && arch === "arm64") {
         return "aarch64-apple-darwin";
     }
@@ -137,6 +144,8 @@ function buildElectronBuilderArgs(args) {
         result.push("--x64");
     } else if (args.arch === "arm64") {
         result.push("--arm64");
+    } else if (args.arch === "universal") {
+        result.push("--universal");
     }
 
     return result;
@@ -144,7 +153,7 @@ function buildElectronBuilderArgs(args) {
 
 const args = parseArgs(process.argv.slice(2));
 const normalizedPlatform = normalizePlatform(args.platform);
-const normalizedArch = normalizeArch(args.arch);
+const normalizedArch = normalizeArch(normalizedPlatform, args.arch);
 const rustTarget = resolveRustTarget(normalizedPlatform, normalizedArch);
 const builderEnv = {};
 

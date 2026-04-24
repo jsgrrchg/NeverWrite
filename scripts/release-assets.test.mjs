@@ -28,7 +28,7 @@ function withTempDir(callback) {
 
 test("runtimeBinaryFileName follows target platform conventions", () => {
     assert.equal(
-        runtimeBinaryFileName("x86_64-apple-darwin", "codex-acp"),
+        runtimeBinaryFileName("universal-apple-darwin", "codex-acp"),
         "codex-acp",
     );
     assert.equal(
@@ -66,16 +66,10 @@ test("validateStagedRuntimeResources checks bundled runtime staging inputs", () 
 test("buildManualDownloadRows exposes the public installer set for humans", () => {
     assert.deepEqual(buildManualDownloadRows("0.2.0"), [
         {
-            buildTarget: "aarch64-apple-darwin",
+            buildTarget: "universal-apple-darwin",
             platformLabel: "macOS",
-            architectureLabel: "Apple Silicon",
-            assetName: "NeverWrite_0.2.0_macOS_AppleSilicon.dmg",
-        },
-        {
-            buildTarget: "x86_64-apple-darwin",
-            platformLabel: "macOS",
-            architectureLabel: "Intel",
-            assetName: "NeverWrite_0.2.0_macOS_Intel.dmg",
+            architectureLabel: "Universal",
+            assetName: "NeverWrite_0.2.0_macOS_Universal.dmg",
         },
         {
             buildTarget: "aarch64-pc-windows-msvc",
@@ -98,7 +92,7 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
         "## Added\n\n- Manual packaging polish.",
     );
     assert.match(body, /## Manual installers/);
-    assert.match(body, /NeverWrite_0.2.0_macOS_AppleSilicon\.dmg/);
+    assert.match(body, /NeverWrite_0.2.0_macOS_Universal\.dmg/);
     assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
     assert.match(body, /internal updater assets/i);
     assert.match(body, /## Release notes/);
@@ -121,7 +115,7 @@ test("collectBundleArtifacts locates macOS bundles and updater archives", () => 
 
         const artifacts = collectBundleArtifacts(
             tempDir,
-            "aarch64-apple-darwin",
+            "universal-apple-darwin",
         );
         assert.equal(
             path.basename(artifacts.manualAssetPath),
@@ -144,7 +138,7 @@ test("validateMacosBundleResources ensures resources exist inside the app bundle
         const appBundlePath = path.join(tempDir, "NeverWrite.app");
         const resourcesDir = path.join(appBundlePath, "Contents", "Resources");
         for (const relativePath of requiredStagedResourcePaths(
-            "x86_64-apple-darwin",
+            "universal-apple-darwin",
         )) {
             const absolutePath = path.join(resourcesDir, relativePath);
             fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
@@ -152,7 +146,7 @@ test("validateMacosBundleResources ensures resources exist inside the app bundle
         }
 
         assert.doesNotThrow(() =>
-            validateMacosBundleResources(appBundlePath, "x86_64-apple-darwin"),
+            validateMacosBundleResources(appBundlePath, "universal-apple-darwin"),
         );
     });
 });

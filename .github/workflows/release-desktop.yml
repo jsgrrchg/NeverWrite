@@ -77,18 +77,12 @@ jobs:
                   console.log(`pages_base_url=${CANONICAL_RELEASE_PAGES_BASE_URL}`);
                   EOF
 
-            - name: Create or update GitHub release
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: |
-                  VERSION="${{ steps.meta.outputs.version }}"
-                  TAG="${{ steps.meta.outputs.tag }}"
-                  TITLE="NeverWrite v${VERSION}"
-                  if gh release view "$TAG" >/dev/null 2>&1; then
-                    gh release edit "$TAG" --title "$TITLE" --notes-file release-body.md
-                  else
-                    gh release create "$TAG" --title "$TITLE" --notes-file release-body.md --verify-tag
-                  fi
+            - name: Upload release body artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-body-${{ steps.meta.outputs.tag }}
+                  path: release-body.md
+                  if-no-files-found: error
 
     build-target:
         name: Build ${{ matrix.target }}
@@ -100,23 +94,22 @@ jobs:
                 include:
                     - runner: macos-latest
                       platform: mac
-                      arch: arm64
-                      target: aarch64-apple-darwin
-                      node_dist: darwin-arm64
-                    - runner: macos-latest
-                      platform: mac
-                      arch: x64
-                      target: x86_64-apple-darwin
-                      node_dist: darwin-x64
-                    - runner: windows-latest
+                      arch: universal
+                      target: universal-apple-darwin
+                      rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+                      node_dist_arm64: darwin-arm64
+                      node_dist_x64: darwin-x64
+                    - runner: windows-11-arm
                       platform: win
                       arch: arm64
                       target: aarch64-pc-windows-msvc
+                      rust_targets: aarch64-pc-windows-msvc
                       node_dist: win-arm64
                     - runner: windows-latest
                       platform: win
                       arch: x64
                       target: x86_64-pc-windows-msvc
+                      rust_targets: x86_64-pc-windows-msvc
                       node_dist: win-x64
 
         steps:
@@ -132,28 +125,44 @@ jobs:
             - name: Setup Rust toolchain
               uses: dtolnay/rust-toolchain@stable
               with:
-                  targets: ${{ matrix.target }}
+                  targets: ${{ matrix.rust_targets }}
 
             - name: Install desktop dependencies
               working-directory: apps/desktop
               run: npm ci
 
             - name: Build target-specific Codex sidecar
-              run: cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }}
+              shell: bash
+              run: |
+                  if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin
+                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin
+                  else
+                    cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target ${{ matrix.target }}
+                  fi
 
             - name: Download embedded Node runtime
               shell: bash
               run: |
                   NODE_VERSION="$(node -p "process.version.replace(/^v/, '')")"
-                  DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
                   DEST="$RUNNER_TEMP/node-dist"
                   mkdir -p "$DEST"
 
-                  if [[ "${{ runner.os }}" == "Windows" ]]; then
+                  if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+                    for NODE_DIST in "${{ matrix.node_dist_arm64 }}" "${{ matrix.node_dist_x64 }}"; do
+                      DIST="node-v${NODE_VERSION}-${NODE_DIST}"
+                      curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.tar.gz" -o "$RUNNER_TEMP/${NODE_DIST}.tar.gz"
+                      tar -xzf "$RUNNER_TEMP/${NODE_DIST}.tar.gz" -C "$DEST"
+                    done
+                    echo "NEVERWRITE_EMBEDDED_NODE_BIN_ARM64=$DEST/node-v${NODE_VERSION}-${{ matrix.node_dist_arm64 }}/bin/node" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_EMBEDDED_NODE_BIN_X64=$DEST/node-v${NODE_VERSION}-${{ matrix.node_dist_x64 }}/bin/node" >> "$GITHUB_ENV"
+                  elif [[ "${{ runner.os }}" == "Windows" ]]; then
+                    DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
                     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
                     powershell -NoProfile -Command "Expand-Archive -Path '$env:RUNNER_TEMP/node.zip' -DestinationPath '$env:RUNNER_TEMP/node-dist'"
                     echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
                   else
+                    DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
                     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.tar.gz" -o "$RUNNER_TEMP/node.tar.gz"
                     tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$DEST"
                     echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/bin/node" >> "$GITHUB_ENV"
@@ -162,13 +171,17 @@ jobs:
             - name: Export build environment
               shell: bash
               run: |
-                  if [[ "${{ runner.os }}" == "Windows" ]]; then
+                  if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                  elif [[ "${{ runner.os }}" == "Windows" ]]; then
                     CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp.exe"
+                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
                   else
                     CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
+                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
                   fi
 
-                  echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
 
             - name: Validate macOS signing configuration
@@ -202,34 +215,8 @@ jobs:
                     exit 1
                   fi
 
-            - name: Validate Windows signing configuration
-              if: runner.os == 'Windows'
-              shell: bash
-              env:
-                  WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-                  WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER }}
-              run: |
-                  HAS_PFX=false
-                  HAS_AZURE=false
-
-                  if [[ -n "$WIN_CSC_LINK" && -n "$WIN_CSC_KEY_PASSWORD" ]]; then
-                    HAS_PFX=true
-                  fi
-
-                  if [[ -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT" && -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT" && -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE" && -n "$NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER" ]]; then
-                    HAS_AZURE=true
-                  fi
-
-                  if [[ "$HAS_PFX" != true && "$HAS_AZURE" != true ]]; then
-                    echo "Windows releases require WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD or the NEVERWRITE_WINDOWS_AZURE_SIGN_* configuration." >&2
-                    exit 1
-                  fi
-
-            - name: Build desktop release
+            - name: Build signed macOS desktop release
+              if: runner.os == 'macOS'
               working-directory: apps/desktop
               shell: bash
               env:
@@ -241,21 +228,15 @@ jobs:
                   APPLE_ID: ${{ secrets.APPLE_ID }}
                   APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
                   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-                  WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-                  WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE }}
-                  NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER: ${{ secrets.NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER }}
-                  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-                  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-                  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-                  AZURE_CLIENT_CERTIFICATE_PATH: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PATH }}
-                  AZURE_CLIENT_CERTIFICATE_PASSWORD: ${{ secrets.AZURE_CLIENT_CERTIFICATE_PASSWORD }}
-                  AZURE_CLIENT_SEND_CERTIFICATE_CHAIN: ${{ secrets.AZURE_CLIENT_SEND_CERTIFICATE_CHAIN }}
-                  AZURE_USERNAME: ${{ secrets.AZURE_USERNAME }}
-                  AZURE_PASSWORD: ${{ secrets.AZURE_PASSWORD }}
               run: npm run electron:release:local -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+
+            - name: Build unsigned Windows desktop release
+              if: runner.os == 'Windows'
+              working-directory: apps/desktop
+              shell: bash
+              env:
+                  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+              run: npm run electron:release:local -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }} --unsigned
 
             - name: Smoke packaged sidecar
               working-directory: apps/desktop
@@ -263,6 +244,42 @@ jobs:
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
                   NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
               run: npm run electron:sidecar:smoke:packaged
+
+            - name: Verify macOS universal runtime binaries
+              if: matrix.target == 'universal-apple-darwin'
+              shell: bash
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+              run: |
+                  APP_PATH=""
+                  for candidate in \
+                    "$NEVERWRITE_ELECTRON_OUTPUT_DIR/mac-universal/NeverWrite.app" \
+                    "$NEVERWRITE_ELECTRON_OUTPUT_DIR/mac/NeverWrite.app"; do
+                    if [[ -d "$candidate" ]]; then
+                      APP_PATH="$candidate"
+                      break
+                    fi
+                  done
+
+                  if [[ -z "$APP_PATH" ]]; then
+                    echo "Could not find packaged NeverWrite.app in $NEVERWRITE_ELECTRON_OUTPUT_DIR." >&2
+                    exit 1
+                  fi
+
+                  verify_universal() {
+                    local binary_path="$1"
+                    local archs
+                    archs="$(lipo -archs "$binary_path")"
+                    echo "$binary_path: $archs"
+                    if [[ "$archs" != *"arm64"* || "$archs" != *"x86_64"* ]]; then
+                      echo "Expected universal arm64/x86_64 binary: $binary_path" >&2
+                      exit 1
+                    fi
+                  }
+
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/neverwrite-native-backend"
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
+                  verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
 
             - name: Stage release assets and target metadata
               shell: bash
@@ -277,17 +294,12 @@ jobs:
                     --output-dir "$RUNNER_TEMP/release-assets" \
                     --metadata-out "$RUNNER_TEMP/target-metadata/${{ matrix.target }}.json"
 
-            - name: Upload release assets
-              shell: bash
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: |
-                  mapfile -d '' files < <(find "$RUNNER_TEMP/release-assets" -maxdepth 1 -type f -print0)
-                  if [[ "${#files[@]}" -eq 0 ]]; then
-                    echo "No staged release files found to upload." >&2
-                    exit 1
-                  fi
-                  gh release upload "${{ needs.prepare.outputs.tag }}" "${files[@]}" --clobber
+            - name: Upload release asset artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-assets-${{ matrix.target }}
+                  path: ${{ runner.temp }}/release-assets
+                  if-no-files-found: error
 
             - name: Upload target metadata artifact
               uses: actions/upload-artifact@v4
@@ -303,11 +315,83 @@ jobs:
                   path: ${{ runner.temp }}/release-assets/feeds
                   if-no-files-found: error
 
+    publish-release:
+        name: Publish GitHub Release
+        needs:
+            - prepare
+            - build-target
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - name: Download release body
+              uses: actions/download-artifact@v4
+              with:
+                  name: release-body-${{ needs.prepare.outputs.tag }}
+                  path: .artifacts/release-body
+
+            - name: Download staged release assets
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-assets-*
+                  path: .artifacts/release-assets
+                  merge-multiple: true
+
+            - name: Download target metadata
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-target-metadata-*
+                  path: .artifacts/release-targets
+                  merge-multiple: true
+
+            - name: Validate release target coverage
+              run: |
+                  node --input-type=module <<'EOF'
+                  import {
+                    loadTargetMetadataEntries,
+                    validateTargetMetadataEntries,
+                  } from "./scripts/platform-validation-lib.mjs";
+
+                  const entries = loadTargetMetadataEntries(".artifacts/release-targets");
+                  validateTargetMetadataEntries(entries);
+                  EOF
+
+            - name: Create or update GitHub release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  VERSION="${{ needs.prepare.outputs.version }}"
+                  TAG="${{ needs.prepare.outputs.tag }}"
+                  TITLE="NeverWrite v${VERSION}"
+                  NOTES_FILE=".artifacts/release-body/release-body.md"
+                  if gh release view "$TAG" >/dev/null 2>&1; then
+                    gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE"
+                  else
+                    gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES_FILE" --verify-tag
+                  fi
+
+            - name: Upload release assets
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  mapfile -d '' files < <(find ".artifacts/release-assets" -type f ! -path "*/feeds/*" -print0)
+                  if [[ "${#files[@]}" -eq 0 ]]; then
+                    echo "No staged release files found to upload." >&2
+                    exit 1
+                  fi
+                  gh release upload "${{ needs.prepare.outputs.tag }}" "${files[@]}" --clobber
+
     publish-feeds:
         name: Publish Release Feeds
         needs:
             - prepare
             - build-target
+            - publish-release
         runs-on: ubuntu-latest
 
         steps:

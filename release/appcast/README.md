@@ -21,15 +21,14 @@ Current feed targets:
 
 | Build target | Feed target | Metadata file |
 | --- | --- | --- |
-| `aarch64-apple-darwin` | `darwin-arm64` | `latest-mac.yml` |
-| `x86_64-apple-darwin` | `darwin-x64` | `latest-mac.yml` |
+| `universal-apple-darwin` | `darwin-universal` | `latest-mac.yml` |
 | `aarch64-pc-windows-msvc` | `windows-arm64` | `latest.yml` |
 | `x86_64-pc-windows-msvc` | `windows-x64` | `latest.yml` |
 
 Example published URLs:
 
 ```text
-https://jsgrrchg.github.io/NeverWrite/stable/darwin-arm64/latest-mac.yml
+https://jsgrrchg.github.io/NeverWrite/stable/darwin-universal/latest-mac.yml
 https://jsgrrchg.github.io/NeverWrite/stable/windows-x64/latest.yml
 ```
 
@@ -47,12 +46,11 @@ Public naming remains stable per target:
 
 | Build target | Manual asset | Updater asset |
 | --- | --- | --- |
-| `aarch64-apple-darwin` | `NeverWrite_<version>_macOS_AppleSilicon.dmg` | `NeverWrite_<version>_macOS_AppleSilicon.zip` |
-| `x86_64-apple-darwin` | `NeverWrite_<version>_macOS_Intel.dmg` | `NeverWrite_<version>_macOS_Intel.zip` |
+| `universal-apple-darwin` | `NeverWrite_<version>_macOS_Universal.dmg` | `NeverWrite_<version>_macOS_Universal.zip` |
 | `aarch64-pc-windows-msvc` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` |
 | `x86_64-pc-windows-msvc` | `NeverWrite_<version>_Windows_x64_Setup.exe` | `NeverWrite_<version>_Windows_x64_Setup.exe` |
 
-The architecture suffix is mandatory. We do not publish shared `latest.yml` / `latest-mac.yml` metadata for multiple architectures in the same directory because `electron-builder` would otherwise collide on macOS and Windows metadata names.
+The architecture suffix is mandatory for Windows. macOS publishes a universal package and a single universal updater feed. We do not publish shared Windows `latest.yml` metadata for multiple architectures in the same directory because `electron-builder` would otherwise collide on Windows metadata names.
 
 ## Signing and notarization
 
@@ -76,17 +74,12 @@ macOS code signing also requires:
 
 ### Windows
 
-Windows signing supports either:
+Windows releases are distributed unsigned for now. The release workflow disables
+certificate auto-discovery for Windows builds and does not require `WIN_CSC_*`,
+Azure Trusted Signing, or other Windows signing secrets.
 
-1. PFX-based signing
-   - `WIN_CSC_LINK`
-   - `WIN_CSC_KEY_PASSWORD`
-2. Azure Trusted Signing
-   - `NEVERWRITE_WINDOWS_AZURE_SIGN_ENDPOINT`
-   - `NEVERWRITE_WINDOWS_AZURE_SIGN_ACCOUNT`
-   - `NEVERWRITE_WINDOWS_AZURE_SIGN_CERTIFICATE_PROFILE`
-   - `NEVERWRITE_WINDOWS_AZURE_SIGN_PUBLISHER`
-   - plus the standard Azure authentication environment required by `electron-builder`
+Unsigned Windows installers can trigger SmartScreen or Defender warnings until a
+future signed distribution path builds reputation.
 
 ## Workflow
 
@@ -97,10 +90,10 @@ The production release entrypoint is:
 High-level flow:
 
 1. validate version identity and changelog
-2. build one signed target per matrix entry
+2. build one target per matrix entry
 3. smoke the packaged native sidecar
-4. stage release assets and target metadata
-5. upload release files to `GitHub Releases`
+4. stage release assets and target metadata as internal workflow artifacts
+5. publish all release files to `GitHub Releases` after every target succeeds
 6. publish feeds to `gh-pages`
 7. generate a platform validation pack
 
@@ -111,12 +104,12 @@ From `apps/desktop`:
 ```bash
 npm run electron:build
 npm run electron:package:unsigned
-npm run electron:dist:mac -- --arch arm64
-npm run electron:dist:mac -- --arch x64
+npm run electron:dist:mac
 npm run electron:dist:win -- --arch x64
+npm run electron:dist:win -- --arch arm64
 ```
 
-The release wrapper is target-aware and stages the correct Rust sidecar for the selected architecture before calling `electron-builder`.
+The release wrapper is target-aware and stages the correct Rust sidecar for the selected architecture before calling `electron-builder`. For universal macOS builds, CI downloads both Node runtimes and stages a lipo'd embedded Node binary via `NEVERWRITE_EMBEDDED_NODE_BIN_ARM64` and `NEVERWRITE_EMBEDDED_NODE_BIN_X64`.
 
 ## Local updater validation
 
@@ -129,6 +122,8 @@ The runtime updater is intentionally strict:
 
 Runtime knobs:
 
+- Packaged builds default to `https://jsgrrchg.github.io/NeverWrite`.
+- The env vars below are overrides for local validation, staging feeds, or one-off diagnostics.
 - `NEVERWRITE_UPDATER_BASE_URL`
 - `NEVERWRITE_UPDATER_ENDPOINT`
 - `NEVERWRITE_UPDATER_CHANNEL`

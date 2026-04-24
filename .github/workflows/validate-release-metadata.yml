@@ -5,14 +5,18 @@ on:
         paths:
             - CHANGELOG.md
             - apps/desktop/package.json
+            - apps/desktop/package-lock.json
             - apps/desktop/electron-builder.config.mjs
+            - apps/desktop/electron.vite.config.ts
+            - apps/desktop/build/**
+            - apps/desktop/embedded/**
+            - apps/desktop/scripts/build-electron.mjs
             - apps/desktop/scripts/build-electron-release.mjs
             - apps/desktop/scripts/stage-electron-release-assets.mjs
             - apps/desktop/scripts/stage-electron-release-assets.test.mjs
             - apps/desktop/scripts/stage-electron-sidecar.mjs
             - apps/desktop/scripts/verify-electron-bundle.mjs
-            - apps/desktop/src-electron/main/window.ts
-            - apps/desktop/src-electron/main/window.test.ts
+            - apps/desktop/src-electron/**
             - apps/desktop/src/features/settings/SettingsPanel.test.tsx
             - apps/desktop/native-backend/Cargo.toml
             - scripts/extract-changelog-release-notes.mjs
@@ -33,6 +37,7 @@ on:
             - scripts/validate-appcast-manifest.mjs
             - scripts/validate-release-metadata.mjs
             - release/appcast/README.md
+            - .github/workflows/electron-package-smoke.yml
             - .github/workflows/release-desktop.yml
             - .github/workflows/validate-release-metadata.yml
     push:

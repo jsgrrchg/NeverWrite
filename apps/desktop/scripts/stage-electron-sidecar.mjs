@@ -15,6 +15,11 @@ const vendorClaudeEmbeddedDir = path.join(
     "vendor",
     "Claude-agent-acp-upstream",
 );
+const MAC_UNIVERSAL_TARGET = "universal-apple-darwin";
+const MAC_UNIVERSAL_COMPONENT_TARGETS = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+];
 
 function parseArgs(argv) {
     const args = {
@@ -37,7 +42,7 @@ function parseArgs(argv) {
         }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --target <rust-target>, --skip-build.`,
+            `Unknown argument "${arg}". Supported args: --target <rust-target|universal-apple-darwin>, --skip-build.`,
         );
     }
 
@@ -100,16 +105,31 @@ function executableNameForTarget(baseName, targetTriple) {
     return targetTriple.includes("windows") ? `${baseName}.exe` : baseName;
 }
 
+function isMacUniversalTarget(targetTriple) {
+    return targetTriple === MAC_UNIVERSAL_TARGET;
+}
+
+function envSuffixForTarget(targetTriple) {
+    if (targetTriple === "aarch64-apple-darwin") return "ARM64";
+    if (targetTriple === "x86_64-apple-darwin") return "X64";
+    if (targetTriple === "aarch64-pc-windows-msvc") return "ARM64";
+    if (targetTriple === "x86_64-pc-windows-msvc") return "X64";
+    throw new Error(`Unsupported target for environment suffix: ${targetTriple}`);
+}
+
 async function resolveBuiltBinary({
-    envKey,
+    envKeys,
     fallbackPath,
     description,
 }) {
-    const configuredPath = process.env[envKey]?.trim();
-    if (configuredPath) {
+    for (const envKey of envKeys) {
+        const configuredPath = process.env[envKey]?.trim();
+        if (!configuredPath) {
+            continue;
+        }
         if (!(await pathExists(configuredPath))) {
             throw new Error(
-                `${description} override path does not exist: ${configuredPath}`,
+                `${description} override path from ${envKey} does not exist: ${configuredPath}`,
             );
         }
         return configuredPath;
@@ -122,15 +142,7 @@ async function resolveBuiltBinary({
     return fallbackPath;
 }
 
-function resolveEmbeddedNodeSource() {
-    const configuredNodeBinary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN?.trim();
-    if (!configuredNodeBinary) {
-        return {
-            kind: "directory",
-            sourcePath: path.join(embeddedAssetsDir, "node"),
-        };
-    }
-
+function nodeSourceFromBinary(configuredNodeBinary) {
     const sourceDir = path.dirname(configuredNodeBinary);
     if (configuredNodeBinary.endsWith(".exe")) {
         return { kind: "portable-bin-directory", sourcePath: sourceDir };
@@ -140,6 +152,46 @@ function resolveEmbeddedNodeSource() {
         kind: "directory",
         sourcePath: path.resolve(sourceDir, ".."),
     };
+}
+
+async function resolveEmbeddedNodeSource(targetTriple) {
+    if (isMacUniversalTarget(targetTriple)) {
+        const arm64Binary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64?.trim();
+        const x64Binary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64?.trim();
+
+        if (!arm64Binary || !x64Binary) {
+            throw new Error(
+                "Universal macOS packaging requires NEVERWRITE_EMBEDDED_NODE_BIN_ARM64 and NEVERWRITE_EMBEDDED_NODE_BIN_X64.",
+            );
+        }
+        for (const [label, binaryPath] of [
+            ["arm64", arm64Binary],
+            ["x64", x64Binary],
+        ]) {
+            if (!(await pathExists(binaryPath))) {
+                throw new Error(
+                    `Configured ${label} embedded Node binary does not exist: ${binaryPath}`,
+                );
+            }
+        }
+
+        return {
+            kind: "universal-directory",
+            arm64Binary,
+            x64Binary,
+            sourcePath: nodeSourceFromBinary(arm64Binary).sourcePath,
+        };
+    }
+
+    const configuredNodeBinary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN?.trim();
+    if (!configuredNodeBinary) {
+        return {
+            kind: "directory",
+            sourcePath: path.join(embeddedAssetsDir, "node"),
+        };
+    }
+
+    return nodeSourceFromBinary(configuredNodeBinary);
 }
 
 async function resolveClaudeEmbeddedSource() {
@@ -197,6 +249,22 @@ async function stageEmbeddedNodeRuntime(nodeSource) {
     }
 }
 
+async function lipoCreate(inputPaths, outputPath) {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await run("lipo", ["-create", ...inputPaths, "-output", outputPath], appRoot);
+}
+
+async function stageUniversalEmbeddedNodeRuntime(nodeSource) {
+    const destinationNodeRoot = path.join(embeddedDir, "node");
+    await fs.cp(nodeSource.sourcePath, destinationNodeRoot, {
+        recursive: true,
+    });
+    await lipoCreate(
+        [nodeSource.arm64Binary, nodeSource.x64Binary],
+        path.join(destinationNodeRoot, "bin", "node"),
+    );
+}
+
 async function ensureExecutableIfNeeded(filePath) {
     if (filePath.endsWith(".exe")) {
         return;
@@ -226,32 +294,33 @@ async function materializeStagingSource(filePath) {
     return cachedPath;
 }
 
-const args = parseArgs(process.argv.slice(2));
-const targetTriple = args.target ?? resolveHostRustTarget();
-const nativeBackendName = executableNameForTarget(
-    "neverwrite-native-backend",
-    targetTriple,
-);
-const codexBinaryName = executableNameForTarget("codex-acp", targetTriple);
-const stagedPath = path.join(stagedDir, nativeBackendName);
-const nativeBackendPath = path.join(
-    workspaceRoot,
-    "target",
-    targetTriple,
-    "release",
-    nativeBackendName,
-);
-const codexPath = path.join(
-    workspaceRoot,
-    "vendor",
-    "codex-acp",
-    "target",
-    targetTriple,
-    "release",
-    codexBinaryName,
-);
+function nativeBackendPathForTarget(targetTriple) {
+    return path.join(
+        workspaceRoot,
+        "target",
+        targetTriple,
+        "release",
+        executableNameForTarget("neverwrite-native-backend", targetTriple),
+    );
+}
 
-if (!args.skipBuild && !process.env.NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN?.trim()) {
+function codexPathForTarget(targetTriple) {
+    return path.join(
+        workspaceRoot,
+        "vendor",
+        "codex-acp",
+        "target",
+        targetTriple,
+        "release",
+        executableNameForTarget("codex-acp", targetTriple),
+    );
+}
+
+function targetSpecificEnvKey(baseEnvKey, targetTriple) {
+    return `${baseEnvKey}_${envSuffixForTarget(targetTriple)}`;
+}
+
+async function buildNativeBackendForTarget(targetTriple) {
     await run(
         "cargo",
         [
@@ -267,7 +336,7 @@ if (!args.skipBuild && !process.env.NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN?.trim()
     );
 }
 
-if (!args.skipBuild && !process.env.NEVERWRITE_CODEX_ACP_BUNDLE_BIN?.trim()) {
+async function buildCodexForTarget(targetTriple) {
     await run(
         "cargo",
         [
@@ -283,32 +352,142 @@ if (!args.skipBuild && !process.env.NEVERWRITE_CODEX_ACP_BUNDLE_BIN?.trim()) {
     );
 }
 
-const resolvedNativeBackendPath = await resolveBuiltBinary({
-    envKey: "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN",
-    fallbackPath: nativeBackendPath,
-    description: "Native backend",
-});
-const resolvedCodexPath = await resolveBuiltBinary({
-    envKey: "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
-    fallbackPath: codexPath,
-    description: "Codex ACP",
-});
-const stagingNativeBackendPath = await materializeStagingSource(
-    resolvedNativeBackendPath,
+async function resolveSingleTargetRuntimeBinary({
+    targetTriple,
+    baseEnvKey,
+    fallbackPath,
+    description,
+}) {
+    return resolveBuiltBinary({
+        envKeys: [targetSpecificEnvKey(baseEnvKey, targetTriple), baseEnvKey],
+        fallbackPath,
+        description,
+    });
+}
+
+async function buildOrResolveUniversalRuntimeBinary({
+    baseEnvKey,
+    description,
+    fallbackPathForTarget,
+    buildForTarget,
+}) {
+    const configuredUniversalPath = process.env[baseEnvKey]?.trim();
+    if (configuredUniversalPath) {
+        if (!(await pathExists(configuredUniversalPath))) {
+            throw new Error(
+                `${description} universal override path from ${baseEnvKey} does not exist: ${configuredUniversalPath}`,
+            );
+        }
+        return materializeStagingSource(configuredUniversalPath);
+    }
+
+    const inputPaths = [];
+    for (const componentTarget of MAC_UNIVERSAL_COMPONENT_TARGETS) {
+        const envKey = targetSpecificEnvKey(baseEnvKey, componentTarget);
+        if (!args.skipBuild && !process.env[envKey]?.trim()) {
+            await buildForTarget(componentTarget);
+        }
+        inputPaths.push(
+            await resolveBuiltBinary({
+                envKeys: [envKey],
+                fallbackPath: fallbackPathForTarget(componentTarget),
+                description: `${description} ${componentTarget}`,
+            }),
+        );
+    }
+
+    return inputPaths;
+}
+
+const args = parseArgs(process.argv.slice(2));
+const targetTriple = args.target ?? resolveHostRustTarget();
+const nativeBackendName = executableNameForTarget(
+    "neverwrite-native-backend",
+    targetTriple,
 );
-const stagingCodexPath = await materializeStagingSource(resolvedCodexPath);
-const nodeSource = resolveEmbeddedNodeSource();
+const codexBinaryName = executableNameForTarget("codex-acp", targetTriple);
+const stagedPath = path.join(stagedDir, nativeBackendName);
+const isUniversalMac = isMacUniversalTarget(targetTriple);
+
+let stagingNativeBackendPath;
+let stagingCodexPath;
+
+if (isUniversalMac) {
+    stagingNativeBackendPath = await buildOrResolveUniversalRuntimeBinary({
+        baseEnvKey: "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN",
+        description: "Native backend",
+        fallbackPathForTarget: nativeBackendPathForTarget,
+        buildForTarget: buildNativeBackendForTarget,
+    });
+    stagingCodexPath = await buildOrResolveUniversalRuntimeBinary({
+        baseEnvKey: "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
+        description: "Codex ACP",
+        fallbackPathForTarget: codexPathForTarget,
+        buildForTarget: buildCodexForTarget,
+    });
+} else {
+    if (
+        !args.skipBuild &&
+        !process.env.NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN?.trim() &&
+        !process.env[
+            targetSpecificEnvKey("NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN", targetTriple)
+        ]?.trim()
+    ) {
+        await buildNativeBackendForTarget(targetTriple);
+    }
+
+    if (
+        !args.skipBuild &&
+        !process.env.NEVERWRITE_CODEX_ACP_BUNDLE_BIN?.trim() &&
+        !process.env[
+            targetSpecificEnvKey("NEVERWRITE_CODEX_ACP_BUNDLE_BIN", targetTriple)
+        ]?.trim()
+    ) {
+        await buildCodexForTarget(targetTriple);
+    }
+
+    stagingNativeBackendPath = await materializeStagingSource(
+        await resolveSingleTargetRuntimeBinary({
+            targetTriple,
+            baseEnvKey: "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN",
+            fallbackPath: nativeBackendPathForTarget(targetTriple),
+            description: "Native backend",
+        }),
+    );
+    stagingCodexPath = await materializeStagingSource(
+        await resolveSingleTargetRuntimeBinary({
+            targetTriple,
+            baseEnvKey: "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
+            fallbackPath: codexPathForTarget(targetTriple),
+            description: "Codex ACP",
+        }),
+    );
+}
+
+const nodeSource = await resolveEmbeddedNodeSource(targetTriple);
 const claudeEmbeddedSource = await resolveClaudeEmbeddedSource();
 
 // Electron release jobs must stage binaries for the requested target explicitly.
 // Reusing host binaries here would silently create a mismatched bundle.
 await fs.rm(stagedDir, { recursive: true, force: true });
 await fs.mkdir(stagedDir, { recursive: true });
-await fs.copyFile(stagingNativeBackendPath, stagedPath);
+if (Array.isArray(stagingNativeBackendPath)) {
+    await lipoCreate(stagingNativeBackendPath, stagedPath);
+} else {
+    await fs.copyFile(stagingNativeBackendPath, stagedPath);
+}
 await fs.mkdir(binariesDir, { recursive: true });
-await fs.copyFile(stagingCodexPath, path.join(binariesDir, codexBinaryName));
+if (Array.isArray(stagingCodexPath)) {
+    await lipoCreate(stagingCodexPath, path.join(binariesDir, codexBinaryName));
+} else {
+    await fs.copyFile(stagingCodexPath, path.join(binariesDir, codexBinaryName));
+}
 await fs.mkdir(embeddedDir, { recursive: true });
-await stageEmbeddedNodeRuntime(nodeSource);
+if (nodeSource.kind === "universal-directory") {
+    await stageUniversalEmbeddedNodeRuntime(nodeSource);
+} else {
+    await stageEmbeddedNodeRuntime(nodeSource);
+}
 await fs.cp(claudeEmbeddedSource, path.join(embeddedDir, "claude-agent-acp"), {
     recursive: true,
 });

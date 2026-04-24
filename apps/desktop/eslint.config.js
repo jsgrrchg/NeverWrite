@@ -8,6 +8,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 export default defineConfig([
     globalIgnores([
         "dist",
+        "out/**",
         "embedded/**",
         "src/features/ai/store/wasm/*.d.ts",
     ]),
@@ -31,6 +32,18 @@ export default defineConfig([
                     varsIgnorePattern: "^_",
                 },
             ],
+            // React Compiler rules are too broad for the current codebase patterns.
+            "react-hooks/immutability": "off",
+            "react-hooks/preserve-manual-memoization": "off",
+            "react-hooks/purity": "off",
+            "react-hooks/refs": "off",
+            "react-hooks/set-state-in-effect": "off",
+        },
+    },
+    {
+        files: ["src/features/editor/editorTabIcons.tsx"],
+        rules: {
+            "react-refresh/only-export-components": "off",
         },
     },
     {

@@ -31,7 +31,11 @@ test("stage-electron-release-assets rewrites macOS feed metadata", () => {
     withTempDir((tempDir) => {
         const distDir = path.join(tempDir, "dist");
         const outputDir = path.join(tempDir, "staged");
-        const metadataOut = path.join(tempDir, "metadata", "darwin-arm64.json");
+        const metadataOut = path.join(
+            tempDir,
+            "metadata",
+            "darwin-universal.json",
+        );
 
         writeFile(path.join(distDir, "NeverWrite.dmg"), "manual");
         writeFile(path.join(distDir, "NeverWrite.zip"), "updater");
@@ -58,7 +62,7 @@ test("stage-electron-release-assets rewrites macOS feed metadata", () => {
                 "--dist-dir",
                 distDir,
                 "--target",
-                "aarch64-apple-darwin",
+                "universal-apple-darwin",
                 "--version",
                 "0.2.0",
                 "--tag",
@@ -78,29 +82,32 @@ test("stage-electron-release-assets rewrites macOS feed metadata", () => {
 
         const metadata = JSON.parse(fs.readFileSync(metadataOut, "utf8"));
         const rewrittenFeed = fs.readFileSync(
-            path.join(outputDir, "feeds", "darwin-arm64", "latest-mac.yml"),
+            path.join(outputDir, "feeds", "darwin-universal", "latest-mac.yml"),
             "utf8",
         );
 
-        assert.equal(metadata.feedRelativePath, "darwin-arm64/latest-mac.yml");
+        assert.equal(
+            metadata.feedRelativePath,
+            "darwin-universal/latest-mac.yml",
+        );
         assert.equal(
             metadata.updaterAssetName,
-            "NeverWrite_0.2.0_macOS_AppleSilicon.zip",
+            "NeverWrite_0.2.0_macOS_Universal.zip",
         );
         assert.equal(metadata.manualAssetSizeBytes, 6);
         assert.equal(metadata.updaterAssetSizeBytes, 7);
         assert.equal(metadata.updaterBlockmapSizeBytes, 8);
         assert.match(
             rewrittenFeed,
-            /https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_AppleSilicon\.zip/,
+            /https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_Universal\.zip/,
         );
         assert.match(
             rewrittenFeed,
-            /files:\n\s+- url: https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_AppleSilicon\.zip/,
+            /files:\n\s+- url: https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_Universal\.zip/,
         );
         assert.match(
             rewrittenFeed,
-            /\n\s+- url: https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_AppleSilicon\.dmg/,
+            /\n\s+- url: https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_Universal\.dmg/,
         );
         assert.doesNotMatch(
             rewrittenFeed,
