@@ -22,6 +22,7 @@ import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { EditorPaneContent } from "./features/editor/EditorPaneContent";
 import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
 import { EditorChromeBar } from "./features/editor/EditorChromeBar";
+import { openUntitledMarkdownNote } from "./features/editor/markdownNoteCreation";
 import { useBookmarkStore } from "./app/store/bookmarkStore";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
@@ -616,22 +617,7 @@ function useRegisterCommands(
             category: newNoteShortcut.category,
             when: hasVault,
             execute: () => {
-                const { notes, createNote } = useVaultStore.getState();
-                let name = "Untitled";
-                let i = 1;
-                while (
-                    notes.some(
-                        (n) => n.id === name || n.id.endsWith(`/${name}`),
-                    )
-                ) {
-                    name = `Untitled ${i++}`;
-                }
-                void createNote(name).then((note) => {
-                    if (note)
-                        useEditorStore
-                            .getState()
-                            .openNote(note.id, note.title, "");
-                });
+                void openUntitledMarkdownNote();
             },
         });
 

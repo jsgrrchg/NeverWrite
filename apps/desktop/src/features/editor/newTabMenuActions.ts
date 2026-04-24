@@ -4,48 +4,13 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../app/store/editorStore";
-import { useVaultStore } from "../../app/store/vaultStore";
 import { createNewChatInWorkspace } from "../ai/chatPaneMovement";
 import { useChatStore } from "../ai/store/chatStore";
-
-function getNextUntitledNoteName() {
-    const notes = useVaultStore.getState().notes;
-    let name = "Untitled";
-    let index = 1;
-
-    while (
-        notes.some((note) => note.id === name || note.id.endsWith(`/${name}`))
-    ) {
-        name = `Untitled ${index++}`;
-    }
-
-    return name;
-}
+import { openUntitledMarkdownNote } from "./markdownNoteCreation";
 
 async function createNewNote(paneId?: string) {
-    const vault = useVaultStore.getState();
-    if (!vault.vaultPath) return;
-
     try {
-        const note = await vault.createNote(getNextUntitledNoteName());
-        if (!note) return;
-
-        const editor = useEditorStore.getState();
-        if (paneId) {
-            editor.insertExternalTabInPane(
-                {
-                    id: crypto.randomUUID(),
-                    kind: "note",
-                    noteId: note.id,
-                    title: note.title,
-                    content: "",
-                },
-                paneId,
-            );
-            return;
-        }
-
-        editor.openNote(note.id, note.title, "");
+        await openUntitledMarkdownNote(paneId);
     } catch (error) {
         console.error("Failed to create a new note from the tab menu:", error);
     }

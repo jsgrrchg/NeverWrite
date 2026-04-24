@@ -1,4 +1,4 @@
-import { act, screen } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import {
     getAllWebviewWindows,
     getCurrentWindow,
@@ -419,6 +419,44 @@ describe("App web clipper routing", () => {
         });
 
         expect(useCommandStore.getState().activeModal).toBe("command-palette");
+    });
+
+    it("creates a markdown note from the native New Note command", async () => {
+        const createNote = vi.fn(async () => ({
+            id: "Untitled",
+            path: "/vaults/a/Untitled.md",
+            title: "Untitled",
+            modified_at: 1,
+            created_at: 1,
+        }));
+        useVaultStore.setState({ createNote, notes: [], entries: [] });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            eventHandlers.get(MENU_ACTION_EVENT)?.({
+                payload: "vault:new-note",
+            });
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(createNote).toHaveBeenCalledWith("Untitled.md");
+        });
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .panes.some((pane) =>
+                        pane.tabs.some(
+                            (tab) =>
+                                tab.kind === "note" &&
+                                tab.noteId === "Untitled",
+                        ),
+                    ),
+            ).toBe(true);
+        });
     });
 
     it("opens a new vault window when the dock menu requests it", async () => {

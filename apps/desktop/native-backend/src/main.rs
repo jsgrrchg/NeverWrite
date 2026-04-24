@@ -1391,7 +1391,7 @@ impl NativeBackend {
     }
 
     fn save_vault_file(&mut self, args: Value) -> Result<Value, String> {
-        let content = required_string(&args, &["content"])?;
+        let content = required_string_allow_empty(&args, &["content"])?;
         let relative_path = required_string(&args, &["relativePath", "relative_path"])?;
         let op_id = optional_string(&args, &["opId", "op_id"]);
         let (vault_path, state) = self.state_mut(&args)?;
@@ -1467,7 +1467,7 @@ impl NativeBackend {
 
     fn save_note(&mut self, args: Value) -> Result<Value, String> {
         let note_id = required_string(&args, &["noteId", "note_id"])?;
-        let content = required_string(&args, &["content"])?;
+        let content = required_string_allow_empty(&args, &["content"])?;
         let op_id = optional_string(&args, &["opId", "op_id"]);
         let (vault_path, state) = self.state_mut(&args)?;
         let target_path = state
@@ -1501,7 +1501,7 @@ impl NativeBackend {
 
     fn create_note(&mut self, args: Value) -> Result<Value, String> {
         let relative_path = required_string(&args, &["path"])?;
-        let content = required_string(&args, &["content"])?;
+        let content = required_string_allow_empty(&args, &["content"])?;
         let (vault_path, state) = self.state_mut(&args)?;
         let target_path = state
             .vault
@@ -2515,6 +2515,14 @@ fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
     optional_string(args, names).ok_or_else(|| format!("Missing argument: {}", names[0]))
 }
 
+fn required_string_allow_empty(args: &Value, names: &[&str]) -> Result<String, String> {
+    names
+        .iter()
+        .find_map(|name| args.get(*name).and_then(Value::as_str))
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("Missing argument: {}", names[0]))
+}
+
 fn optional_string(args: &Value, names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| {
         args.get(*name)
@@ -3202,6 +3210,43 @@ mod tests {
             .unwrap()
             .iter()
             .any(|note| note.get("id").and_then(Value::as_str) == Some("Notes/B")));
+    }
+
+    #[test]
+    fn creates_and_saves_empty_markdown_notes() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let created = invoke(
+            &backend,
+            "create_note",
+            json!({
+                "vaultPath": vault_path,
+                "path": "Untitled.md",
+                "content": "",
+            }),
+        )
+        .unwrap();
+        assert_eq!(created.get("id").and_then(Value::as_str), Some("Untitled"));
+        assert_eq!(created.get("content").and_then(Value::as_str), Some(""));
+        assert_eq!(
+            fs::read_to_string(vault_dir.path().join("Untitled.md")).unwrap(),
+            ""
+        );
+
+        invoke(
+            &backend,
+            "save_note",
+            json!({
+                "vaultPath": vault_path,
+                "noteId": "Untitled",
+                "content": "",
+            }),
+        )
+        .unwrap();
     }
 
     #[test]
