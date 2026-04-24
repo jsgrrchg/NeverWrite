@@ -24,6 +24,7 @@ export {
     isPdfTab,
     isResourceBackedTab,
     isReviewTab,
+    isTerminalTab,
     isTransientTab,
 } from "./editorTabs";
 export type {
@@ -52,6 +53,8 @@ export type {
     TabCloseReason,
     TabHistoryEntry,
     TabInput,
+    TerminalTab,
+    TerminalTabInput,
     TransientTab,
 } from "./editorTabs";
 export { markSessionReady, readPersistedSession } from "./editorSession";

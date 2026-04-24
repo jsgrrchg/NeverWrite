@@ -1,4 +1,4 @@
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     buildWindowSessionEntry,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useLayoutEffect } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@neverwrite/runtime";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import { findWikilinkResource } from "./wikilinkResolution";
 import { navigateWikilink, openWikilinkInNewTab } from "./wikilinkNavigation";

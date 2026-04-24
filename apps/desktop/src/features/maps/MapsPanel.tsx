@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { invoke } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import { useEditorStore } from "../../app/store/editorStore";
 import { resolveVaultAbsolutePath } from "../../app/utils/vaultPaths";
 import { useVaultStore, type VaultEntryDto } from "../../app/store/vaultStore";
@@ -13,6 +13,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 
 interface MapEntryDto {
     id: string;
@@ -77,6 +78,7 @@ export function MapsPanel() {
         useState<ContextMenuState<MapsContextPayload> | null>(null);
     const [renamingMapPath, setRenamingMapPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
+    const [filterText, setFilterText] = useState("");
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const openMap = useEditorStore((s) => s.openMap);
     const handleMapDeleted = useEditorStore((s) => s.handleMapDeleted);
@@ -386,26 +388,43 @@ export function MapsPanel() {
         ];
     }, [contextMenu, handleDeleteMap, handleRenameStart, openMap, vaultPath]);
 
+    const filteredMaps = useMemo(() => {
+        const q = filterText.trim().toLowerCase();
+        if (!q) return maps;
+        return maps.filter((map) => map.title.toLowerCase().includes(q));
+    }, [maps, filterText]);
+
     return (
         <div className="flex flex-col h-full">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-(--border)">
-                <span className="text-xs font-medium text-(--text-secondary) uppercase tracking-wide">
-                    Concept Maps
-                </span>
-                <button
-                    onClick={handleNewMap}
-                    className="p-1 rounded hover:bg-(--bg-tertiary) text-(--text-secondary) hover:text-(--text-primary)"
-                    title="New Concept Map"
-                >
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                        <path
-                            d="M8 3v10M3 8h10"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                        />
-                    </svg>
-                </button>
+            <div
+                className="shrink-0 border-b border-(--border)"
+            >
+                <div className="flex items-center justify-between px-3 py-2">
+                    <span className="text-xs font-medium text-(--text-secondary) uppercase tracking-wide">
+                        Concept Maps
+                    </span>
+                    <button
+                        onClick={handleNewMap}
+                        className="p-1 rounded hover:bg-(--bg-tertiary) text-(--text-secondary) hover:text-(--text-primary)"
+                        title="New Concept Map"
+                    >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                            <path
+                                d="M8 3v10M3 8h10"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                            />
+                        </svg>
+                    </button>
+                </div>
+                <div className="px-2 pb-2">
+                    <SidebarFilterInput
+                        value={filterText}
+                        onChange={setFilterText}
+                        placeholder="Filter maps..."
+                    />
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto py-1">
@@ -420,8 +439,12 @@ export function MapsPanel() {
                             Create one
                         </button>
                     </div>
+                ) : filteredMaps.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-sm text-(--text-secondary)">
+                        No maps match &ldquo;{filterText}&rdquo;
+                    </div>
                 ) : (
-                    maps.map((map) => (
+                    filteredMaps.map((map) => (
                         <div
                             key={map.relativePath}
                             className="group flex items-center hover:bg-(--bg-tertiary)"

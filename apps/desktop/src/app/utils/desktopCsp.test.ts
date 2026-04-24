@@ -5,18 +5,12 @@ async function readDesktopCsp() {
     const { resolve } = await import("node:path");
 
     const raw = await readFile(
-        resolve(import.meta.dirname, "../../../src-tauri/tauri.conf.json"),
+        resolve(import.meta.dirname, "../../../config/desktop-security.json"),
         "utf8",
     );
-    const parsed = JSON.parse(raw) as {
-        app?: {
-            security?: {
-                csp?: string;
-            };
-        };
-    };
+    const parsed = JSON.parse(raw) as { csp?: string };
 
-    return parsed.app?.security?.csp ?? "";
+    return parsed.csp ?? "";
 }
 
 describe("desktop CSP allowlist", () => {

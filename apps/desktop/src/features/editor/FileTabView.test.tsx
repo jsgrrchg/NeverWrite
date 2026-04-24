@@ -3,7 +3,7 @@ import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import userEvent from "@testing-library/user-event";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";

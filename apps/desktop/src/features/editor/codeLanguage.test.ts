@@ -100,6 +100,38 @@ describe("codeLanguage", () => {
         expect(resolveCodeLanguageKey("/vault/module.wast", null)).toBe("wast");
     });
 
+    it("maps lockfiles to the closest available language", () => {
+        expect(resolveCodeLanguageKey("/vault/Cargo.lock", null)).toBe("toml");
+        expect(resolveCodeLanguageKey("/vault/poetry.lock", null)).toBe("toml");
+        expect(resolveCodeLanguageKey("/vault/uv.lock", null)).toBe("toml");
+        expect(resolveCodeLanguageKey("/vault/Pipfile.lock", null)).toBe(
+            "json",
+        );
+        expect(resolveCodeLanguageKey("/vault/composer.lock", null)).toBe(
+            "json",
+        );
+        expect(resolveCodeLanguageKey("/vault/deno.lock", null)).toBe("json");
+        expect(resolveCodeLanguageKey("/vault/flake.lock", null)).toBe("json");
+        expect(resolveCodeLanguageKey("/vault/pubspec.lock", null)).toBe(
+            "yaml",
+        );
+        expect(resolveCodeLanguageKey("/vault/Gemfile.lock", null)).toBe(
+            "lockfile",
+        );
+        expect(resolveCodeLanguageKey("/vault/yarn.lock", null)).toBe(
+            "lockfile",
+        );
+        expect(resolveCodeLanguageKey("/vault/custom.lock", null)).toBe(
+            "lockfile",
+        );
+        expect(resolveCodeLanguageKey("/vault/package-lock.json", null)).toBe(
+            "json",
+        );
+        expect(resolveCodeLanguageKey("/vault/pnpm-lock.yaml", null)).toBe(
+            "yaml",
+        );
+    });
+
     it("falls back to mime type when the extension is missing", () => {
         expect(
             resolveCodeLanguageKey("/vault/datafile", "application/json"),
@@ -184,6 +216,7 @@ describe("codeLanguage", () => {
             dockerfileLanguage,
             makefileLanguage,
             propertiesLanguage,
+            lockfileLanguage,
             unknownLanguage,
         ] = await Promise.all([
             loadCodeLanguage("/vault/main.c", "text/plain"),
@@ -196,6 +229,7 @@ describe("codeLanguage", () => {
             loadCodeLanguage("/vault/Dockerfile", null),
             loadCodeLanguage("/vault/Makefile", null),
             loadCodeLanguage("/vault/.env.local", null),
+            loadCodeLanguage("/vault/yarn.lock", null),
             loadCodeLanguage("/vault/file.unknown", "text/plain"),
         ]);
 
@@ -209,6 +243,7 @@ describe("codeLanguage", () => {
         expect(dockerfileLanguage).not.toBeNull();
         expect(makefileLanguage).not.toBeNull();
         expect(propertiesLanguage).not.toBeNull();
+        expect(lockfileLanguage).not.toBeNull();
         expect(unknownLanguage).toBeNull();
     });
 });

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
 import { getPathBaseName } from "../utils/path";
 import {

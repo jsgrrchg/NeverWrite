@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { confirm, open } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     canOpenVaultFileEntryInApp,
@@ -46,6 +46,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
+import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { perfMeasure, perfNow } from "../../app/utils/perfInstrumentation";
 import {
@@ -110,12 +111,19 @@ const TREE_ROW_BOX_STYLE = {
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
-const TREE_STICKY_ROW_BACKGROUND = "var(--bg-secondary)";
+// `--bg-tertiary` opaque gives a consistent, subtle delta against the
+// sidebar in both modes: a touch darker in light (sidebar is near-white,
+// bg-tertiary ≈ #ebebeb) and a touch lighter in dark (sidebar tint ≈ #1c1c1c,
+// bg-tertiary ≈ #2e2e2e). Avoids the light-mode wash-out that `bg-secondary`
+// at 65% produced, and the over-bright surface that `bg-primary` at high
+// alpha produced on light themes with warm vibrancy casts.
+const TREE_STICKY_ROW_BACKGROUND = "var(--bg-tertiary)";
+const TREE_STICKY_ROW_BACKDROP_FILTER = "saturate(180%) blur(14px)";
 // Drop shadow applied only to the deepest sticky folder wrapper,
 // not to individual rows — avoids stacking noise.
 const TREE_STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
 const TREE_LABEL_CLASSNAME = "shrink-0 whitespace-nowrap";
-const TREE_GUIDE_COLOR = "color-mix(in srgb, var(--border) 82%, transparent)";
+const TREE_GUIDE_COLOR = "var(--tree-guide-color)";
 const FILE_TREE_CONTEXT_MENU_VIEWPORT_MARGIN = 32;
 const FILE_TREE_CONTEXT_MENU_MIN_HEIGHT = 180;
 
@@ -356,6 +364,20 @@ function getNoteDisplayName(note: NoteDto, showExtensions: boolean) {
 
 function getNoteRenameValue(note: NoteDto, showExtensions: boolean) {
     return getNoteDisplayName(note, showExtensions);
+}
+
+function getNoteFilterText(note: NoteDto) {
+    return [note.title, note.id, note.path.split("/").pop(), note.path]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase();
+}
+
+function getVaultEntryFilterText(entry: VaultEntryDto) {
+    return [entry.title, entry.file_name, entry.relative_path, entry.path]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase();
 }
 
 function isMarkdownLeafName(name: string) {
@@ -1040,6 +1062,10 @@ const FlatTreeRowView = memo(
                                 ? {
                                       backgroundColor:
                                           TREE_STICKY_ROW_BACKGROUND,
+                                      backdropFilter:
+                                          TREE_STICKY_ROW_BACKDROP_FILTER,
+                                      WebkitBackdropFilter:
+                                          TREE_STICKY_ROW_BACKDROP_FILTER,
                                   }
                                 : {}),
                         outline: isDragOver
@@ -1588,10 +1614,20 @@ export function FileTree() {
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const bookmarkItems = useBookmarkStore((s) => s.items);
     const fileTreeScale = useSettingsStore((s) => s.fileTreeScale);
+    const fileTreeStickyFolders = useSettingsStore(
+        (s) => s.fileTreeStickyFolders,
+    );
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
+
+    // Editor/workspace toggles that the unified toolbar exposes alongside the
+    // tree-specific actions. Sourced from the same stores the old utility
+    // row in SidebarShell used to read.
+    const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
+    const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const setSetting = useSettingsStore((s) => s.setSetting);
 
     const [sortMode, setSortMode] = useState<SortMode>(
         () => (safeStorageGetItem(SORT_KEY) as SortMode | null) ?? "name_asc",
@@ -1636,6 +1672,7 @@ export function FileTree() {
     );
     const [, setClipboardVersion] = useState(0);
     const [focusedFolderPath, setFocusedFolderPath] = useState("");
+    const [filterText, setFilterText] = useState("");
 
     const treeScrollRef = useRef<HTMLDivElement>(null);
     const dragStateRef = useRef<DragState | null>(null);
@@ -1712,10 +1749,59 @@ export function FileTree() {
         revealedFolders.forEach((path) => next.add(path));
         return next;
     }, [expandedFolders, revealedFolders]);
-    const flatRows = useMemo(
-        () => flattenTreeRows(tree, visibleExpandedFolders, sortMode),
-        [sortMode, tree, visibleExpandedFolders],
-    );
+    const normalizedFilter = filterText.trim().toLowerCase();
+    const flatRows = useMemo(() => {
+        // Without a filter, honor the user's expansion state as usual.
+        if (!normalizedFilter) {
+            return flattenTreeRows(tree, visibleExpandedFolders, sortMode);
+        }
+        // Active filter: walk the whole tree (all folders expanded) so hits
+        // buried inside collapsed folders surface. Then keep only rows that
+        // match directly, their ancestor folders (to preserve hierarchy),
+        // and — if a folder itself matches — all of its descendants.
+        const fullRows = flattenTreeRows(
+            tree,
+            new Set(allFolderPaths),
+            sortMode,
+        );
+        const rowNameLower = (row: FlatTreeRow): string => {
+            if (row.kind === "folder") {
+                return `${row.name}\n${row.path}`.toLowerCase();
+            }
+            if (row.kind === "note") return getNoteFilterText(row.note);
+            if (row.kind === "pdf" || row.kind === "file") {
+                return getVaultEntryFilterText(row.entry);
+            }
+            return "";
+        };
+        const keepExactPaths = new Set<string>();
+        const keepSubtreePrefixes: string[] = [];
+        for (const row of fullRows) {
+            if (row.kind === "create") continue;
+            if (!rowNameLower(row).includes(normalizedFilter)) continue;
+            keepExactPaths.add(row.path);
+            const parts = row.path.split("/");
+            for (let i = 1; i < parts.length; i++) {
+                keepExactPaths.add(parts.slice(0, i).join("/"));
+            }
+            if (row.kind === "folder") {
+                keepSubtreePrefixes.push(`${row.path}/`);
+            }
+        }
+        if (keepExactPaths.size === 0) return [];
+        return fullRows.filter((row) => {
+            if (keepExactPaths.has(row.path)) return true;
+            return keepSubtreePrefixes.some((prefix) =>
+                row.path.startsWith(prefix),
+            );
+        });
+    }, [
+        allFolderPaths,
+        normalizedFilter,
+        sortMode,
+        tree,
+        visibleExpandedFolders,
+    ]);
     flatRowsRef.current = flatRows;
     const displayRows = useMemo(() => {
         if (!creatingMode) return flatRows;
@@ -1816,6 +1902,10 @@ export function FileTree() {
 
     // Compute which folders should appear as sticky overlay headers
     const stickyFolders = useMemo(() => {
+        // Filtering already rewrites the visible hierarchy around matches;
+        // sticky headers add visual noise and can obscure filtered results.
+        if (normalizedFilter) return [];
+        if (!fileTreeStickyFolders) return [];
         if (displayRows.length === 0) return [];
 
         const result: {
@@ -1868,7 +1958,14 @@ export function FileTree() {
         }
 
         return result;
-    }, [displayRows, scrollTop, metrics.rowHeight, folderLastDescendant]);
+    }, [
+        displayRows,
+        fileTreeStickyFolders,
+        normalizedFilter,
+        scrollTop,
+        metrics.rowHeight,
+        folderLastDescendant,
+    ]);
 
     const stickyFolderPaths = useMemo(
         () => new Set(stickyFolders.map((f) => f.row.path)),
@@ -4187,6 +4284,94 @@ export function FileTree() {
                     )}
                 </ToolbarBtn>
 
+                {/* Thin divider between tree-specific ops and editor toggles. */}
+                <span
+                    aria-hidden="true"
+                    style={{
+                        width: 1,
+                        height: 16,
+                        margin: "0 4px",
+                        backgroundColor:
+                            "color-mix(in srgb, var(--border) 60%, transparent)",
+                        flexShrink: 0,
+                    }}
+                />
+
+                <ToolbarBtn
+                    title={
+                        livePreviewEnabled
+                            ? "Disable Live Preview"
+                            : "Enable Live Preview"
+                    }
+                    active={livePreviewEnabled}
+                    onClick={() =>
+                        setSetting("livePreviewEnabled", !livePreviewEnabled)
+                    }
+                    size={metrics.toolbarButton}
+                    iconScale={metrics.toolbarIconScale}
+                >
+                    {livePreviewEnabled ? (
+                        <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                            <circle cx="12" cy="12" r="3" />
+                        </svg>
+                    ) : (
+                        <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                        </svg>
+                    )}
+                </ToolbarBtn>
+
+                <ToolbarBtn
+                    title={
+                        lineWrapping
+                            ? "Disable Line Wrapping"
+                            : "Enable Line Wrapping"
+                    }
+                    active={lineWrapping}
+                    onClick={() => setSetting("lineWrapping", !lineWrapping)}
+                    size={metrics.toolbarButton}
+                    iconScale={metrics.toolbarIconScale}
+                >
+                    <svg
+                        width="15"
+                        height="15"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <path d="M4 6h16" />
+                        <path d="M4 12h10a3 3 0 1 1 0 6H9" />
+                        <path d="m9 15-3 3 3 3" />
+                        {!lineWrapping && (
+                            <line x1="5" y1="5" x2="19" y2="19" />
+                        )}
+                    </svg>
+                </ToolbarBtn>
+
                 {sortMenuOpen && (
                     <SortMenu
                         current={sortMode}
@@ -4194,6 +4379,22 @@ export function FileTree() {
                         onClose={() => setSortMenuOpen(false)}
                     />
                 )}
+            </div>
+
+            {/* Persistent filter. Mirrors Comando: client-side substring
+                match on names, Escape to clear, auto-expand subtree matches. */}
+            <div
+                className="shrink-0"
+                style={{
+                    padding: "6px 8px",
+                    borderBottom: "1px solid var(--border)",
+                }}
+            >
+                <SidebarFilterInput
+                    value={filterText}
+                    onChange={setFilterText}
+                    placeholder="Filter files..."
+                />
             </div>
 
             {/* Tree (virtualized) */}
@@ -4222,10 +4423,13 @@ export function FileTree() {
                     handleBlankContextMenu(event);
                 }}
                 style={{
+                    // Stay transparent so the sidebar's vibrancy tint (or
+                    // the opaque sidebar bg on non-vibrancy platforms) shows
+                    // through uniformly. Only the drag-over state paints.
                     backgroundColor:
                         dragOverPath === ""
                             ? "color-mix(in srgb, var(--accent) 8%, transparent)"
-                            : "var(--bg-secondary)",
+                            : "transparent",
                     outline:
                         dragOverPath === ""
                             ? "1px solid color-mix(in srgb, var(--accent) 50%, transparent)"
@@ -4243,7 +4447,9 @@ export function FileTree() {
                             fontSize: metrics.fontSize,
                         }}
                     >
-                        No notes
+                        {normalizedFilter
+                            ? `No files match "${filterText}"`
+                            : "No notes"}
                     </p>
                 ) : (
                     <>

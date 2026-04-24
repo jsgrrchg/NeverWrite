@@ -384,9 +384,8 @@ fn build_update_status(
     // and let the frontend render a neutral "not available" state.
     let message = updater_config.endpoint_error.clone();
 
-    let fully_configured = updater_config.pubkey.is_some()
-        && updater_config.endpoint.is_some()
-        && message.is_none();
+    let fully_configured =
+        updater_config.pubkey.is_some() && updater_config.endpoint.is_some() && message.is_none();
 
     AppUpdateStatusDto {
         enabled: fully_configured,

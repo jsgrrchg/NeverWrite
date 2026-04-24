@@ -1,19 +1,19 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm } from "@neverwrite/runtime";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import {
-    renderComponent,
     flushPromises,
-    mockInvoke,
+    getMockCurrentWebview,
+    getMockCurrentWindow,
+    renderComponent,
     setEditorTabs,
     setVaultEntries,
     setVaultNotes,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import { useVaultStore } from "../../app/store/vaultStore";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
 import { useChatStore } from "../ai/store/chatStore";
 import type { AIComposerPart } from "../ai/types";
@@ -25,25 +25,6 @@ const minimizeMock = vi.fn().mockResolvedValue(undefined);
 const toggleMaximizeMock = vi.fn().mockResolvedValue(undefined);
 const isMaximizedMock = vi.fn().mockResolvedValue(false);
 const closeMock = vi.fn().mockResolvedValue(undefined);
-
-const mockCurrentWindow = {
-    listen: vi.fn(),
-    once: vi.fn(),
-    onCloseRequested: vi.fn(),
-    onMoved: vi.fn().mockResolvedValue(vi.fn()),
-    onResized: vi.fn().mockResolvedValue(vi.fn()),
-    onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-    innerPosition: innerPositionMock,
-    scaleFactor: scaleFactorMock,
-    setFocus: vi.fn(),
-    startDragging: vi.fn(),
-    minimize: minimizeMock,
-    toggleMaximize: toggleMaximizeMock,
-    isMaximized: isMaximizedMock,
-    emitTo: vi.fn(),
-    close: closeMock,
-    label: "main",
-};
 
 function createChatSession(
     sessionId: string,
@@ -72,16 +53,6 @@ function createChatSession(
         attachments: [],
     };
 }
-
-vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => mockCurrentWindow,
-}));
-
-vi.mock("@tauri-apps/api/webview", () => ({
-    getCurrentWebview: () => ({
-        onDragDropEvent: onDragDropEventMock,
-    }),
-}));
 
 vi.mock("../../app/detachedWindows", () => ({
     ATTACH_EXTERNAL_TAB_EVENT: "neverwrite:attach-external-tab",
@@ -149,6 +120,71 @@ function resizeObserverEntry(
 
 describe("UnifiedBar tab strip drop", () => {
     beforeEach(() => {
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).innerPosition = innerPositionMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).scaleFactor = scaleFactorMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).minimize = minimizeMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).toggleMaximize = toggleMaximizeMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).isMaximized = isMaximizedMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+                minimize: typeof minimizeMock;
+                toggleMaximize: typeof toggleMaximizeMock;
+                isMaximized: typeof isMaximizedMock;
+                close: typeof closeMock;
+            }
+        ).close = closeMock;
+        (
+            getMockCurrentWebview() as {
+                onDragDropEvent: typeof onDragDropEventMock;
+            }
+        ).onDragDropEvent = onDragDropEventMock;
         if (typeof window.PointerEvent === "undefined") {
             class MockPointerEvent extends MouseEvent {
                 pointerId: number;
@@ -793,37 +829,6 @@ describe("UnifiedBar tab strip drop", () => {
         expect(closeMock).toHaveBeenCalledTimes(1);
     });
 
-    it("renders New Tab without a fake .md suffix and closes it from the tab strip", async () => {
-        useSettingsStore.setState({ fileTreeShowExtensions: true });
-        setEditorTabs([
-            {
-                id: "tab-new",
-                kind: "note",
-                noteId: "",
-                title: "New Tab",
-                content: "",
-            },
-        ]);
-
-        const { UnifiedBar } = await import("./UnifiedBar");
-        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
-        await flushPromises();
-
-        expect(container).toHaveTextContent("New Tab");
-        expect(container).not.toHaveTextContent(".md");
-
-        const closeButton = container.querySelector(
-            '[data-tab-id="tab-new"] button',
-        ) as HTMLElement | null;
-        expect(closeButton).not.toBeNull();
-
-        fireEvent.click(closeButton!);
-        await flushPromises();
-
-        expect(useEditorStore.getState().tabs).toHaveLength(0);
-        expect(useEditorStore.getState().activeTabId).toBeNull();
-    });
-
     it("does not render the ACP chat button next to the new-tab button", async () => {
         setEditorTabs([
             {
@@ -842,7 +847,7 @@ describe("UnifiedBar tab strip drop", () => {
         expect(container.querySelector('button[title="New ACP"]')).toBeNull();
     });
 
-    it("shows the plus-button context menu and hides blank files outside developer mode", async () => {
+    it("shows the plus-button context menu without the blank-file action", async () => {
         setEditorTabs([
             {
                 id: "tab-a",
@@ -873,8 +878,48 @@ describe("UnifiedBar tab strip drop", () => {
             screen.getByRole("button", { name: "New Agent" }),
         ).toBeInTheDocument();
         expect(
+            screen.getByRole("button", { name: "Open Graph" }),
+        ).toBeInTheDocument();
+        expect(
             screen.queryByRole("button", { name: "New blank file" }),
         ).toBeNull();
+    });
+
+    it("opens the graph from the plus-button context menu", async () => {
+        const user = userEvent.setup();
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+        useSettingsStore.setState({ developerModeEnabled: false });
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        const { container } = renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        const newTabButton = container.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "Open Graph" }),
+        );
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(activeTab?.kind).toBe("graph");
+        });
     });
 
     it("opens the New Agent submenu and creates a chat for the selected provider", async () => {
@@ -959,7 +1004,7 @@ describe("UnifiedBar tab strip drop", () => {
         }
     });
 
-    it("creates a blank file from the plus-button context menu in developer mode", async () => {
+    it("creates a workspace terminal from the plus-button context menu in developer terminal mode", async () => {
         const user = userEvent.setup();
         setEditorTabs([
             {
@@ -971,18 +1016,9 @@ describe("UnifiedBar tab strip drop", () => {
             },
         ]);
         setVaultEntries([]);
-        useSettingsStore.setState({ developerModeEnabled: true });
-        useVaultStore.setState({
-            refreshEntries: vi.fn().mockResolvedValue(undefined),
-        });
-        mockInvoke().mockResolvedValue({
-            relative_path: "untitled",
-            file_name: "untitled",
-            path: "/vault/untitled",
-            mime_type: "text/plain",
-            content: "",
-            size_bytes: 0,
-            content_truncated: false,
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: true,
         });
 
         const { UnifiedBar } = await import("./UnifiedBar");
@@ -995,25 +1031,20 @@ describe("UnifiedBar tab strip drop", () => {
         expect(newTabButton).not.toBeNull();
 
         fireEvent.contextMenu(newTabButton!);
+        expect(
+            screen.queryByRole("button", { name: "New blank file" }),
+        ).toBeNull();
         await user.click(
-            await screen.findByRole("button", { name: "New blank file" }),
+            await screen.findByRole("button", { name: "New Terminal" }),
         );
 
         await waitFor(() => {
-            expect(
-                useEditorStore
-                    .getState()
-                    .tabs.some(
-                        (tab) =>
-                            tab.kind === "file" && tab.title === "untitled",
-                    ),
-            ).toBe(true);
-        });
-
-        expect(mockInvoke()).toHaveBeenCalledWith("save_vault_file", {
-            vaultPath: "/vault",
-            relativePath: "untitled",
-            content: "",
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(activeTab?.kind).toBe("terminal");
         });
     });
 

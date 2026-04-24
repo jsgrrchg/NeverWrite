@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, screen } from "@testing-library/react";
 import {
     flushPromises,
+    getMockCurrentWebview,
+    getMockCurrentWindow,
     mockInvoke,
     renderComponent,
     setVaultEntries,
@@ -20,30 +22,6 @@ import { CROSS_PANE_TAB_DROP_PREVIEW_EVENT } from "./workspaceTabDropPreview";
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
 const onDragDropEventMock = vi.fn();
-
-vi.mock("@tauri-apps/api/window", () => ({
-    getCurrentWindow: () => ({
-        listen: vi.fn(),
-        once: vi.fn(),
-        onCloseRequested: vi.fn(),
-        onMoved: vi.fn().mockResolvedValue(vi.fn()),
-        onResized: vi.fn().mockResolvedValue(vi.fn()),
-        onScaleChanged: vi.fn().mockResolvedValue(vi.fn()),
-        innerPosition: innerPositionMock,
-        scaleFactor: scaleFactorMock,
-        setFocus: vi.fn(),
-        startDragging: vi.fn(),
-        emitTo: vi.fn(),
-        close: vi.fn(),
-        label: "main",
-    }),
-}));
-
-vi.mock("@tauri-apps/api/webview", () => ({
-    getCurrentWebview: () => ({
-        onDragDropEvent: onDragDropEventMock,
-    }),
-}));
 
 vi.mock("../../app/detachedWindows", () => ({
     getCurrentWindowLabel: vi.fn(() => "main"),
@@ -98,6 +76,23 @@ describe("MultiPaneWorkspace", () => {
     }
 
     beforeEach(() => {
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+            }
+        ).innerPosition = innerPositionMock;
+        (
+            getMockCurrentWindow() as {
+                innerPosition: typeof innerPositionMock;
+                scaleFactor: typeof scaleFactorMock;
+            }
+        ).scaleFactor = scaleFactorMock;
+        (
+            getMockCurrentWebview() as {
+                onDragDropEvent: typeof onDragDropEventMock;
+            }
+        ).onDragDropEvent = onDragDropEventMock;
         class MockResizeObserver {
             private readonly callback: ResizeObserverCallback;
 

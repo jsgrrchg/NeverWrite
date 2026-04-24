@@ -11,6 +11,13 @@ export default mergeConfig(
             clearMocks: true,
             restoreMocks: true,
             css: true,
+            include: [
+                "src/**/*.test.ts",
+                "src/**/*.test.tsx",
+                "src-electron/**/*.test.ts",
+                "src-electron/**/*.test.tsx",
+            ],
+            exclude: ["scripts/**/*.test.mjs"],
         },
     }),
 );

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import { useEditorStore } from "../store/editorStore";
 import { useVaultStore } from "../store/vaultStore";
 import {
@@ -8,14 +8,6 @@ import {
     openVaultFileEntry,
 } from "./vaultEntries";
 import { setEditorTabs } from "../../test/test-utils";
-
-vi.mock("@tauri-apps/api/core", () => ({
-    invoke: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/plugin-opener", () => ({
-    openPath: vi.fn(),
-}));
 
 describe("vaultEntries", () => {
     beforeEach(() => {

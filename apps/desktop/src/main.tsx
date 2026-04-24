@@ -210,6 +210,15 @@ async function startApplication() {
         throw new Error("App root element not found.");
     }
 
+    // Expose platform at the <html> level so CSS and styling can opt-in to
+    // native materials (macOS vibrancy, Windows acrylic) without re-reading
+    // navigator at render time.
+    const { getDesktopPlatform } = await import("./app/utils/platform");
+    document.documentElement.setAttribute(
+        "data-desktop-platform",
+        getDesktopPlatform(),
+    );
+
     const { bootstrapApplicationRuntime } = await import("./app/bootstrap");
     bootstrapApplicationRuntime();
 

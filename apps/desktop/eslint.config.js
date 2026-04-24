@@ -8,7 +8,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 export default defineConfig([
     globalIgnores([
         "dist",
-        "src-tauri/embedded/**",
+        "embedded/**",
         "src/features/ai/store/wasm/*.d.ts",
     ]),
     {

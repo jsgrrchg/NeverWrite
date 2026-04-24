@@ -1,0 +1,25 @@
+[package]
+name = "neverwrite-native-backend"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+agent-client-protocol = { version = "=0.10.2", features = ["unstable"] }
+async-trait = "0.1"
+neverwrite-diff = { path = "../../../crates/diff" }
+neverwrite-ai = { path = "../../../crates/ai" }
+neverwrite-index = { path = "../../../crates/index" }
+neverwrite-types = { path = "../../../crates/types" }
+neverwrite-vault = { path = "../../../crates/vault" }
+notify = "7"
+portable-pty = "0.9.0"
+reqwest = { version = "0.13.2", features = ["blocking", "rustls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+spellbook = "0.4.0"
+tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+[dev-dependencies]
+tempfile = "3"

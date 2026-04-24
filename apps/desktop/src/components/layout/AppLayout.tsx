@@ -5,30 +5,34 @@ import {
     useState,
     type PointerEvent as ReactPointerEvent,
 } from "react";
+import { getCurrentWindow } from "@neverwrite/runtime";
 import {
-    DEFAULT_BOTTOM_PANEL_HEIGHT,
     DEFAULT_RIGHT_PANEL_WIDTH,
     DEFAULT_SIDEBAR_WIDTH,
-    MIN_BOTTOM_PANEL_HEIGHT,
     MIN_RIGHT_PANEL_WIDTH,
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
 } from "../../app/store/layoutStore";
+import { getDesktopPlatform } from "../../app/utils/platform";
+import {
+    FILE_TREE_NOTE_DRAG_EVENT,
+    type FileTreeNoteDragDetail,
+} from "../../features/ai/dragEvents";
 
-const COLLAPSE_TRIGGER_WIDTH = 168;
-const COLLAPSE_TRIGGER_HEIGHT = 120;
-const LEFT_SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH, 320];
+// On macOS we let BrowserWindow "sidebar" vibrancy show through the left pane,
+// so the sidebar region must stay transparent and not paint its own background
+// or a hard 1px separator against the editor. Other platforms keep the
+// existing opaque chrome.
+const SIDEBAR_VIBRANCY_ENABLED = getDesktopPlatform() === "macos";
+
+const RIGHT_COLLAPSE_TRIGGER_WIDTH = 168;
+const LEFT_SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH];
 const RIGHT_SNAP_POINTS = [DEFAULT_RIGHT_PANEL_WIDTH, 360, 500];
-const BOTTOM_SNAP_POINTS = [DEFAULT_BOTTOM_PANEL_HEIGHT, 320];
 const SNAP_DISTANCE = 18;
 const RESIZER_HITBOX_WIDTH = 10;
-const RESIZER_HITBOX_HEIGHT = 10;
 const RESIZER_VISIBLE_WIDTH = 1;
-const RESIZER_VISIBLE_HEIGHT = 1;
 const RESIZER_OVERLAP = RESIZER_HITBOX_WIDTH / 2;
-const RESIZER_VERTICAL_OVERLAP = RESIZER_HITBOX_HEIGHT / 2;
 const MIN_CENTER_PEEK_WIDTH = 36;
-const MIN_TOP_PEEK_HEIGHT = 48;
 
 interface HorizontalResizeSession {
     pointerId: number;
@@ -37,26 +41,15 @@ interface HorizontalResizeSession {
     pendingWidth: number;
 }
 
-interface VerticalResizeSession {
-    pointerId: number;
-    startY: number;
-    startHeight: number;
-    pendingHeight: number;
-}
-
 interface AppLayoutProps {
     left: React.ReactNode;
     center: React.ReactNode;
     right?: React.ReactNode;
-    bottom?: React.ReactNode;
 }
 
-export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
+export function AppLayout({ left, center, right }: AppLayoutProps) {
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const sidebarWidth = useLayoutStore((s) => s.sidebarWidth);
-    const collapseSidebarToWidth = useLayoutStore(
-        (s) => s.collapseSidebarToWidth,
-    );
     const showSidebarAtWidth = useLayoutStore((s) => s.showSidebarAtWidth);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
@@ -69,27 +62,145 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
         (s) => s.showRightPanelAtWidth,
     );
     const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
-    const bottomPanelCollapsed = useLayoutStore((s) => s.bottomPanelCollapsed);
-    const bottomPanelHeight = useLayoutStore((s) => s.bottomPanelHeight);
-    const collapseBottomPanelToHeight = useLayoutStore(
-        (s) => s.collapseBottomPanelToHeight,
-    );
-    const showBottomPanelAtHeight = useLayoutStore(
-        (s) => s.showBottomPanelAtHeight,
-    );
-    const toggleBottomPanel = useLayoutStore((s) => s.toggleBottomPanel);
     const rootRef = useRef<HTMLDivElement>(null);
     const [layoutWidth, setLayoutWidth] = useState(0);
-    const [layoutHeight, setLayoutHeight] = useState(0);
 
     // --- Left panel ---
     const [isResizingLeft, setIsResizingLeft] = useState(false);
-    const [collapsePreviewLeft, setCollapsePreviewLeft] = useState(false);
     const leftPanelRef = useRef<HTMLDivElement>(null);
     const leftResizerRef = useRef<HTMLDivElement>(null);
     const leftSessionRef = useRef<HorizontalResizeSession | null>(null);
     const leftFrameRef = useRef<number | null>(null);
-    const leftCollapsePreviewRef = useRef(false);
+
+    // Arc-style overlay: when the sidebar is collapsed we show a thin hotspot
+    // on the left edge; hovering it reveals the sidebar content as a floating
+    // panel without pushing the editor. A short dismiss delay keeps the peek
+    // stable while the cursor crosses gaps.
+    const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
+    const overlayDismissTimerRef = useRef<number | null>(null);
+    const sidebarDragActiveRef = useRef(false);
+
+    const clearOverlayDismissTimer = useCallback(() => {
+        if (overlayDismissTimerRef.current !== null) {
+            window.clearTimeout(overlayDismissTimerRef.current);
+            overlayDismissTimerRef.current = null;
+        }
+    }, []);
+
+    const showSidebarOverlay = useCallback(() => {
+        clearOverlayDismissTimer();
+        setSidebarOverlayVisible(true);
+    }, [clearOverlayDismissTimer]);
+
+    const scheduleHideSidebarOverlay = useCallback(() => {
+        if (sidebarDragActiveRef.current) return;
+        if (overlayDismissTimerRef.current !== null) return;
+        overlayDismissTimerRef.current = window.setTimeout(() => {
+            overlayDismissTimerRef.current = null;
+            setSidebarOverlayVisible(false);
+        }, 200);
+    }, []);
+
+    useEffect(() => {
+        const handleFileTreeDrag = (event: Event) => {
+            const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
+                .detail;
+            if (!detail) return;
+
+            if (detail.phase === "start" || detail.phase === "move") {
+                const rootRect = rootRef.current?.getBoundingClientRect();
+                const overlayLeft = rootRect?.left ?? 0;
+                const startedInsideSidebarOverlay =
+                    detail.phase === "start" &&
+                    sidebarCollapsed &&
+                    sidebarOverlayVisible &&
+                    detail.origin?.kind !== "workspace-tab" &&
+                    detail.x >= overlayLeft &&
+                    detail.x <= overlayLeft + sidebarWidth;
+
+                if (
+                    !sidebarDragActiveRef.current &&
+                    !startedInsideSidebarOverlay
+                ) {
+                    return;
+                }
+
+                sidebarDragActiveRef.current = true;
+                if (sidebarCollapsed) {
+                    showSidebarOverlay();
+                }
+                return;
+            }
+
+            if (
+                detail.phase === "end" ||
+                detail.phase === "cancel" ||
+                detail.phase === "attach"
+            ) {
+                if (!sidebarDragActiveRef.current) return;
+                sidebarDragActiveRef.current = false;
+                if (sidebarCollapsed) {
+                    scheduleHideSidebarOverlay();
+                }
+            }
+        };
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleFileTreeDrag);
+        return () => {
+            sidebarDragActiveRef.current = false;
+            window.removeEventListener(
+                FILE_TREE_NOTE_DRAG_EVENT,
+                handleFileTreeDrag,
+            );
+        };
+    }, [
+        scheduleHideSidebarOverlay,
+        showSidebarOverlay,
+        sidebarCollapsed,
+        sidebarOverlayVisible,
+        sidebarWidth,
+    ]);
+
+    // Tear down the timer on unmount; also retract the overlay as soon as the
+    // sidebar goes back to docked mode so we never leak a floating copy.
+    useEffect(() => {
+        return () => {
+            clearOverlayDismissTimer();
+        };
+    }, [clearOverlayDismissTimer]);
+
+    useEffect(() => {
+        if (!sidebarCollapsed && sidebarOverlayVisible) {
+            clearOverlayDismissTimer();
+            const timer = window.setTimeout(() => {
+                setSidebarOverlayVisible(false);
+            }, 0);
+            return () => window.clearTimeout(timer);
+        }
+    }, [clearOverlayDismissTimer, sidebarCollapsed, sidebarOverlayVisible]);
+
+    // macOS: hide the native traffic-light buttons whenever the sidebar is
+    // fully collapsed. They would otherwise float over the empty editor top
+    // and break the immersive look. Restore them as soon as the sidebar is
+    // docked again (whether via toggle or peek pin). Tauri and other runtimes
+    // silently skip this because setTrafficLightsVisible is optional.
+    useEffect(() => {
+        if (!SIDEBAR_VIBRANCY_ENABLED) return;
+        const win = getCurrentWindow();
+        // Show while docked or while the peek overlay is up so the user can
+        // still reach the buttons from within the revealed sidebar.
+        const visible = !sidebarCollapsed || sidebarOverlayVisible;
+        void win.setTrafficLightsVisible?.(visible);
+    }, [sidebarCollapsed, sidebarOverlayVisible]);
+
+    // Ensure the traffic lights are restored if the layout unmounts while
+    // they were hidden (e.g. window swap during vault change).
+    useEffect(() => {
+        return () => {
+            if (!SIDEBAR_VIBRANCY_ENABLED) return;
+            void getCurrentWindow().setTrafficLightsVisible?.(true);
+        };
+    }, []);
 
     // --- Right panel ---
     const [isResizingRight, setIsResizingRight] = useState(false);
@@ -99,15 +210,6 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
     const rightSessionRef = useRef<HorizontalResizeSession | null>(null);
     const rightFrameRef = useRef<number | null>(null);
     const rightCollapsePreviewRef = useRef(false);
-
-    // --- Bottom panel ---
-    const [isResizingBottom, setIsResizingBottom] = useState(false);
-    const [collapsePreviewBottom, setCollapsePreviewBottom] = useState(false);
-    const bottomPanelRef = useRef<HTMLDivElement>(null);
-    const bottomResizerRef = useRef<HTMLDivElement>(null);
-    const bottomSessionRef = useRef<VerticalResizeSession | null>(null);
-    const bottomFrameRef = useRef<number | null>(null);
-    const bottomCollapsePreviewRef = useRef(false);
 
     const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
     const effectiveRightForLeftCalc = rightPanelCollapsed ? 0 : rightPanelWidth;
@@ -124,30 +226,18 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
         : rightPanelExpanded
           ? maxRightWidthForLayout
           : Math.min(rightPanelWidth, maxRightWidthForLayout);
-    const maxBottomHeightForLayout = Math.max(
-        MIN_BOTTOM_PANEL_HEIGHT,
-        layoutHeight - MIN_TOP_PEEK_HEIGHT,
-    );
-    const effectiveBottom = bottom
-        ? bottomPanelCollapsed
-            ? 0
-            : Math.min(bottomPanelHeight, maxBottomHeightForLayout)
-        : 0;
-
     // ---- Left resize logic ----
 
     const applyLeftWidth = useCallback((width: number) => {
         const panel = leftPanelRef.current;
         if (!panel) return;
         panel.style.width = `${width}px`;
+        // Only draw a hairline separator when vibrancy is off. With vibrancy,
+        // the border fights the native material and reads as a hard seam.
         panel.style.borderRight =
-            width > 0 ? "1px solid var(--border)" : "none";
-    }, []);
-
-    const syncLeftPreview = useCallback((next: boolean) => {
-        if (leftCollapsePreviewRef.current === next) return;
-        leftCollapsePreviewRef.current = next;
-        setCollapsePreviewLeft(next);
+            !SIDEBAR_VIBRANCY_ENABLED && width > 0
+                ? "1px solid var(--border)"
+                : "none";
     }, []);
 
     const flushLeftWidth = useCallback(() => {
@@ -155,8 +245,7 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
         const s = leftSessionRef.current;
         if (!s) return;
         applyLeftWidth(s.pendingWidth);
-        syncLeftPreview(s.pendingWidth < COLLAPSE_TRIGGER_WIDTH);
-    }, [applyLeftWidth, syncLeftPreview]);
+    }, [applyLeftWidth]);
 
     const scheduleLeftWidth = useCallback(() => {
         if (leftFrameRef.current !== null) return;
@@ -184,13 +273,8 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
             applyLeftWidth(s.pendingWidth);
             document.body.classList.remove("resizing-sidebar");
             leftSessionRef.current = null;
-            syncLeftPreview(false);
             setIsResizingLeft(false);
 
-            if (s.pendingWidth < COLLAPSE_TRIGGER_WIDTH) {
-                collapseSidebarToWidth(MIN_SIDEBAR_WIDTH);
-                return;
-            }
             const clamped = Math.max(
                 MIN_SIDEBAR_WIDTH,
                 Math.min(maxLeftWidthForLayout, s.pendingWidth),
@@ -201,13 +285,7 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
                 ) ?? clamped;
             showSidebarAtWidth(snapped);
         },
-        [
-            applyLeftWidth,
-            collapseSidebarToWidth,
-            maxLeftWidthForLayout,
-            showSidebarAtWidth,
-            syncLeftPreview,
-        ],
+        [applyLeftWidth, maxLeftWidthForLayout, showSidebarAtWidth],
     );
 
     useEffect(() => {
@@ -252,11 +330,10 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
             e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
             document.body.classList.add("resizing-sidebar");
-            syncLeftPreview(false);
             setIsResizingLeft(true);
             applyLeftWidth(startWidth);
         },
-        [applyLeftWidth, sidebarCollapsed, sidebarWidth, syncLeftPreview],
+        [applyLeftWidth, sidebarCollapsed, sidebarWidth],
     );
 
     const onLeftMove = useCallback(
@@ -264,7 +341,7 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
             const s = leftSessionRef.current;
             if (!s || s.pointerId !== e.pointerId) return;
             s.pendingWidth = Math.max(
-                0,
+                MIN_SIDEBAR_WIDTH,
                 Math.min(
                     maxLeftWidthForLayout,
                     s.startWidth + e.clientX - s.startX,
@@ -300,7 +377,7 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
         const s = rightSessionRef.current;
         if (!s) return;
         applyRightWidth(s.pendingWidth);
-        syncRightPreview(s.pendingWidth < COLLAPSE_TRIGGER_WIDTH);
+        syncRightPreview(s.pendingWidth < RIGHT_COLLAPSE_TRIGGER_WIDTH);
     }, [applyRightWidth, syncRightPreview]);
 
     const scheduleRightWidth = useCallback(() => {
@@ -332,7 +409,7 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
             syncRightPreview(false);
             setIsResizingRight(false);
 
-            if (s.pendingWidth < COLLAPSE_TRIGGER_WIDTH) {
+            if (s.pendingWidth < RIGHT_COLLAPSE_TRIGGER_WIDTH) {
                 collapseRightPanelToWidth(MIN_RIGHT_PANEL_WIDTH);
                 return;
             }
@@ -387,174 +464,12 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
         const el = rootRef.current;
         if (!el) return;
         setLayoutWidth(el.clientWidth);
-        setLayoutHeight(el.clientHeight);
         const ro = new ResizeObserver(([entry]) => {
             setLayoutWidth(Math.round(entry.contentRect.width));
-            setLayoutHeight(Math.round(entry.contentRect.height));
         });
         ro.observe(el);
         return () => ro.disconnect();
     }, []);
-
-    // ---- Bottom resize logic ----
-
-    const applyBottomHeight = useCallback((height: number) => {
-        const panel = bottomPanelRef.current;
-        if (!panel) return;
-        panel.style.height = `${height}px`;
-        panel.style.borderTop = height > 0 ? "1px solid var(--border)" : "none";
-    }, []);
-
-    const syncBottomPreview = useCallback((next: boolean) => {
-        if (bottomCollapsePreviewRef.current === next) return;
-        bottomCollapsePreviewRef.current = next;
-        setCollapsePreviewBottom(next);
-    }, []);
-
-    const flushBottomHeight = useCallback(() => {
-        bottomFrameRef.current = null;
-        const s = bottomSessionRef.current;
-        if (!s) return;
-        applyBottomHeight(s.pendingHeight);
-        syncBottomPreview(s.pendingHeight < COLLAPSE_TRIGGER_HEIGHT);
-    }, [applyBottomHeight, syncBottomPreview]);
-
-    const scheduleBottomHeight = useCallback(() => {
-        if (bottomFrameRef.current !== null) return;
-        bottomFrameRef.current =
-            window.requestAnimationFrame(flushBottomHeight);
-    }, [flushBottomHeight]);
-
-    const finishBottomResize = useCallback(
-        (pointerId?: number) => {
-            const s = bottomSessionRef.current;
-            if (!s) return;
-            if (pointerId !== undefined && s.pointerId !== pointerId) return;
-
-            if (bottomFrameRef.current !== null) {
-                window.cancelAnimationFrame(bottomFrameRef.current);
-                bottomFrameRef.current = null;
-            }
-            const resizer = bottomResizerRef.current;
-            if (
-                resizer &&
-                pointerId !== undefined &&
-                resizer.hasPointerCapture(pointerId)
-            ) {
-                resizer.releasePointerCapture(pointerId);
-            }
-            applyBottomHeight(s.pendingHeight);
-            document.body.classList.remove("resizing-sidebar");
-            bottomSessionRef.current = null;
-            syncBottomPreview(false);
-            setIsResizingBottom(false);
-
-            if (s.pendingHeight < COLLAPSE_TRIGGER_HEIGHT) {
-                collapseBottomPanelToHeight(MIN_BOTTOM_PANEL_HEIGHT);
-                return;
-            }
-
-            const clamped = Math.max(
-                MIN_BOTTOM_PANEL_HEIGHT,
-                Math.min(maxBottomHeightForLayout, s.pendingHeight),
-            );
-            const snapped =
-                BOTTOM_SNAP_POINTS.find(
-                    (p) => Math.abs(p - clamped) <= SNAP_DISTANCE,
-                ) ?? clamped;
-            showBottomPanelAtHeight(snapped);
-        },
-        [
-            applyBottomHeight,
-            collapseBottomPanelToHeight,
-            maxBottomHeightForLayout,
-            showBottomPanelAtHeight,
-            syncBottomPreview,
-        ],
-    );
-
-    useEffect(() => {
-        if (!isResizingBottom) return;
-        const stop = () => finishBottomResize();
-        window.addEventListener("pointerup", stop);
-        window.addEventListener("pointercancel", stop);
-        window.addEventListener("mouseup", stop);
-        window.addEventListener("blur", stop);
-        const onVis = () => {
-            if (document.visibilityState !== "visible") stop();
-        };
-        document.addEventListener("visibilitychange", onVis);
-        return () => {
-            window.removeEventListener("pointerup", stop);
-            window.removeEventListener("pointercancel", stop);
-            window.removeEventListener("mouseup", stop);
-            window.removeEventListener("blur", stop);
-            document.removeEventListener("visibilitychange", onVis);
-        };
-    }, [finishBottomResize, isResizingBottom]);
-
-    useEffect(
-        () => () => {
-            if (bottomFrameRef.current !== null)
-                window.cancelAnimationFrame(bottomFrameRef.current);
-        },
-        [],
-    );
-
-    const onBottomDown = useCallback(
-        (e: ReactPointerEvent<HTMLDivElement>) => {
-            if (e.button !== 0) return;
-            const startHeight = bottomPanelCollapsed ? 0 : effectiveBottom;
-            bottomSessionRef.current = {
-                pointerId: e.pointerId,
-                startY: e.clientY,
-                startHeight,
-                pendingHeight: startHeight,
-            };
-            e.preventDefault();
-            e.currentTarget.setPointerCapture(e.pointerId);
-            document.body.classList.add("resizing-sidebar");
-            syncBottomPreview(false);
-            setIsResizingBottom(true);
-            applyBottomHeight(startHeight);
-        },
-        [
-            applyBottomHeight,
-            bottomPanelCollapsed,
-            effectiveBottom,
-            syncBottomPreview,
-        ],
-    );
-
-    const onBottomMove = useCallback(
-        (e: ReactPointerEvent<HTMLDivElement>) => {
-            const s = bottomSessionRef.current;
-            if (!s || s.pointerId !== e.pointerId) return;
-            s.pendingHeight = Math.max(
-                0,
-                Math.min(
-                    maxBottomHeightForLayout,
-                    s.startHeight - (e.clientY - s.startY),
-                ),
-            );
-            scheduleBottomHeight();
-        },
-        [maxBottomHeightForLayout, scheduleBottomHeight],
-    );
-
-    const onBottomUp = useCallback(
-        (e: ReactPointerEvent<HTMLDivElement>) =>
-            finishBottomResize(e.pointerId),
-        [finishBottomResize],
-    );
-
-    const onBottomDoubleClick = useCallback(() => {
-        if (bottomPanelCollapsed) {
-            showBottomPanelAtHeight(DEFAULT_BOTTOM_PANEL_HEIGHT);
-        } else {
-            toggleBottomPanel();
-        }
-    }, [bottomPanelCollapsed, showBottomPanelAtHeight, toggleBottomPanel]);
 
     const onRightDown = useCallback(
         (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -612,72 +527,96 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
         }
     }, [rightPanelCollapsed, showRightPanelAtWidth, toggleRightPanel]);
 
-    const isResizing = isResizingLeft || isResizingRight || isResizingBottom;
+    const isResizing = isResizingLeft || isResizingRight;
 
     return (
         <div
             ref={rootRef}
-            className="relative flex h-full overflow-hidden"
-            style={{ backgroundColor: "var(--bg-primary)" }}
+            className="relative flex h-full min-w-0 w-full flex-1 overflow-hidden"
+            style={{
+                // With vibrancy we must not paint an opaque background here —
+                // the center column paints its own bg below. Otherwise we
+                // would cover the native material in the sidebar region.
+                backgroundColor: SIDEBAR_VIBRANCY_ENABLED
+                    ? "transparent"
+                    : "var(--bg-primary)",
+            }}
         >
-            {/* Left sidebar — full height, unaffected by bottom panel */}
-            <div
-                ref={leftPanelRef}
-                style={{
-                    width: effectiveLeft,
-                    flexShrink: 0,
-                    overflow: "hidden",
-                    backgroundColor: "var(--bg-secondary)",
-                    borderRight: sidebarCollapsed
-                        ? "none"
-                        : "1px solid var(--border)",
-                    transition: isResizingLeft
-                        ? "none"
-                        : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
-                }}
-            >
-                {left}
-            </div>
-
-            {/* Left resizer */}
-            <div
-                className="relative shrink-0 cursor-col-resize touch-none"
-                style={{
-                    width: RESIZER_HITBOX_WIDTH,
-                    marginLeft: -RESIZER_OVERLAP,
-                    marginRight: -RESIZER_OVERLAP,
-                    zIndex: 2,
-                }}
-                ref={leftResizerRef}
-                onPointerDown={onLeftDown}
-                onPointerMove={onLeftMove}
-                onPointerUp={onLeftUp}
-                onPointerCancel={onLeftUp}
-                onLostPointerCapture={onLeftUp}
-                onDoubleClick={() => {
-                    if (sidebarCollapsed)
-                        showSidebarAtWidth(DEFAULT_SIDEBAR_WIDTH);
-                    else toggleSidebar();
-                }}
-            >
+            {/* Left sidebar. When
+                the sidebar is collapsed we remove the docked copy entirely so
+                the peek overlay is the only instance on screen (prevents
+                duplicate DOM + double focus traps). */}
+            {!sidebarCollapsed && (
                 <div
-                    className="pointer-events-none absolute bottom-0 top-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+                    ref={leftPanelRef}
                     style={{
-                        width: RESIZER_VISIBLE_WIDTH,
-                        backgroundColor: collapsePreviewLeft
-                            ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
-                            : isResizingLeft
-                              ? "var(--accent)"
-                              : "transparent",
-                        boxShadow: isResizingLeft
-                            ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
-                            : "none",
+                        width: effectiveLeft,
+                        flexShrink: 0,
+                        overflow: "hidden",
+                        // Under vibrancy, paint a translucent tint
+                        // (Comando-style 82%/85%) so the native material
+                        // still reads through but hover/selection highlights
+                        // don't feel harsh.
+                        backgroundColor: SIDEBAR_VIBRANCY_ENABLED
+                            ? "var(--sidebar-vibrancy-tint)"
+                            : "var(--bg-secondary)",
+                        borderRight: SIDEBAR_VIBRANCY_ENABLED
+                            ? "none"
+                            : "1px solid var(--border)",
+                        transition: isResizingLeft
+                            ? "none"
+                            : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
                     }}
-                />
-            </div>
+                >
+                    {left}
+                </div>
+            )}
 
-            {/* Center column + right panel. Bottom panel only affects the center column. */}
-            <div className="flex min-w-0 flex-1 overflow-hidden">
+            {/* Left resizer — hidden while collapsed; the edge hotspot takes
+                over to reveal the overlay instead. */}
+            {!sidebarCollapsed && (
+                <div
+                    className="relative shrink-0 cursor-col-resize touch-none"
+                    style={{
+                        width: RESIZER_HITBOX_WIDTH,
+                        marginLeft: -RESIZER_OVERLAP,
+                        marginRight: -RESIZER_OVERLAP,
+                        zIndex: 2,
+                    }}
+                    ref={leftResizerRef}
+                    onPointerDown={onLeftDown}
+                    onPointerMove={onLeftMove}
+                    onPointerUp={onLeftUp}
+                    onPointerCancel={onLeftUp}
+                    onLostPointerCapture={onLeftUp}
+                    onDoubleClick={() => {
+                        toggleSidebar();
+                    }}
+                >
+                    <div
+                        className="pointer-events-none absolute bottom-0 top-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+                        style={{
+                            width: RESIZER_VISIBLE_WIDTH,
+                            backgroundColor: isResizingLeft
+                                ? "var(--accent)"
+                                : "transparent",
+                            boxShadow: isResizingLeft
+                                ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
+                                : "none",
+                        }}
+                    />
+                </div>
+            )}
+
+            {/* Center column + right panel. */}
+            <div
+                className="flex min-w-0 flex-1 overflow-hidden"
+                style={{
+                    // Keep the editor surface opaque even when the sidebar
+                    // region is translucent — vibrancy is sidebar-only.
+                    backgroundColor: "var(--bg-primary)",
+                }}
+            >
                 <div
                     className="flex min-w-0 flex-1 flex-col overflow-hidden"
                     data-testid="app-layout-center-column"
@@ -685,7 +624,6 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
                     <div
                         className="flex min-h-0 flex-1 flex-col overflow-hidden"
                         style={{
-                            minHeight: bottom ? MIN_TOP_PEEK_HEIGHT : 0,
                             minWidth: rightPanelExpanded
                                 ? MIN_CENTER_PEEK_WIDTH
                                 : 0,
@@ -693,64 +631,6 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
                     >
                         {center}
                     </div>
-
-                    {/* Bottom resizer — only spans the center column */}
-                    {bottom && (
-                        <div
-                            ref={bottomResizerRef}
-                            className="relative shrink-0 cursor-row-resize touch-none"
-                            style={{
-                                height: RESIZER_HITBOX_HEIGHT,
-                                marginTop: -RESIZER_VERTICAL_OVERLAP,
-                                marginBottom: -RESIZER_VERTICAL_OVERLAP,
-                                zIndex: 2,
-                            }}
-                            onPointerDown={onBottomDown}
-                            onPointerMove={onBottomMove}
-                            onPointerUp={onBottomUp}
-                            onPointerCancel={onBottomUp}
-                            onLostPointerCapture={onBottomUp}
-                            onDoubleClick={onBottomDoubleClick}
-                        >
-                            <div
-                                className="pointer-events-none absolute left-0 right-0 top-1/2 -translate-y-1/2 rounded-full transition-all duration-150"
-                                style={{
-                                    height: RESIZER_VISIBLE_HEIGHT,
-                                    backgroundColor: collapsePreviewBottom
-                                        ? "color-mix(in srgb, var(--accent) 65%, #ef4444 35%)"
-                                        : isResizingBottom
-                                          ? "var(--accent)"
-                                          : "transparent",
-                                    boxShadow: isResizingBottom
-                                        ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
-                                        : "none",
-                                }}
-                            />
-                        </div>
-                    )}
-
-                    {/* Bottom panel — only spans the center column */}
-                    {bottom && (
-                        <div
-                            ref={bottomPanelRef}
-                            data-testid="app-layout-bottom-panel"
-                            style={{
-                                height: effectiveBottom,
-                                flexShrink: 0,
-                                overflow: "hidden",
-                                minHeight: 0,
-                                backgroundColor: "var(--bg-secondary)",
-                                borderTop: bottomPanelCollapsed
-                                    ? "none"
-                                    : "1px solid var(--border)",
-                                transition: isResizingBottom
-                                    ? "none"
-                                    : "height 160ms cubic-bezier(0.22, 1, 0.36, 1)",
-                            }}
-                        >
-                            {bottom}
-                        </div>
-                    )}
                 </div>
 
                 {/* Right resizer */}
@@ -788,7 +668,7 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
                     </div>
                 )}
 
-                {/* Right panel — full height, unaffected by bottom panel */}
+                {/* Right panel */}
                 {right && (
                     <div
                         ref={rightPanelRef}
@@ -815,9 +695,55 @@ export function AppLayout({ left, center, right, bottom }: AppLayoutProps) {
                 <div
                     className="pointer-events-none absolute inset-0 z-10"
                     style={{
-                        cursor: isResizingBottom ? "row-resize" : "col-resize",
+                        cursor: "col-resize",
                     }}
                 />
+            )}
+
+            {/* Arc-style peek: an invisible 8px hotspot on the left edge
+                reveals the sidebar as a floating overlay while collapsed.
+                The overlay collapses its own hotspot once visible so the
+                cursor can cross freely into the panel without retriggering
+                the enter handler. */}
+            {sidebarCollapsed && (
+                <div
+                    data-testid="sidebar-peek-hotspot"
+                    style={{
+                        position: "absolute",
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: sidebarOverlayVisible ? 0 : 8,
+                        zIndex: 15,
+                    }}
+                    onMouseEnter={showSidebarOverlay}
+                />
+            )}
+            {sidebarCollapsed && sidebarOverlayVisible && (
+                <div
+                    data-testid="sidebar-peek-overlay"
+                    style={{
+                        position: "absolute",
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: sidebarWidth,
+                        zIndex: 20,
+                        overflow: "hidden",
+                        // The peek overlay paints a fully opaque surface so it
+                        // reads as a solid floating panel above the editor —
+                        // vibrancy is only appropriate for the docked pane,
+                        // where it blends with the macOS window material.
+                        backgroundColor: "var(--bg-secondary)",
+                        borderRight: "1px solid var(--border)",
+                        boxShadow:
+                            "4px 0 24px rgba(0, 0, 0, 0.22), 1px 0 6px rgba(0, 0, 0, 0.10)",
+                    }}
+                    onMouseEnter={showSidebarOverlay}
+                    onMouseLeave={scheduleHideSidebarOverlay}
+                >
+                    {left}
+                </div>
             )}
         </div>
     );

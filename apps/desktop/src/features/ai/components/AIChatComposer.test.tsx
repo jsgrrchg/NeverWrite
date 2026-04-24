@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@neverwrite/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";

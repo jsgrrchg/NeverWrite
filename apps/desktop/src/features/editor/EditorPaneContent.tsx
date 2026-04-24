@@ -9,23 +9,25 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
+    isTerminalTab,
     selectEditorPaneActiveTab,
     selectEditorPaneState,
+    selectFocusedPaneId,
+    type TerminalTab,
 } from "../../app/store/editorStore";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
-import { NewTabView } from "./NewTabView";
 import { SearchView } from "../search/SearchView";
 import { PdfTabView } from "../pdf/PdfTabView";
 import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
 import { AIReviewView } from "../ai/components/AIReviewView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
+import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
 
 type EditorPanelView =
     | "pdf"
     | "file"
-    | "new"
     | "search"
     | "ai-review"
     | "ai-chat"
@@ -110,11 +112,9 @@ function renderEditorPanelView(
             }
             return (
                 <React.Suspense fallback={null}>
-                    <LazyExcalidrawTabView />
+                    <LazyExcalidrawTabView paneId={paneId} />
                 </React.Suspense>
             );
-        case "new":
-            return <NewTabView />;
         case "search":
             return <SearchView />;
         case "graph":
@@ -149,13 +149,18 @@ export function EditorPaneContent({
         if (isMapTab(tab)) return "map";
         if (isGraphTab(tab)) return "graph";
         if (!isNoteTab(tab)) return "editor";
-        if (tab.noteId === "") return "new";
         if (tab.noteId === "__search__") return "search";
         return "editor";
     })();
     const paneTabs = useEditorStore(
         (state) => selectEditorPaneState(state, paneId).tabs,
     );
+    const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const activePane = paneId ? focusedPaneId === paneId : true;
+    const terminalTabs = paneTabs.filter(
+        (tab): tab is TerminalTab => isTerminalTab(tab),
+    );
+    const isTerminalActive = activeTab ? isTerminalTab(activeTab) : false;
     const hasGraphTab = paneTabs.some((tab) => isGraphTab(tab));
     const isGraphActive = view === "graph";
     const keepGraphMounted = hasGraphTab;
@@ -182,7 +187,16 @@ export function EditorPaneContent({
                     </React.Suspense>
                 </div>
             )}
+            {terminalTabs.map((tab) => (
+                <WorkspaceTerminalView
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTab?.id}
+                    activePane={activePane}
+                />
+            ))}
             {!isGraphActive &&
+                !isTerminalActive &&
                 renderEditorPanelView(view, paneId, emptyStateMessage)}
         </div>
     );

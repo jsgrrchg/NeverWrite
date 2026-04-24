@@ -7,8 +7,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@neverwrite/runtime";
+import { getCurrentWindow } from "@neverwrite/runtime";
 import {
     getCurrentWindowLabel,
     publishWindowTabDropZone,

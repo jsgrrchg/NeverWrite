@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     useEditorStore,
@@ -59,9 +60,7 @@ export function TagsPanel() {
     const openNote = useEditorStore((s) => s.openNote);
     const [tags, setTags] = useState<TagEntry[]>([]);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
-    const [showFilter, setShowFilter] = useState(false);
     const [filterText, setFilterText] = useState("");
-    const filterInputRef = useRef<HTMLInputElement>(null);
     const [tagContextMenu, setTagContextMenu] =
         useState<ContextMenuState<TagEntry> | null>(null);
     const [noteContextMenu, setNoteContextMenu] = useState<ContextMenuState<{
@@ -111,19 +110,6 @@ export function TagsPanel() {
             cancelled = true;
         };
     }, [vaultPath, tagsRevision]);
-
-    const toggleFilter = useCallback(() => {
-        setShowFilter((v) => {
-            if (v) setFilterText("");
-            return !v;
-        });
-    }, []);
-
-    useEffect(() => {
-        if (showFilter) {
-            requestAnimationFrame(() => filterInputRef.current?.focus());
-        }
-    }, [showFilter]);
 
     const toggleTag = (tag: string) => {
         setExpanded((prev) => {
@@ -197,104 +183,14 @@ export function TagsPanel() {
                     >
                         Tags
                     </span>
-                    <button
-                        onClick={toggleFilter}
-                        title={showFilter ? "Hide filter" : "Filter tags"}
-                        className="flex items-center justify-center rounded transition-opacity"
-                        style={{
-                            width: 18,
-                            height: 18,
-                            color: showFilter
-                                ? "var(--accent)"
-                                : "var(--text-secondary)",
-                            opacity: showFilter ? 1 : 0.5,
-                        }}
-                        onMouseEnter={(e) =>
-                            (e.currentTarget.style.opacity = "1")
-                        }
-                        onMouseLeave={(e) =>
-                            (e.currentTarget.style.opacity = showFilter
-                                ? "1"
-                                : "0.5")
-                        }
-                    >
-                        <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <circle cx="7" cy="7" r="4" />
-                            <path d="M10 10L13.5 13.5" />
-                        </svg>
-                    </button>
                 </div>
-                {showFilter && (
-                    <div className="px-2 pb-2">
-                        <div
-                            className="flex items-center gap-1.5 px-2 rounded"
-                            style={{
-                                backgroundColor: "var(--bg-primary)",
-                                border: "1px solid var(--border)",
-                                height: 24,
-                            }}
-                        >
-                            <svg
-                                width="10"
-                                height="10"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.6"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                style={{
-                                    color: "var(--text-secondary)",
-                                    opacity: 0.5,
-                                    flexShrink: 0,
-                                }}
-                            >
-                                <circle cx="7" cy="7" r="4" />
-                                <path d="M10 10L13.5 13.5" />
-                            </svg>
-                            <input
-                                ref={filterInputRef}
-                                type="text"
-                                value={filterText}
-                                onChange={(e) => setFilterText(e.target.value)}
-                                placeholder="Filter tags..."
-                                className="flex-1 bg-transparent text-[11px] outline-none"
-                                style={{ color: "var(--text-primary)" }}
-                                spellCheck={false}
-                                onKeyDown={(e) => {
-                                    if (e.key === "Escape") toggleFilter();
-                                }}
-                            />
-                            {filterText && (
-                                <button
-                                    onClick={() => setFilterText("")}
-                                    className="opacity-40 hover:opacity-100 transition-opacity"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    <svg
-                                        width="10"
-                                        height="10"
-                                        viewBox="0 0 16 16"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="1.8"
-                                    >
-                                        <path d="M4 4l8 8M4 12l8-8" />
-                                    </svg>
-                                </button>
-                            )}
-                        </div>
-                    </div>
-                )}
+                <div className="px-2 pb-2">
+                    <SidebarFilterInput
+                        value={filterText}
+                        onChange={setFilterText}
+                        placeholder="Filter tags..."
+                    />
+                </div>
             </div>
 
             {/* Content */}

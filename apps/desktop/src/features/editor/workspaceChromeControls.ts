@@ -1,13 +1,17 @@
 import type { CSSProperties } from "react";
 
+// Matches `SidebarFilterInput` (85% bg-tertiary / 70% border) so the
+// chrome control group and the filter pill read as a harmonised family
+// of sidebar surfaces. The previous mix (`bg-primary 52% / bg-tertiary`)
+// collapsed into `bg-secondary` on light themes and barely registered.
 export const chromeControlsGroupStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
     gap: 2,
     padding: "0 2px",
     borderRadius: 8,
-    border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
-    background: "color-mix(in srgb, var(--bg-primary) 52%, var(--bg-tertiary))",
+    border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+    background: "color-mix(in srgb, var(--bg-tertiary) 85%, transparent)",
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
 };
 

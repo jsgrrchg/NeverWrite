@@ -1,0 +1,3 @@
+{
+    "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost asset: neverwrite-file: http://neverwrite-file.localhost https://neverwrite-file.localhost https://www.youtube.com; worker-src 'self' blob:; img-src 'self' asset: data: neverwrite-file: http://neverwrite-file.localhost https://neverwrite-file.localhost https: http:; style-src 'self' 'unsafe-inline'; frame-src https://www.youtube.com https://www.youtube-nocookie.com"
+}

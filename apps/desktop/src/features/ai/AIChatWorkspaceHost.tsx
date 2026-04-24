@@ -24,10 +24,12 @@ function hasVisibleAiComposerDropZone() {
 
 interface AIChatWorkspaceHostProps {
     startupReady?: boolean;
+    listenWithoutChatTabs?: boolean;
 }
 
 export function AIChatWorkspaceHost({
     startupReady = true,
+    listenWithoutChatTabs = false,
 }: AIChatWorkspaceHostProps) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const { hasChatTabs, activeChatSessionId } = useEditorStore(
@@ -53,7 +55,11 @@ export function AIChatWorkspaceHost({
     const recoveringSessionIdRef = useRef<string | null>(null);
     const attachReplayCountsRef = useRef(new WeakMap<object, number>());
 
-    useAiChatEventBridge(Boolean(vaultPath) && hasChatTabs && startupReady);
+    useAiChatEventBridge(
+        Boolean(vaultPath) &&
+            startupReady &&
+            (hasChatTabs || listenWithoutChatTabs),
+    );
 
     useEffect(() => {
         if (!startupReady || !vaultPath || !hasChatTabs) return;

@@ -6,7 +6,7 @@ import {
     type ViewUpdate,
 } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@neverwrite/runtime";
 
 const URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const EMAIL_RE = /(?:^|[\s<(])([^\s<>()"\],;:]+@[^\s<>()"\],;:]+\.[^\s<>()"\],;:]+)(?=$|[\s>)])/g;

@@ -6,7 +6,7 @@ import {
     useState,
     type ReactNode,
 } from "react";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import {
     fileViewerNeedsTextContent,
     useEditorStore,

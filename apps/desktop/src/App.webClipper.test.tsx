@@ -1,8 +1,11 @@
 import { act, screen } from "@testing-library/react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import {
+    getAllWebviewWindows,
+    getCurrentWindow,
+    invoke,
+    listen,
+    type UnlistenFn,
+} from "@neverwrite/runtime";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -30,40 +33,21 @@ vi.mock("./components/layout/AppLayout", () => ({
         left,
         center,
         right,
-        bottom,
     }: {
         left: ReactNode;
         center: ReactNode;
         right: ReactNode;
-        bottom?: ReactNode;
     }) => (
         <div data-testid="app-layout">
             <div>{left}</div>
             <div>{center}</div>
             <div>{right}</div>
-            <div>{bottom}</div>
         </div>
     ),
 }));
 
-vi.mock("./components/layout/ActivityBar", () => ({
-    ActivityBar: () => <div data-testid="activity-bar" />,
-}));
-
-vi.mock("./features/vault/FileTree", () => ({
-    FileTree: () => <div data-testid="file-tree" />,
-}));
-
-vi.mock("./features/vault/VaultSwitcher", () => ({
-    VaultSwitcher: () => <div data-testid="vault-switcher" />,
-}));
-
-vi.mock("./features/tags/TagsPanel", () => ({
-    TagsPanel: () => <div data-testid="tags-panel" />,
-}));
-
-vi.mock("./features/search/SearchPanel", () => ({
-    SearchPanel: () => <div data-testid="search-panel" />,
+vi.mock("./components/layout/SidebarShell", () => ({
+    SidebarShell: () => <div data-testid="sidebar-shell" />,
 }));
 
 vi.mock("./features/notes/LinksPanel", () => ({
@@ -74,8 +58,8 @@ vi.mock("./features/notes/OutlinePanel", () => ({
     OutlinePanel: () => <div data-testid="outline-panel" />,
 }));
 
-vi.mock("./features/ai/AIChatPanel", () => ({
-    AIChatPanel: () => <div data-testid="ai-chat-panel" />,
+vi.mock("./features/ai/AgentsSidebarPanel", () => ({
+    AgentsSidebarPanel: () => <div data-testid="agents-sidebar-panel" />,
 }));
 
 vi.mock("./features/editor/UnifiedBar", () => ({
@@ -84,8 +68,8 @@ vi.mock("./features/editor/UnifiedBar", () => ({
     ),
 }));
 
-vi.mock("./features/editor/WorkspaceChromeBar", () => ({
-    WorkspaceChromeBar: () => <div data-testid="workspace-chrome-bar" />,
+vi.mock("./features/editor/EditorChromeBar", () => ({
+    EditorChromeBar: () => <div data-testid="editor-chrome-bar" />,
 }));
 
 vi.mock("./features/editor/MultiPaneWorkspace", () => ({
@@ -107,10 +91,6 @@ vi.mock("./features/editor/FileTabView", () => ({
 
 vi.mock("./features/ai/components/AIReviewView", () => ({
     AIReviewView: () => <div data-testid="review-view">Review view</div>,
-}));
-
-vi.mock("./features/editor/NewTabView", () => ({
-    NewTabView: () => <div data-testid="new-tab-view">New tab</div>,
 }));
 
 vi.mock("./features/search/SearchView", () => ({
@@ -139,12 +119,6 @@ vi.mock("./features/quick-switcher/QuickSwitcher", () => ({
 
 vi.mock("./features/settings", () => ({
     SettingsPanel: () => <div data-testid="settings-panel" />,
-}));
-
-vi.mock("./features/devtools/DeveloperPanel", () => ({
-    DEVELOPER_PANEL_NEW_TAB_EVENT: "developer-panel:new-tab",
-    DEVELOPER_PANEL_RESTART_EVENT: "developer-panel:restart",
-    DeveloperPanel: () => <div data-testid="developer-panel" />,
 }));
 
 vi.mock("./app/detachedWindows", () => ({
@@ -428,7 +402,7 @@ describe("App web clipper routing", () => {
 
         expect(useEditorStore.getState().panes).toHaveLength(2);
         expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
-        expect(screen.getByTestId("workspace-chrome-bar")).toBeInTheDocument();
+        expect(screen.getByTestId("editor-chrome-bar")).toBeInTheDocument();
         expect(screen.getByTestId("multi-pane-workspace")).toBeInTheDocument();
         expect(useLayoutStore.getState().editorPaneSizes).toEqual([0.4, 0.6]);
     });

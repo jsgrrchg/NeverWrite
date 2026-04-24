@@ -8,10 +8,10 @@ import {
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { confirm } from "@tauri-apps/plugin-dialog";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { confirm } from "@neverwrite/runtime";
+import { getCurrentWindow } from "@neverwrite/runtime";
+import { getCurrentWebview } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import {
     getCurrentWindowLabel,
     publishWindowTabDropZone,
@@ -55,10 +55,8 @@ import {
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
-import {
-    buildNewTabContextMenuEntries,
-    openBlankDraftTabFromPlusButton,
-} from "./newTabMenuActions";
+import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
+import { useCommandStore } from "../command-palette/store/commandStore";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
@@ -158,6 +156,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const tabOpenBehavior = useSettingsStore((s) => s.tabOpenBehavior);
     const developerModeEnabled = useSettingsStore(
         (s) => s.developerModeEnabled,
+    );
+    const developerTerminalEnabled = useSettingsStore(
+        (s) => s.developerTerminalEnabled,
     );
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
@@ -1422,9 +1423,9 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         data-new-tab-button="true"
                                         onMouseDown={(e) => e.stopPropagation()}
                                         onClick={() => {
-                                            openBlankDraftTabFromPlusButton(
-                                                focusedPaneId ?? undefined,
-                                            );
+                                            useCommandStore
+                                                .getState()
+                                                .openQuickSwitcher();
                                         }}
                                         onContextMenu={(event) => {
                                             event.preventDefault();
@@ -1453,7 +1454,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 <div
                                     onMouseDown={startWindowDrag}
                                     onDoubleClick={() => toggleWindowMaximize()}
-                                    className="min-w-2 flex-1"
+                                    className="drag min-w-2 flex-1"
                                 />
                             </div>
                             {tabStripOverflowState.showLeadingFade && (
@@ -1627,6 +1628,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     entries={buildNewTabContextMenuEntries({
                         paneId: focusedPaneId ?? undefined,
                         developerModeEnabled,
+                        developerTerminalEnabled,
                     })}
                 />
             )}

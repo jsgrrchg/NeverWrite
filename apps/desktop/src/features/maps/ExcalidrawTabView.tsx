@@ -1,8 +1,12 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import type { MutableRefObject } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { useEditorStore, isMapTab } from "../../app/store/editorStore";
+import { invoke } from "@neverwrite/runtime";
+import { listen } from "@neverwrite/runtime";
+import {
+    useEditorStore,
+    isMapTab,
+    selectEditorPaneActiveTab,
+} from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
@@ -127,9 +131,13 @@ function flushScheduledSaveRefs(
     flushSaveQueue(activeSaveRef, pendingSavesRef, persistedSignaturesRef);
 }
 
-export function ExcalidrawTabView() {
+interface ExcalidrawTabViewProps {
+    paneId?: string;
+}
+
+export function ExcalidrawTabView({ paneId }: ExcalidrawTabViewProps) {
     const relativePath = useEditorStore((s) => {
-        const t = s.tabs.find((t) => t.id === s.activeTabId);
+        const t = selectEditorPaneActiveTab(s, paneId);
         return t && isMapTab(t) ? t.relativePath : null;
     });
     const vaultPath = useVaultStore((s) => s.vaultPath);
@@ -378,7 +386,7 @@ export function ExcalidrawTabView() {
         >
             <div className="w-full h-full">
                 <Excalidraw
-                    key={relativePath}
+                    key={`${paneId ?? "focused"}:${relativePath}`}
                     excalidrawAPI={setExcalidrawAPI}
                     initialData={loaded}
                     onChange={handleChange}

@@ -1,5 +1,6 @@
 import {
     fileViewerNeedsTextContent,
+    ensureTerminalTabDefaults,
     isFileTab,
     isGraphTab,
     isHistoryTab,
@@ -10,6 +11,7 @@ import {
     isChatTab,
     isChatHistoryTab,
     isReviewTab,
+    isTerminalTab,
     type FileViewerMode,
     type PdfViewMode,
     type Tab,
@@ -131,6 +133,14 @@ type PersistedChatHistoryWorkspaceTab = {
     title: string;
 };
 
+type PersistedTerminalWorkspaceTab = {
+    id: string;
+    kind: "terminal";
+    terminalId: string;
+    title: string;
+    cwd: string | null;
+};
+
 type PersistedWorkspaceTab =
     | PersistedNoteWorkspaceTab
     | PersistedPdfWorkspaceTab
@@ -138,7 +148,8 @@ type PersistedWorkspaceTab =
     | PersistedMapWorkspaceTab
     | PersistedGraphWorkspaceTab
     | PersistedChatWorkspaceTab
-    | PersistedChatHistoryWorkspaceTab;
+    | PersistedChatHistoryWorkspaceTab
+    | PersistedTerminalWorkspaceTab;
 
 export interface PersistedSessionV2 {
     version: 2;
@@ -383,6 +394,16 @@ function serializeWorkspaceTabForSession(
         };
     }
 
+    if (isTerminalTab(tab)) {
+        return {
+            id: tab.id,
+            kind: "terminal",
+            terminalId: tab.terminalId,
+            title: tab.title,
+            cwd: tab.cwd,
+        };
+    }
+
     return null;
 }
 
@@ -564,7 +585,12 @@ function normalizeRestoredTabInput(tab: TabInput): TabInput | null {
     if (isHistoryTab(tab)) {
         return normalizeHistoryTab(tab);
     }
-    if (isGraphTab(tab) || isChatHistoryTab(tab) || isMapTab(tab)) {
+    if (
+        isGraphTab(tab) ||
+        isChatHistoryTab(tab) ||
+        isMapTab(tab) ||
+        isTerminalTab(tab)
+    ) {
         return tab;
     }
     return null;
@@ -684,6 +710,17 @@ async function restorePersistedWorkspaceTabsById(
                     ? { historySessionId: tab.historySessionId }
                     : {}),
                 title: tab.title,
+            };
+            continue;
+        }
+
+        if (tab.kind === "terminal") {
+            restoredTabsById[tab.id] = {
+                id: tab.id,
+                kind: "terminal",
+                terminalId: tab.terminalId,
+                title: tab.title,
+                cwd: tab.cwd ?? null,
             };
             continue;
         }
@@ -1194,6 +1231,9 @@ function normalizeHydratedSessionTab(tab: TabInput): Tab | null {
     }
     if (isChatTab(tab) || isChatHistoryTab(tab) || isGraphTab(tab)) {
         return tab;
+    }
+    if (isTerminalTab(tab)) {
+        return ensureTerminalTabDefaults(tab);
     }
     return null;
 }

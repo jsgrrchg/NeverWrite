@@ -3,7 +3,7 @@ import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@neverwrite/runtime";
 import { Terminal } from "@xterm/xterm";
 import {
     useCallback,
@@ -55,8 +55,12 @@ function buildSearchSummary(resultIndex: number, resultCount: number) {
 const TERMINAL_RESIZE_SETTLE_MS = 80;
 
 export function TerminalViewport({
+    active = true,
+    autoFocus = false,
     session,
 }: {
+    active?: boolean;
+    autoFocus?: boolean;
     session: TerminalSessionView;
 }) {
     const { rawOutput, resize, snapshot, writeInput } = session;
@@ -67,6 +71,7 @@ export function TerminalViewport({
     const writeInputRef = useRef(writeInput);
     const resizeRef = useRef(resize);
     const snapshotRef = useRef(snapshot);
+    const syncSizeRef = useRef<() => void>(() => undefined);
     const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(
         null,
@@ -229,6 +234,7 @@ export function TerminalViewport({
                 }, TERMINAL_RESIZE_SETTLE_MS);
             }
         };
+        syncSizeRef.current = syncSize;
 
         terminal.loadAddon(fitAddon);
         terminal.loadAddon(searchAddon);
@@ -300,6 +306,7 @@ export function TerminalViewport({
             textarea?.removeEventListener("focus", handleFocus);
             onDataDisposable.dispose();
             terminal.dispose();
+            syncSizeRef.current = () => undefined;
             terminalRef.current = null;
             fitAddonRef.current = null;
             searchAddonRef.current = null;
@@ -322,6 +329,19 @@ export function TerminalViewport({
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [closeSearch, openSearch]);
+
+    useEffect(() => {
+        if (!active) return;
+
+        const frame = requestAnimationFrame(() => {
+            syncSizeRef.current();
+            if (autoFocus) {
+                focusTerminal();
+            }
+        });
+
+        return () => cancelAnimationFrame(frame);
+    }, [active, autoFocus, focusTerminal, snapshot.sessionId]);
 
     useEffect(() => {
         const terminal = terminalRef.current;

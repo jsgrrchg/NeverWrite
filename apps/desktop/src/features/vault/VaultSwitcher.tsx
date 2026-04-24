@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "@neverwrite/runtime";
 import {
     useVaultStore,
     getRecentVaults,
@@ -12,7 +12,15 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { getPathBaseName } from "../../app/utils/path";
 
-export function VaultSwitcher() {
+export interface VaultSwitcherProps {
+    onOpenSettings?: (section?: string) => void;
+    updateAvailable?: boolean;
+}
+
+export function VaultSwitcher({
+    onOpenSettings,
+    updateAvailable = false,
+}: VaultSwitcherProps = {}) {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [isOpen, setIsOpen] = useState(false);
     const [recentSearch, setRecentSearch] = useState("");
@@ -73,6 +81,7 @@ export function VaultSwitcher() {
         action: () => void,
         checked = false,
         muted = false,
+        trailing?: React.ReactNode,
     ) => (
         <button
             key={label}
@@ -91,9 +100,15 @@ export function VaultSwitcher() {
             <span style={{ width: 12, flexShrink: 0, color: "var(--accent)" }}>
                 {checked ? "✓" : ""}
             </span>
-            <span className="truncate">{label}</span>
+            <span className="truncate flex-1">{label}</span>
+            {trailing}
         </button>
     );
+
+    const handleOpenSettings = () => {
+        closeSwitcher();
+        onOpenSettings?.(updateAvailable ? "updates" : undefined);
+    };
 
     return (
         <div
@@ -232,6 +247,38 @@ export function VaultSwitcher() {
                         () => void handleOpenVault(),
                         false,
                         true,
+                    )}
+                    {onOpenSettings && (
+                        <>
+                            <div
+                                style={{
+                                    height: 1,
+                                    backgroundColor: "var(--border)",
+                                    margin: "4px 0",
+                                }}
+                            />
+                            {menuItem(
+                                updateAvailable
+                                    ? "Settings · Update available"
+                                    : "Settings…",
+                                handleOpenSettings,
+                                false,
+                                true,
+                                updateAvailable ? (
+                                    <span
+                                        aria-hidden="true"
+                                        style={{
+                                            width: 6,
+                                            height: 6,
+                                            borderRadius: "50%",
+                                            background:
+                                                "linear-gradient(180deg, #f97316, #ef4444)",
+                                            flexShrink: 0,
+                                        }}
+                                    />
+                                ) : undefined,
+                            )}
+                        </>
                     )}
                 </div>
             )}

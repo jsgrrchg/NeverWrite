@@ -4,7 +4,7 @@ NeverWrite is a local-first knowledge workspace for people who want AI on top of
 
 Today the repository combines:
 
-- A Tauri desktop app that opens a real local vault and keeps working state on disk
+- An Electron desktop app with a Rust sidecar that opens a real local vault and keeps working state on disk
 - A serious Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view
 - An ACP-based AI layer with Codex, Claude, Gemini, and Kilo runtimes
@@ -87,7 +87,7 @@ The current product already includes:
 
 ```text
 apps/
-  desktop/          Main Tauri + React desktop application
+  desktop/          Main Electron + React desktop application
   web-clipper/      Browser extension built with WXT + React
 
 crates/
@@ -100,15 +100,14 @@ crates/
 
 Useful docs already in the repo:
 
-- [`apps/desktop/README.md`](apps/desktop/README.md)
 - [`apps/web-clipper/README.md`](apps/web-clipper/README.md)
-- [`apps/desktop/src-tauri/src/ai/ACP.md`](apps/desktop/src-tauri/src/ai/ACP.md)
+- [`release/appcast/README.md`](release/appcast/README.md)
 - [`apps/desktop/src/features/spellcheck/ARCHITECTURE.md`](apps/desktop/src/features/spellcheck/ARCHITECTURE.md)
 
 ## Stack
 
-- Desktop frontend: React 19, TypeScript, Vite, Tailwind CSS 4, CodeMirror 6, Excalidraw, PDF.js
-- Desktop backend: Tauri 2, Rust, `notify`, `tiny_http`, `keyring`, app-owned spellcheck runtime
+- Desktop shell: Electron 41, React 19, TypeScript, Vite, Tailwind CSS 4, CodeMirror 6, Excalidraw, PDF.js
+- Desktop native sidecar: Rust, `notify`, `tiny_http`, `keyring`, app-owned spellcheck runtime
 - Shared Rust crates: vault parsing, indexing, search, diff, DTOs
 - Browser extension: WXT, React, TypeScript, Chrome MV3 and Firefox MV3 targets
 
@@ -121,7 +120,6 @@ Important: there is no top-level JavaScript workspace package. JavaScript depend
 - Rust and Cargo
 - Node.js 22+ and npm for `apps/desktop` and JavaScript tooling
 - Pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
-- Standard Tauri prerequisites for your operating system
 
 CI and release workflows are pinned to Node.js 22, so local development should use Node 22 or newer.
 
@@ -133,13 +131,13 @@ npm install
 npm run dev
 ```
 
-That starts the Vite frontend only.
+That starts the Electron desktop app plus the local renderer dev server.
 
-To run the full Tauri desktop app:
+If you only need the renderer dev server:
 
 ```bash
 cd apps/desktop
-npm run tauri -- dev
+npm run renderer:dev
 ```
 
 ### Web clipper
@@ -215,7 +213,7 @@ Useful runtime overrides during development:
 - `NEVERWRITE_GEMINI_ACP_BIN`
 - `NEVERWRITE_KILO_ACP_BIN`
 
-For release builds, `apps/desktop/src-tauri/binaries/README.md` documents how bundled runtime staging works.
+For release builds, see `apps/desktop/scripts/stage-electron-sidecar.mjs` and `release/appcast/README.md`.
 
 ## Web Clipper Notes
 
@@ -225,7 +223,7 @@ When developing against an unpacked extension build, the desktop app blocks arbi
 
 ```bash
 cd apps/desktop
-NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run tauri -- dev
+NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS="chrome-extension://<dev-id>,moz-extension://<dev-id>" npm run dev
 ```
 
 Use exact origins only. Wildcards are intentionally unsupported.

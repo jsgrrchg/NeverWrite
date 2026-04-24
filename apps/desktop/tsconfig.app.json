@@ -6,6 +6,11 @@
         "lib": ["ES2023", "DOM", "DOM.Iterable"],
         "module": "ESNext",
         "types": ["vite/client"],
+        "ignoreDeprecations": "6.0",
+        "baseUrl": ".",
+        "paths": {
+            "@neverwrite/runtime": ["src/app/runtime/index.ts"]
+        },
         "skipLibCheck": true,
 
         /* Bundler mode */

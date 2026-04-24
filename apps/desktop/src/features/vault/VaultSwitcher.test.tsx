@@ -4,10 +4,6 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
 import { VaultSwitcher } from "./VaultSwitcher";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-    open: vi.fn(),
-}));
-
 vi.mock("../../app/detachedWindows", () => ({
     openVaultWindow: vi.fn(),
 }));

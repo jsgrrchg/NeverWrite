@@ -155,8 +155,11 @@ export const WORKSPACE_PHASE0_INVENTORY = [
     {
         id: "workspace-chrome-global-navigation",
         role: "chrome-navigation",
-        file: "apps/desktop/src/features/editor/WorkspaceChromeBar.tsx",
-        symbols: ["WorkspaceChromeBar", "goBack", "goForward"],
+        // The horizontal WorkspaceChromeBar was retired in favour of a
+        // sidebar-integrated layout; goBack/goForward now live exclusively
+        // in UnifiedBar and will migrate to pane headers in Phase 2b.
+        file: "apps/desktop/src/features/editor/UnifiedBar.tsx",
+        symbols: ["UnifiedBar", "goBack", "goForward"],
         reads: [
             "tabs",
             "activeTabId",
@@ -290,7 +293,6 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         file: "apps/desktop/src/App.tsx",
         symbols: [
             "RightPanel",
-            "AIChatPanel",
             "cycleEditorTabs",
             "tabs",
             "activeTabId",
@@ -298,25 +300,24 @@ export const WORKSPACE_PHASE0_INVENTORY = [
         reads: ["tabs", "activeTabId", "panes", "focusedPaneId"],
         writes: [],
         summary:
-            "The app shell still owns the auxiliary chat sidebar, while workspace chat tabs remain the primary chat surface.",
+            "The app shell no longer hosts the chat sidebar — that moved to the left SidebarShell. The right panel only exposes Outline/Links as contextual support.",
         migrationIntent:
-            "Phase 2c keeps the right panel as contextual support and leaves future shortcut cleanup to focused-pane-aware commands.",
+            "Phase 2c keeps the right panel contextual and leaves future shortcut cleanup to focused-pane-aware commands.",
     },
     {
         id: "ai-chat-panel-sidebar-primary-surface",
         role: "chat-sidebar-bridge",
-        file: "apps/desktop/src/features/ai/AIChatPanel.tsx",
+        file: "apps/desktop/src/features/ai/AgentsSidebarPanel.tsx",
         symbols: [
-            "AIChatPanel",
-            "AIChatPanel",
-            "AIChatSessionList",
+            "AgentsSidebarPanel",
+            "AgentsSidebarItem",
             "openChatSessionInWorkspace",
             "createNewChatInWorkspace",
         ],
         reads: [],
         writes: [],
         summary:
-            "AIChatPanel now acts as a launcher and inspector for workspace-owned chat sessions instead of rendering the primary composer surface itself.",
+            "AgentsSidebarPanel acts as a Comando-style launcher for workspace-owned chat sessions inside the left sidebar, without rendering the primary composer surface itself.",
         migrationIntent:
             "Keep this panel auxiliary and resist reintroducing a second primary chat surface here.",
     },
@@ -405,7 +406,6 @@ export const WORKSPACE_PHASE0_INCONSISTENCIES = [
     {
         id: "global-navigation-still-lives-in-window-chrome",
         files: [
-            "apps/desktop/src/features/editor/WorkspaceChromeBar.tsx",
             "apps/desktop/src/features/editor/UnifiedBar.tsx",
             "apps/desktop/src/App.tsx",
         ],

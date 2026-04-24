@@ -1,8 +1,8 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { listen } from "@neverwrite/runtime";
+import { getCurrentWebviewWindow } from "@neverwrite/runtime";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
     useSettingsStore,
@@ -778,7 +778,8 @@ function GeneralSettings() {
 
 function AppearanceSettings() {
     const { mode, setMode, themeName, setThemeName } = useThemeStore();
-    const { fileTreeScale, setSetting } = useSettingsStore();
+    const { fileTreeScale, fileTreeStickyFolders, setSetting } =
+        useSettingsStore();
 
     return (
         <div>
@@ -812,6 +813,18 @@ function AppearanceSettings() {
                         min={90}
                         max={140}
                         onChange={(v) => setSetting("fileTreeScale", v)}
+                    />
+                }
+            />
+            <Row
+                label="Sticky folders"
+                description="Keep parent folders pinned at the top while scrolling the file tree."
+                control={
+                    <Toggle
+                        value={fileTreeStickyFolders}
+                        onChange={(v) =>
+                            setSetting("fileTreeStickyFolders", v)
+                        }
                     />
                 }
             />
@@ -2156,7 +2169,7 @@ function UpdatesSettings() {
                                     fontVariantNumeric: "tabular-nums",
                                 }}
                             >
-                                {formatUpdateDate(status.update.date)}
+                                {formatUpdateDate(status.update.date ?? undefined)}
                             </span>
                         }
                     />

@@ -1,6 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@neverwrite/runtime";
+import { listen, type UnlistenFn } from "@neverwrite/runtime";
 import type { VaultNoteChange } from "../../app/store/vaultStore";
+import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import type {
     AIAvailableCommandsPayload,
     AIAuthTerminalErrorPayload,
@@ -547,7 +548,7 @@ export async function aiGetTextFileHash(
 ): Promise<string | null> {
     return invoke<string | null>("ai_get_text_file_hash", {
         vaultPath,
-        path,
+        path: toBackendVaultScopedPath(vaultPath, path),
     });
 }
 
@@ -560,11 +561,21 @@ export async function aiRestoreTextFile(input: {
     return (
         (await invoke<VaultNoteChange | null>("ai_restore_text_file", {
             vaultPath: input.vaultPath,
-            path: input.path,
-            previousPath: input.previousPath ?? null,
+            path: toBackendVaultScopedPath(input.vaultPath, input.path),
+            previousPath:
+                typeof input.previousPath === "string"
+                    ? toBackendVaultScopedPath(
+                          input.vaultPath,
+                          input.previousPath,
+                      )
+                    : null,
             content: input.content ?? null,
         })) ?? null
     );
+}
+
+function toBackendVaultScopedPath(vaultPath: string, path: string) {
+    return toVaultRelativePath(path, vaultPath) ?? path;
 }
 
 export async function listenToAiSessionCreated(

@@ -10,6 +10,7 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
+    isTerminalTab,
     markSessionReady,
     readPersistedSession,
     selectFocusedPaneId,
@@ -120,6 +121,18 @@ function makeMapTab(overrides: {
         kind: "map" as const,
         history: [],
         historyIndex: -1,
+    };
+}
+
+function makeTerminalTab(overrides: {
+    id: string;
+    terminalId: string;
+    title: string;
+    cwd: string | null;
+}) {
+    return {
+        ...overrides,
+        kind: "terminal" as const,
     };
 }
 
@@ -1867,6 +1880,121 @@ describe("editorStore tab management", () => {
         const historyTabs = state.tabs.filter((tab) => isChatHistoryTab(tab));
         expect(historyTabs).toHaveLength(1);
         expect(state.activeTabId).toBe(firstHistoryTab?.id ?? null);
+    });
+
+    it("detects terminal tabs and preserves them during workspace hydration", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "terminal-1",
+                            kind: "terminal",
+                            terminalId: "runtime-1",
+                            title: "Terminal 1",
+                            cwd: "/vaults/project-alpha",
+                        },
+                    ],
+                    activeTabId: "terminal-1",
+                },
+            ],
+            "primary",
+        );
+
+        const state = useEditorStore.getState();
+        expect(state.tabs).toHaveLength(1);
+        expect(isTerminalTab(state.tabs[0])).toBe(true);
+        expect(state.tabs[0]).toMatchObject({
+            id: "terminal-1",
+            kind: "terminal",
+            terminalId: "runtime-1",
+            title: "Terminal 1",
+            cwd: "/vaults/project-alpha",
+        });
+        expect(state.activeTabId).toBe("terminal-1");
+    });
+
+    it("opens terminal tabs in the requested pane without creating PTY runtime state", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/project-alpha" });
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "left",
+                    tabs: [
+                        makeTab({
+                            id: "note-1",
+                            noteId: "notes/alpha",
+                            title: "Alpha",
+                            content: "alpha",
+                        }),
+                    ],
+                    activeTabId: "note-1",
+                },
+                {
+                    id: "right",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "left",
+        );
+
+        const tabId = useEditorStore.getState().openTerminal({
+            paneId: "right",
+        });
+
+        const state = useEditorStore.getState();
+        expect(tabId).toBeTruthy();
+        expect(state.focusedPaneId).toBe("right");
+        expect(state.panes[1]?.tabs).toEqual([
+            expect.objectContaining({
+                id: tabId,
+                kind: "terminal",
+                title: "Terminal 1",
+                cwd: "/vaults/project-alpha",
+            }),
+        ]);
+        expect(state.activeTabId).toBe(tabId);
+        expect(
+            useEditorStore.getState().openTerminal({ paneId: "missing" }),
+        ).toBeNull();
+    });
+
+    it("remembers terminal tabs in recently closed tabs", () => {
+        useEditorStore.setState({
+            tabs: [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "a",
+                }),
+                makeTerminalTab({
+                    id: "terminal-1",
+                    terminalId: "runtime-1",
+                    title: "Terminal 1",
+                    cwd: null,
+                }),
+            ],
+            activeTabId: "terminal-1",
+            activationHistory: ["tab-a", "terminal-1"],
+            tabNavigationHistory: ["tab-a", "terminal-1"],
+            tabNavigationIndex: 1,
+        });
+
+        useEditorStore.getState().closeTab("terminal-1");
+
+        expect(useEditorStore.getState().recentlyClosedTabs).toMatchObject([
+            {
+                index: 1,
+                tab: {
+                    id: "terminal-1",
+                    kind: "terminal",
+                    terminalId: "runtime-1",
+                },
+            },
+        ]);
     });
 
     it("focuses an existing chat history tab in another pane without duplicating it", () => {

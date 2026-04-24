@@ -2935,7 +2935,11 @@ mod tests {
 
         assert_eq!(mapped.model_id, "claude-3-7-sonnet");
         assert_eq!(
-            mapped.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            mapped
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["claude-3-7-sonnet"]
         );
         assert_eq!(

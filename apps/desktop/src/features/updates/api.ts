@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { Update } from "@tauri-apps/plugin-updater";
+import { invoke } from "@neverwrite/runtime";
+import type { Update } from "@neverwrite/runtime";
 
 export interface AvailableAppUpdate extends Pick<
     Update,

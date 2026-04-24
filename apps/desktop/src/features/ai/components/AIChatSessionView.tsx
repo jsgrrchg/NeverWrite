@@ -2,7 +2,7 @@
  * AIChatSessionView — renders a single chat session inside an editor workspace pane.
  *
  * Unlike the window-level chat host, this component:
- * - Does NOT bind Tauri event listeners itself.
+ * - Does NOT bind desktop runtime event listeners itself.
  * - Does NOT manage tabs or history — the workspace pane handles that.
  * - Derives its sessionId from the active ChatTab in the pane via editorStore.
  *
@@ -10,7 +10,7 @@
  * source of truth regardless of where the UI renders.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { open as tauriOpen } from "@tauri-apps/plugin-dialog";
+import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
     isChatTab,
@@ -206,7 +206,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
 
     const handleAttachFile = useCallback(async () => {
         if (!sessionId) return;
-        const selected = await tauriOpen({
+        const selected = await runtimeOpen({
             multiple: false,
             filters: [
                 {

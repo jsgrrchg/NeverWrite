@@ -1,42 +1,32 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
-import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@neverwrite/runtime";
+import { listen } from "@neverwrite/runtime";
+import { getCurrentWebview } from "@neverwrite/runtime";
+import { getAllWebviewWindows } from "@neverwrite/runtime";
+import { open } from "@neverwrite/runtime";
+import { invoke } from "@neverwrite/runtime";
 import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
 import { vaultInvoke } from "./app/utils/vaultInvoke";
 import { AppLayout } from "./components/layout/AppLayout";
-import { ActivityBar, type SidebarView } from "./components/layout/ActivityBar";
-import { FileTree } from "./features/vault/FileTree";
-import { VaultSwitcher } from "./features/vault/VaultSwitcher";
-import { TagsPanel } from "./features/tags/TagsPanel";
-import { SearchPanel } from "./features/search/SearchPanel";
+import { SidebarShell } from "./components/layout/SidebarShell";
 import { LinksPanel } from "./features/notes/LinksPanel";
 import { OutlinePanel } from "./features/notes/OutlinePanel";
-import { AIChatPanel } from "./features/ai/AIChatPanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
+import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
+import { migrateLegacyTerminalTabsToWorkspace } from "./features/terminal/legacyTerminalMigration";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./features/editor/Editor";
 import { EditorPaneContent } from "./features/editor/EditorPaneContent";
 import { MultiPaneWorkspace } from "./features/editor/MultiPaneWorkspace";
-import { WorkspaceChromeBar } from "./features/editor/WorkspaceChromeBar";
-import { MapsPanel } from "./features/maps/MapsPanel";
-import { BookmarksPanel } from "./features/bookmarks/BookmarksPanel";
+import { EditorChromeBar } from "./features/editor/EditorChromeBar";
 import { useBookmarkStore } from "./app/store/bookmarkStore";
 import { CommandPalette } from "./features/command-palette/CommandPalette";
 import { QuickSwitcher } from "./features/quick-switcher/QuickSwitcher";
 import { SettingsPanel } from "./features/settings";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
-import {
-    DEVELOPER_PANEL_NEW_TAB_EVENT,
-    DEVELOPER_PANEL_RESTART_EVENT,
-    DeveloperPanel,
-} from "./features/devtools/DeveloperPanel";
 import { getPathBaseName } from "./app/utils/path";
 import {
     ATTACH_EXTERNAL_TAB_EVENT,
@@ -62,6 +52,7 @@ import {
     isChatTab,
     isFileTab,
     isNoteTab,
+    isTerminalTab,
     selectEditorWorkspaceTabs,
     selectFocusedPaneId,
     selectFocusedEditorTab,
@@ -106,6 +97,7 @@ import {
     useChatTabsStore,
 } from "./features/ai/store/chatTabsStore";
 import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
+import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
 import { useAppUpdateStore } from "./features/updates/store";
@@ -147,27 +139,6 @@ function waitForWindowRoute(ms: number) {
     });
 }
 
-function SidebarPanel({ view }: { view: SidebarView }) {
-    return (
-        <div className="h-full flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-hidden">
-                {view === "files" ? (
-                    <FileTree />
-                ) : view === "search" ? (
-                    <SearchPanel autoFocus />
-                ) : view === "bookmarks" ? (
-                    <BookmarksPanel />
-                ) : view === "maps" ? (
-                    <MapsPanel />
-                ) : (
-                    <TagsPanel />
-                )}
-            </div>
-            {view !== "maps" && <VaultSwitcher />}
-        </div>
-    );
-}
-
 function cycleEditorTabs(backward: boolean) {
     const state = useEditorStore.getState();
     const pane = selectPaneState(state);
@@ -179,14 +150,9 @@ function cycleEditorTabs(backward: boolean) {
 }
 
 function openEmptyTab() {
+    // Cmd+T opens the unified quick switcher palette instead of a blank draft tab.
     if (!useVaultStore.getState().vaultPath) return;
-
-    useEditorStore.getState().insertExternalTab({
-        id: crypto.randomUUID(),
-        noteId: "",
-        title: "New Tab",
-        content: "",
-    });
+    useCommandStore.getState().openQuickSwitcher();
 }
 
 function toggleLivePreviewSetting() {
@@ -210,7 +176,6 @@ function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
     return (
         <>
-            {rightPanelView === "chat" && <AIChatPanel />}
             {rightPanelView === "outline" && <OutlineRightPanel />}
             {rightPanelView === "links" && <LinksPanel />}
         </>
@@ -373,7 +338,6 @@ function OutlineRightPanel() {
 
 // Register all initial commands
 function useRegisterCommands(
-    openSearchPanel: () => void,
     openSettings: () => void,
     developerCommandsEnabled: boolean,
 ) {
@@ -400,7 +364,6 @@ function useRegisterCommands(
         const zoomInShortcut = getShortcutDefinition("zoom_in");
         const zoomOutShortcut = getShortcutDefinition("zoom_out");
         const resetZoomShortcut = getShortcutDefinition("reset_zoom");
-        const searchInVaultShortcut = getShortcutDefinition("search_in_vault");
         const openSettingsShortcut = getShortcutDefinition("open_settings");
         const toggleLivePreviewShortcut = getShortcutDefinition(
             "toggle_live_preview",
@@ -430,6 +393,12 @@ function useRegisterCommands(
             developerCommandsEnabled &&
             useSettingsStore.getState().developerModeEnabled &&
             useSettingsStore.getState().developerTerminalEnabled;
+        const activeTerminalTab = () => {
+            const tab = selectFocusedEditorTab(useEditorStore.getState());
+            return tab && isTerminalTab(tab) ? tab : null;
+        };
+        const canRestartActiveTerminal = () =>
+            developerModeEnabled() && activeTerminalTab() !== null;
 
         // Navigation
         register({
@@ -569,7 +538,7 @@ function useRegisterCommands(
                 const activeTab = selectFocusedEditorTab(state);
                 if (!activeTab) return;
 
-                if (isNoteTab(activeTab) && activeTab.noteId !== "") {
+                if (isNoteTab(activeTab)) {
                     window.dispatchEvent(
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );
@@ -742,15 +711,6 @@ function useRegisterCommands(
         });
 
         register({
-            id: "vault:search",
-            label: searchInVaultShortcut.label,
-            shortcut: formatShortcutAction(searchInVaultShortcut.id, platform),
-            category: searchInVaultShortcut.category,
-            when: hasVault,
-            execute: openSearchPanel,
-        });
-
-        register({
             id: "app:open-settings",
             label: openSettingsShortcut.label,
             shortcut: formatShortcutAction(openSettingsShortcut.id, platform),
@@ -759,57 +719,32 @@ function useRegisterCommands(
         });
 
         register({
-            id: "developer:toggle-panel",
-            label: "Toggle Developer Panel",
-            category: "Developer",
-            when: developerModeEnabled,
-            execute: () => {
-                const layout = useLayoutStore.getState();
-                if (
-                    layout.bottomPanelCollapsed ||
-                    layout.bottomPanelView !== "terminal"
-                ) {
-                    layout.activateBottomView("terminal");
-                    return;
-                }
-                layout.toggleBottomPanel();
-            },
-        });
-
-        register({
             id: "developer:restart-terminal",
             label: "Restart Active Terminal",
             category: "Developer",
-            when: developerModeEnabled,
+            when: canRestartActiveTerminal,
             execute: () => {
-                useLayoutStore.getState().activateBottomView("terminal");
-                window.setTimeout(() => {
-                    window.dispatchEvent(
-                        new Event(DEVELOPER_PANEL_RESTART_EVENT),
-                    );
-                }, 0);
+                const tab = activeTerminalTab();
+                if (!tab) return;
+                void useTerminalRuntimeStore
+                    .getState()
+                    .restart(tab.terminalId);
             },
         });
 
         register({
             id: "developer:new-terminal-tab",
-            label: "New Terminal Tab",
+            label: "New Terminal",
             category: "Developer",
             when: developerModeEnabled,
             execute: () => {
-                useLayoutStore.getState().activateBottomView("terminal");
-                window.setTimeout(() => {
-                    window.dispatchEvent(
-                        new Event(DEVELOPER_PANEL_NEW_TAB_EVENT),
-                    );
-                }, 0);
+                useEditorStore.getState().openTerminal();
             },
         });
     }, [
         register,
         openCommandPalette,
         openQuickSwitcher,
-        openSearchPanel,
         openSettings,
         developerCommandsEnabled,
     ]);
@@ -892,12 +827,6 @@ function useGlobalShortcuts(openSettings: () => void) {
             if (matchesShortcutAction(e, "reset_zoom", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("app:zoom-reset");
-                return;
-            }
-
-            if (matchesShortcutAction(e, "search_in_vault", platform)) {
-                e.preventDefault();
-                useCommandStore.getState().execute("vault:search");
                 return;
             }
 
@@ -1130,11 +1059,8 @@ function useDynamicScrollbars() {
 }
 
 export default function App() {
-    const sidebarView = useLayoutStore((s) => s.sidebarView);
     const editorPaneSizes = useLayoutStore((s) => s.editorPaneSizes);
-    const setSidebarView = useLayoutStore((s) => s.setSidebarView);
     const setEditorPaneSizes = useLayoutStore((s) => s.setEditorPaneSizes);
-    const bottomPanelView = useLayoutStore((s) => s.bottomPanelView);
     const restoreVault = useVaultStore((s) => s.restoreVault);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
@@ -1148,12 +1074,6 @@ export default function App() {
     const chatTabsReady = useChatTabsStore((s) => s.isReady);
     const hydrateChatWorkspace = useChatTabsStore((s) => s.hydrateForVault);
     const restoreChatWorkspace = useChatTabsStore((s) => s.restoreWorkspace);
-    const developerModeEnabled = useSettingsStore(
-        (s) => s.developerModeEnabled,
-    );
-    const developerTerminalEnabled = useSettingsStore(
-        (s) => s.developerTerminalEnabled,
-    );
     const windowMode = getWindowMode();
     const vaultParam = readSearchParam("vault");
     const [windowSessionReady, setWindowSessionReady] = useState(
@@ -1172,11 +1092,6 @@ export default function App() {
     >(new Map());
     const fileReloadVersionRef = useRef<Map<string, number>>(new Map());
 
-    const openSearchPanel = useCallback(() => {
-        useLayoutStore.getState().setSidebarView("search");
-        useLayoutStore.getState().expandSidebar();
-    }, []);
-
     const openSettings = useCallback(
         (section?: string) =>
             void openSettingsWindow(
@@ -1185,7 +1100,6 @@ export default function App() {
             ),
         [vaultPath],
     );
-
     useEffect(() => {
         if (windowMode !== "main") {
             return;
@@ -1338,7 +1252,7 @@ export default function App() {
         [openWebClipperClip],
     );
 
-    useRegisterCommands(openSearchPanel, openSettings, windowMode === "main");
+    useRegisterCommands(openSettings, windowMode === "main");
     useGlobalShortcuts(openSettings);
     useAppWebviewZoom();
     useNativeMenuActions(windowMode);
@@ -1348,12 +1262,8 @@ export default function App() {
         const restored = await restorePersistedSession(vaultPath, {
             includeMaps: EXCALIDRAW_RUNTIME_SUPPORTED,
         });
-        if (!restored) {
-            setEditorPaneSizes(1, []);
-            return;
-        }
-        const restoredPanes =
-            restored.panes?.length && restored.panes.length > 0
+        const restoredPanes = restored
+            ? restored.panes?.length && restored.panes.length > 0
                 ? restored.panes
                 : [
                       {
@@ -1368,13 +1278,31 @@ export default function App() {
                               : [],
                           tabNavigationIndex: restored.activeTabId ? 0 : -1,
                       },
-                  ];
-        const paneCount = restoredPanes.length;
-        setEditorPaneSizes(paneCount, restored.paneSizes ?? []);
+                  ]
+            : [
+                  {
+                      id: "primary",
+                      tabs: [],
+                      activeTabId: null,
+                  },
+              ];
+        const migrated = migrateLegacyTerminalTabsToWorkspace({
+            vaultPath,
+            panes: restoredPanes,
+            focusedPaneId:
+                restored?.focusedPaneId ?? restoredPanes[0]?.id ?? null,
+        });
+
+        if (!restored && !migrated.migrated) {
+            setEditorPaneSizes(1, []);
+            return;
+        }
+        const paneCount = migrated.panes.length;
+        setEditorPaneSizes(paneCount, restored?.paneSizes ?? []);
         hydrateWorkspace(
-            restoredPanes,
-            restored.focusedPaneId ?? restoredPanes[0]?.id ?? null,
-            restored.layoutTree,
+            migrated.panes,
+            restored?.focusedPaneId ?? migrated.panes[0]?.id ?? null,
+            restored?.layoutTree,
         );
     }, [hydrateWorkspace, setEditorPaneSizes]);
 
@@ -2045,32 +1973,28 @@ export default function App() {
 
     return (
         <div className="h-full flex flex-col overflow-hidden">
-            <AIChatWorkspaceHost startupReady={chatTabsReady} />
-            <WorkspaceChromeBar />
+            <AIChatWorkspaceHost
+                startupReady={chatTabsReady}
+                listenWithoutChatTabs
+            />
+            <WorkspaceTerminalHost />
 
+            {/* No horizontal chrome bar: the sidebar carries the traffic-light
+                inset and the editor carries its own compact toolbar. This is
+                what lets the translucent sidebar read as a separate surface. */}
             <div className="relative flex-1 flex overflow-hidden">
-                <ActivityBar
-                    active={sidebarView}
-                    onChange={(view) => {
-                        setSidebarView(view);
-                        useLayoutStore.getState().expandSidebar();
-                    }}
-                    onOpenSettings={openSettings}
+                <AppLayout
+                    left={<SidebarShell onOpenSettings={openSettings} />}
+                    center={
+                        <div className="flex h-full min-h-0 flex-col overflow-hidden">
+                            <EditorChromeBar />
+                            <div className="min-h-0 flex-1 overflow-hidden">
+                                <MultiPaneWorkspace />
+                            </div>
+                        </div>
+                    }
+                    right={<RightPanel />}
                 />
-                <div className="min-w-0 flex-1 overflow-hidden">
-                    <AppLayout
-                        left={<SidebarPanel view={sidebarView} />}
-                        center={<MultiPaneWorkspace />}
-                        right={<RightPanel />}
-                        bottom={
-                            developerModeEnabled &&
-                            developerTerminalEnabled &&
-                            bottomPanelView === "terminal" ? (
-                                <DeveloperPanel />
-                            ) : undefined
-                        }
-                    />
-                </div>
                 <VaultOpeningOverlay />
             </div>
 

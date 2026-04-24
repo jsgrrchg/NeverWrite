@@ -7,7 +7,9 @@ import {
     createFileHistoryEntry,
     createGraphTab,
     createMapTab,
+    createTerminalTab,
     ensureFileTabDefaults,
+    ensureTerminalTabDefaults,
     isChatTab,
     isChatHistoryTab,
     isFileTab,
@@ -18,6 +20,7 @@ import {
     isNoteTab,
     isPdfTab,
     isReviewTab,
+    isTerminalTab,
     type ChatTab,
     type FileViewerMode,
     type HistoryTab,
@@ -45,6 +48,7 @@ import {
     type ResourceReloadMetadata,
 } from "./editorResourceRegistry";
 import { useSettingsStore } from "./settingsStore";
+import { useVaultStore } from "./vaultStore";
 import {
     balanceSplit,
     DEFAULT_EDITOR_PANE_ID as INITIAL_EDITOR_PANE_ID,
@@ -164,6 +168,11 @@ export interface EditorWorkspaceActions {
         },
     ) => void;
     closeChat: (sessionId: string) => void;
+    openTerminal: (options?: {
+        cwd?: string | null;
+        paneId?: string;
+        title?: string | null;
+    }) => string | null;
     replaceAiSessionId: (
         fromSessionId: string,
         toSessionId: string,
@@ -969,6 +978,9 @@ function normalizeHydratedTab(tab: TabInput): Tab | null {
     if (isGraphTab(tab)) {
         return tab;
     }
+    if (isTerminalTab(tab)) {
+        return ensureTerminalTabDefaults(tab);
+    }
     return null;
 }
 
@@ -983,6 +995,9 @@ function normalizeExternalTab(tab: TabInput): Tab | null {
         isGraphTab(tab)
     ) {
         return tab;
+    }
+    if (isTerminalTab(tab)) {
+        return ensureTerminalTabDefaults(tab);
     }
     return null;
 }
@@ -1401,6 +1416,11 @@ function pushRecentlyClosedTab(
 
 function getTabOpenBehavior() {
     return useSettingsStore.getState().tabOpenBehavior;
+}
+
+function getNextTerminalTitle(tabs: readonly Tab[]) {
+    const count = tabs.filter((tab) => isTerminalTab(tab)).length;
+    return `Terminal ${count + 1}`;
 }
 
 function updatePaneWithTabs(pane: EditorPaneState, tabs: readonly Tab[]) {
@@ -2346,6 +2366,49 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 (t) => isChatTab(t) && t.sessionId === sessionId,
             );
             if (tab) get().closeTab(tab.id);
+        },
+
+        openTerminal: (options) => {
+            const workspace = getEffectivePaneWorkspace(get());
+            const requestedPane = options?.paneId
+                ? (workspace.panes.find((pane) => pane.id === options.paneId) ??
+                  null)
+                : null;
+
+            if (options?.paneId && !requestedPane) {
+                return null;
+            }
+
+            const targetPane = requestedPane ?? selectEditorPaneState(workspace);
+            const newTab = createTerminalTab({
+                cwd: options?.cwd ?? useVaultStore.getState().vaultPath,
+                title:
+                    options?.title ??
+                    getNextTerminalTitle(selectEditorWorkspaceTabs(workspace)),
+            });
+
+            set((state) => {
+                const currentWorkspace = getEffectivePaneWorkspace(state);
+                const currentTargetPane =
+                    currentWorkspace.panes.find(
+                        (pane) => pane.id === targetPane.id,
+                    ) ?? selectEditorPaneState(currentWorkspace);
+
+                return buildWorkspaceSnapshot({
+                    panes: currentWorkspace.panes.map((pane) =>
+                        pane.id === currentTargetPane.id
+                            ? createEditorPaneState(
+                                  pane.id,
+                                  insertNormalizedTab(pane, newTab),
+                              )
+                            : pane,
+                    ),
+                    focusedPaneId: currentTargetPane.id,
+                    layoutTree: currentWorkspace.layoutTree,
+                });
+            });
+
+            return newTab.id;
         },
 
         replaceAiSessionId: (fromSessionId, toSessionId, historySessionId) => {

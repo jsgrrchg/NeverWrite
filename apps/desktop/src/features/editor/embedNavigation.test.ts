@@ -4,10 +4,6 @@ import { useEditorStore } from "../../app/store/editorStore";
 import { openVaultEmbedTarget } from "./embedNavigation";
 import { setEditorTabs, setVaultEntries } from "../../test/test-utils";
 
-vi.mock("@tauri-apps/plugin-opener", () => ({
-    openPath: vi.fn(),
-}));
-
 describe("embedNavigation", () => {
     beforeEach(() => {
         setEditorTabs([]);

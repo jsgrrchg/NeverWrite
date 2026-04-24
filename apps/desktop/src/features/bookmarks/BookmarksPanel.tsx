@@ -24,6 +24,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import { useVirtualList } from "../../app/hooks/useVirtualList";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
@@ -261,6 +262,7 @@ export function BookmarksPanel() {
     }, [fileTreeScale]);
 
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const [filterText, setFilterText] = useState("");
     const [renamingFolderId, setRenamingFolderId] = useState<string | null>(
         null,
     );
@@ -284,11 +286,49 @@ export function BookmarksPanel() {
         [entries],
     );
 
-    // Build flat rows
-    const rows = useMemo(
-        () => flattenRows(folders, items, expanded),
-        [folders, items, expanded],
-    );
+    // Build flat rows. When a filter is active we narrow `items` to matches
+    // and auto-expand every folder that still contains any — so hits stay
+    // visible without the user opening each folder. Folders whose name
+    // matches are kept whole (children not trimmed) to preserve context.
+    const rows = useMemo(() => {
+        const q = filterText.trim().toLowerCase();
+        if (!q) return flattenRows(folders, items, expanded);
+
+        const resolveTitle = (item: BookmarkItem): string => {
+            if (item.kind === "note" && item.noteId) {
+                return noteMap.get(item.noteId)?.title ?? item.noteId;
+            }
+            if (item.entryPath) {
+                const entry = entryMap.get(item.entryPath);
+                return (
+                    entry?.title ??
+                    item.entryPath.split("/").pop() ??
+                    item.entryPath
+                );
+            }
+            return "";
+        };
+
+        const folderMatches = new Set(
+            folders
+                .filter((f) => f.name.toLowerCase().includes(q))
+                .map((f) => f.id),
+        );
+        const filteredItems = items.filter((item) => {
+            if (item.folderId && folderMatches.has(item.folderId)) return true;
+            return resolveTitle(item).toLowerCase().includes(q);
+        });
+        const folderIdsWithHits = new Set(
+            filteredItems
+                .map((item) => item.folderId)
+                .filter((id): id is string => id !== null),
+        );
+        const filteredFolders = folders.filter(
+            (f) => folderMatches.has(f.id) || folderIdsWithHits.has(f.id),
+        );
+        const expandedForFilter = new Set(filteredFolders.map((f) => f.id));
+        return flattenRows(filteredFolders, filteredItems, expandedForFilter);
+    }, [folders, items, expanded, filterText, noteMap, entryMap]);
     const virtual = useVirtualList(listRef, rows.length, m.rowHeight, 10);
     const visibleRows = rows.slice(virtual.startIndex, virtual.endIndex);
 
@@ -703,6 +743,13 @@ export function BookmarksPanel() {
                         </svg>
                     </button>
                 </div>
+                <div className="px-2 pb-2">
+                    <SidebarFilterInput
+                        value={filterText}
+                        onChange={setFilterText}
+                        placeholder="Filter bookmarks..."
+                    />
+                </div>
             </div>
 
             {/* Content */}
@@ -735,8 +782,9 @@ export function BookmarksPanel() {
                         className="text-xs px-3 py-2"
                         style={{ color: "var(--text-secondary)" }}
                     >
-                        No bookmarks yet. Right-click a note in the file tree to
-                        add one.
+                        {filterText.trim()
+                            ? `No bookmarks match "${filterText}"`
+                            : "No bookmarks yet. Right-click a note in the file tree to add one."}
                     </p>
                 ) : (
                     <div

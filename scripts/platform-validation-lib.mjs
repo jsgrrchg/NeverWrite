@@ -2,35 +2,32 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
-    BUILD_TARGET_TO_APPCAST_KEY,
-    V1_BUILD_TARGETS,
-    buildChannelAppcastUrl,
+    BUILD_TARGET_TO_FEED_TARGET,
+    CANONICAL_RELEASE_PAGES_BASE_URL,
+    ELECTRON_BUILD_TARGETS,
+    buildPublishedFeedUrl,
+    describeBuildTarget,
     describeUpdaterArtifactKind,
-} from "./appcast-lib.mjs";
-import {
-    PUBLIC_DOWNLOAD_VARIANTS,
-    requiredStagedResourcePaths,
-} from "./release-assets-lib.mjs";
+    feedTargetForBuildTarget,
+    metadataFileNameForBuildTarget,
+    normalizeAppcastChannel,
+} from "./electron-release-lib.mjs";
 
-const APPCAST_KEY_TO_BUILD_TARGET = Object.fromEntries(
-    Object.entries(BUILD_TARGET_TO_APPCAST_KEY).map(
-        ([buildTarget, appcastKey]) => [appcastKey, buildTarget],
+const FEED_TARGET_TO_BUILD_TARGET = Object.fromEntries(
+    Object.entries(BUILD_TARGET_TO_FEED_TARGET).map(
+        ([buildTarget, feedTarget]) => [feedTarget, buildTarget],
     ),
 );
 
 export const PLATFORM_VALIDATION_CASES = [
     "Clean install succeeds for the target",
     "Update from the previous version reaches this target",
-    "The app reports the correct target before install",
-    "The app does not switch to another architecture asset",
-    "An invalid signature blocks installation",
+    "The app resolves the correct feed for this target",
+    "The app does not switch to another architecture feed",
+    "A tampered checksum blocks installation",
     "Sensitive state requires inline confirmation before restart",
     "Restart completes on the new version",
 ];
-
-function cloneJson(value) {
-    return JSON.parse(JSON.stringify(value));
-}
 
 export function resolveValidationTarget(target) {
     const normalized = typeof target === "string" ? target.trim() : "";
@@ -39,33 +36,24 @@ export function resolveValidationTarget(target) {
     }
 
     const buildTarget =
-        BUILD_TARGET_TO_APPCAST_KEY[normalized] != null
+        BUILD_TARGET_TO_FEED_TARGET[normalized] != null
             ? normalized
-            : APPCAST_KEY_TO_BUILD_TARGET[normalized];
+            : FEED_TARGET_TO_BUILD_TARGET[normalized];
     if (!buildTarget) {
         throw new Error(
             `Unsupported validation target "${target}". Expected one of: ${[
-                ...V1_BUILD_TARGETS,
-                ...Object.values(BUILD_TARGET_TO_APPCAST_KEY),
+                ...ELECTRON_BUILD_TARGETS,
+                ...Object.values(BUILD_TARGET_TO_FEED_TARGET),
             ].join(", ")}.`,
         );
     }
 
-    const appcastKey = BUILD_TARGET_TO_APPCAST_KEY[buildTarget];
-    const variant = PUBLIC_DOWNLOAD_VARIANTS.find(
-        (entry) => entry.buildTarget === buildTarget,
-    );
-    if (!variant) {
-        throw new Error(`Missing public download variant for ${buildTarget}.`);
-    }
-
     return {
         buildTarget,
-        appcastKey,
-        platformLabel: variant.platformLabel,
-        architectureLabel: variant.architectureLabel,
+        feedTarget: feedTargetForBuildTarget(buildTarget),
+        metadataFileName: metadataFileNameForBuildTarget(buildTarget),
         updaterArtifactKind: describeUpdaterArtifactKind(buildTarget),
-        embeddedResourcePaths: requiredStagedResourcePaths(buildTarget),
+        ...describeBuildTarget(buildTarget),
     };
 }
 
@@ -116,30 +104,31 @@ export function validateTargetMetadataEntries(entries) {
     }
 
     const byBuildTarget = new Map();
-    const byAppcastKey = new Map();
+    const byFeedTarget = new Map();
 
     for (const entry of entries) {
         if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
             throw new Error("Each target metadata entry must be an object.");
         }
+
         const resolved = resolveValidationTarget(
-            entry.buildTarget ?? entry.appcastKey,
+            entry.buildTarget ?? entry.feedTarget,
         );
         if (byBuildTarget.has(resolved.buildTarget)) {
             throw new Error(
                 `Duplicate target metadata for build target ${resolved.buildTarget}.`,
             );
         }
-        if (byAppcastKey.has(resolved.appcastKey)) {
+        if (byFeedTarget.has(resolved.feedTarget)) {
             throw new Error(
-                `Duplicate target metadata for appcast key ${resolved.appcastKey}.`,
+                `Duplicate target metadata for feed target ${resolved.feedTarget}.`,
             );
         }
         byBuildTarget.set(resolved.buildTarget, entry);
-        byAppcastKey.set(resolved.appcastKey, entry);
+        byFeedTarget.set(resolved.feedTarget, entry);
     }
 
-    const missing = V1_BUILD_TARGETS.filter(
+    const missing = ELECTRON_BUILD_TARGETS.filter(
         (buildTarget) => !byBuildTarget.has(buildTarget),
     );
     if (missing.length > 0) {
@@ -148,92 +137,58 @@ export function validateTargetMetadataEntries(entries) {
         );
     }
 
+    ensureUniquePerField(entries, "feedRelativePath");
     ensureUniquePerField(entries, "updaterUrl");
-    ensureUniquePerField(entries, "updaterAssetName");
-    return { byBuildTarget, byAppcastKey };
-}
-
-export function buildAppcastPlatformsFromTargetMetadata(entries) {
-    const { byBuildTarget } = validateTargetMetadataEntries(entries);
-
-    return Object.fromEntries(
-        V1_BUILD_TARGETS.map((buildTarget) => {
-            const target = resolveValidationTarget(buildTarget);
-            const metadata = byBuildTarget.get(buildTarget);
-
-            return [
-                target.appcastKey,
-                {
-                    url: metadata.updaterUrl,
-                    signature: metadata.updaterSignature,
-                },
-            ];
-        }),
-    );
+    ensureUniquePerField(entries, "manualAssetName");
+    return { byBuildTarget, byFeedTarget };
 }
 
 export function buildPlatformValidationMatrix({
     version,
     tag,
     channel,
-    appcastBaseUrl,
-    manifest,
+    pagesBaseUrl = CANONICAL_RELEASE_PAGES_BASE_URL,
     metadataEntries,
 }) {
-    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-        throw new Error("Appcast manifest must be an object.");
-    }
+    const normalizedChannel = normalizeAppcastChannel(channel);
     const { byBuildTarget } = validateTargetMetadataEntries(metadataEntries);
-    const feedUrl =
-        typeof appcastBaseUrl === "string" && appcastBaseUrl.trim()
-            ? buildChannelAppcastUrl(appcastBaseUrl, channel)
-            : null;
 
-    return V1_BUILD_TARGETS.map((buildTarget) => {
+    return ELECTRON_BUILD_TARGETS.map((buildTarget) => {
         const target = resolveValidationTarget(buildTarget);
         const metadata = byBuildTarget.get(buildTarget);
-        const manifestPlatform = manifest.platforms?.[target.appcastKey];
-        if (!manifestPlatform) {
-            throw new Error(
-                `Appcast manifest is missing platform entry ${target.appcastKey}.`,
-            );
-        }
-        if (manifestPlatform.url !== metadata.updaterUrl) {
-            throw new Error(
-                `Appcast URL mismatch for ${target.appcastKey}: manifest=${manifestPlatform.url} metadata=${metadata.updaterUrl}.`,
-            );
-        }
-        if (manifestPlatform.signature !== metadata.updaterSignature) {
-            throw new Error(
-                `Appcast signature mismatch for ${target.appcastKey}.`,
-            );
-        }
 
         return {
             version,
             tag,
-            channel,
-            feedUrl,
+            channel: normalizedChannel,
+            feedUrl: buildPublishedFeedUrl(
+                pagesBaseUrl,
+                normalizedChannel,
+                buildTarget,
+            ),
             ...target,
             manualAssetName: metadata.manualAssetName,
             updaterAssetName: metadata.updaterAssetName,
-            updaterSignatureAssetName: metadata.updaterSignatureAssetName,
+            updaterBlockmapAssetName: metadata.updaterBlockmapAssetName,
             updaterUrl: metadata.updaterUrl,
+            feedRelativePath: metadata.feedRelativePath,
         };
     });
 }
 
-export function createInvalidSignatureManifest(manifest, appcastKey) {
-    const target = resolveValidationTarget(appcastKey);
-    const next = cloneJson(manifest);
-    const previous = next.platforms?.[target.appcastKey]?.signature;
-    if (typeof previous !== "string" || !previous.trim()) {
-        throw new Error(
-            `Cannot tamper signature for ${target.appcastKey}: signature is missing.`,
-        );
+export function tamperFeedChecksum(feedContents) {
+    if (typeof feedContents !== "string" || !feedContents.trim()) {
+        throw new Error("Feed contents must be a non-empty string.");
     }
-    next.platforms[target.appcastKey].signature = `${previous.trim()}tampered`;
-    return next;
+
+    const tampered = feedContents.replace(
+        /^(\s*sha512:\s*).+$/m,
+        "$1tampered",
+    );
+    if (tampered === feedContents) {
+        throw new Error("Could not locate sha512 entry to tamper in feed.");
+    }
+    return tampered;
 }
 
 export function renderPlatformValidationChecklist({
@@ -257,13 +212,13 @@ export function renderPlatformValidationChecklist({
         "",
         "## Matrix",
         "",
-        "| Target | Platform | Architecture | Appcast key | Manual installer | Updater asset |",
+        "| Target | Platform | Architecture | Feed target | Manual installer | Updater asset |",
         "| --- | --- | --- | --- | --- | --- |",
     ];
 
     for (const row of rows) {
         lines.push(
-            `| \`${row.buildTarget}\` | ${row.platformLabel} | ${row.architectureLabel} | \`${row.appcastKey}\` | \`${row.manualAssetName}\` | \`${row.updaterAssetName}\` |`,
+            `| \`${row.buildTarget}\` | ${row.platformLabel} | ${row.architectureLabel} | \`${row.feedTarget}\` | \`${row.manualAssetName}\` | \`${row.updaterAssetName}\` |`,
         );
     }
 
@@ -272,13 +227,13 @@ export function renderPlatformValidationChecklist({
         "1. Install the previous public version for the target, or perform a clean install when validating first-run packaging.",
     );
     lines.push(
-        "2. Serve `fixtures/` from this pack on `127.0.0.1` and point the app to the loopback `stable/latest.json` feed.",
+        "2. Serve `fixtures/` from this pack on `127.0.0.1` and point the app to the loopback target feed for the same architecture.",
     );
     lines.push(
         "3. Confirm `Settings > Updates` reports the expected target before installing anything.",
     );
     lines.push(
-        "4. Run the valid feed once, then switch to the invalid-signature fixture for the same target and confirm install is blocked.",
+        "4. Run the valid feed once, then switch to the invalid-checksum fixture for the same target and confirm install is blocked.",
     );
     lines.push(
         "5. Repeat with an unsaved editor tab or pending agent work and confirm the inline confirmation gate appears before restart.",
@@ -289,15 +244,12 @@ export function renderPlatformValidationChecklist({
 
     for (const row of rows) {
         lines.push("", `## ${row.platformLabel} ${row.architectureLabel}`, "");
-        if (row.feedUrl) {
-            lines.push(`Published feed: \`${row.feedUrl}\``);
-            lines.push("");
-        }
+        lines.push(`Published feed: \`${row.feedUrl}\``);
+        lines.push(`Feed target: \`${row.feedTarget}\``);
         lines.push(`Manual installer: \`${row.manualAssetName}\``);
         lines.push(`Updater asset: \`${row.updaterAssetName}\``);
-        lines.push(`Target in UI: \`${row.appcastKey}\``);
         lines.push(
-            `Invalid-signature fixture: \`fixtures/${row.appcastKey}/invalid-signature/${channel}/latest.json\``,
+            `Invalid-checksum fixture: \`fixtures/${row.feedTarget}/invalid-checksum/${channel}/${row.metadataFileName}\``,
         );
         lines.push(
             `Expected updater artifact family: ${row.updaterArtifactKind}`,
@@ -306,15 +258,6 @@ export function renderPlatformValidationChecklist({
         lines.push("Checks:");
         for (const item of PLATFORM_VALIDATION_CASES) {
             lines.push(`- [ ] ${item}`);
-        }
-        if (row.buildTarget === "aarch64-pc-windows-msvc") {
-            lines.push(
-                "- [ ] Validate the embedded runtime files for Windows ARM64 explicitly.",
-            );
-            lines.push("Expected embedded resources:");
-            for (const resourcePath of row.embeddedResourcePaths) {
-                lines.push(`- \`${resourcePath}\``);
-            }
         }
     }
 

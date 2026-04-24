@@ -3397,13 +3397,12 @@ async function prepareTrackedFileMutation(
     identityKey: string,
     scope: TrackedFileMutationScope,
 ): Promise<PreparedTrackedFileMutation> {
-    const vaultPath = useVaultStore.getState().vaultPath;
-    if (!vaultPath) {
-        return { kind: "abort" };
-    }
-
     const session = useChatStore.getState().sessionsById[sessionId];
     if (!session) {
+        return { kind: "abort" };
+    }
+    const vaultPath = getSessionVaultPath(session);
+    if (!vaultPath) {
         return { kind: "abort" };
     }
 
@@ -4425,6 +4424,10 @@ function stampSessionVaultPath(
         ...session,
         vaultPath,
     };
+}
+
+function getSessionVaultPath(session: AIChatSession | null | undefined) {
+    return session?.vaultPath ?? useVaultStore.getState().vaultPath;
 }
 
 function sessionMatchesVaultPath(
@@ -6475,12 +6478,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let shouldDrainQueue = false;
             set((state) => {
                 const currentVaultPath = useVaultStore.getState().vaultPath;
+                const existing = state.sessionsById[session.sessionId];
+                const sessionVaultPath =
+                    session.vaultPath ?? existing?.vaultPath ?? currentVaultPath;
                 const workspaceTabs = selectEditorWorkspaceTabs(
                     useEditorStore.getState(),
                 );
                 const stampedSession = stampSessionVaultPath(
                     session,
-                    currentVaultPath,
+                    sessionVaultPath,
                 );
                 const scopedSession = hydrateSessionCatalogFromRuntime(
                     stampedSession,
@@ -6489,7 +6495,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             runtime.runtime.id === stampedSession.runtimeId,
                     ),
                 );
-                const existing = state.sessionsById[scopedSession.sessionId];
                 const isKnown = state.sessionOrder.includes(
                     scopedSession.sessionId,
                 );
@@ -8718,11 +8723,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         rejectAllEditedFiles: async (sessionId) => {
             const { sessionsById } = get();
-            const vaultPath = useVaultStore.getState().vaultPath;
-            if (!vaultPath) return;
-
             const session = sessionsById[sessionId];
             if (!session) return;
+            const vaultPath = getSessionVaultPath(session);
+            if (!vaultPath) return;
 
             const trackedFiles = getAccumulatedTrackedFiles(session);
 
@@ -8983,7 +8987,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 snapshot: TrackedFile;
             } | null = null;
 
-            const vaultPath = useVaultStore.getState().vaultPath;
+            const vaultPath = getSessionVaultPath(session);
             if (vaultPath) {
                 // Run the same settle + reconcile dance for accept as for
                 // reject. On accept we don't write to disk, but an external
@@ -9150,11 +9154,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         undoLastReject: async (sessionId) => {
             const { sessionsById } = get();
-            const vaultPath = useVaultStore.getState().vaultPath;
-            if (!vaultPath) return;
-
             const session = sessionsById[sessionId];
             if (!session?.actionLog?.lastRejectUndo) return;
+            const vaultPath = getSessionVaultPath(session);
+            if (!vaultPath) return;
 
             const { lastRejectUndo } = session.actionLog;
             const { snapshots } = lastRejectUndo;

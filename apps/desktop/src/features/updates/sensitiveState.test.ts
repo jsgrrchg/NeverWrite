@@ -1,14 +1,10 @@
-import { getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { getAllWebviewWindows } from "@neverwrite/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { subscribeSafeStorage } from "../../app/utils/safeStorage";
 import {
     readSensitiveUpdateState,
     writeWindowOperationalState,
 } from "./sensitiveState";
-
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-    getAllWebviewWindows: vi.fn(),
-}));
 
 afterEach(() => {
     localStorage.clear();

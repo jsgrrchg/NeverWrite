@@ -8,7 +8,7 @@ import {
     type MouseEvent as ReactMouseEvent,
 } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath } from "@neverwrite/runtime";
 import {
     ContextMenu,
     type ContextMenuEntry,
