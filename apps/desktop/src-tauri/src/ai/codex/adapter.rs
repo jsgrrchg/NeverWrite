@@ -6,7 +6,10 @@ use neverwrite_ai::{
 };
 use tauri::AppHandle;
 
-use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
+use crate::ai::{
+    runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput},
+    shared::apply_config_options_to_session,
+};
 
 use super::{
     clear_authenticated_method, mark_authenticated_method, save_setup_config, CodexRuntime,
@@ -282,37 +285,12 @@ impl AiRuntimeAdapter for CodexRuntimeAdapter {
             ));
         }
 
-        self.handle_from_session(session_id)?
+        let config_options = self
+            .handle_from_session(session_id)?
             .set_config_option(session_id, option_id, value)?;
 
-        if option_id == "reasoning_effort" {
-            let managed = self
-                .sessions
-                .get(session_id)
-                .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))?;
-            let model_id = &managed.session.model_id;
-            let acp_base = managed
-                .acp_model_ids
-                .get(model_id)
-                .cloned()
-                .unwrap_or_else(|| model_id.clone());
-            let acp_model_id = format!("{acp_base}/{value}");
-            self.handle_from_session(session_id)?
-                .set_model(session_id, &acp_model_id)?;
-        }
-
         let managed = self.session_mut(session_id)?;
-        if option_id == "model" {
-            sync_model_selection(&mut managed.session, value, &managed.efforts_by_model);
-        } else {
-            let option = managed
-                .session
-                .config_options
-                .iter_mut()
-                .find(|item| item.id == option_id)
-                .ok_or_else(|| format!("Opcion no encontrada: {option_id}"))?;
-            option.value = value.to_string();
-        }
+        apply_config_options_to_session(&mut managed.session, config_options);
 
         Ok(managed.session.clone())
     }

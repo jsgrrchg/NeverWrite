@@ -88,7 +88,7 @@ enum RuntimeCommand {
         session_id: String,
         option_id: String,
         value: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
+        response_tx: mpsc::Sender<Result<Vec<AiConfigOption>, String>>,
     },
     Prompt {
         session_id: String,
@@ -1055,7 +1055,7 @@ impl CodexRuntimeHandle {
         session_id: &str,
         option_id: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<AiConfigOption>, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(RuntimeCommand::SetConfigOption {
@@ -1637,7 +1637,7 @@ impl RuntimeActor {
         session_id: String,
         option_id: String,
         value: String,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<AiConfigOption>, String> {
         self.poll_connection_health()?;
         let connection = self
             .connection
@@ -1652,7 +1652,7 @@ impl RuntimeActor {
                 value.as_str(),
             ))
             .await
-            .map(|_| ())
+            .map(|response| map_session_config_options(response.config_options))
             .map_err(|error| error.to_string())
     }
 

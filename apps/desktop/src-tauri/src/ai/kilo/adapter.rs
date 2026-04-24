@@ -3,7 +3,10 @@ use std::{collections::HashMap, path::PathBuf};
 use neverwrite_ai::{AiRuntimeSessionSummary, AiSession, AiSessionStatus, KILO_RUNTIME_ID};
 use tauri::AppHandle;
 
-use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
+use crate::ai::{
+    runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput},
+    shared::apply_config_options_to_session,
+};
 
 use super::{
     client::{KiloRuntimeHandle, KiloSessionCache},
@@ -341,24 +344,13 @@ impl AiRuntimeAdapter for KiloRuntimeAdapter {
             ));
         }
 
-        self.handle_from_session(session_id)?
+        let config_options = self
+            .handle_from_session(session_id)?
             .set_config_option(session_id, option_id, value)?;
 
         self.session_cache
             .update(session_id, |session| {
-                if let Some(option) = session
-                    .config_options
-                    .iter_mut()
-                    .find(|item| item.id == option_id)
-                {
-                    option.value = value.to_string();
-                }
-
-                if option_id == "model" {
-                    session.model_id = value.to_string();
-                } else if option_id == "mode" {
-                    session.mode_id = value.to_string();
-                }
+                apply_config_options_to_session(session, config_options);
             })
             .ok_or_else(|| format!("Sesion AI no encontrada: {session_id}"))
     }

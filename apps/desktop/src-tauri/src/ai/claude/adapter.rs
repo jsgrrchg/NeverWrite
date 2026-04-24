@@ -3,10 +3,13 @@ use std::{collections::HashMap, path::PathBuf};
 use neverwrite_ai::{AiRuntimeSessionSummary, AiSession, AiSessionStatus, CLAUDE_RUNTIME_ID};
 use tauri::AppHandle;
 
-use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
+use crate::ai::{
+    runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput},
+    shared::apply_config_options_to_session,
+};
 
 use super::{
-    client::{apply_config_options_to_session, ClaudeRuntimeHandle, ClaudeSessionCache},
+    client::{ClaudeRuntimeHandle, ClaudeSessionCache},
     process::ClaudeRuntime,
     setup::{
         clear_authenticated_method, clear_gateway_settings, launch_claude_login,

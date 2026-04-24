@@ -43,6 +43,7 @@ use crate::ai::emit::{
     AiTokenUsagePayload, AiToolActivityPayload,
 };
 use crate::ai::env::preferred_path_value;
+use crate::ai::shared::{apply_config_options_to_session, apply_mode_update_to_session};
 use crate::branding::APP_BRAND_NAME;
 use crate::technical_branding::{
     meta_get, meta_get_str, ACP_DIFF_HUNKS_KEY, ACP_DIFF_PREVIOUS_PATH_KEY, ACP_IMPLEMENTATION_ID,
@@ -94,7 +95,7 @@ enum RuntimeCommand {
         session_id: String,
         option_id: String,
         value: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
+        response_tx: mpsc::Sender<Result<Vec<AiConfigOption>, String>>,
     },
     Prompt {
         session_id: String,
@@ -1218,7 +1219,7 @@ impl KiloRuntimeHandle {
         session_id: &str,
         option_id: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<AiConfigOption>, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(RuntimeCommand::SetConfigOption {
@@ -1911,7 +1912,7 @@ impl RuntimeActor {
         session_id: String,
         option_id: String,
         value: String,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<AiConfigOption>, String> {
         if !self
             .negotiated_capabilities
             .lock()
@@ -1936,7 +1937,7 @@ impl RuntimeActor {
                 value.as_str(),
             ))
             .await
-            .map(|_| ())
+            .map(|response| map_session_config_options(response.config_options))
             .map_err(|error| error.to_string())
     }
 
@@ -2331,37 +2332,6 @@ fn build_new_session_request(
             "additionalRoots".to_string(),
             serde_json::json!(additional_roots),
         )]))
-    }
-}
-
-fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
-    session.mode_id = mode_id.to_string();
-    if let Some(option) = session
-        .config_options
-        .iter_mut()
-        .find(|option| option.id == "mode")
-    {
-        option.value = mode_id.to_string();
-    }
-}
-
-fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<AiConfigOption>) {
-    let mode_id = config_options
-        .iter()
-        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
-        .map(|option| option.value.clone());
-    let model_id = config_options
-        .iter()
-        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
-        .map(|option| option.value.clone());
-
-    session.config_options = config_options;
-
-    if let Some(mode_id) = mode_id {
-        session.mode_id = mode_id;
-    }
-    if let Some(model_id) = model_id {
-        session.model_id = model_id;
     }
 }
 

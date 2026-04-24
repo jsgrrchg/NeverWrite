@@ -3,7 +3,10 @@ use std::{collections::HashMap, path::PathBuf};
 use neverwrite_ai::{AiRuntimeSetupStatus, AiSession, AiSessionStatus, GEMINI_RUNTIME_ID};
 use tauri::AppHandle;
 
-use crate::ai::runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput};
+use crate::ai::{
+    runtime::{AiRuntimeAdapter, AiRuntimeCapabilities, AiRuntimeSetupInput},
+    shared::apply_config_options_to_session,
+};
 
 use super::{
     clear_authenticated_method, mark_authenticated_method, save_setup_config, GeminiRuntime,
@@ -236,17 +239,12 @@ impl AiRuntimeAdapter for GeminiRuntimeAdapter {
             ));
         }
 
-        self.handle_from_session(session_id)?
+        let config_options = self
+            .handle_from_session(session_id)?
             .set_config_option(session_id, option_id, value)?;
 
         let managed = self.session_mut(session_id)?;
-        let option = managed
-            .session
-            .config_options
-            .iter_mut()
-            .find(|item| item.id == option_id)
-            .ok_or_else(|| format!("Opcion no encontrada: {option_id}"))?;
-        option.value = value.to_string();
+        apply_config_options_to_session(&mut managed.session, config_options);
         Ok(managed.session.clone())
     }
 
