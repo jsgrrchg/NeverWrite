@@ -1488,50 +1488,86 @@ fn session_from_acp_response(
     modes_state: Option<agent_client_protocol::SessionModeState>,
     config_options: Option<Vec<agent_client_protocol::SessionConfigOption>>,
 ) -> AiSession {
-    let models = models_state
+    let mapped_models = models_state
         .as_ref()
         .map(|state| map_session_models(runtime_id, state))
-        .unwrap_or_else(|| default_models(runtime_id));
+        .unwrap_or_default();
+    let models = if mapped_models.models.is_empty() {
+        default_models(runtime_id)
+    } else {
+        mapped_models.models
+    };
     let modes = modes_state
         .as_ref()
         .map(|state| map_session_modes(runtime_id, state))
         .unwrap_or_else(|| default_modes(runtime_id));
-    let config_options = config_options
+    let mut config_options = config_options
         .map(|options| map_session_config_options(runtime_id, options))
         .unwrap_or_else(|| default_config_options(runtime_id, &models, &modes));
+    config_options = ensure_reasoning_config_option(
+        runtime_id,
+        config_options,
+        models_state.as_ref(),
+        &mapped_models.efforts_by_model,
+    );
+    let model_id = selected_model_id(models_state.as_ref(), &config_options)
+        .or_else(|| models.first().map(|model| model.id.clone()))
+        .unwrap_or_default();
+    let mode_id = selected_mode_id(modes_state.as_ref(), &config_options)
+        .or_else(|| modes.first().map(|mode| mode.id.clone()))
+        .unwrap_or_else(|| "default".to_string());
+
     AiSession {
         session_id,
         runtime_id: runtime_id.to_string(),
-        model_id: models
-            .first()
-            .map(|model| model.id.clone())
-            .unwrap_or_default(),
-        mode_id: modes
-            .first()
-            .map(|mode| mode.id.clone())
-            .unwrap_or_else(|| "default".to_string()),
+        model_id,
+        mode_id,
         status: AiSessionStatus::Idle,
-        efforts_by_model: HashMap::new(),
+        efforts_by_model: mapped_models.efforts_by_model,
         models,
         modes,
         config_options,
     }
 }
 
+#[derive(Default)]
+struct MappedSessionModels {
+    models: Vec<AiModelOption>,
+    efforts_by_model: HashMap<String, Vec<String>>,
+}
+
 fn map_session_models(
     runtime_id: &str,
     state: &agent_client_protocol::SessionModelState,
-) -> Vec<AiModelOption> {
-    state
-        .available_models
-        .iter()
-        .map(|model| AiModelOption {
-            id: strip_effort_suffix(&model.model_id.0).to_string(),
+) -> MappedSessionModels {
+    let mut mapped = MappedSessionModels::default();
+
+    for model in &state.available_models {
+        let model_id = model.model_id.0.as_ref();
+        let base_model_id = strip_effort_suffix(model_id).to_string();
+        if let Some(effort) = extract_effort(model_id) {
+            let efforts = mapped
+                .efforts_by_model
+                .entry(base_model_id.clone())
+                .or_default();
+            if !efforts.iter().any(|item| item == effort) {
+                efforts.push(effort.to_string());
+            }
+        }
+
+        if mapped.models.iter().any(|item| item.id == base_model_id) {
+            continue;
+        }
+
+        mapped.models.push(AiModelOption {
+            id: base_model_id,
             runtime_id: runtime_id.to_string(),
             name: strip_effort_suffix(&model.name).to_string(),
             description: model.description.clone().unwrap_or_default(),
-        })
-        .collect()
+        });
+    }
+
+    mapped
 }
 
 fn map_session_modes(
@@ -1573,18 +1609,7 @@ fn map_session_config_options(
             Some(AiConfigOption {
                 id: option.id.0.to_string(),
                 runtime_id: runtime_id.to_string(),
-                category: match option.category {
-                    Some(agent_client_protocol::SessionConfigOptionCategory::Mode) => {
-                        AiConfigOptionCategory::Mode
-                    }
-                    Some(agent_client_protocol::SessionConfigOptionCategory::Model) => {
-                        AiConfigOptionCategory::Model
-                    }
-                    Some(agent_client_protocol::SessionConfigOptionCategory::ThoughtLevel) => {
-                        AiConfigOptionCategory::Reasoning
-                    }
-                    _ => AiConfigOptionCategory::Other,
-                },
+                category: map_config_option_category(&option.id.0, option.category.as_ref()),
                 label: option.name,
                 description: option.description,
                 kind: "select".to_string(),
@@ -1600,6 +1625,132 @@ fn map_session_config_options(
             })
         })
         .collect()
+}
+
+fn map_config_option_category(
+    option_id: &str,
+    category: Option<&agent_client_protocol::SessionConfigOptionCategory>,
+) -> AiConfigOptionCategory {
+    let normalized_id = option_id.to_ascii_lowercase();
+    if matches!(
+        normalized_id.as_str(),
+        "reasoning_effort" | "thought_level" | "effort"
+    ) {
+        return AiConfigOptionCategory::Reasoning;
+    }
+
+    match category {
+        Some(agent_client_protocol::SessionConfigOptionCategory::Mode) => {
+            AiConfigOptionCategory::Mode
+        }
+        Some(agent_client_protocol::SessionConfigOptionCategory::Model) => {
+            AiConfigOptionCategory::Model
+        }
+        Some(agent_client_protocol::SessionConfigOptionCategory::ThoughtLevel) => {
+            AiConfigOptionCategory::Reasoning
+        }
+        Some(agent_client_protocol::SessionConfigOptionCategory::Other(value))
+            if matches!(
+                value.as_str(),
+                "thought_level" | "effort" | "reasoning" | "reasoning_effort"
+            ) =>
+        {
+            AiConfigOptionCategory::Reasoning
+        }
+        _ => AiConfigOptionCategory::Other,
+    }
+}
+
+fn ensure_reasoning_config_option(
+    runtime_id: &str,
+    mut config_options: Vec<AiConfigOption>,
+    models_state: Option<&agent_client_protocol::SessionModelState>,
+    efforts_by_model: &HashMap<String, Vec<String>>,
+) -> Vec<AiConfigOption> {
+    if config_options
+        .iter()
+        .any(|option| matches!(option.category, AiConfigOptionCategory::Reasoning))
+    {
+        return config_options;
+    }
+
+    let Some(model_id) = selected_model_id(models_state, &config_options) else {
+        return config_options;
+    };
+    let Some(efforts) = efforts_by_model.get(&model_id) else {
+        return config_options;
+    };
+    if efforts.len() <= 1 {
+        return config_options;
+    }
+
+    let current_effort = models_state
+        .and_then(|state| extract_effort(state.current_model_id.0.as_ref()))
+        .filter(|effort| efforts.iter().any(|item| item == effort))
+        .or_else(|| {
+            efforts
+                .iter()
+                .find(|effort| effort.as_str() == "medium")
+                .map(String::as_str)
+        })
+        .unwrap_or_else(|| efforts[0].as_str())
+        .to_string();
+    let reasoning_option = AiConfigOption {
+        id: "reasoning_effort".to_string(),
+        runtime_id: runtime_id.to_string(),
+        category: AiConfigOptionCategory::Reasoning,
+        label: "Reasoning Effort".to_string(),
+        description: Some("Choose how much reasoning effort the model should use.".to_string()),
+        kind: "select".to_string(),
+        value: current_effort,
+        options: efforts
+            .iter()
+            .map(|effort| AiConfigSelectOption {
+                value: effort.clone(),
+                label: reasoning_effort_label(effort),
+                description: None,
+            })
+            .collect(),
+    };
+    let insert_at = config_options
+        .iter()
+        .position(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|index| index + 1)
+        .unwrap_or(config_options.len());
+    config_options.insert(insert_at, reasoning_option);
+    config_options
+}
+
+fn selected_model_id(
+    models_state: Option<&agent_client_protocol::SessionModelState>,
+    config_options: &[AiConfigOption],
+) -> Option<String> {
+    config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|option| strip_effort_suffix(&option.value).to_string())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            models_state
+                .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
+                .filter(|value| !value.trim().is_empty())
+        })
+}
+
+fn selected_mode_id(
+    modes_state: Option<&agent_client_protocol::SessionModeState>,
+    config_options: &[AiConfigOption],
+) -> Option<String> {
+    config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+        .map(|option| option.value.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            modes_state
+                .map(|state| state.current_mode_id.0.to_string())
+                .filter(|value| !value.trim().is_empty())
+        })
 }
 
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
@@ -1762,12 +1913,41 @@ fn tool_status_label(status: &ToolCallStatus) -> String {
 }
 
 fn strip_effort_suffix(value: &str) -> &str {
+    for effort in EFFORT_LEVELS {
+        if let Some(base) = value.strip_suffix(&format!("/{effort}")) {
+            return base;
+        }
+        if let Some(base) = value.strip_suffix(&format!(" ({effort})")) {
+            return base;
+        }
+        if let Some(base) = value.strip_suffix(&format!("-{effort}")) {
+            return base;
+        }
+    }
     value
-        .strip_suffix("-minimal")
-        .or_else(|| value.strip_suffix("-low"))
-        .or_else(|| value.strip_suffix("-medium"))
-        .or_else(|| value.strip_suffix("-high"))
-        .unwrap_or(value)
+}
+
+const EFFORT_LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+
+fn extract_effort(value: &str) -> Option<&str> {
+    let suffix = value.rsplit('/').next()?;
+    EFFORT_LEVELS
+        .iter()
+        .find(|effort| **effort == suffix)
+        .copied()
+}
+
+fn reasoning_effort_label(effort: &str) -> String {
+    match effort {
+        "xhigh" => "Extra High".to_string(),
+        _ => {
+            let mut chars = effort.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        }
+    }
 }
 
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
@@ -2716,8 +2896,9 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::{
-        Meta, PermissionOptionKind, SessionNotification, SessionUpdate, ToolCallContent,
-        ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        Meta, ModelInfo, PermissionOptionKind, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigSelectOption, SessionModelState, SessionNotification, SessionUpdate,
+        ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -2777,6 +2958,84 @@ mod tests {
             status.get("onboarding_required").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn acp_session_synthesizes_reasoning_config_from_model_efforts() {
+        let models_state = SessionModelState::new(
+            "gpt-5.5/medium",
+            vec![
+                ModelInfo::new("gpt-5.5/low", "GPT-5.5 (low)"),
+                ModelInfo::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
+                ModelInfo::new("gpt-5.5/high", "GPT-5.5 (high)"),
+                ModelInfo::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+            ],
+        );
+        let config_options = vec![SessionConfigOption::select(
+            "model",
+            "Model",
+            "gpt-5.5",
+            vec![SessionConfigSelectOption::new("gpt-5.5", "GPT-5.5")],
+        )
+        .category(SessionConfigOptionCategory::Model)];
+
+        let session = session_from_acp_response(
+            CODEX_RUNTIME_ID,
+            "session-1".to_string(),
+            Some(models_state),
+            None,
+            Some(config_options),
+        );
+
+        assert_eq!(session.model_id, "gpt-5.5");
+        assert_eq!(session.models.len(), 1);
+        assert_eq!(
+            session.efforts_by_model.get("gpt-5.5"),
+            Some(&vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string()
+            ])
+        );
+
+        let reasoning = session
+            .config_options
+            .iter()
+            .find(|option| option.id == "reasoning_effort")
+            .expect("reasoning config should be synthesized");
+        assert!(matches!(
+            reasoning.category,
+            AiConfigOptionCategory::Reasoning
+        ));
+        assert_eq!(reasoning.value, "medium");
+        assert_eq!(
+            reasoning
+                .options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+    }
+
+    #[test]
+    fn acp_config_mapping_treats_effort_category_as_reasoning() {
+        let mapped = map_session_config_options(
+            CODEX_RUNTIME_ID,
+            vec![SessionConfigOption::select(
+                "custom_effort",
+                "Effort",
+                "high",
+                vec![SessionConfigSelectOption::new("high", "High")],
+            )
+            .category(SessionConfigOptionCategory::Other("effort".to_string()))],
+        );
+
+        assert!(matches!(
+            mapped[0].category,
+            AiConfigOptionCategory::Reasoning
+        ));
     }
 
     #[test]
