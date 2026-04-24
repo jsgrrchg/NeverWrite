@@ -26,18 +26,12 @@ vi.mock("../../app/detachedWindows", () => ({
 
 describe("UnifiedBar drop zone publishing", () => {
     it("publishes a drop zone even when the window has no open tabs", async () => {
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-            }
-        ).innerPosition = innerPositionMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-            }
-        ).scaleFactor = scaleFactorMock;
+        const mockWindow = getMockCurrentWindow() as unknown as {
+            innerPosition: typeof innerPositionMock;
+            scaleFactor: typeof scaleFactorMock;
+        };
+        mockWindow.innerPosition = innerPositionMock;
+        mockWindow.scaleFactor = scaleFactorMock;
         useVaultStore.setState((state) => ({
             ...state,
             vaultPath: "/vaults/main",

@@ -10,7 +10,7 @@ This document records the clean-cut completion of the technical rebrand.
 
 ### What changed
 
-- Desktop, Tauri, frontend persistence helpers, and web clipper contracts now operate only with `neverwrite*` naming.
+- Desktop, Electron, frontend persistence helpers, and web clipper contracts now operate only with `neverwrite*` naming.
 - Runtime and build overrides use only `NEVERWRITE_*` environment variables.
 - App support paths, hidden state directories, storage keys, and file-preview schemes now use the canonical NeverWrite names only.
 - ACP metadata, diff metadata, status identifiers, and user-input payload prefixes now use the canonical NeverWrite contract end to end.

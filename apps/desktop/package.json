@@ -28,8 +28,7 @@
         "electron:package:unsigned": "node scripts/build-electron-release.mjs --dir --unsigned",
         "electron:dist:mac": "node scripts/build-electron-release.mjs --platform mac",
         "electron:dist:win": "node scripts/build-electron-release.mjs --platform win",
-        "electron:release:local": "node scripts/build-electron-release.mjs",
-        "legacy:tauri:dev": "node legacy-tauri/run-tauri.mjs"
+        "electron:release:local": "node scripts/build-electron-release.mjs"
     },
     "dependencies": {
         "@chenglou/pretext": "^0.0.3",

@@ -1,5 +1,4 @@
 target/
-apps/desktop/src-tauri/target/
 .DS_Store
 .IDEAS/
 AGENTS.md
@@ -16,9 +15,6 @@ CLAUDE.md
 .neverwrite-cache/
 .PERSONAL
 .trash/
-apps/desktop/src-tauri/binaries/*
-!apps/desktop/src-tauri/binaries/README.md
-apps/desktop/src-tauri/embedded/
 apps/desktop/embedded/
 # Vendored runtimes are committed intentionally. Ignore only local build/install
 # byproducts inside vendor/, not the vendored source trees themselves.

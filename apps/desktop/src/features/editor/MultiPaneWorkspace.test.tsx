@@ -76,18 +76,12 @@ describe("MultiPaneWorkspace", () => {
     }
 
     beforeEach(() => {
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-            }
-        ).innerPosition = innerPositionMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-            }
-        ).scaleFactor = scaleFactorMock;
+        const mockWindow = getMockCurrentWindow() as unknown as {
+            innerPosition: typeof innerPositionMock;
+            scaleFactor: typeof scaleFactorMock;
+        };
+        mockWindow.innerPosition = innerPositionMock;
+        mockWindow.scaleFactor = scaleFactorMock;
         (
             getMockCurrentWebview() as {
                 onDragDropEvent: typeof onDragDropEventMock;

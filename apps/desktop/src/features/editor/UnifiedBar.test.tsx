@@ -120,66 +120,20 @@ function resizeObserverEntry(
 
 describe("UnifiedBar tab strip drop", () => {
     beforeEach(() => {
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-                minimize: typeof minimizeMock;
-                toggleMaximize: typeof toggleMaximizeMock;
-                isMaximized: typeof isMaximizedMock;
-                close: typeof closeMock;
-            }
-        ).innerPosition = innerPositionMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-                minimize: typeof minimizeMock;
-                toggleMaximize: typeof toggleMaximizeMock;
-                isMaximized: typeof isMaximizedMock;
-                close: typeof closeMock;
-            }
-        ).scaleFactor = scaleFactorMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-                minimize: typeof minimizeMock;
-                toggleMaximize: typeof toggleMaximizeMock;
-                isMaximized: typeof isMaximizedMock;
-                close: typeof closeMock;
-            }
-        ).minimize = minimizeMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-                minimize: typeof minimizeMock;
-                toggleMaximize: typeof toggleMaximizeMock;
-                isMaximized: typeof isMaximizedMock;
-                close: typeof closeMock;
-            }
-        ).toggleMaximize = toggleMaximizeMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-                minimize: typeof minimizeMock;
-                toggleMaximize: typeof toggleMaximizeMock;
-                isMaximized: typeof isMaximizedMock;
-                close: typeof closeMock;
-            }
-        ).isMaximized = isMaximizedMock;
-        (
-            getMockCurrentWindow() as {
-                innerPosition: typeof innerPositionMock;
-                scaleFactor: typeof scaleFactorMock;
-                minimize: typeof minimizeMock;
-                toggleMaximize: typeof toggleMaximizeMock;
-                isMaximized: typeof isMaximizedMock;
-                close: typeof closeMock;
-            }
-        ).close = closeMock;
+        const mockWindow = getMockCurrentWindow() as unknown as {
+            innerPosition: typeof innerPositionMock;
+            scaleFactor: typeof scaleFactorMock;
+            minimize: typeof minimizeMock;
+            toggleMaximize: typeof toggleMaximizeMock;
+            isMaximized: typeof isMaximizedMock;
+            close: typeof closeMock;
+        };
+        mockWindow.innerPosition = innerPositionMock;
+        mockWindow.scaleFactor = scaleFactorMock;
+        mockWindow.minimize = minimizeMock;
+        mockWindow.toggleMaximize = toggleMaximizeMock;
+        mockWindow.isMaximized = isMaximizedMock;
+        mockWindow.close = closeMock;
         (
             getMockCurrentWebview() as {
                 onDragDropEvent: typeof onDragDropEventMock;

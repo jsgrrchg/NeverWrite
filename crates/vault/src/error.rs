@@ -28,7 +28,7 @@ pub enum VaultError {
     PdfExtraction(String),
 }
 
-// Allows converting VaultError to String for Tauri commands.
+// Allows converting VaultError to a string across command/RPC boundaries.
 impl serde::Serialize for VaultError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

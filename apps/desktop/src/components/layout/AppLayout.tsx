@@ -182,7 +182,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // macOS: hide the native traffic-light buttons whenever the sidebar is
     // fully collapsed. They would otherwise float over the empty editor top
     // and break the immersive look. Restore them as soon as the sidebar is
-    // docked again (whether via toggle or peek pin). Tauri and other runtimes
+    // docked again (whether via toggle or peek pin). Other runtime adapters
     // silently skip this because setTrafficLightsVisible is optional.
     useEffect(() => {
         if (!SIDEBAR_VIBRANCY_ENABLED) return;
