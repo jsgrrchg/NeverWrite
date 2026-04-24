@@ -12,6 +12,16 @@ vi.mock("./useAiChatEventBridge", () => ({
     useAiChatEventBridge: eventBridgeMock,
 }));
 
+function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}
+
 describe("AIChatDetachedWindowHost", () => {
     beforeEach(() => {
         resetChatStore();
@@ -51,6 +61,45 @@ describe("AIChatDetachedWindowHost", () => {
             createDefaultSession: false,
         });
         expect(loadSession).toHaveBeenCalledWith("session-1");
+    });
+
+    it("waits for startup initialization before recovering the active chat", async () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    title: "Chat",
+                },
+            ],
+            "chat-tab-1",
+        );
+
+        const initialization = createDeferred<{
+            sessionInventoryLoaded: boolean;
+        }>();
+        const initialize = vi.fn().mockReturnValue(initialization.promise);
+        const loadSession = vi.fn().mockResolvedValue(undefined);
+        useChatStore.setState({
+            initialize,
+            loadSession,
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        renderComponent(<AIChatDetachedWindowHost />);
+        await flushPromises();
+
+        expect(initialize).toHaveBeenCalledWith({
+            createDefaultSession: false,
+        });
+        expect(loadSession).not.toHaveBeenCalled();
+
+        initialization.resolve({ sessionInventoryLoaded: true });
+        await flushPromises();
+        await flushPromises();
+
+        expect(loadSession).toHaveBeenCalledWith("persisted:history-1");
     });
 
     it("does not reload a live detached chat session", async () => {

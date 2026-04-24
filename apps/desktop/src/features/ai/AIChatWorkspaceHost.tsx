@@ -22,6 +22,11 @@ function hasVisibleAiComposerDropZone() {
     );
 }
 
+function getActiveEditorChatSessionId() {
+    const activeTab = selectFocusedEditorTab(useEditorStore.getState());
+    return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
+}
+
 interface AIChatWorkspaceHostProps {
     startupReady?: boolean;
     listenWithoutChatTabs?: boolean;
@@ -52,6 +57,7 @@ export function AIChatWorkspaceHost({
     );
     const isInitializing = useChatStore((state) => state.isInitializing);
     const chatActions = useRef(useChatStore.getState()).current;
+    const initializationPromiseRef = useRef<Promise<unknown> | null>(null);
     const recoveringSessionIdRef = useRef<string | null>(null);
     const attachReplayCountsRef = useRef(new WeakMap<object, number>());
 
@@ -64,7 +70,15 @@ export function AIChatWorkspaceHost({
     useEffect(() => {
         if (!startupReady || !vaultPath || !hasChatTabs) return;
 
-        void chatActions.initialize({ createDefaultSession: false });
+        const initialization = chatActions.initialize({
+            createDefaultSession: false,
+        });
+        initializationPromiseRef.current = initialization;
+        void initialization.finally(() => {
+            if (initializationPromiseRef.current === initialization) {
+                initializationPromiseRef.current = null;
+            }
+        });
     }, [chatActions, hasChatTabs, startupReady, vaultPath]);
 
     useEffect(() => {
@@ -105,7 +119,27 @@ export function AIChatWorkspaceHost({
         }
 
         recoveringSessionIdRef.current = activeChatSessionId;
-        void chatActions.loadSession(activeChatSessionId).finally(() => {
+        void (async () => {
+            await initializationPromiseRef.current?.catch(() => {});
+            if (
+                recoveringSessionIdRef.current !== activeChatSessionId ||
+                getActiveEditorChatSessionId() !== activeChatSessionId
+            ) {
+                return;
+            }
+
+            const latestSession =
+                useChatStore.getState().sessionsById[activeChatSessionId] ??
+                null;
+            if (
+                latestSession?.runtimeState === "live" ||
+                latestSession?.isResumingSession
+            ) {
+                return;
+            }
+
+            await chatActions.loadSession(activeChatSessionId);
+        })().finally(() => {
             if (recoveringSessionIdRef.current === activeChatSessionId) {
                 recoveringSessionIdRef.current = null;
             }

@@ -25,7 +25,7 @@ governing our direct and transitive dependencies, grouped by license type.
 | License              | Scope                                                    |
 | -------------------- | -------------------------------------------------------- |
 | MIT                  | Majority of frontend and backend dependencies            |
-| Apache-2.0           | TypeScript, pdfjs-dist, agent-client-protocol               |
+| Apache-2.0           | TypeScript, pdfjs-dist, Tauri (dual), agent-client-protocol |
 | MIT OR Apache-2.0    | Most Rust crates (serde, tokio, regex, etc.)             |
 | MPL-2.0              | cssparser, selectors, spellbook                          |
 | Unicode-3.0          | ICU libraries (icu_*, zerovec, yoke, litemap)            |
@@ -50,6 +50,14 @@ No GPL or strong-copyleft dependencies are used in this project.
 | tailwindcss, @tailwindcss/vite | MIT                |
 | vite, @vitejs/plugin-react     | MIT                |
 | typescript                     | Apache-2.0         |
+
+### Tauri
+| Package                        | License               |
+| ------------------------------ | --------------------- |
+| @tauri-apps/api                | Apache-2.0 OR MIT     |
+| @tauri-apps/cli                | Apache-2.0 OR MIT     |
+| @tauri-apps/plugin-dialog      | MIT OR Apache-2.0     |
+| @tauri-apps/plugin-opener      | MIT OR Apache-2.0     |
 
 ### Editor (CodeMirror 6)
 
@@ -125,6 +133,10 @@ No GPL or strong-copyleft dependencies are used in this project.
 
 | Crate                      | License               |
 | -------------------------- | --------------------- |
+| tauri                      | Apache-2.0 OR MIT     |
+| tauri-build                | Apache-2.0 OR MIT     |
+| tauri-plugin-dialog        | Apache-2.0 OR MIT     |
+| tauri-plugin-opener        | Apache-2.0 OR MIT     |
 | serde, serde_json          | MIT OR Apache-2.0     |
 | tokio                      | MIT                   |
 | tokio-util                 | MIT                   |

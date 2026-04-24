@@ -449,6 +449,14 @@ function getPersistedHistoryFromCache(
     return _persistedHistoryCacheBySessionId.get(historySessionId) ?? null;
 }
 
+function getPersistedHistorySessionId(sessionId: string) {
+    if (!sessionId.startsWith("persisted:")) {
+        return null;
+    }
+
+    return sessionId.slice("persisted:".length) || null;
+}
+
 function summarizePersistedHistory(
     history: PersistedSessionHistory,
 ): PersistedSessionHistorySummary {
@@ -2113,6 +2121,11 @@ function migrateSessionLocalState(
 }
 
 function registerOpenEditorBaselines(sessionId: string) {
+    const session = useChatStore.getState().sessionsById[sessionId];
+    if (!session || session.runtimeState !== "live") {
+        return;
+    }
+
     const tabs = selectEditorWorkspaceTabs(useEditorStore.getState());
     for (const tab of tabs) {
         if (isNoteTab(tab) && tab.content != null) {
@@ -7731,6 +7744,35 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            const persistedHistorySessionId =
+                getPersistedHistorySessionId(sessionId);
+            if (persistedHistorySessionId) {
+                const vaultPath = useVaultStore.getState().vaultPath;
+                const persisted = getPersistedHistoryFromCache(
+                    vaultPath,
+                    persistedHistorySessionId,
+                );
+                if (persisted) {
+                    const restored = createPersistedSession(
+                        { ...persisted, messages: [] },
+                        get().runtimes,
+                        vaultPath,
+                    );
+                    if (restored) {
+                        get().upsertSession(restored, true);
+                        await get().resumeSession(restored.sessionId);
+                        return;
+                    }
+                }
+
+                get().applySessionError({
+                    session_id: sessionId,
+                    message:
+                        "Saved chat history is still loading. Try reopening the chat in a moment.",
+                });
+                return;
+            }
+
             try {
                 const session = await aiLoadSession(sessionId);
                 get().upsertSession(session, true);
@@ -8334,6 +8376,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         stopStreaming: async (sessionId) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
+            const targetSession = get().sessionsById[resolvedSessionId];
+            if (!targetSession || targetSession.runtimeState !== "live") {
+                return;
+            }
+
             const existingPendingStop =
                 _pendingStopBySessionId.get(resolvedSessionId);
             if (existingPendingStop) {
@@ -8429,6 +8476,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         respondPermissionForSession: async (sessionId, requestId, optionId) => {
+            const targetSession = get().sessionsById[sessionId];
+            if (!targetSession || targetSession.runtimeState !== "live") {
+                return;
+            }
+
             // Optimistically mark as streaming since the agent will resume
             set((state) => {
                 const session = state.sessionsById[sessionId];
@@ -9474,7 +9526,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             ) {
                 await aiCancelTurn(sessionId).catch(() => {});
             }
-            await aiDeleteRuntimeSession(sessionId).catch(() => {});
+            if (targetSession?.runtimeState === "live") {
+                await aiDeleteRuntimeSession(sessionId).catch(() => {});
+            }
             if (vaultPath) {
                 await aiDeleteSessionHistory(vaultPath, historySessionId).catch(
                     () => {},
@@ -9979,7 +10033,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const sourceHistoryId =
                 session.historySessionId ||
-                session.sessionId.replace(/^persisted:/, "");
+                getPersistedHistorySessionId(session.sessionId) ||
+                session.sessionId;
 
             try {
                 const newHistoryId = await aiForkSessionHistory(

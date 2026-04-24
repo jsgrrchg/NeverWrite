@@ -8637,6 +8637,66 @@ describe("chatStore", () => {
         });
     });
 
+    it("does not ask the runtime backend to load an unknown persisted-only session id", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session") {
+                throw new Error("persisted-only ids must not hit the runtime");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().loadSession("persisted:history-missing");
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_load_session",
+            ),
+        ).toBe(false);
+    });
+
+    it("does not send live runtime commands for persisted-only sessions", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "persisted:history-1": {
+                    ...createSessionWithTrackedFiles("persisted:history-1", []),
+                    historySessionId: "history-1",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    status: "waiting_permission",
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) =>
+            defaultInvokeImplementation(command, args),
+        );
+
+        await useChatStore.getState().stopStreaming("persisted:history-1");
+        await useChatStore
+            .getState()
+            .respondPermissionForSession(
+                "persisted:history-1",
+                "permission-1",
+                "allow",
+            );
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) =>
+                    command === "ai_cancel_turn" ||
+                    command === "ai_respond_permission",
+            ),
+        ).toBe(false);
+    });
+
     it("rehydrates Claude histories with their runtime and resumes them natively", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
