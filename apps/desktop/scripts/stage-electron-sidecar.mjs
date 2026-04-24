@@ -490,6 +490,7 @@ if (nodeSource.kind === "universal-directory") {
 }
 await fs.cp(claudeEmbeddedSource, path.join(embeddedDir, "claude-agent-acp"), {
     recursive: true,
+    dereference: true,
 });
 
 await ensureExecutableIfNeeded(stagedPath);

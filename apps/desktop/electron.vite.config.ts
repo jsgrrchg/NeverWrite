@@ -52,6 +52,7 @@ function electronProcessConfig(kind: "main" | "preload"): UserConfig {
 
 function rendererConfig(): UserConfig {
     return {
+        base: "./",
         plugins: [react(), tailwindcss()],
         resolve: {
             dedupe: ["react", "react-dom"],
