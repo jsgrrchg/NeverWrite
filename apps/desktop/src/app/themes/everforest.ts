@@ -20,10 +20,10 @@ export const everforestTheme: ThemePalette = {
         bgTertiary: "#3D484D",
         bgElevated: "#313a40",
         textPrimary: "#D3C6AA",
-        textSecondary: "#859289",
+        textSecondary: "#A7B0A4",
         border: "#475258",
         accent: "#A7C080",
-        iconMuted: "#7a8a7e",
+        iconMuted: "#9AA79C",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.30)",
     },
 };

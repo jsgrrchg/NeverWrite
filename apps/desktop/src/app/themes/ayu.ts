@@ -20,10 +20,10 @@ export const ayuTheme: ThemePalette = {
         bgTertiary: "#151a23",
         bgElevated: "#141821",
         textPrimary: "#bfbdb6",
-        textSecondary: "#5a6378",
+        textSecondary: "#8a97ad",
         border: "#1b1f29",
         accent: "#e6b450",
-        iconMuted: "#6b7a90",
+        iconMuted: "#8a97ad",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };

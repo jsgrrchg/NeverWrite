@@ -20,10 +20,10 @@ export const nightOwlTheme: ThemePalette = {
         bgTertiary: "#0b253a",
         bgElevated: "#021d32",
         textPrimary: "#d6deeb",
-        textSecondary: "#5f7e97",
+        textSecondary: "#94a9c2",
         border: "#122d42",
         accent: "#82aaff",
-        iconMuted: "#6d849c",
+        iconMuted: "#8aa0ba",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.40)",
     },
 };

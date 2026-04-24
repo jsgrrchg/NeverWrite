@@ -20,10 +20,10 @@ export const kanagawaTheme: ThemePalette = {
         bgTertiary: "#2A2A37",
         bgElevated: "#1a1a22",
         textPrimary: "#DCD7BA",
-        textSecondary: "#727169",
+        textSecondary: "#A6A69C",
         border: "#363646",
         accent: "#7E9CD8",
-        iconMuted: "#838275",
+        iconMuted: "#9A998F",
         shadowSoft: "0 24px 56px rgba(0, 0, 0, 0.35)",
     },
 };
