@@ -143,6 +143,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const paneLabel = `Pane ${paneIndex + 1}`;
     const activePaneTab =
         pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
+    const showHistoryNavigationButtons = tabOpenBehavior === "history";
     const canGoBack =
         tabOpenBehavior === "history"
             ? activePaneTab &&
@@ -387,61 +388,63 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 }}
                 data-pane-empty={hasTabs ? undefined : "true"}
             >
-                <div className="flex shrink-0 items-center px-1.5">
-                    <div
-                        className="flex shrink-0 items-center"
-                        style={chromeControlsGroupStyle}
-                    >
-                        <button
-                            type="button"
-                            onClick={goBack}
-                            disabled={!canGoBack}
-                            title="Go back"
-                            className="flex shrink-0 items-center justify-center"
-                            style={getChromeNavigationButtonStyle(
-                                "leading",
-                                canGoBack,
-                            )}
+                {showHistoryNavigationButtons && (
+                    <div className="flex shrink-0 items-center px-1.5">
+                        <div
+                            className="flex shrink-0 items-center"
+                            style={chromeControlsGroupStyle}
                         >
-                            <svg
-                                width="11"
-                                height="11"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                            <button
+                                type="button"
+                                onClick={goBack}
+                                disabled={!canGoBack}
+                                title="Go back"
+                                className="flex shrink-0 items-center justify-center"
+                                style={getChromeNavigationButtonStyle(
+                                    "leading",
+                                    canGoBack,
+                                )}
                             >
-                                <path d="M9.5 3L4.5 8l5 5" />
-                            </svg>
-                        </button>
-                        <button
-                            type="button"
-                            onClick={goForward}
-                            disabled={!canGoForward}
-                            title="Go forward"
-                            className="flex shrink-0 items-center justify-center"
-                            style={getChromeNavigationButtonStyle(
-                                "trailing",
-                                canGoForward,
-                            )}
-                        >
-                            <svg
-                                width="11"
-                                height="11"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                                <svg
+                                    width="11"
+                                    height="11"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <path d="M9.5 3L4.5 8l5 5" />
+                                </svg>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={goForward}
+                                disabled={!canGoForward}
+                                title="Go forward"
+                                className="flex shrink-0 items-center justify-center"
+                                style={getChromeNavigationButtonStyle(
+                                    "trailing",
+                                    canGoForward,
+                                )}
                             >
-                                <path d="M6.5 3L11.5 8l-5 5" />
-                            </svg>
-                        </button>
+                                <svg
+                                    width="11"
+                                    height="11"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <path d="M6.5 3L11.5 8l-5 5" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
-                </div>
+                )}
 
                 <div className="relative flex min-w-0 flex-1 self-stretch overflow-hidden">
                     {hasTabs ? (

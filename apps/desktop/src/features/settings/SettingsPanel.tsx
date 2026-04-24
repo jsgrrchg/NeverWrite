@@ -23,7 +23,10 @@ import {
 import { useChatStore } from "../ai/store/chatStore";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
-import { formatPrimaryShortcut } from "../../app/shortcuts/format";
+import {
+    formatPrimaryShortcut,
+    formatShortcutAction,
+} from "../../app/shortcuts/format";
 import {
     buildSpellcheckLanguageDescription,
     buildSpellcheckLanguageSelectOptions,
@@ -37,6 +40,14 @@ import { getDesktopPlatform } from "../../app/utils/platform";
 import { readSearchParam } from "../../app/utils/safeBrowser";
 import { subscribeSafeStorage } from "../../app/utils/safeStorage";
 import { APP_BRAND_NAME } from "../../app/utils/branding";
+import {
+    APP_ZOOM_STEP,
+    MAX_APP_ZOOM,
+    MIN_APP_ZOOM,
+    readAppZoom,
+    subscribeAppZoom,
+    writeAppZoom,
+} from "../../app/utils/appZoom";
 import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { AIProvidersSettings } from "./AIProvidersSettings";
@@ -367,11 +378,13 @@ function NumberStepper({
     value,
     min,
     max,
+    step = 1,
     onChange,
 }: {
     value: number;
     min: number;
     max: number;
+    step?: number;
     onChange: (v: number) => void;
 }) {
     const inputRef = useRef<HTMLInputElement>(null);
@@ -397,7 +410,7 @@ function NumberStepper({
             }}
         >
             <button
-                onClick={() => onChange(Math.max(min, value - 1))}
+                onClick={() => onChange(Math.max(min, value - step))}
                 style={{
                     width: 24,
                     height: 26,
@@ -449,7 +462,7 @@ function NumberStepper({
                 }}
             />
             <button
-                onClick={() => onChange(Math.min(max, value + 1))}
+                onClick={() => onChange(Math.min(max, value + step))}
                 style={{
                     width: 24,
                     height: 26,
@@ -776,6 +789,33 @@ function GeneralSettings() {
     );
 }
 
+const APP_ZOOM_PERCENT_MIN = Math.round(MIN_APP_ZOOM * 100);
+const APP_ZOOM_PERCENT_MAX = Math.round(MAX_APP_ZOOM * 100);
+const APP_ZOOM_PERCENT_STEP = Math.round(APP_ZOOM_STEP * 100);
+
+function appZoomToPercent(zoom: number) {
+    return Math.round(zoom * 100);
+}
+
+function useAppZoomPercent() {
+    const [appZoomPercent, setAppZoomPercent] = useState(() =>
+        appZoomToPercent(readAppZoom()),
+    );
+
+    useEffect(() => {
+        return subscribeAppZoom((nextZoom) => {
+            setAppZoomPercent(appZoomToPercent(nextZoom));
+        });
+    }, []);
+
+    const writeAppZoomPercent = (nextPercent: number) => {
+        const nextZoom = writeAppZoom(nextPercent / 100);
+        setAppZoomPercent(appZoomToPercent(nextZoom));
+    };
+
+    return [appZoomPercent, writeAppZoomPercent] as const;
+}
+
 function AppearanceSettings() {
     const { mode, setMode, themeName, setThemeName } = useThemeStore();
     const {
@@ -784,6 +824,13 @@ function AppearanceSettings() {
         fileTreeStickyFolders,
         setSetting,
     } = useSettingsStore();
+    const [appZoomPercent, setAppZoomPercent] = useAppZoomPercent();
+    const platform = getDesktopPlatform();
+    const appZoomShortcut = [
+        formatShortcutAction("zoom_in", platform),
+        formatShortcutAction("zoom_out", platform),
+        formatShortcutAction("reset_zoom", platform),
+    ].join(" / ");
 
     return (
         <div>
@@ -841,6 +888,21 @@ function AppearanceSettings() {
                         onChange={(v) =>
                             setSetting("fileTreeStickyFolders", v)
                         }
+                    />
+                }
+            />
+
+            <SectionLabel>Zoom</SectionLabel>
+            <Row
+                label="App zoom"
+                description={`Scale the entire app UI, in percent. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`}
+                control={
+                    <NumberStepper
+                        value={appZoomPercent}
+                        min={APP_ZOOM_PERCENT_MIN}
+                        max={APP_ZOOM_PERCENT_MAX}
+                        step={APP_ZOOM_PERCENT_STEP}
+                        onChange={setAppZoomPercent}
                     />
                 }
             />

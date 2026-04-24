@@ -185,6 +185,24 @@ describe("EditorPaneBar", () => {
         ).not.toBeNull();
     });
 
+    it("shows pane history navigation buttons when open behavior uses history", () => {
+        useSettingsStore.getState().setSetting("tabOpenBehavior", "history");
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.getByTitle("Go back")).toBeInTheDocument();
+        expect(screen.getByTitle("Go forward")).toBeInTheDocument();
+    });
+
+    it("hides pane history navigation buttons when open behavior creates new tabs", () => {
+        useSettingsStore.getState().setSetting("tabOpenBehavior", "new_tab");
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.queryByTitle("Go back")).not.toBeInTheDocument();
+        expect(screen.queryByTitle("Go forward")).not.toBeInTheDocument();
+    });
+
     it("hides direct pane-target entries from the tab context menu", async () => {
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);
 

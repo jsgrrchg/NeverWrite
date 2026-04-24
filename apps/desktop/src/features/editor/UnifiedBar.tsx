@@ -163,6 +163,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         (s) => s.fileTreeShowExtensions,
     );
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const showHistoryNavigationButtons = tabOpenBehavior === "history";
     // Primitive selectors — stable when values don't change
     const canGoBack = useEditorStore((s) => {
         const pane = selectEditorPaneState(s);
@@ -1073,74 +1074,78 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                 />
                             </svg>
                         </button>
-                        <button
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={goBack}
-                            onContextMenu={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if (!canGoBack) return;
-                                const rect =
-                                    e.currentTarget.getBoundingClientRect();
-                                setHistoryContextMenu({
-                                    x: rect.left,
-                                    y: rect.bottom + 4,
-                                    payload: undefined,
-                                });
-                            }}
-                            disabled={!canGoBack}
-                            title="Go back"
-                            className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
-                            style={{
-                                alignSelf: "center",
-                                marginRight: 0,
-                                ...getChromeNavigationButtonStyle(
-                                    "leading",
-                                    canGoBack,
-                                ),
-                            }}
-                        >
-                            <svg
-                                width="14"
-                                height="14"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.8"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            >
-                                <path d="M9.5 3L4.5 8l5 5" />
-                            </svg>
-                        </button>
-                        <button
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={goForward}
-                            disabled={!canGoForward}
-                            title="Go forward"
-                            className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
-                            style={{
-                                alignSelf: "center",
-                                marginRight: 4,
-                                ...getChromeNavigationButtonStyle(
-                                    "trailing",
-                                    canGoForward,
-                                ),
-                            }}
-                        >
-                            <svg
-                                width="14"
-                                height="14"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.8"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            >
-                                <path d="M6.5 3L11.5 8l-5 5" />
-                            </svg>
-                        </button>
+                        {showHistoryNavigationButtons && (
+                            <>
+                                <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={goBack}
+                                    onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (!canGoBack) return;
+                                        const rect =
+                                            e.currentTarget.getBoundingClientRect();
+                                        setHistoryContextMenu({
+                                            x: rect.left,
+                                            y: rect.bottom + 4,
+                                            payload: undefined,
+                                        });
+                                    }}
+                                    disabled={!canGoBack}
+                                    title="Go back"
+                                    className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
+                                    style={{
+                                        alignSelf: "center",
+                                        marginRight: 0,
+                                        ...getChromeNavigationButtonStyle(
+                                            "leading",
+                                            canGoBack,
+                                        ),
+                                    }}
+                                >
+                                    <svg
+                                        width="14"
+                                        height="14"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="1.8"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    >
+                                        <path d="M9.5 3L4.5 8l5 5" />
+                                    </svg>
+                                </button>
+                                <button
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={goForward}
+                                    disabled={!canGoForward}
+                                    title="Go forward"
+                                    className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
+                                    style={{
+                                        alignSelf: "center",
+                                        marginRight: 4,
+                                        ...getChromeNavigationButtonStyle(
+                                            "trailing",
+                                            canGoForward,
+                                        ),
+                                    }}
+                                >
+                                    <svg
+                                        width="14"
+                                        height="14"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="1.8"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    >
+                                        <path d="M6.5 3L11.5 8l-5 5" />
+                                    </svg>
+                                </button>
+                            </>
+                        )}
                     </>
                 )}
 

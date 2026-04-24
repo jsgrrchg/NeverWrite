@@ -6,6 +6,7 @@ import { useChatStore } from "../ai/store/chatStore";
 import { SettingsPanel } from "./SettingsPanel";
 import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useAppUpdateStore } from "../updates/store";
+import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -198,6 +199,29 @@ describe("SettingsPanel", () => {
         });
 
         expect(screen.getByDisplayValue("750")).toBeInTheDocument();
+    });
+
+    it("renders and persists app zoom as a percentage stepper", async () => {
+        localStorage.setItem(APP_ZOOM_STORAGE_KEY, "1.1");
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+        const label = screen.getByText("App zoom");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        const input = within(row as HTMLElement).getByDisplayValue("110");
+
+        fireEvent.focus(input);
+        fireEvent.change(input, { target: { value: "125" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        await waitFor(() => {
+            expect(localStorage.getItem(APP_ZOOM_STORAGE_KEY)).toBe("1.25");
+        });
+        expect(screen.getByDisplayValue("125")).toBeInTheDocument();
     });
 
     it("filters recent vaults in a scrollable list", () => {

@@ -183,7 +183,10 @@ describe("UnifiedBar tab strip drop", () => {
             configurable: true,
         });
 
-        useSettingsStore.setState({ fileTreeShowExtensions: false });
+        useSettingsStore.setState({
+            fileTreeShowExtensions: false,
+            tabOpenBehavior: "history",
+        });
         useChatStore.setState({
             runtimes: [
                 {
@@ -245,6 +248,45 @@ describe("UnifiedBar tab strip drop", () => {
 
         fireEvent.click(targetTab!);
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
+    });
+
+    it("shows history navigation buttons when open behavior uses history", async () => {
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        expect(screen.getByTitle("Go back")).toBeInTheDocument();
+        expect(screen.getByTitle("Go forward")).toBeInTheDocument();
+    });
+
+    it("hides history navigation buttons when open behavior creates new tabs", async () => {
+        useSettingsStore.setState({ tabOpenBehavior: "new_tab" });
+        setEditorTabs([
+            {
+                id: "tab-a",
+                kind: "note",
+                noteId: "notes/alpha.md",
+                title: "Alpha",
+                content: "alpha",
+            },
+        ]);
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+        await flushPromises();
+
+        expect(screen.queryByTitle("Go back")).not.toBeInTheDocument();
+        expect(screen.queryByTitle("Go forward")).not.toBeInTheDocument();
     });
 
     it("waits until pointer release before switching tabs", async () => {
