@@ -122,6 +122,16 @@ class ElectronWindowHandle {
         );
     }
 
+    setTitleBarOverlay(options: {
+        color?: string;
+        symbolColor?: string;
+        height?: number;
+    }): Promise<void> {
+        return this.windowCommand("setTitleBarOverlay", options).then(
+            () => undefined,
+        );
+    }
+
     protected windowCommand(
         command: string,
         args?: Record<string, unknown>,

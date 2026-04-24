@@ -21,10 +21,6 @@ import type { AIComposerPart } from "../ai/types";
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
 const onDragDropEventMock = vi.fn();
-const minimizeMock = vi.fn().mockResolvedValue(undefined);
-const toggleMaximizeMock = vi.fn().mockResolvedValue(undefined);
-const isMaximizedMock = vi.fn().mockResolvedValue(false);
-const closeMock = vi.fn().mockResolvedValue(undefined);
 
 function createChatSession(
     sessionId: string,
@@ -123,17 +119,9 @@ describe("UnifiedBar tab strip drop", () => {
         const mockWindow = getMockCurrentWindow() as unknown as {
             innerPosition: typeof innerPositionMock;
             scaleFactor: typeof scaleFactorMock;
-            minimize: typeof minimizeMock;
-            toggleMaximize: typeof toggleMaximizeMock;
-            isMaximized: typeof isMaximizedMock;
-            close: typeof closeMock;
         };
         mockWindow.innerPosition = innerPositionMock;
         mockWindow.scaleFactor = scaleFactorMock;
-        mockWindow.minimize = minimizeMock;
-        mockWindow.toggleMaximize = toggleMaximizeMock;
-        mockWindow.isMaximized = isMaximizedMock;
-        mockWindow.close = closeMock;
         (
             getMockCurrentWebview() as {
                 onDragDropEvent: typeof onDragDropEventMock;
@@ -172,11 +160,6 @@ describe("UnifiedBar tab strip drop", () => {
 
         onDragDropEventMock.mockReset();
         onDragDropEventMock.mockResolvedValue(vi.fn());
-        minimizeMock.mockClear();
-        toggleMaximizeMock.mockClear();
-        isMaximizedMock.mockReset();
-        isMaximizedMock.mockResolvedValue(false);
-        closeMock.mockClear();
         vi.mocked(confirm).mockReset();
         vi.mocked(confirm).mockResolvedValue(true);
 
@@ -732,55 +715,6 @@ describe("UnifiedBar tab strip drop", () => {
             "tab-a",
             "tab-b",
         ]);
-    });
-
-    it("renders native window controls on Windows and dispatches commands", async () => {
-        Object.defineProperty(window.navigator, "userAgent", {
-            configurable: true,
-            value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        });
-        Object.defineProperty(window.navigator, "platform", {
-            configurable: true,
-            value: "Win32",
-        });
-
-        setEditorTabs([
-            {
-                id: "tab-a",
-                kind: "note",
-                noteId: "notes/alpha.md",
-                title: "Alpha",
-                content: "alpha",
-            },
-        ]);
-
-        const { UnifiedBar } = await import("./UnifiedBar");
-        const { container } = renderComponent(<UnifiedBar windowMode="note" />);
-        await flushPromises();
-
-        expect(
-            container.querySelector('[data-window-controls="windows"]'),
-        ).not.toBeNull();
-
-        fireEvent.click(
-            container.querySelector(
-                '[data-window-control="minimize"]',
-            ) as HTMLElement,
-        );
-        fireEvent.click(
-            container.querySelector(
-                '[data-window-control="maximize"]',
-            ) as HTMLElement,
-        );
-        fireEvent.click(
-            container.querySelector(
-                '[data-window-control="close"]',
-            ) as HTMLElement,
-        );
-
-        expect(minimizeMock).toHaveBeenCalledTimes(1);
-        expect(toggleMaximizeMock).toHaveBeenCalledTimes(1);
-        expect(closeMock).toHaveBeenCalledTimes(1);
     });
 
     it("does not render the ACP chat button next to the new-tab button", async () => {

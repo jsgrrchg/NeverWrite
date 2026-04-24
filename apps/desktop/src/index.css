@@ -421,26 +421,33 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
-/* macOS: let BrowserWindow vibrancy show through the sidebar region.
-   html, body and #root must be transparent so the native material reaches
-   the sidebar. Opaque surfaces (editor, right panel, bottom panel) paint
-   their own backgrounds, so the rest of the app still looks solid. */
+/* Desktop: let the native window material (macOS vibrancy, Windows acrylic)
+   show through the sidebar region. html, body and #root must be transparent
+   so the material reaches the sidebar. Opaque surfaces (editor, right panel,
+   bottom panel) paint their own backgrounds, so the rest of the app still
+   looks solid. */
 html[data-desktop-platform="macos"],
 html[data-desktop-platform="macos"] body,
-html[data-desktop-platform="macos"] #root {
+html[data-desktop-platform="macos"] #root,
+html[data-desktop-platform="windows"],
+html[data-desktop-platform="windows"] body,
+html[data-desktop-platform="windows"] #root {
     background-color: transparent;
 }
 
-/* Sidebar vibrancy tint — matches Comando's muted frosted look instead of
-   leaving the sidebar fully transparent. 82% in light, 85% in dark mode. */
-html[data-desktop-platform="macos"] {
+/* Sidebar translucent tint — muted frosted look instead of a fully
+   transparent panel. 82% in light, 85% in dark mode. Shared by the macOS
+   native "sidebar" vibrancy and the Windows 11 acrylic backgroundMaterial. */
+html[data-desktop-platform="macos"],
+html[data-desktop-platform="windows"] {
     --sidebar-vibrancy-tint: color-mix(
         in srgb,
         var(--bg-primary) 82%,
         transparent
     );
 }
-html[data-desktop-platform="macos"].dark {
+html[data-desktop-platform="macos"].dark,
+html[data-desktop-platform="windows"].dark {
     --sidebar-vibrancy-tint: color-mix(
         in srgb,
         var(--bg-primary) 85%,
@@ -785,58 +792,6 @@ body.dragging-tab * {
 }
 .ub-sidebar-tab[data-active]:hover {
     transform: translateY(-1px);
-}
-
-.windows-caption-controls {
-    overflow: hidden;
-}
-
-.windows-caption-button {
-    appearance: none;
-    -webkit-appearance: none;
-    background: transparent;
-    border-radius: 2px;
-    transition:
-        background-color 150ms ease,
-        color 150ms ease,
-        box-shadow 150ms ease,
-        transform 150ms ease;
-}
-
-.windows-caption-button svg {
-    opacity: 0.94;
-    transition: opacity 150ms ease;
-}
-
-.windows-caption-button:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--text-primary) 13%, transparent);
-    color: var(--text-primary) !important;
-}
-
-.windows-caption-button:active:not(:disabled) {
-    background: color-mix(in srgb, var(--text-primary) 20%, transparent);
-    transform: scale(0.97);
-    transition-duration: 40ms;
-}
-
-.windows-caption-button:active:not(:disabled) svg {
-    opacity: 0.7;
-}
-
-.windows-caption-button:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px
-        color-mix(in srgb, var(--accent) 34%, transparent);
-}
-
-.windows-caption-button-close:hover:not(:disabled) {
-    background: #c42b1c;
-    color: #ffffff !important;
-}
-
-.windows-caption-button-close:active:not(:disabled) {
-    background: #8b1f15;
-    color: #ffffff !important;
 }
 
 .ub-nav-btn {

@@ -66,6 +66,14 @@ export interface RuntimeWindow {
     // macOS-only on Electron, so this remains optional and callers should treat
     // a missing method as a no-op.
     setTrafficLightsVisible?: (visible: boolean) => Promise<void>;
+    // Windows-only on Electron: retint the native titleBarOverlay caption
+    // buttons so they stay legible against the current theme. Optional so
+    // other runtimes (and other platforms) can silently ignore it.
+    setTitleBarOverlay?: (options: {
+        color?: string;
+        symbolColor?: string;
+        height?: number;
+    }) => Promise<void>;
 }
 
 export interface RuntimeWebview {

@@ -1,5 +1,7 @@
 import { create } from "zustand";
-import { type ThemeName, applyThemeColors } from "../themes/index";
+import { getCurrentWindow } from "@neverwrite/runtime";
+import { type ThemeName, applyThemeColors, themes } from "../themes/index";
+import { getDesktopPlatform } from "../utils/platform";
 import { readSearchParam, safeMatchMedia } from "../utils/safeBrowser";
 import {
     safeStorageGetItem,
@@ -108,10 +110,29 @@ function applyDark(isDark: boolean) {
     document.documentElement.classList.toggle("dark", isDark);
 }
 
+// Windows only: keep the native titleBarOverlay caption buttons legible by
+// retinting their symbol color whenever the theme (palette or light/dark
+// mode) changes. Background stays transparent so the acrylic surface shows
+// through — only the symbol color needs to follow the theme.
+function syncWindowsTitleBarOverlay(themeName: ThemeName, isDark: boolean) {
+    if (getDesktopPlatform() !== "windows") return;
+    const palette = themes[themeName];
+    const symbolColor = (isDark ? palette.dark : palette.light).textPrimary;
+    const runtimeWindow = getCurrentWindow();
+    if (typeof runtimeWindow.setTitleBarOverlay !== "function") return;
+    void runtimeWindow
+        .setTitleBarOverlay({ color: "#00000000", symbolColor })
+        .catch(() => {
+            // The overlay API is only available on windows created with
+            // titleBarOverlay; silently ignore when it is not.
+        });
+}
+
 function resolveTheme(mode: ThemeMode, themeName: ThemeName) {
     const isDark = getIsDark(mode);
     applyDark(isDark);
     applyThemeColors(themeName, isDark);
+    syncWindowsTitleBarOverlay(themeName, isDark);
     return { mode, themeName, isDark };
 }
 
@@ -202,6 +223,7 @@ export function initializeThemeStore() {
     stopThemePersistence = useThemeStore.subscribe((state) => {
         applyDark(state.isDark);
         applyThemeColors(state.themeName, state.isDark);
+        syncWindowsTitleBarOverlay(state.themeName, state.isDark);
         if (!isApplyingExternal) {
             saveTheme(currentVaultPath, {
                 mode: state.mode,

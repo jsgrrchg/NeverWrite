@@ -31,8 +31,8 @@
         "electron:release:local": "node scripts/build-electron-release.mjs"
     },
     "dependencies": {
-        "@chenglou/pretext": "^0.0.3",
-        "@codemirror/commands": "^6.10.2",
+        "@chenglou/pretext": "^0.0.6",
+        "@codemirror/commands": "^6.10.3",
         "@codemirror/lang-cpp": "^6.0.3",
         "@codemirror/lang-css": "^6.3.1",
         "@codemirror/lang-html": "^6.4.11",
@@ -44,60 +44,78 @@
         "@codemirror/lang-python": "^6.2.1",
         "@codemirror/lang-rust": "^6.0.2",
         "@codemirror/lang-sql": "^6.10.0",
-        "@codemirror/lang-yaml": "^6.1.2",
-        "@codemirror/language": "^6.12.2",
+        "@codemirror/lang-yaml": "^6.1.3",
+        "@codemirror/language": "^6.12.3",
         "@codemirror/legacy-modes": "^6.5.2",
         "@codemirror/merge": "^6.12.1",
-        "@codemirror/search": "^6.6.0",
-        "@codemirror/state": "^6.5.4",
+        "@codemirror/search": "^6.7.0",
+        "@codemirror/state": "^6.6.0",
         "@codemirror/theme-one-dark": "^6.1.3",
-        "@codemirror/view": "^6.39.16",
-        "@excalidraw/excalidraw": "^0.18.0",
+        "@codemirror/view": "^6.41.1",
+        "@excalidraw/excalidraw": "^0.18.1",
         "@iconify-json/catppuccin": "^1.2.17",
-        "@lezer/common": "^1.5.1",
+        "@lezer/common": "^1.5.2",
         "@lezer/highlight": "^1.2.3",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-search": "^0.16.0",
         "@xterm/addon-web-links": "^0.12.0",
         "@xterm/xterm": "^6.0.0",
         "electron-updater": "^6.8.3",
-        "katex": "^0.16.38",
+        "katex": "^0.16.45",
         "papaparse": "^5.5.3",
-        "pdfjs-dist": "5.5.207",
+        "pdfjs-dist": "^5.6.205",
         "react": "19.2.5",
         "react-datasheet-grid": "^4.11.6",
         "react-dom": "19.2.5",
         "react-force-graph-2d": "^1.29.1",
         "react-force-graph-3d": "^1.29.1",
-        "tailwindcss": "^4.2.2",
-        "zustand": "^5.0.11"
+        "tailwindcss": "^4.2.4",
+        "zustand": "^5.0.12"
     },
     "devDependencies": {
         "@eslint/js": "^9.39.1",
-        "@tailwindcss/vite": "^4.2.2",
+        "@tailwindcss/vite": "^4.2.4",
         "@testing-library/jest-dom": "^6.9.1",
         "@testing-library/react": "^16.3.2",
         "@testing-library/user-event": "^14.6.1",
-        "@types/node": "^24.10.1",
+        "@types/node": "^24.12.2",
         "@types/papaparse": "^5.5.2",
         "@types/react": "^19.2.7",
         "@types/react-dom": "^19.2.3",
         "@types/three": "^0.183.1",
         "@vitejs/plugin-react": "^6.0.1",
-        "electron": "^41.2.1",
+        "electron": "^41.3.0",
         "electron-builder": "^26.8.1",
         "eslint": "^9.39.1",
-        "eslint-plugin-react-hooks": "^7.0.1",
+        "eslint-plugin-react-hooks": "^7.1.1",
         "eslint-plugin-react-refresh": "^0.4.24",
         "globals": "^16.5.0",
         "jsdom": "^26.1.0",
         "typescript": "^6.0.3",
-        "typescript-eslint": "^8.58.2",
-        "vite": "^8.0.8",
-        "vitest": "^4.1.4",
+        "typescript-eslint": "^8.59.0",
+        "vite": "^8.0.10",
+        "vitest": "^4.1.5",
         "yaml": "^2.8.3"
     },
     "overrides": {
+        "@chevrotain/cst-dts-gen": {
+            "lodash-es": "4.18.1"
+        },
+        "@chevrotain/gast": {
+            "lodash-es": "4.18.1"
+        },
+        "@excalidraw/excalidraw": {
+            "nanoid": "3.3.11"
+        },
+        "@excalidraw/mermaid-to-excalidraw": {
+            "nanoid": "5.1.9"
+        },
+        "chevrotain": {
+            "lodash-es": "4.18.1"
+        },
+        "mermaid": {
+            "uuid": "14.0.0"
+        },
         "react": "$react",
         "react-dom": "$react-dom",
         "react-resize-detector": "12.3.0"

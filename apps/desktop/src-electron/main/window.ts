@@ -288,6 +288,29 @@ export function windowCommand(
                 }
             }
             return null;
+        case "setTitleBarOverlay":
+            // Windows only: theme the native titleBarOverlay symbol/background
+            // color so the caption buttons stay legible against the acrylic
+            // surface in both light and dark themes. No-op elsewhere because
+            // the API is only meaningful on Windows titleBarOverlay windows.
+            if (process.platform === "win32") {
+                const overlay: Parameters<
+                    BrowserWindow["setTitleBarOverlay"]
+                >[0] = {};
+                if (typeof args?.color === "string") {
+                    overlay.color = args.color;
+                }
+                if (typeof args?.symbolColor === "string") {
+                    overlay.symbolColor = args.symbolColor;
+                }
+                if (typeof args?.height === "number") {
+                    overlay.height = Math.round(args.height);
+                }
+                if (Object.keys(overlay).length > 0) {
+                    window.setTitleBarOverlay(overlay);
+                }
+            }
+            return null;
         default:
             throw new Error(`Unsupported window command: ${command}`);
     }

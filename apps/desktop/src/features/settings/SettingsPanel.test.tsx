@@ -269,6 +269,10 @@ describe("SettingsPanel", () => {
     });
 
     it("hides the inline close button in standalone Windows settings", () => {
+        // Standalone Windows settings rely on Electron's native
+        // titleBarOverlay for min/max/close, so the React-level "Close
+        // settings (Esc)" affordance must not appear — it would double up
+        // with the OS-drawn buttons on the right.
         setNavigatorIdentity(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Win32",
@@ -277,15 +281,17 @@ describe("SettingsPanel", () => {
 
         renderComponent(<SettingsPanel onClose={() => {}} standalone />);
 
-        expect(screen.getByLabelText("Minimize window")).toBeInTheDocument();
-        expect(screen.getByLabelText("Maximize window")).toBeInTheDocument();
-        expect(screen.getByLabelText("Close window")).toBeInTheDocument();
         expect(
             screen.queryByTitle("Close settings (Esc)"),
         ).not.toBeInTheDocument();
+        // The native caption buttons are painted by Electron, not React, so
+        // nothing about them should appear in the DOM either.
+        expect(
+            screen.queryByLabelText("Close window"),
+        ).not.toBeInTheDocument();
     });
 
-    it("routes standalone Windows chrome actions through the current webview window", () => {
+    it("routes standalone Windows drag from the chrome root through the current webview window", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Win32",
@@ -305,14 +311,11 @@ describe("SettingsPanel", () => {
 
         fireEvent.mouseDown(chromeRoot!, { button: 0 });
         fireEvent.doubleClick(chromeRoot!);
-        fireEvent.click(screen.getByLabelText("Close window"));
 
         expect(mockWebviewWindow.startDragging.mock.calls).toHaveLength(1);
         expect(mockWebviewWindow.toggleMaximize.mock.calls).toHaveLength(1);
-        expect(mockWebviewWindow.close.mock.calls).toHaveLength(1);
         expect(mockWindow.startDragging).not.toHaveBeenCalled();
         expect(mockWindow.toggleMaximize).not.toHaveBeenCalled();
-        expect(mockWindow.close).not.toHaveBeenCalled();
     });
 
     it("keeps the settings window title centered in the shared chrome", () => {

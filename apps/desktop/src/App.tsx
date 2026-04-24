@@ -172,13 +172,154 @@ function resetAppToActualSize() {
     resetAppZoom();
 }
 
+type RightPanelTab = "outline" | "links";
+
+const RIGHT_PANEL_TABS: Array<{
+    value: RightPanelTab;
+    label: string;
+    icon: React.ReactNode;
+}> = [
+    {
+        value: "outline",
+        label: "Outline",
+        icon: (
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M3 3.5h10" />
+                <path d="M5.5 8h7.5" />
+                <path d="M8 12.5h5" />
+                <path d="M3 8h.01" />
+                <path d="M5.5 12.5h.01" />
+            </svg>
+        ),
+    },
+    {
+        value: "links",
+        label: "Links",
+        icon: (
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M10 2h4v4M14 2l-6 6M6 4H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3" />
+            </svg>
+        ),
+    },
+];
+
+function RightPanelTabBar({
+    view,
+    onSelect,
+    onCollapse,
+}: {
+    view: RightPanelTab;
+    onSelect: (view: RightPanelTab) => void;
+    onCollapse: () => void;
+}) {
+    return (
+        <div
+            className="flex items-center gap-1"
+            style={{ padding: "8px 8px 6px", flexShrink: 0 }}
+        >
+            {RIGHT_PANEL_TABS.map((tab) => {
+                const active = view === tab.value;
+                return (
+                    <button
+                        key={tab.value}
+                        type="button"
+                        onClick={() => onSelect(tab.value)}
+                        title={tab.label}
+                        data-active={active || undefined}
+                        className="ub-sidebar-tab flex items-center justify-center gap-1.5 text-[11px] font-medium rounded-md"
+                        style={{
+                            flex: 1,
+                            minWidth: 0,
+                            height: 26,
+                            padding: "0 6px",
+                            border: active
+                                ? "1px solid color-mix(in srgb, var(--accent) 22%, var(--border))"
+                                : "1px solid transparent",
+                            background: active
+                                ? "color-mix(in srgb, var(--bg-primary) 60%, transparent)"
+                                : "transparent",
+                            color: active
+                                ? "var(--text-primary)"
+                                : "var(--text-secondary)",
+                            boxShadow: active
+                                ? "0 1px 2px rgb(0 0 0 / 0.12)"
+                                : "none",
+                            transition:
+                                "background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease",
+                        }}
+                    >
+                        {tab.icon}
+                        <span className="truncate">{tab.label}</span>
+                    </button>
+                );
+            })}
+            <button
+                type="button"
+                onClick={onCollapse}
+                title="Hide right panel"
+                aria-label="Hide right panel"
+                className="ub-chrome-btn flex items-center justify-center shrink-0 rounded-md"
+                style={{
+                    width: 26,
+                    height: 26,
+                    border: "1px solid transparent",
+                    background: "transparent",
+                    color: "var(--text-secondary)",
+                    opacity: 0.82,
+                }}
+            >
+                <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                >
+                    <rect x="2" y="2.5" width="12" height="11" rx="2.2" />
+                    <path d="M6 2.5v11" />
+                </svg>
+            </button>
+        </div>
+    );
+}
+
 function RightPanel() {
     const rightPanelView = useLayoutStore((s) => s.rightPanelView);
+    const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
     return (
-        <>
-            {rightPanelView === "outline" && <OutlineRightPanel />}
-            {rightPanelView === "links" && <LinksPanel />}
-        </>
+        <div className="flex h-full min-h-0 flex-col overflow-hidden">
+            <RightPanelTabBar
+                view={rightPanelView}
+                onSelect={activateRightView}
+                onCollapse={toggleRightPanel}
+            />
+            <div className="min-h-0 flex-1 overflow-hidden">
+                {rightPanelView === "outline" && <OutlineRightPanel />}
+                {rightPanelView === "links" && <LinksPanel />}
+            </div>
+        </div>
     );
 }
 
@@ -1979,16 +2120,26 @@ export default function App() {
             />
             <WorkspaceTerminalHost />
 
-            {/* No horizontal chrome bar: the sidebar carries the traffic-light
-                inset and the editor carries its own compact toolbar. This is
-                what lets the translucent sidebar read as a separate surface. */}
+            {/* EditorChromeBar only renders on Windows (to reserve the
+                trailing space for the native titleBarOverlay controls). On
+                macOS it returns null: the sidebar owns the traffic-light
+                inset and the pane bars are free to sit flush against the top
+                of the window, giving the editor more vertical real estate. */}
             <div className="relative flex-1 flex overflow-hidden">
                 <AppLayout
                     left={<SidebarShell onOpenSettings={openSettings} />}
                     center={
                         <div className="flex h-full min-h-0 flex-col overflow-hidden">
                             <EditorChromeBar />
-                            <div className="min-h-0 flex-1 overflow-hidden">
+                            {/* Editor body paints its own opaque background so
+                                the translucent surfaces above read as frosted
+                                strips while the editor surface stays solid. */}
+                            <div
+                                className="min-h-0 flex-1 overflow-hidden"
+                                style={{
+                                    backgroundColor: "var(--bg-primary)",
+                                }}
+                            >
                                 <MultiPaneWorkspace />
                             </div>
                         </div>

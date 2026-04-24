@@ -19,11 +19,15 @@ import {
     type FileTreeNoteDragDetail,
 } from "../../features/ai/dragEvents";
 
-// On macOS we let BrowserWindow "sidebar" vibrancy show through the left pane,
-// so the sidebar region must stay transparent and not paint its own background
-// or a hard 1px separator against the editor. Other platforms keep the
-// existing opaque chrome.
-const SIDEBAR_VIBRANCY_ENABLED = getDesktopPlatform() === "macos";
+// Both macOS (native "sidebar" vibrancy) and Windows 11 (native acrylic
+// backgroundMaterial) paint a translucent window material beneath the
+// renderer, so the sidebar region must stay transparent-ish and must not
+// draw a hard 1px separator against the editor — it would fight the native
+// surface. Only the native traffic-light visibility toggle is still
+// macOS-specific, and is guarded separately.
+const IS_MACOS = getDesktopPlatform() === "macos";
+const SIDEBAR_TRANSLUCENT_ENABLED =
+    IS_MACOS || getDesktopPlatform() === "windows";
 
 const RIGHT_COLLAPSE_TRIGGER_WIDTH = 168;
 const LEFT_SNAP_POINTS = [DEFAULT_SIDEBAR_WIDTH];
@@ -98,6 +102,32 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         overlayDismissTimerRef.current = window.setTimeout(() => {
             overlayDismissTimerRef.current = null;
             setSidebarOverlayVisible(false);
+        }, 200);
+    }, []);
+
+    // Arc-style peek for the right panel — mirror of the sidebar peek, keyed
+    // off the right edge. No file-tree drag coupling: the right panel isn't
+    // a drop target for note drags, so the simple hover flow is enough.
+    const [rightOverlayVisible, setRightOverlayVisible] = useState(false);
+    const rightOverlayDismissTimerRef = useRef<number | null>(null);
+
+    const clearRightOverlayDismissTimer = useCallback(() => {
+        if (rightOverlayDismissTimerRef.current !== null) {
+            window.clearTimeout(rightOverlayDismissTimerRef.current);
+            rightOverlayDismissTimerRef.current = null;
+        }
+    }, []);
+
+    const showRightOverlay = useCallback(() => {
+        clearRightOverlayDismissTimer();
+        setRightOverlayVisible(true);
+    }, [clearRightOverlayDismissTimer]);
+
+    const scheduleHideRightOverlay = useCallback(() => {
+        if (rightOverlayDismissTimerRef.current !== null) return;
+        rightOverlayDismissTimerRef.current = window.setTimeout(() => {
+            rightOverlayDismissTimerRef.current = null;
+            setRightOverlayVisible(false);
         }, 200);
     }, []);
 
@@ -179,13 +209,36 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         }
     }, [clearOverlayDismissTimer, sidebarCollapsed, sidebarOverlayVisible]);
 
-    // macOS: hide the native traffic-light buttons whenever the sidebar is
-    // fully collapsed. They would otherwise float over the empty editor top
-    // and break the immersive look. Restore them as soon as the sidebar is
-    // docked again (whether via toggle or peek pin). Other runtime adapters
-    // silently skip this because setTrafficLightsVisible is optional.
+    // Mirror the sidebar teardown for the right peek: clear timer on unmount
+    // and retract the overlay the moment the panel is docked again.
     useEffect(() => {
-        if (!SIDEBAR_VIBRANCY_ENABLED) return;
+        return () => {
+            clearRightOverlayDismissTimer();
+        };
+    }, [clearRightOverlayDismissTimer]);
+
+    useEffect(() => {
+        if (!rightPanelCollapsed && rightOverlayVisible) {
+            clearRightOverlayDismissTimer();
+            const timer = window.setTimeout(() => {
+                setRightOverlayVisible(false);
+            }, 0);
+            return () => window.clearTimeout(timer);
+        }
+    }, [
+        clearRightOverlayDismissTimer,
+        rightPanelCollapsed,
+        rightOverlayVisible,
+    ]);
+
+    // macOS only: hide the native traffic-light buttons whenever the sidebar
+    // is fully collapsed. They would otherwise float over the empty editor
+    // top and break the immersive look. Restore them as soon as the sidebar
+    // is docked again (whether via toggle or peek pin). Windows keeps its
+    // caption buttons on the right via titleBarOverlay, so they never
+    // overlap the editor and do not need to be toggled.
+    useEffect(() => {
+        if (!IS_MACOS) return;
         const win = getCurrentWindow();
         // Show while docked or while the peek overlay is up so the user can
         // still reach the buttons from within the revealed sidebar.
@@ -197,7 +250,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // they were hidden (e.g. window swap during vault change).
     useEffect(() => {
         return () => {
-            if (!SIDEBAR_VIBRANCY_ENABLED) return;
+            if (!IS_MACOS) return;
             void getCurrentWindow().setTrafficLightsVisible?.(true);
         };
     }, []);
@@ -235,7 +288,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         // Only draw a hairline separator when vibrancy is off. With vibrancy,
         // the border fights the native material and reads as a hard seam.
         panel.style.borderRight =
-            !SIDEBAR_VIBRANCY_ENABLED && width > 0
+            !SIDEBAR_TRANSLUCENT_ENABLED && width > 0
                 ? "1px solid var(--border)"
                 : "none";
     }, []);
@@ -537,7 +590,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 // With vibrancy we must not paint an opaque background here —
                 // the center column paints its own bg below. Otherwise we
                 // would cover the native material in the sidebar region.
-                backgroundColor: SIDEBAR_VIBRANCY_ENABLED
+                backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
                     ? "transparent"
                     : "var(--bg-primary)",
             }}
@@ -557,10 +610,10 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         // (Comando-style 82%/85%) so the native material
                         // still reads through but hover/selection highlights
                         // don't feel harsh.
-                        backgroundColor: SIDEBAR_VIBRANCY_ENABLED
+                        backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
                             ? "var(--sidebar-vibrancy-tint)"
                             : "var(--bg-secondary)",
-                        borderRight: SIDEBAR_VIBRANCY_ENABLED
+                        borderRight: SIDEBAR_TRANSLUCENT_ENABLED
                             ? "none"
                             : "1px solid var(--border)",
                         transition: isResizingLeft
@@ -612,9 +665,15 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             <div
                 className="flex min-w-0 flex-1 overflow-hidden"
                 style={{
-                    // Keep the editor surface opaque even when the sidebar
-                    // region is translucent — vibrancy is sidebar-only.
-                    backgroundColor: "var(--bg-primary)",
+                    // Under vibrancy keep this wrapper transparent so the
+                    // native material can reach the editor's chrome strip.
+                    // Opacity is provided below: the editor body paints its
+                    // own --bg-primary, and the right panel paints
+                    // --bg-secondary — so the rest of the app still reads as
+                    // a solid surface.
+                    backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
+                        ? "transparent"
+                        : "var(--bg-primary)",
                 }}
             >
                 <div
@@ -668,7 +727,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     </div>
                 )}
 
-                {/* Right panel */}
+                {/* Right panel. Matches the sidebar's translucent treatment
+                    on macOS vibrancy / Windows acrylic: paint the same
+                    frosted tint and drop the hard separator so the native
+                    material reads through evenly on both flanks of the
+                    window. */}
                 {right && (
                     <div
                         ref={rightPanelRef}
@@ -677,10 +740,14 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                             width: effectiveRight,
                             flexShrink: 0,
                             overflow: "hidden",
-                            backgroundColor: "var(--bg-secondary)",
-                            borderLeft: rightPanelCollapsed
-                                ? "none"
-                                : "1px solid var(--border)",
+                            backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
+                                ? "var(--sidebar-vibrancy-tint)"
+                                : "var(--bg-secondary)",
+                            borderLeft:
+                                SIDEBAR_TRANSLUCENT_ENABLED ||
+                                rightPanelCollapsed
+                                    ? "none"
+                                    : "1px solid var(--border)",
                             transition: isResizingRight
                                 ? "none"
                                 : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
@@ -743,6 +810,45 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     onMouseLeave={scheduleHideSidebarOverlay}
                 >
                     {left}
+                </div>
+            )}
+
+            {/* Mirror Arc peek for the right panel: hotspot on the right
+                edge reveals the panel as a floating overlay while collapsed. */}
+            {right && rightPanelCollapsed && (
+                <div
+                    data-testid="right-peek-hotspot"
+                    style={{
+                        position: "absolute",
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: rightOverlayVisible ? 0 : 8,
+                        zIndex: 15,
+                    }}
+                    onMouseEnter={showRightOverlay}
+                />
+            )}
+            {right && rightPanelCollapsed && rightOverlayVisible && (
+                <div
+                    data-testid="right-peek-overlay"
+                    style={{
+                        position: "absolute",
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: rightPanelWidth,
+                        zIndex: 20,
+                        overflow: "hidden",
+                        backgroundColor: "var(--bg-secondary)",
+                        borderLeft: "1px solid var(--border)",
+                        boxShadow:
+                            "-4px 0 24px rgba(0, 0, 0, 0.22), -1px 0 6px rgba(0, 0, 0, 0.10)",
+                    }}
+                    onMouseEnter={showRightOverlay}
+                    onMouseLeave={scheduleHideRightOverlay}
+                >
+                    {right}
                 </div>
             )}
         </div>

@@ -66,7 +66,6 @@ import {
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
 } from "./workspaceChromeControls";
-import { WorkspacePanelControls } from "./WorkspacePanelControls";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
 
@@ -196,8 +195,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const sidebarCollapsed = useLayoutStore((s) => s.sidebarCollapsed);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
     const rightPanelCollapsed = useLayoutStore((s) => s.rightPanelCollapsed);
-    const rightPanelView = useLayoutStore((s) => s.rightPanelView);
-    const activateRightView = useLayoutStore((s) => s.activateRightView);
+    const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
@@ -990,7 +988,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     return (
         <>
             <WindowChrome
-                showWindowControls
                 onBackgroundMouseDown={(event) => {
                     if (event.target === event.currentTarget) {
                         startWindowDrag(event);
@@ -998,13 +995,28 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 }}
                 showLeadingInset
                 onLeadingInsetMouseDown={startWindowDrag}
-                shellStyle={{
-                    background:
-                        "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
-                    borderBottom: "1px solid var(--border)",
-                    backdropFilter: "blur(18px)",
-                    boxShadow: "0 1px 0 rgba(255,255,255,0.04)",
-                }}
+                shellStyle={
+                    desktopPlatform === "macos" ||
+                    desktopPlatform === "windows"
+                        ? {
+                              // Detached note windows share the main shell's
+                              // translucent surface: paint the same frosted
+                              // tint as the sidebar and let the native window
+                              // material (macOS vibrancy / Windows acrylic)
+                              // provide the blur. No emulated backdrop-filter
+                              // — it fights the OS material and produces a
+                              // muddy double-blur.
+                              background: "var(--sidebar-vibrancy-tint)",
+                              borderBottom: "1px solid var(--border)",
+                          }
+                        : {
+                              background:
+                                  "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
+                              borderBottom: "1px solid var(--border)",
+                              backdropFilter: "blur(18px)",
+                              boxShadow: "0 1px 0 rgba(255,255,255,0.04)",
+                          }
+                }
                 barStyle={{ padding: "0 6px" }}
             >
                 {windowMode === "main" && (
@@ -1546,13 +1558,87 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{ width: trailingDragZoneWidth }}
                         >
                             {windowMode === "main" && (
-                                <WorkspacePanelControls
-                                    rightPanelCollapsed={rightPanelCollapsed}
-                                    rightPanelView={rightPanelView}
-                                    activateRightView={activateRightView}
-                                />
+                                <button
+                                    type="button"
+                                    onMouseDown={(event) =>
+                                        event.stopPropagation()
+                                    }
+                                    onClick={toggleRightPanel}
+                                    title={
+                                        rightPanelCollapsed
+                                            ? "Show right panel"
+                                            : "Hide right panel"
+                                    }
+                                    aria-label={
+                                        rightPanelCollapsed
+                                            ? "Show right panel"
+                                            : "Hide right panel"
+                                    }
+                                    className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
+                                    style={{
+                                        alignSelf: "center",
+                                        marginLeft: 2,
+                                        marginRight: 10,
+                                        width: 30,
+                                        height: 30,
+                                        borderRadius: 9,
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg-secondary)",
+                                        boxShadow:
+                                            "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+                                        color: "var(--text-secondary)",
+                                        opacity: rightPanelCollapsed
+                                            ? 0.55
+                                            : 0.85,
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    <svg
+                                        width="14"
+                                        height="14"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                    >
+                                        <rect
+                                            x="11"
+                                            y="2"
+                                            width="4"
+                                            height="12"
+                                            rx="1"
+                                            fill="currentColor"
+                                            opacity={
+                                                rightPanelCollapsed ? 0.4 : 1
+                                            }
+                                        />
+                                        <rect
+                                            x="1"
+                                            y="2"
+                                            width="8"
+                                            height="2"
+                                            rx="1"
+                                            fill="currentColor"
+                                        />
+                                        <rect
+                                            x="1"
+                                            y="7"
+                                            width="8"
+                                            height="2"
+                                            rx="1"
+                                            fill="currentColor"
+                                        />
+                                        <rect
+                                            x="1"
+                                            y="12"
+                                            width="8"
+                                            height="2"
+                                            rx="1"
+                                            fill="currentColor"
+                                        />
+                                    </svg>
+                                </button>
                             )}
                         </div>
+
                     </>
                 ) : (
                     <>
@@ -1581,13 +1667,87 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                             style={{ width: trailingDragZoneWidth }}
                         >
                             {windowMode === "main" && (
-                                <WorkspacePanelControls
-                                    rightPanelCollapsed={rightPanelCollapsed}
-                                    rightPanelView={rightPanelView}
-                                    activateRightView={activateRightView}
-                                />
+                                <button
+                                    type="button"
+                                    onMouseDown={(event) =>
+                                        event.stopPropagation()
+                                    }
+                                    onClick={toggleRightPanel}
+                                    title={
+                                        rightPanelCollapsed
+                                            ? "Show right panel"
+                                            : "Hide right panel"
+                                    }
+                                    aria-label={
+                                        rightPanelCollapsed
+                                            ? "Show right panel"
+                                            : "Hide right panel"
+                                    }
+                                    className="no-drag flex items-center justify-center shrink-0 ub-nav-btn"
+                                    style={{
+                                        alignSelf: "center",
+                                        marginLeft: 2,
+                                        marginRight: 10,
+                                        width: 30,
+                                        height: 30,
+                                        borderRadius: 9,
+                                        border: "1px solid var(--border)",
+                                        background: "var(--bg-secondary)",
+                                        boxShadow:
+                                            "0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06)",
+                                        color: "var(--text-secondary)",
+                                        opacity: rightPanelCollapsed
+                                            ? 0.55
+                                            : 0.85,
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    <svg
+                                        width="14"
+                                        height="14"
+                                        viewBox="0 0 16 16"
+                                        fill="none"
+                                    >
+                                        <rect
+                                            x="11"
+                                            y="2"
+                                            width="4"
+                                            height="12"
+                                            rx="1"
+                                            fill="currentColor"
+                                            opacity={
+                                                rightPanelCollapsed ? 0.4 : 1
+                                            }
+                                        />
+                                        <rect
+                                            x="1"
+                                            y="2"
+                                            width="8"
+                                            height="2"
+                                            rx="1"
+                                            fill="currentColor"
+                                        />
+                                        <rect
+                                            x="1"
+                                            y="7"
+                                            width="8"
+                                            height="2"
+                                            rx="1"
+                                            fill="currentColor"
+                                        />
+                                        <rect
+                                            x="1"
+                                            y="12"
+                                            width="8"
+                                            height="2"
+                                            rx="1"
+                                            fill="currentColor"
+                                        />
+                                    </svg>
+                                </button>
                             )}
                         </div>
+
                     </>
                 )}
             </WindowChrome>

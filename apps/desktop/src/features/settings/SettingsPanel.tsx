@@ -3084,8 +3084,6 @@ export function SettingsPanel({
             {/* Header */}
             <WindowChrome
                 showLeadingInset={standalone}
-                showWindowControls={standalone}
-                windowControlScope={standalone ? "webview" : "window"}
                 onBackgroundMouseDown={(e) => {
                     if (
                         standalone &&
