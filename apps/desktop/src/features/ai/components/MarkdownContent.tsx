@@ -201,6 +201,12 @@ interface MarkdownTable {
     rows: string[][];
 }
 
+interface MarkdownListItem {
+    ordered: boolean;
+    text: string;
+    markerNumber?: number;
+}
+
 const PARSED_BLOCK_CACHE_LIMIT = 250;
 const parsedBlockCache = new Map<string, Block[]>();
 
@@ -728,7 +734,7 @@ function TextBlock({
         useState<ContextMenuState<MarkdownPillContextMenuPayload> | null>(null);
     const lines = content.split("\n");
     const elements: ReactNode[] = [];
-    let listItems: { ordered: boolean; text: string }[] = [];
+    let listItems: MarkdownListItem[] = [];
     let listOrdered = false;
 
     const handleNoteContextMenu = (
@@ -786,10 +792,14 @@ function TextBlock({
     function flushList() {
         if (listItems.length === 0) return;
         const Tag = listOrdered ? "ol" : "ul";
+        const firstMarkerNumber = listOrdered
+            ? listItems[0]?.markerNumber
+            : undefined;
         elements.push(
             <Tag
                 key={elements.length}
                 className={`my-1 space-y-0.5 pl-5 ${listOrdered ? "list-decimal" : "list-disc"}`}
+                start={firstMarkerNumber}
                 style={{
                     maxWidth: "100%",
                     overflowWrap: "anywhere",
@@ -956,11 +966,15 @@ function TextBlock({
         }
 
         // Ordered list
-        const olMatch = /^[\s]*\d+[.)]\s+(.+)$/.exec(line);
+        const olMatch = /^[\s]*(\d+)[.)]\s+(.+)$/.exec(line);
         if (olMatch) {
             if (listItems.length > 0 && !listOrdered) flushList();
             listOrdered = true;
-            listItems.push({ ordered: true, text: olMatch[1] });
+            listItems.push({
+                ordered: true,
+                markerNumber: Number.parseInt(olMatch[1], 10),
+                text: olMatch[2],
+            });
             lineIndex += 1;
             continue;
         }

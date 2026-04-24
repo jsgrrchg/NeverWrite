@@ -408,4 +408,46 @@ describe("MarkdownContent", () => {
             screen.getByText("status | pending | review"),
         ).toBeInTheDocument();
     });
+
+    it("preserves ordered list markers when paragraphs split list items", () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "1. First pressure point",
+                    "The first point has explanatory text.",
+                    "",
+                    "2. Second pressure point",
+                    "The second point should not render as item one.",
+                    "",
+                    "3. Third pressure point",
+                    "The third point should keep its marker too.",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const orderedLists = Array.from(document.querySelectorAll("ol"));
+        expect(orderedLists).toHaveLength(3);
+        expect(orderedLists.map((list) => list.start)).toEqual([1, 2, 3]);
+
+        expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    });
+
+    it("keeps browser auto-numbering for repeated ordered list markers", () => {
+        renderComponent(
+            <MarkdownContent
+                content={["1. First", "1. Second", "1. Third"].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const orderedLists = Array.from(document.querySelectorAll("ol"));
+        expect(orderedLists).toHaveLength(1);
+        expect(orderedLists[0].start).toBe(1);
+        expect(
+            screen
+                .getAllByRole("listitem")
+                .every((item) => !item.hasAttribute("value")),
+        ).toBe(true);
+    });
 });
