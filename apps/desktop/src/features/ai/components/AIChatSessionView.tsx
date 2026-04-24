@@ -446,8 +446,8 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
             <div
                 className={
                     composerExpanded
-                        ? "flex min-h-0 flex-1 flex-col px-1.5 pb-1.5 pt-1.5"
-                        : "px-3 pb-3 pt-2"
+                        ? "flex min-h-0 flex-1 flex-col pt-1.5"
+                        : "pt-2"
                 }
             >
                 <QueuedMessagesPanel

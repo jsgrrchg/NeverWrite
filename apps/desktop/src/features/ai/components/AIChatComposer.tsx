@@ -1658,8 +1658,9 @@ export function AIChatComposer({
                         : "relative flex flex-col"
                 }
                 style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: expanded ? 10 : 12,
+                    border: "none",
+                    borderTop: "1px solid var(--border)",
+                    borderRadius: 0,
                     backgroundColor: "var(--bg-tertiary)",
                     boxShadow: externalDragActive
                         ? "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
@@ -1682,7 +1683,6 @@ export function AIChatComposer({
                             top: -4,
                             height: 9,
                             zIndex: 2,
-                            borderRadius: "12px 12px 0 0",
                         }}
                     >
                         <div
