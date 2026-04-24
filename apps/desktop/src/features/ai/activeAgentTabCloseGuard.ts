@@ -4,14 +4,9 @@ import {
     isReviewTab,
     type Tab,
 } from "../../app/store/editorStore";
+import { resolveAgentSessionActivity } from "./agentSessionActivity";
 import { getSessionTitle } from "./sessionPresentation";
 import type { AIChatSession, AIChatSessionStatus } from "./types";
-
-const ACTIVE_AGENT_SESSION_STATUSES = new Set<AIChatSessionStatus>([
-    "streaming",
-    "waiting_permission",
-    "waiting_user_input",
-]);
 
 const ACTIVE_AGENT_STATUS_LABELS: Record<AIChatSessionStatus, string> = {
     idle: "Idle",
@@ -29,11 +24,7 @@ interface ActiveAgentSessionDescriptor {
 }
 
 function isSessionActivelyWorking(session: AIChatSession) {
-    if (session.runtimeState != null && session.runtimeState !== "live") {
-        return false;
-    }
-
-    return ACTIVE_AGENT_SESSION_STATUSES.has(session.status);
+    return resolveAgentSessionActivity(session)?.tone === "working";
 }
 
 function getLinkedSessionId(tab: Tab) {

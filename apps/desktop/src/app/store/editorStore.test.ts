@@ -85,10 +85,12 @@ function makePdfTab(overrides: {
     page?: number;
     zoom?: number;
     viewMode?: "single" | "continuous";
+    scrollTop?: number;
 }) {
     const page = overrides.page ?? 1;
     const zoom = overrides.zoom ?? 1;
     const viewMode = overrides.viewMode ?? "continuous";
+    const scrollTop = overrides.scrollTop ?? 0;
 
     return {
         ...overrides,
@@ -96,6 +98,7 @@ function makePdfTab(overrides: {
         page,
         zoom,
         viewMode,
+        scrollTop,
         history: [
             {
                 kind: "pdf" as const,
@@ -105,6 +108,7 @@ function makePdfTab(overrides: {
                 page,
                 zoom,
                 viewMode,
+                scrollTop,
             },
         ],
         historyIndex: 0,
@@ -1452,6 +1456,34 @@ describe("editorStore tab history mode", () => {
         useEditorStore.getState().goBack();
         expect(useEditorStore.getState().tabs[0]).toMatchObject({
             relativePath: "src/alpha.ts",
+            historyIndex: 0,
+        });
+    });
+
+    it("preserves pdf scroll position when pushing local history", () => {
+        useEditorStore.setState({
+            tabs: [
+                makePdfTab({
+                    id: "pdf-tab-a",
+                    entryId: "docs/source.pdf",
+                    title: "source.pdf",
+                    path: "/vault/docs/source.pdf",
+                    page: 18,
+                    scrollTop: 14000,
+                }),
+            ],
+            activeTabId: "pdf-tab-a",
+        });
+
+        useEditorStore.getState().openNote("notes/linked", "Linked", "linked");
+        useEditorStore.getState().goBack();
+
+        const tab = useEditorStore.getState().tabs[0];
+        expect(tab).toMatchObject({
+            kind: "pdf",
+            entryId: "docs/source.pdf",
+            page: 18,
+            scrollTop: 14000,
             historyIndex: 0,
         });
     });
@@ -2989,7 +3021,7 @@ describe("editorStore tab management", () => {
         });
     });
 
-    it("updates pdf page, zoom, and view mode on the current history entry", () => {
+    it("updates pdf page, zoom, view mode, and scroll position on the current history entry", () => {
         useEditorStore.setState({
             tabs: [
                 makePdfTab({
@@ -3008,6 +3040,7 @@ describe("editorStore tab management", () => {
         useEditorStore.getState().updatePdfPage("pdf-tab-a", 4);
         useEditorStore.getState().updatePdfZoom("pdf-tab-a", 1.75);
         useEditorStore.getState().updatePdfViewMode("pdf-tab-a", "single");
+        useEditorStore.getState().updatePdfScrollTop("pdf-tab-a", 1248.6);
 
         const pdfTab = useEditorStore
             .getState()
@@ -3016,6 +3049,7 @@ describe("editorStore tab management", () => {
             page: 4,
             zoom: 1.75,
             viewMode: "single",
+            scrollTop: 1249,
         });
         expect(
             isPdfTab(pdfTab) ? pdfTab.history[pdfTab.historyIndex] : null,
@@ -3024,6 +3058,7 @@ describe("editorStore tab management", () => {
             page: 4,
             zoom: 1.75,
             viewMode: "single",
+            scrollTop: 1249,
         });
     });
 

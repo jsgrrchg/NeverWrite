@@ -54,6 +54,7 @@ describe("editorSession", () => {
                     page: 2,
                     zoom: 1.2,
                     viewMode: "single",
+                    scrollTop: 320,
                     history: [
                         {
                             kind: "pdf",
@@ -63,6 +64,7 @@ describe("editorSession", () => {
                             page: 2,
                             zoom: 1.2,
                             viewMode: "single",
+                            scrollTop: 320,
                         },
                     ],
                     historyIndex: 0,

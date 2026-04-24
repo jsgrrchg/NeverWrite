@@ -8,6 +8,7 @@ import {
     setEditorTabs,
     setVaultEntries,
 } from "../../test/test-utils";
+import { useEditorStore } from "../../app/store/editorStore";
 
 const { getDocumentMock } = vi.hoisted(() => ({
     getDocumentMock: vi.fn(),
@@ -45,6 +46,16 @@ beforeAll(() => {
     Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
         configurable: true,
         value: vi.fn(() => ({ clearRect: vi.fn() })),
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+        configurable: true,
+        value(this: HTMLElement, options?: ScrollToOptions | number) {
+            if (typeof options === "number") {
+                this.scrollTop = options;
+                return;
+            }
+            this.scrollTop = options?.top ?? this.scrollTop;
+        },
     });
 });
 
@@ -192,6 +203,154 @@ describe("PdfTabView", () => {
             expect(
                 container.querySelector('[data-page-number="1"]'),
             ).toBeFalsy();
+        });
+    });
+
+    it("restores a persisted continuous scroll position when the PDF view remounts", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 30,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 18,
+                zoom: 1,
+                viewMode: "continuous",
+                scrollTop: 14000,
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await screen.findByText("Continuous");
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
+        await waitFor(() => {
+            expect(scrollSurface!.scrollTop).toBe(14000);
+            expect(
+                container.querySelector('[data-page-number="18"]'),
+            ).toBeTruthy();
+            expect(
+                container.querySelector('[data-page-number="1"]'),
+            ).toBeFalsy();
+        });
+    });
+
+    it("does not overwrite the saved page with page 1 while restoring continuous view", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 30,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 18,
+                zoom: 1,
+                viewMode: "continuous",
+                scrollTop: 0,
+            },
+        ]);
+
+        renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.find((tab) => tab.id === "pdf-tab"),
+            ).toMatchObject({
+                kind: "pdf",
+                page: 18,
+            });
+        });
+
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "pdf-tab"),
+        ).toMatchObject({
+            kind: "pdf",
+            page: 18,
+        });
+    });
+
+    it("persists continuous scroll before the next animation frame", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 30,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "continuous",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(
+                container.querySelector('[data-page-number="1"]'),
+            ).toBeTruthy();
+        });
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        scrollSurface!.scrollTop = 14000;
+        fireEvent.scroll(scrollSurface!);
+
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "pdf-tab"),
+        ).toMatchObject({
+            kind: "pdf",
+            scrollTop: 14000,
         });
     });
 

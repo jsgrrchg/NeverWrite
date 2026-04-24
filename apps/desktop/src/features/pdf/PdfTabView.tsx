@@ -34,6 +34,7 @@ const CONTINUOUS_PAGE_GAP = 20;
 const CONTINUOUS_OVERSCAN_PX = 1200;
 const CONTINUOUS_MAX_RENDERED_PAGES = 15;
 const VIEWPORT_HEIGHT_FALLBACK = 800;
+const SCROLL_PERSIST_THRESHOLD_PX = 24;
 const PDF_TEXT_CONTENT_OPTIONS = {
     includeMarkedContent: true,
     disableNormalization: true,
@@ -257,6 +258,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
     const previousViewModeRef = useRef(tab.viewMode);
     const pendingProgrammaticPageRef = useRef<number | null>(null);
+    const restoredScrollKeyRef = useRef<string | null>(null);
+    const completedScrollRestoreKeyRef = useRef<string | null>(null);
+    const isRestoringScrollRef = useRef(false);
+    const lastPersistedScrollTopRef = useRef(tab.scrollTop);
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         pageNumber: number;
         selectedText: string;
@@ -280,6 +285,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const updatePdfPage = useEditorStore((s) => s.updatePdfPage);
     const updatePdfZoom = useEditorStore((s) => s.updatePdfZoom);
     const updatePdfViewMode = useEditorStore((s) => s.updatePdfViewMode);
+    const updatePdfScrollTop = useEditorStore((s) => s.updatePdfScrollTop);
     const previewUrl = useMemo(
         () => buildVaultPreviewUrlFromAbsolutePath(tab.path, vaultPath),
         [tab.path, vaultPath],
@@ -304,6 +310,17 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const effectiveViewportHeight = Math.max(
         viewportHeight,
         VIEWPORT_HEIGHT_FALLBACK,
+    );
+    const scrollRestoreKey = useMemo(
+        () =>
+            [
+                tab.id,
+                tab.path,
+                retryCount,
+                tab.viewMode,
+                effectiveZoom,
+            ].join(":"),
+        [effectiveZoom, retryCount, tab.id, tab.path, tab.viewMode],
     );
     const visibleContinuousLayouts = useMemo(() => {
         if (tab.viewMode !== "continuous" || continuousLayouts.length === 0) {
@@ -391,6 +408,10 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     useEffect(() => {
         pageRefs.current = {};
     }, [effectiveZoom, retryCount, tab.path, tab.viewMode]);
+
+    useEffect(() => {
+        lastPersistedScrollTopRef.current = tab.scrollTop;
+    }, [tab.id, tab.scrollTop]);
 
     useEffect(() => {
         queueMicrotask(() => setPageMetrics(null));
@@ -482,13 +503,36 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (!scrollContainer) return;
 
         let frame = 0;
+        const persistScrollTop = (nextScrollTop: number, force = false) => {
+            if (
+                isRestoringScrollRef.current ||
+                completedScrollRestoreKeyRef.current !== scrollRestoreKey
+            ) {
+                return;
+            }
+
+            const normalizedScrollTop = Math.max(0, Math.round(nextScrollTop));
+            if (
+                !force &&
+                Math.abs(
+                    normalizedScrollTop - lastPersistedScrollTopRef.current,
+                ) < SCROLL_PERSIST_THRESHOLD_PX
+            ) {
+                return;
+            }
+
+            lastPersistedScrollTopRef.current = normalizedScrollTop;
+            updatePdfScrollTop(tab.id, normalizedScrollTop);
+        };
         const syncViewportMetrics = () => {
+            const nextScrollTop = scrollContainer.scrollTop;
             setViewportHeight(
                 scrollContainer.clientHeight || VIEWPORT_HEIGHT_FALLBACK,
             );
-            setScrollTop(scrollContainer.scrollTop);
+            setScrollTop(nextScrollTop);
         };
         const scheduleSync = () => {
+            persistScrollTop(scrollContainer.scrollTop);
             window.cancelAnimationFrame(frame);
             frame = window.requestAnimationFrame(syncViewportMetrics);
         };
@@ -500,10 +544,58 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         window.addEventListener("resize", scheduleSync);
         return () => {
             window.cancelAnimationFrame(frame);
+            persistScrollTop(scrollContainer.scrollTop, true);
             scrollContainer.removeEventListener("scroll", scheduleSync);
             window.removeEventListener("resize", scheduleSync);
         };
-    }, [scrollContainer]);
+    }, [scrollContainer, scrollRestoreKey, tab.id, updatePdfScrollTop]);
+
+    useEffect(() => {
+        if (!scrollContainer || loading || error) return;
+        if (tab.viewMode === "continuous" && continuousLayouts.length === 0) {
+            return;
+        }
+
+        if (restoredScrollKeyRef.current === scrollRestoreKey) return;
+        restoredScrollKeyRef.current = scrollRestoreKey;
+        completedScrollRestoreKeyRef.current = null;
+        isRestoringScrollRef.current = true;
+
+        const targetScrollTop =
+            tab.scrollTop > 0
+                ? tab.scrollTop
+                : tab.viewMode === "continuous"
+                  ? (continuousLayouts[tab.page - 1]?.offsetTop ?? 0)
+                  : 0;
+
+        const frame = window.requestAnimationFrame(() => {
+            scrollContainer.scrollTo({
+                top: Math.max(0, targetScrollTop),
+                behavior: "auto",
+            });
+            setScrollTop(scrollContainer.scrollTop);
+            lastPersistedScrollTopRef.current = Math.max(
+                0,
+                Math.round(scrollContainer.scrollTop),
+            );
+            completedScrollRestoreKeyRef.current = scrollRestoreKey;
+            isRestoringScrollRef.current = false;
+        });
+
+        return () => {
+            isRestoringScrollRef.current = false;
+            window.cancelAnimationFrame(frame);
+        };
+    }, [
+        continuousLayouts,
+        error,
+        loading,
+        scrollRestoreKey,
+        scrollContainer,
+        tab.page,
+        tab.scrollTop,
+        tab.viewMode,
+    ]);
 
     useEffect(() => {
         if (tab.viewMode !== "continuous" || !pdf || pageMetrics) return;
@@ -553,6 +645,12 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (tab.viewMode !== "continuous" || continuousLayouts.length === 0) {
             return;
         }
+        if (
+            isRestoringScrollRef.current ||
+            completedScrollRestoreKeyRef.current !== scrollRestoreKey
+        ) {
+            return;
+        }
 
         const pendingPageNumber = pendingProgrammaticPageRef.current;
         if (pendingPageNumber !== null) {
@@ -581,6 +679,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         continuousLayouts,
         effectiveViewportHeight,
         scrollTop,
+        scrollRestoreKey,
         tab.id,
         tab.page,
         tab.viewMode,

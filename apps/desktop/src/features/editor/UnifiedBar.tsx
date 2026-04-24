@@ -54,6 +54,7 @@ import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
+import { renderEditorTabActivityIndicator } from "./EditorTabActivityIndicator";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
 import { useCommandStore } from "../command-palette/store/commandStore";
@@ -1340,6 +1341,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                     }}
                                                 >
                                                     {renderEditorTabLeadingIcon(
+                                                        tab,
+                                                        chatSessionsById,
+                                                    )}
+                                                    {renderEditorTabActivityIndicator(
                                                         tab,
                                                         chatSessionsById,
                                                     )}

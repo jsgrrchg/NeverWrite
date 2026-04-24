@@ -141,6 +141,7 @@ function serializePdfTabForSession(tab: PdfTab) {
         page: tab.page,
         zoom: tab.zoom,
         viewMode: tab.viewMode,
+        scrollTop: tab.scrollTop,
         history: tab.history
             .filter((entry): entry is PdfHistoryEntry => entry.kind === "pdf")
             .map((entry) => ({
@@ -150,6 +151,7 @@ function serializePdfTabForSession(tab: PdfTab) {
                 page: entry.page,
                 zoom: entry.zoom,
                 viewMode: entry.viewMode,
+                scrollTop: entry.scrollTop,
             })),
         historyIndex: tab.historyIndex,
     };

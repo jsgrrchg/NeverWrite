@@ -34,6 +34,7 @@ import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
+import { renderEditorTabActivityIndicator } from "./EditorTabActivityIndicator";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
@@ -588,6 +589,10 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                             }}
                                         >
                                             {renderEditorTabLeadingIcon(
+                                                tab,
+                                                chatSessionsById,
+                                            )}
+                                            {renderEditorTabActivityIndicator(
                                                 tab,
                                                 chatSessionsById,
                                             )}

@@ -258,6 +258,38 @@ describe("EditorPaneBar", () => {
         ]);
     });
 
+    it("shows an activity dot for tabs with a working agent", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-chat",
+                            kind: "ai-chat",
+                            sessionId: "session-busy",
+                            title: "Chat",
+                        },
+                    ],
+                    activeTabId: "tab-chat",
+                },
+            ],
+            "primary",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": {
+                    ...createChatSession("session-busy", "Busy agent"),
+                    status: "streaming",
+                },
+            },
+        });
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        expect(screen.getByTitle("Agent busy")).toBeInTheDocument();
+    });
+
     it("moves a tab into a new right split from the tab context menu", async () => {
         const user = userEvent.setup();
         renderComponent(<EditorPaneBar paneId="primary" isFocused />);

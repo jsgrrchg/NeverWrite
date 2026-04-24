@@ -250,6 +250,31 @@ describe("UnifiedBar tab strip drop", () => {
         expect(useEditorStore.getState().activeTabId).toBe("tab-b");
     });
 
+    it("shows an activity dot for working agent tabs", async () => {
+        setEditorTabs([
+            {
+                id: "tab-chat",
+                kind: "ai-chat",
+                sessionId: "session-busy",
+                title: "Chat",
+            },
+        ]);
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": createChatSession(
+                    "session-busy",
+                    "Busy agent",
+                    "streaming",
+                ),
+            },
+        });
+
+        const { UnifiedBar } = await import("./UnifiedBar");
+        renderComponent(<UnifiedBar windowMode="main" />);
+
+        expect(screen.getByTitle("Agent busy")).toBeInTheDocument();
+    });
+
     it("shows history navigation buttons when open behavior uses history", async () => {
         setEditorTabs([
             {
