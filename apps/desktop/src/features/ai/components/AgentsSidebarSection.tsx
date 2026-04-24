@@ -5,6 +5,12 @@ interface AgentsSidebarSectionProps {
     count: number;
     showHeader?: boolean;
     children: ReactNode;
+    headerMetrics: {
+        fontSize: number;
+        paddingX: number;
+        paddingTop: number;
+        paddingBottom: number;
+    };
 }
 
 // Thin section wrapper used to group the Pinned/Open/All buckets inside the
@@ -16,6 +22,7 @@ export function AgentsSidebarSection({
     count,
     showHeader = true,
     children,
+    headerMetrics,
 }: AgentsSidebarSectionProps) {
     if (count === 0) return null;
     return (
@@ -23,7 +30,12 @@ export function AgentsSidebarSection({
             {showHeader ? (
                 <div
                     className="flex items-center justify-between px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.1em]"
-                    style={{ color: "var(--text-secondary)", opacity: 0.8 }}
+                    style={{
+                        color: "var(--text-secondary)",
+                        opacity: 0.8,
+                        fontSize: headerMetrics.fontSize,
+                        padding: `${headerMetrics.paddingTop}px ${headerMetrics.paddingX}px ${headerMetrics.paddingBottom}px`,
+                    }}
                 >
                     <span>{title}</span>
                     <span>{count}</span>

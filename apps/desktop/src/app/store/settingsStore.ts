@@ -30,6 +30,7 @@ export interface Settings {
 
     // Navigation
     fileTreeScale: number; // 90–140
+    agentsSidebarScale: number; // 90–140
     fileTreeStickyFolders: boolean;
     tabOpenBehavior: TabOpenBehavior;
 
@@ -157,6 +158,7 @@ const defaults: Settings = {
     grammarCheckEnabled: false,
     grammarCheckServerUrl: "",
     fileTreeScale: 114,
+    agentsSidebarScale: 100,
     fileTreeStickyFolders: true,
     tabOpenBehavior: "history",
     developerModeEnabled: false,
@@ -354,6 +356,12 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 90,
                 140,
             ),
+            agentsSidebarScale: normalizeIntInRange(
+                parsed.state.agentsSidebarScale,
+                defaults.agentsSidebarScale,
+                90,
+                140,
+            ),
             fileTreeStickyFolders:
                 parsed.state.fileTreeStickyFolders ??
                 defaults.fileTreeStickyFolders,
@@ -430,6 +438,7 @@ function pickSettings(state: SettingsStore): Settings {
         grammarCheckEnabled: state.grammarCheckEnabled,
         grammarCheckServerUrl: state.grammarCheckServerUrl,
         fileTreeScale: state.fileTreeScale,
+        agentsSidebarScale: state.agentsSidebarScale,
         fileTreeStickyFolders: state.fileTreeStickyFolders,
         tabOpenBehavior: state.tabOpenBehavior,
         developerModeEnabled: state.developerModeEnabled,

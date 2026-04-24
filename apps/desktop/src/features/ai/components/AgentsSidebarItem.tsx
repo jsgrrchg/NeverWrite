@@ -11,6 +11,20 @@ export type AgentsSidebarActivityIndicator = {
     readonly title: string;
 } | null;
 
+export interface AgentsSidebarItemMetrics {
+    rowPaddingX: number;
+    rowPaddingY: number;
+    rowGap: number;
+    inlineGap: number;
+    titleFontSize: number;
+    previewFontSize: number;
+    metaFontSize: number;
+    timestampFontSize: number;
+    indicatorFontSize: number;
+    pinButtonSize: number;
+    pinIconSize: number;
+}
+
 export interface AgentsSidebarItemProps {
     session: AIChatSession;
     title: string;
@@ -31,6 +45,7 @@ export interface AgentsSidebarItemProps {
     onStartRename: () => void;
     onTogglePin: () => void;
     onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
+    metrics: AgentsSidebarItemMetrics;
 }
 
 export function AgentsSidebarItem({
@@ -52,6 +67,7 @@ export function AgentsSidebarItem({
     onStartRename,
     onTogglePin,
     onContextMenu,
+    metrics,
 }: AgentsSidebarItemProps) {
     return (
         <div
@@ -60,6 +76,8 @@ export function AgentsSidebarItem({
             tabIndex={0}
             className="group flex cursor-pointer flex-col gap-0.5 rounded-md px-2 py-1.5"
             style={{
+                gap: metrics.rowGap,
+                padding: `${metrics.rowPaddingY}px ${metrics.rowPaddingX}px`,
                 backgroundColor: isActive
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
                     : "transparent",
@@ -91,13 +109,17 @@ export function AgentsSidebarItem({
                 event.currentTarget.style.backgroundColor = "transparent";
             }}
         >
-            <div className="flex min-w-0 items-center gap-1.5">
+            <div
+                className="flex min-w-0 items-center"
+                style={{ gap: metrics.inlineGap }}
+            >
                 {indicator ? (
                     <span
                         aria-hidden
                         title={indicator.title}
-                        className="shrink-0 text-[9px] leading-none"
+                        className="shrink-0 leading-none"
                         style={{
+                            fontSize: metrics.indicatorFontSize,
                             color:
                                 indicator.tone === "danger"
                                     ? "var(--diff-remove, #f43f5e)"
@@ -117,6 +139,7 @@ export function AgentsSidebarItem({
                             background: "var(--bg-primary)",
                             color: "var(--text-primary)",
                             border: "1px solid var(--accent)",
+                            fontSize: metrics.titleFontSize,
                         }}
                         value={renameValue}
                         onClick={(event) => event.stopPropagation()}
@@ -136,7 +159,10 @@ export function AgentsSidebarItem({
                 ) : (
                     <span
                         className="min-w-0 flex-1 truncate text-[11.5px] font-medium"
-                        style={{ color: "var(--text-primary)" }}
+                        style={{
+                            color: "var(--text-primary)",
+                            fontSize: metrics.titleFontSize,
+                        }}
                     >
                         {title}
                     </span>
@@ -154,6 +180,8 @@ export function AgentsSidebarItem({
                     }}
                     className="flex h-4 w-4 shrink-0 items-center justify-center rounded transition-opacity"
                     style={{
+                        width: metrics.pinButtonSize,
+                        height: metrics.pinButtonSize,
                         color: isPinned
                             ? "var(--text-primary)"
                             : "var(--text-secondary)",
@@ -161,8 +189,8 @@ export function AgentsSidebarItem({
                     }}
                 >
                     <svg
-                        width="11"
-                        height="11"
+                        width={metrics.pinIconSize}
+                        height={metrics.pinIconSize}
                         viewBox="0 0 24 24"
                         fill={isPinned ? "currentColor" : "none"}
                         stroke="currentColor"
@@ -178,6 +206,7 @@ export function AgentsSidebarItem({
                 <span
                     className="shrink-0 text-[10px]"
                     style={{
+                        fontSize: metrics.timestampFontSize,
                         color:
                             indicator?.tone === "danger"
                                 ? "var(--diff-remove, #f43f5e)"
@@ -194,7 +223,10 @@ export function AgentsSidebarItem({
             {preview ? (
                 <p
                     className="line-clamp-1 text-[10.5px] leading-[1.35]"
-                    style={{ color: "var(--text-secondary)" }}
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: metrics.previewFontSize,
+                    }}
                 >
                     {preview}
                 </p>
@@ -202,7 +234,10 @@ export function AgentsSidebarItem({
 
             <div
                 className="flex items-center gap-1 text-[10px]"
-                style={{ color: "var(--text-secondary)" }}
+                style={{
+                    color: "var(--text-secondary)",
+                    fontSize: metrics.metaFontSize,
+                }}
             >
                 <span>{runtimeLabel}</span>
                 {messageCount > 0 ? (

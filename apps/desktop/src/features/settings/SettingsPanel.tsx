@@ -778,8 +778,12 @@ function GeneralSettings() {
 
 function AppearanceSettings() {
     const { mode, setMode, themeName, setThemeName } = useThemeStore();
-    const { fileTreeScale, fileTreeStickyFolders, setSetting } =
-        useSettingsStore();
+    const {
+        fileTreeScale,
+        agentsSidebarScale,
+        fileTreeStickyFolders,
+        setSetting,
+    } = useSettingsStore();
 
     return (
         <div>
@@ -813,6 +817,18 @@ function AppearanceSettings() {
                         min={90}
                         max={140}
                         onChange={(v) => setSetting("fileTreeScale", v)}
+                    />
+                }
+            />
+            <Row
+                label="Agents size"
+                description="Scale text and rows in the Agents sidebar, in percent."
+                control={
+                    <NumberStepper
+                        value={agentsSidebarScale}
+                        min={90}
+                        max={140}
+                        onChange={(v) => setSetting("agentsSidebarScale", v)}
                     />
                 }
             />

@@ -21,6 +21,7 @@ import {
     selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
 import {
@@ -42,6 +43,7 @@ import { useInlineRename } from "./components/useInlineRename";
 import {
     AgentsSidebarItem,
     type AgentsSidebarActivityIndicator,
+    type AgentsSidebarItemMetrics,
 } from "./components/AgentsSidebarItem";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
 
@@ -101,8 +103,60 @@ function compareByUpdatedAtDesc(a: AIChatSession, b: AIChatSession) {
     return getSessionUpdatedAt(b) - getSessionUpdatedAt(a);
 }
 
+function scaleMetric(base: number, scale: number, min: number) {
+    return Math.max(min, Math.round(base * scale * 10) / 10);
+}
+
+function buildAgentsSidebarMetrics(scalePercent: number): {
+    item: AgentsSidebarItemMetrics;
+    header: {
+        fontSize: number;
+        paddingX: number;
+        paddingTop: number;
+        paddingBottom: number;
+    };
+    summaryFontSize: number;
+    summaryPaddingX: number;
+    summaryPaddingTop: number;
+    summaryPaddingBottom: number;
+    actionButtonSize: number;
+    actionIconSize: number;
+} {
+    const scale = scalePercent / 100;
+    return {
+        item: {
+            rowPaddingX: scaleMetric(8, scale, 7),
+            rowPaddingY: scaleMetric(6, scale, 5),
+            rowGap: scaleMetric(2, scale, 1.5),
+            inlineGap: scaleMetric(6, scale, 5),
+            titleFontSize: scaleMetric(11.5, scale, 10.5),
+            previewFontSize: scaleMetric(10.5, scale, 9.5),
+            metaFontSize: scaleMetric(10, scale, 9),
+            timestampFontSize: scaleMetric(10, scale, 9),
+            indicatorFontSize: scaleMetric(9, scale, 8),
+            pinButtonSize: scaleMetric(16, scale, 14),
+            pinIconSize: scaleMetric(11, scale, 10),
+        },
+        header: {
+            fontSize: scaleMetric(10, scale, 9),
+            paddingX: scaleMetric(8, scale, 7),
+            paddingTop: scaleMetric(8, scale, 6),
+            paddingBottom: scaleMetric(4, scale, 3),
+        },
+        summaryFontSize: scaleMetric(10.5, scale, 9.5),
+        summaryPaddingX: scaleMetric(12, scale, 10),
+        summaryPaddingTop: scaleMetric(6, scale, 5),
+        summaryPaddingBottom: scaleMetric(4, scale, 3),
+        actionButtonSize: scaleMetric(20, scale, 18),
+        actionIconSize: scaleMetric(12, scale, 11),
+    };
+}
+
 export function AgentsSidebarPanel() {
     const vaultPath = useVaultStore((state) => state.vaultPath);
+    const agentsSidebarScale = useSettingsStore(
+        (state) => state.agentsSidebarScale,
+    );
     const activeSessionId = useChatStore((state) => state.activeSessionId);
     const sessionsById = useChatStore((state) => state.sessionsById);
     const sessionOrder = useChatStore((state) => state.sessionOrder);
@@ -303,6 +357,10 @@ export function AgentsSidebarPanel() {
     );
 
     const activeSidebarId = focusedWorkspaceChatSessionId ?? activeSessionId;
+    const metrics = useMemo(
+        () => buildAgentsSidebarMetrics(agentsSidebarScale),
+        [agentsSidebarScale],
+    );
 
     const renderItem = (session: AIChatSession) => {
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
@@ -347,6 +405,7 @@ export function AgentsSidebarPanel() {
                 onStartRename={() => handleStartRename(session)}
                 onTogglePin={() => togglePinnedChat(session.sessionId)}
                 onContextMenu={(event) => handleContextMenu(event, session)}
+                metrics={metrics.item}
             />
         );
     };
@@ -369,7 +428,11 @@ export function AgentsSidebarPanel() {
 
             <div
                 className="flex shrink-0 items-center justify-between px-3 pt-1.5 pb-1 text-[10.5px]"
-                style={{ color: "var(--text-secondary)" }}
+                style={{
+                    color: "var(--text-secondary)",
+                    fontSize: metrics.summaryFontSize,
+                    padding: `${metrics.summaryPaddingTop}px ${metrics.summaryPaddingX}px ${metrics.summaryPaddingBottom}px`,
+                }}
             >
                 <span>
                     {hasFilter
@@ -388,13 +451,15 @@ export function AgentsSidebarPanel() {
                             aria-label="New chat"
                             className="flex h-5 w-5 items-center justify-center rounded"
                             style={{
+                                width: metrics.actionButtonSize,
+                                height: metrics.actionButtonSize,
                                 color: "var(--text-secondary)",
                                 background: "transparent",
                             }}
                         >
                             <svg
-                                width="12"
-                                height="12"
+                                width={metrics.actionIconSize}
+                                height={metrics.actionIconSize}
                                 viewBox="0 0 16 16"
                                 fill="none"
                                 stroke="currentColor"
@@ -494,6 +559,7 @@ export function AgentsSidebarPanel() {
                         style={{
                             color: "var(--text-secondary)",
                             background: "transparent",
+                            fontSize: metrics.summaryFontSize,
                         }}
                     >
                         History
@@ -522,6 +588,7 @@ export function AgentsSidebarPanel() {
                         <AgentsSidebarSection
                             title="Pinned"
                             count={pinnedSessions.length}
+                            headerMetrics={metrics.header}
                         >
                             {pinnedSessions.map(renderItem)}
                         </AgentsSidebarSection>
@@ -529,6 +596,7 @@ export function AgentsSidebarPanel() {
                             title="Open"
                             count={openSessions.length}
                             showHeader={showOpenAllHeaders}
+                            headerMetrics={metrics.header}
                         >
                             {openSessions.map(renderItem)}
                         </AgentsSidebarSection>
@@ -536,6 +604,7 @@ export function AgentsSidebarPanel() {
                             title="All"
                             count={otherSessions.length}
                             showHeader={showOpenAllHeaders}
+                            headerMetrics={metrics.header}
                         >
                             {otherSessions.map(renderItem)}
                         </AgentsSidebarSection>
