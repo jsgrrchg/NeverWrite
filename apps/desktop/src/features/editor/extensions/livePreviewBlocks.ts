@@ -1009,6 +1009,13 @@ class CodeBlockHeaderWidget extends WidgetType {
     }
 
     toDOM() {
+        // Keep preview spacing inside the measured widget. Vertical margins on
+        // CodeMirror block widgets are not included in its height map, which
+        // makes pointer-to-caret mapping drift after repeated code cards.
+        const shell = document.createElement("div");
+        shell.className = "cm-code-block-header-shell";
+        shell.setAttribute("contenteditable", "false");
+
         const bar = document.createElement("div");
         bar.className = this.hasContent
             ? "cm-code-block-header"
@@ -1035,7 +1042,8 @@ class CodeBlockHeaderWidget extends WidgetType {
 
         bar.appendChild(lang);
         bar.appendChild(copyBtn);
-        return bar;
+        shell.appendChild(bar);
+        return shell;
     }
 
     ignoreEvent() {

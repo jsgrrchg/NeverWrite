@@ -784,6 +784,9 @@ export const livePreviewTheme = EditorView.baseTheme({
         fontSize: "0",
         overflow: "hidden",
     },
+    ".cm-code-block-header-shell": {
+        paddingTop: "8px",
+    },
     ".cm-code-block-header": {
         display: "flex",
         justifyContent: "space-between",
@@ -796,7 +799,6 @@ export const livePreviewTheme = EditorView.baseTheme({
         borderBottom: "none",
         fontSize: "0.78em",
         color: "var(--text-secondary)",
-        marginTop: "8px",
     },
     ".cm-code-block-header-only": {
         borderBottom: "1px solid var(--border)",
@@ -830,12 +832,12 @@ export const livePreviewTheme = EditorView.baseTheme({
     ".cm-code-block-line-first": {
         borderTop: "1px solid var(--border)",
         borderRadius: "8px 8px 0 0",
-        marginTop: "8px",
+        paddingTop: "8px !important",
     },
     ".cm-code-block-line-last": {
         borderBottom: "1px solid var(--border)",
         borderRadius: "0 0 8px 8px",
-        marginBottom: "8px",
+        paddingBottom: "8px !important",
     },
     ".cm-link-tooltip": {
         position: "fixed",
