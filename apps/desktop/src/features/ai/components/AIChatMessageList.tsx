@@ -471,6 +471,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         status,
         visiblePinnedPlan?.id,
     ]);
+    const bottomAlignTranscript = !hasOlderMessages && !isLoadingOlderMessages;
 
     const rowRenderOptions = useMemo(
         () => ({
@@ -708,11 +709,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 ref={containerRef}
                 onScroll={handleScroll}
                 onContextMenu={handleContextMenu}
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
+                className="min-h-0 min-w-0 flex-1 flex flex-col overflow-y-auto px-3 py-3"
                 data-scrollbar-active="true"
             >
                 <div
-                    className="min-w-0"
+                    className={`min-w-0 ${bottomAlignTranscript ? "mt-auto" : ""}`}
                     data-selectable="true"
                     style={{
                         fontSize: chatFontSize,

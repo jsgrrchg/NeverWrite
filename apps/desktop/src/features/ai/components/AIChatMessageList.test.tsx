@@ -204,6 +204,36 @@ describe("AIChatMessageList streaming run indicator", () => {
         });
     });
 
+    it("bottom-aligns short transcripts near the composer", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-short"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        expect(getScrollContainer(view.container)).toHaveClass("flex-col");
+        expect(
+            view.container.querySelector('[data-selectable="true"]'),
+        ).toHaveClass("mt-auto");
+    });
+
+    it("keeps the transcript top-aligned while older messages can load", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-short-with-older"
+                messages={createMessages()}
+                status="idle"
+                hasOlderMessages
+            />,
+        );
+
+        expect(
+            view.container.querySelector('[data-selectable="true"]'),
+        ).not.toHaveClass("mt-auto");
+    });
+
     it("renders long transcripts while keeping the scrolled region accessible", () => {
         const messages = createLongTranscript(140);
         const view = renderComponent(
