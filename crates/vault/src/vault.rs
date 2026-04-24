@@ -210,7 +210,12 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(note_id.to_string()));
         }
 
-        let relative_path = path.with_extension("md");
+        let mut relative_path = path.clone();
+        let file_name = relative_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| VaultError::InvalidVaultPath(note_id.to_string()))?;
+        relative_path.set_file_name(format!("{file_name}.md"));
         self.resolve_validated_scoped_path(&relative_path, note_id, ScopedPathIntent::CreateTarget)
     }
 

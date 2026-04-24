@@ -441,6 +441,12 @@ fn path_to_id_conversions() {
 
     let path = vault.resolve_note_id_path("carpeta/nota3").unwrap();
     assert!(path.ends_with("carpeta/nota3.md"));
+
+    let dotted_path = vault
+        .resolve_note_id_path("China blames US for trade imbalances as surplus hits record $1.2tn")
+        .unwrap();
+    assert!(dotted_path
+        .ends_with("China blames US for trade imbalances as surplus hits record $1.2tn.md"));
 }
 
 // ------ PDF tests ------

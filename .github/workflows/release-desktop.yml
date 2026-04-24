@@ -245,6 +245,14 @@ jobs:
                   NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
               run: npm run electron:sidecar:smoke:packaged
 
+            - name: Smoke packaged app executable
+              if: runner.os == 'macOS'
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+                  NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
+              run: npm run electron:app:smoke:packaged
+
             - name: Verify macOS universal runtime binaries
               if: matrix.target == 'universal-apple-darwin'
               shell: bash

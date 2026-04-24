@@ -21,6 +21,7 @@
         "electron:sidecar:build": "cargo build -p neverwrite-native-backend",
         "electron:sidecar:build:release": "cargo build -p neverwrite-native-backend --release",
         "electron:sidecar:stage": "node scripts/stage-electron-sidecar.mjs",
+        "electron:app:smoke:packaged": "node scripts/smoke-packaged-app.mjs",
         "electron:sidecar:smoke:packaged": "node scripts/smoke-packaged-sidecar.mjs",
         "electron:vault-editor:smoke": "node scripts/smoke-electron-vault-editor.mjs",
         "electron:ai-runtime:smoke": "node scripts/smoke-electron-ai-runtime.mjs",

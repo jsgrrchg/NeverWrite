@@ -75,6 +75,12 @@ jobs:
               working-directory: apps/desktop
               run: npm run electron:package:unsigned -- --platform mac --arch universal
 
+            - name: Smoke packaged app executable
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_DIST_ARCH: universal
+              run: npm run electron:app:smoke:packaged
+
             - name: Smoke packaged sidecar
               working-directory: apps/desktop
               env:
