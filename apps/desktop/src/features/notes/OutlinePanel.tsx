@@ -25,6 +25,8 @@ const ATX_RE = /^\s*(#{1,6})\s+(.+?)\s*$/;
 const SETEXT_H1_RE = /^===+\s*$/;
 const SETEXT_H2_RE = /^---+\s*$/;
 const TRAILING_HASHES_RE = /\s+#+\s*$/;
+const OUTLINE_INDENT_STEP = 14;
+const OUTLINE_GUIDE_COLOR = "var(--tree-guide-color)";
 
 function cleanHeadingTitle(raw: string): string {
     return raw
@@ -207,6 +209,45 @@ function CollapsibleChildren({
     );
 }
 
+function OutlineIndentGuides({ depth }: { depth: number }) {
+    if (depth <= 0) {
+        return null;
+    }
+
+    return (
+        <span
+            aria-hidden="true"
+            data-outline-indent-guides="true"
+            style={{
+                position: "absolute",
+                inset: 0,
+                pointerEvents: "none",
+            }}
+        >
+            {Array.from({ length: depth }, (_, level) => {
+                const guideX = Math.round(
+                    level * OUTLINE_INDENT_STEP + OUTLINE_INDENT_STEP / 2,
+                );
+
+                return (
+                    <span
+                        key={level}
+                        data-outline-guide-line="true"
+                        style={{
+                            position: "absolute",
+                            left: guideX,
+                            top: 0,
+                            bottom: 0,
+                            width: 1,
+                            backgroundColor: OUTLINE_GUIDE_COLOR,
+                        }}
+                    />
+                );
+            })}
+        </span>
+    );
+}
+
 function OutlineTree({
     nodes,
     depth,
@@ -232,8 +273,13 @@ function OutlineTree({
                     <div key={node.id}>
                         <div
                             className="flex items-center group"
-                            style={{ paddingLeft: depth * 14 }}
+                            data-outline-row="true"
+                            style={{
+                                position: "relative",
+                                paddingLeft: depth * OUTLINE_INDENT_STEP,
+                            }}
                         >
+                            <OutlineIndentGuides depth={depth} />
                             {hasChildren ? (
                                 <button
                                     onClick={() => onToggle(node.id)}
