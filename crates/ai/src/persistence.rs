@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -588,22 +588,11 @@ fn load_lazy_history_page_from_dir(
     let mut messages = Vec::with_capacity(end.saturating_sub(start));
 
     for idx in start..end {
-        let offset = index.message_offsets[idx];
-        let length = index.message_lengths[idx] as usize;
-        let mut bytes = vec![0_u8; length];
-        transcript
-            .seek(SeekFrom::Start(offset))
-            .map_err(|e| e.to_string())?;
-        transcript
-            .read_exact(&mut bytes)
-            .map_err(|e| e.to_string())?;
-
-        if bytes.last() == Some(&b'\n') {
-            bytes.pop();
-        }
-
-        let message =
-            serde_json::from_slice::<PersistedMessage>(&bytes).map_err(|e| e.to_string())?;
+        let message = read_indexed_transcript_message(
+            &mut transcript,
+            index.message_offsets[idx],
+            index.message_lengths[idx] as usize,
+        )?;
         messages.push(message);
     }
 
@@ -614,6 +603,51 @@ fn load_lazy_history_page_from_dir(
         end_index: end,
         messages,
     })
+}
+
+fn read_indexed_transcript_message(
+    transcript: &mut File,
+    offset: u64,
+    length: usize,
+) -> Result<PersistedMessage, String> {
+    let mut bytes = vec![0_u8; length];
+    transcript
+        .seek(SeekFrom::Start(offset))
+        .map_err(|e| e.to_string())?;
+    transcript
+        .read_exact(&mut bytes)
+        .map_err(|e| e.to_string())?;
+
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+
+    match serde_json::from_slice::<PersistedMessage>(&bytes) {
+        Ok(message) => Ok(message),
+        Err(index_error) => {
+            // Some old dev builds wrote stale byte lengths while keeping valid JSONL rows.
+            // Falling back to the newline boundary preserves recoverable transcripts.
+            transcript
+                .seek(SeekFrom::Start(offset))
+                .map_err(|e| e.to_string())?;
+            let mut line = Vec::new();
+            let mut reader = BufReader::new(transcript);
+            let read = reader.read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+            if read == 0 {
+                return Err(format!(
+                    "Persisted transcript message at offset {offset} is empty: {index_error}"
+                ));
+            }
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            serde_json::from_slice::<PersistedMessage>(&line).map_err(|line_error| {
+                format!(
+                    "Persisted transcript message at offset {offset} is invalid: {line_error}; indexed read failed with: {index_error}"
+                )
+            })
+        }
+    }
 }
 
 fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMessage>, String> {

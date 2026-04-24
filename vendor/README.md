@@ -38,6 +38,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
 - `codex-acp/`
   - upstream baseline: `zed-industries/codex-acp` `0.11.1`
   - synced against upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`
+  - OpenAI Codex Rust crates: `rust-v0.124.0` (`e9fb49366c93a1478ec71cc41ecee415a197d036`)
   - local NeverWrite delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
@@ -54,7 +55,7 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - mode and approval-preset stability when Codex expands writable roots under `workspace-write`
 - actor lifecycle behavior that does not keep the internal message channel alive after external senders disappear
 
-When updating Codex again, treat `c3e95ca` as the comparison base and review those files intentionally instead of replacing the whole directory blindly.
+When updating Codex again, treat `c3e95ca` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
 ## Updating Vendored Runtimes
 
@@ -66,8 +67,8 @@ When updating a vendored dependency:
 4. Remove any local byproducts before committing.
 5. Re-run the relevant validation:
    - `cd vendor/codex-acp && cargo test -q`
-   - `NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$REPO_ROOT/vendor/codex-acp/target/debug/codex-acp cargo test -p neverwrite-desktop`
-   - `cd apps/desktop && npm test -- src/features/ai/store/chatStore.test.ts src/features/ai/components/AIReviewView.test.tsx src/features/ai/components/EditedFilesBufferPanel.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/AIChatPanel.test.tsx src/features/ai/components/AIChatMessageItem.test.tsx src/features/editor/mergeViewSync.test.ts src/features/editor/extensions/mergeViewDiff.test.ts`
+   - `cargo test -p neverwrite-native-backend`
+   - `cd apps/desktop && npm test -- src/features/ai/store/chatStore.test.ts src/features/ai/components/AIReviewView.test.tsx src/features/ai/components/EditedFilesBufferPanel.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/components/AIChatMessageList.test.tsx src/features/ai/components/AIChatMessageItem.test.tsx src/features/editor/mergeViewSync.test.ts src/features/editor/extensions/mergeViewDiff.test.ts`
 
 The repository keeps the Claude runtime snapshot broader than the minimum
 runtime surface on purpose. The desktop build depends directly on `dist/`, while

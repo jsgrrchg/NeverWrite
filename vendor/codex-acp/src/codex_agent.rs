@@ -10,24 +10,22 @@ use agent_client_protocol::{
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse, SetSessionModelRequest, SetSessionModelResponse,
 };
+use codex_config::types::{McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    CodexAuth, NewThread, RolloutRecorder, ThreadManager, ThreadSortKey,
-    auth::AuthManager,
-    config::{
-        Config,
-        types::{McpServerConfig, McpServerTransportConfig},
-    },
-    find_thread_path_by_id_str,
-    models_manager::collaboration_mode_presets::CollaborationModesConfig,
-    parse_cursor,
+    NewThread, RolloutRecorder, SortDirection, ThreadManager, ThreadSortKey, config::Config,
+    find_thread_path_by_id_str, parse_cursor,
 };
-use codex_exec_server::EnvironmentManager;
+use codex_exec_server::{EnvironmentManager, EnvironmentManagerArgs, ExecServerRuntimePaths};
 use codex_login::{
-    CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
+    AuthManager, CODEX_API_KEY_ENV_VAR, CodexAuth, OPENAI_API_KEY_ENV_VAR, auth,
     auth::{read_codex_api_key_from_env, read_openai_api_key_from_env},
+};
+use codex_models_manager::{
+    bundled_models_response, collaboration_mode_presets::CollaborationModesConfig,
 };
 use codex_protocol::{
     ThreadId,
+    openai_models::{ModelsResponse, ReasoningEffort, ReasoningEffortPreset},
     protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
 };
 use std::{
@@ -37,7 +35,7 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex},
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::thread::Thread;
@@ -63,15 +61,22 @@ pub struct CodexAgent {
 
 const SESSION_LIST_PAGE_SIZE: usize = 25;
 const SESSION_TITLE_MAX_GRAPHEMES: usize = 120;
+const GPT_5_4_MODEL_SLUG: &str = "gpt-5.4";
+const GPT_5_5_MODEL_SLUG: &str = "gpt-5.5";
+const GPT_5_5_DISPLAY_NAME: &str = "GPT-5.5";
+const GPT_5_5_DESCRIPTION: &str =
+    "Frontier model for complex coding, research, and real-world work.";
 
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
     pub fn new(config: Config) -> Self {
-        let auth_manager = AuthManager::shared(
-            config.codex_home.clone(),
-            false,
-            config.cli_auth_credentials_store_mode,
-        );
+        let config = augment_model_catalog(config);
+        let auth_manager = AuthManager::shared_from_config(&config, false);
+        let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
+            std::env::current_exe().ok(),
+            config.codex_linux_sandbox_exe.clone(),
+        )
+        .expect("codex-acp requires valid exec runtime paths");
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
@@ -83,7 +88,10 @@ impl CodexAgent {
                 // False for now
                 default_mode_request_user_input: false,
             },
-            Arc::new(EnvironmentManager::from_env()),
+            Arc::new(EnvironmentManager::new(EnvironmentManagerArgs::from_env(
+                local_runtime_paths,
+            ))),
+            None,
         );
         Self {
             auth_manager,
@@ -151,10 +159,13 @@ impl CodexAgent {
                                 },
                                 env_http_headers: None,
                             },
+                            experimental_environment: None,
                             required: false,
                             enabled: true,
+                            supports_parallel_tool_calls: false,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
+                            default_tools_approval_mode: None,
                             disabled_tools: None,
                             enabled_tools: None,
                             disabled_reason: None,
@@ -187,10 +198,13 @@ impl CodexAgent {
                                 env_vars: vec![],
                                 cwd: Some(cwd.to_path_buf()),
                             },
+                            experimental_environment: None,
                             required: false,
                             enabled: true,
+                            supports_parallel_tool_calls: false,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
+                            default_tools_approval_mode: None,
                             disabled_tools: None,
                             enabled_tools: None,
                             disabled_reason: None,
@@ -303,8 +317,8 @@ impl Agent for CodexAgent {
             CodexAuthMethod::ChatGpt => {
                 // Perform browser/device login via codex-rs, then report success/failure to the client.
                 let opts = codex_login::ServerOptions::new(
-                    self.config.codex_home.clone(),
-                    codex_core::auth::CLIENT_ID.to_string(),
+                    self.config.codex_home.clone().to_path_buf(),
+                    auth::CLIENT_ID.to_string(),
                     None,
                     self.config.cli_auth_credentials_store_mode,
                 );
@@ -433,7 +447,7 @@ impl Agent for CodexAgent {
         let rollout_items = match &history {
             InitialHistory::Resumed(resumed) => resumed.history.clone(),
             InitialHistory::Forked(items) => items.clone(),
-            InitialHistory::New => Vec::new(),
+            InitialHistory::New | InitialHistory::Cleared => Vec::new(),
         };
 
         let mut config = self.build_session_config(&cwd, mcp_servers)?;
@@ -492,11 +506,13 @@ impl Agent for CodexAgent {
             SESSION_LIST_PAGE_SIZE,
             cursor_obj.as_ref(),
             ThreadSortKey::UpdatedAt,
+            SortDirection::Desc,
             &[
                 SessionSource::Cli,
                 SessionSource::VSCode,
                 SessionSource::Unknown,
             ],
+            None,
             None,
             self.config.model_provider_id.as_str(),
             None,
@@ -713,6 +729,88 @@ fn format_session_title(message: &str) -> Option<String> {
     }
 }
 
+fn augment_model_catalog(mut config: Config) -> Config {
+    let mut catalog = config
+        .model_catalog
+        .take()
+        .or_else(|| bundled_models_response().ok());
+
+    if let Some(catalog) = catalog.as_mut() {
+        ensure_gpt_5_5_reasoning_metadata(catalog);
+    }
+
+    config.model_catalog = catalog;
+    config
+}
+
+fn ensure_gpt_5_5_reasoning_metadata(catalog: &mut ModelsResponse) {
+    if let Some(model) = catalog
+        .models
+        .iter_mut()
+        .find(|model| model.slug == GPT_5_5_MODEL_SLUG)
+    {
+        // Some upstream catalogs list GPT-5.5 before shipping reasoning metadata.
+        // Without this, ACP cannot expose the separate reasoning_effort config option.
+        if model.default_reasoning_level.is_none() || model.supported_reasoning_levels.is_empty() {
+            seed_gpt_5_5_reasoning_metadata(model);
+        }
+        return;
+    }
+
+    let Some(mut template) = catalog
+        .models
+        .iter()
+        .find(|model| model.slug == GPT_5_4_MODEL_SLUG)
+        .cloned()
+    else {
+        warn!("codex-acp could not seed gpt-5.5 because gpt-5.4 is missing from the model catalog");
+        return;
+    };
+
+    template.slug = GPT_5_5_MODEL_SLUG.to_string();
+    template.display_name = GPT_5_5_DISPLAY_NAME.to_string();
+    template.description = Some(GPT_5_5_DESCRIPTION.to_string());
+    seed_gpt_5_5_reasoning_metadata(&mut template);
+
+    catalog.models.push(template);
+}
+
+fn seed_gpt_5_5_reasoning_metadata(model: &mut codex_protocol::openai_models::ModelInfo) {
+    model.default_reasoning_level = Some(ReasoningEffort::Medium);
+    model.supported_reasoning_levels = vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "Fast responses with lighter reasoning".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Medium,
+            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "Greater reasoning depth for complex problems".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::XHigh,
+            description: "Extra high reasoning depth for complex problems".to_string(),
+        },
+    ];
+    model.priority = 0;
+    model.additional_speed_tiers.clear();
+    model.availability_nux = None;
+    model.upgrade = None;
+    model.context_window = Some(272_000);
+    model.max_context_window = None;
+    model.auto_compact_token_limit = None;
+    model.effective_context_window_percent = 95;
+    model.supports_reasoning_summaries = true;
+    model.support_verbosity = true;
+    model.supports_parallel_tool_calls = true;
+    model.supports_search_tool = true;
+    model.supports_image_detail_original = true;
+    model.used_fallback_model_metadata = false;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,7 +838,8 @@ mod tests {
             approval_policy: AskForApproval::OnFailure,
             approvals_reviewer: ApprovalsReviewer::default(),
             sandbox_policy: SandboxPolicy::DangerFullAccess,
-            cwd: std::env::current_dir()?,
+            permission_profile: None,
+            cwd: std::env::current_dir()?.try_into()?,
             reasoning_effort: Some(ReasoningEffort::High),
             history_log_id: 0,
             history_entry_count: 0,
@@ -764,6 +863,46 @@ mod tests {
             SandboxPolicy::DangerFullAccess
         ));
         assert_eq!(config.cwd.to_path_buf(), std::env::current_dir()?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn augment_model_catalog_seeds_gpt_5_5_reasoning_metadata() -> anyhow::Result<()> {
+        let config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        let config = augment_model_catalog(config);
+
+        let catalog = config
+            .model_catalog
+            .expect("codex-acp should provide an augmented model catalog");
+        let model = catalog
+            .models
+            .iter()
+            .find(|model| model.slug == GPT_5_5_MODEL_SLUG)
+            .expect("gpt-5.5 should be present in the catalog");
+
+        assert_eq!(model.display_name, GPT_5_5_DISPLAY_NAME);
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
+        assert_eq!(
+            model
+                .supported_reasoning_levels
+                .iter()
+                .map(|preset| preset.effort)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
+        );
+        assert!(model.supports_reasoning_summaries);
+        assert!(model.supports_parallel_tool_calls);
+        assert!(model.supports_search_tool);
 
         Ok(())
     }

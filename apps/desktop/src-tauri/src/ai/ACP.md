@@ -14,7 +14,7 @@ All three communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini |
 |---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.29.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + selected thread/runtime backports + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` v0.29.0) | Rust (`codex-acp` v0.11.1, upstream `c3e95ca` + OpenAI Codex crates `rust-v0.124.0` + bounded NeverWrite delta) | External Gemini CLI binary (`gemini --acp`) |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS. The legacy `claude-agent-acp` sidecar path still exists as a runtime fallback, but it is not staged by default. | Cargo-built sidecar binary bundled into `binaries/` | Not bundled today; resolved from env/custom path/PATH |
 | **Auth methods** | `claude-ai-login` + `console-login` locally, `claude-login` remotely, `gateway` | `chatgpt`, `openai-api-key`, `codex-api-key` | `login_with_google`, `use_gemini` |
 | **Descriptor capabilities** | attachments, permissions, reasoning, plans, terminal_output | attachments, permissions, reasoning, terminal_output | attachments, permissions, plans |
@@ -31,7 +31,7 @@ Notes:
 - The current Claude vendor also pulls `@anthropic-ai/claude-agent-sdk` `0.2.111`.
 - Claude now exposes model-specific effort controls through ACP `configOptions` when the selected model reports effort support.
 - That Claude effort support is currently a small local port informed by an external fork; if upstream adopts a native version later, NeverWrite should re-evaluate which implementation to keep.
-- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, plus selected newer `thread.rs` behavior merged from the maintained adapter copy.
+- Codex now tracks `zed-industries/codex-acp` `0.11.1` at upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`, while its OpenAI Codex Rust crates are updated to `rust-v0.124.0` (`e9fb49366c93a1478ec71cc41ecee415a197d036`).
 - NeverWrite also ports Codex Fast Mode exposure locally through ACP `service_tier`, `/fast`, and restored `service_tier` session state; upstream does not ship that surface yet, so we should re-evaluate later which Codex implementation to keep.
 - The remaining NeverWrite-specific Codex delta is still intentional and product-facing: review/diff metadata, resilient mode matching, inline diff reconstruction and the prompt-encoded `user_input` bridge all remain local.
 
@@ -258,7 +258,7 @@ Supported methods:
 
 Auth detection is not based only on persisted `auth_method`. NeverWrite also considers environment variables and available secrets when computing the effective ready/authenticated state.
 
-NeverWrite still carries a bounded local delta on `vendor/codex-acp` `v0.11.1`.
+NeverWrite still carries a bounded local delta on `vendor/codex-acp` `v0.11.1`, now compiled against OpenAI Codex Rust crates `rust-v0.124.0`.
 
 That delta is intentional and currently lives mainly in `src/thread.rs` and `src/codex_agent.rs` to preserve product behavior that the desktop app already depends on:
 
@@ -276,7 +276,7 @@ At the same time, the current vendor now also carries forward newer Codex thread
 - MCP tool approval elicitation routed through ACP permission requests when the runtime emits the supported metadata shape
 - `GuardianAssessment` surfaced as tool-call activity
 
-In other words, Codex is now aligned with upstream `0.11.1`, but it is not a raw upstream checkout. The remaining delta is product-facing, not incidental.
+In other words, Codex is still based on upstream adapter `0.11.1`, but it is not a raw upstream checkout. The remaining delta is product-facing, not incidental, and the adapter has API-compatibility changes for OpenAI Codex `rust-v0.124.0`.
 
 ### Gemini
 
@@ -465,7 +465,7 @@ vendor/
 │   ├── dist/index.js
 │   ├── node_modules/
 │   └── package.json
-└── codex-acp/                        # codex-acp v0.11.1 (upstream c3e95ca + bounded NeverWrite delta)
+└── codex-acp/                        # codex-acp v0.11.1 (upstream c3e95ca + OpenAI Codex rust-v0.124.0 + bounded NeverWrite delta)
     ├── src/main.rs
     └── Cargo.toml
 ```
