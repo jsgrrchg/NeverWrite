@@ -51,7 +51,7 @@ The current product already includes:
 - Frontmatter/properties editing
 - CSV editing with table and raw fallback views
 - Editable text/code files with syntax highlighting and autosave
-- PDF viewing with persistent zoom and visual filters
+- PDF viewing with visual filters. 
 - Internal image viewing with fit and zoom
 - App-owned Hunspell-based spellcheck with bundled `en-US` and `es-ES`
 - Grammar/style checks through LanguageTool
@@ -106,20 +106,21 @@ Useful docs already in the repo:
 
 ## Stack
 
-- Desktop shell: Electron 41, React 19, TypeScript, Vite, Tailwind CSS 4, CodeMirror 6, Excalidraw, PDF.js
-- Desktop native sidecar: Rust, `notify`, `tiny_http`, `keyring`, app-owned spellcheck runtime
+- **Desktop shell**: Electron 41, React 19, TypeScript 6, Vite 8, Tailwind CSS 4, CodeMirror 6, Excalidraw, PDF.js, electron-updater
+- Desktop native backend: Rust 2021, Tokio, `notify`, `portable-pty`, `reqwest`, `spellbook`, app-owned spellcheck runtime
+- **Desktop main process**: Electron IPC plus a Node HTTP server for the local web clipper API
 - Shared Rust crates: vault parsing, indexing, search, diff, DTOs
-- Browser extension: WXT, React, TypeScript, Chrome MV3 and Firefox MV3 targets
+- **Browser extension**: WXT, React, TypeScript, Chrome MV3 and Firefox MV3 targets
 
 ## Development
 
-Important: there is no top-level JavaScript workspace package. JavaScript dependencies are installed per app.
+**Important**: there is no top-level JavaScript workspace package. JavaScript dependencies are installed per app.
 
 ### Requirements
 
 - Rust and Cargo
 - Node.js 22+ and npm for `apps/desktop` and JavaScript tooling
-- Pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
+- pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
 
 CI and release workflows are pinned to Node.js 22, so local development should use Node 22 or newer.
 
@@ -148,7 +149,7 @@ pnpm install
 pnpm dev
 ```
 
-Build unpacked extension artifacts:
+Build unpacked extensión artifacts:
 
 ```bash
 cd apps/web-clipper

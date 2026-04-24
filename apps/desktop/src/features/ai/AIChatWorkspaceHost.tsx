@@ -30,11 +30,13 @@ function getActiveEditorChatSessionId() {
 interface AIChatWorkspaceHostProps {
     startupReady?: boolean;
     listenWithoutChatTabs?: boolean;
+    initializeWithoutChatTabs?: boolean;
 }
 
 export function AIChatWorkspaceHost({
     startupReady = true,
     listenWithoutChatTabs = false,
+    initializeWithoutChatTabs = false,
 }: AIChatWorkspaceHostProps) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const { hasChatTabs, activeChatSessionId } = useEditorStore(
@@ -68,7 +70,13 @@ export function AIChatWorkspaceHost({
     );
 
     useEffect(() => {
-        if (!startupReady || !vaultPath || !hasChatTabs) return;
+        if (
+            !startupReady ||
+            !vaultPath ||
+            (!hasChatTabs && !initializeWithoutChatTabs)
+        ) {
+            return;
+        }
 
         const initialization = chatActions.initialize({
             createDefaultSession: false,
@@ -79,7 +87,13 @@ export function AIChatWorkspaceHost({
                 initializationPromiseRef.current = null;
             }
         });
-    }, [chatActions, hasChatTabs, startupReady, vaultPath]);
+    }, [
+        chatActions,
+        hasChatTabs,
+        initializeWithoutChatTabs,
+        startupReady,
+        vaultPath,
+    ]);
 
     useEffect(() => {
         if (!activeChatSessionId) {

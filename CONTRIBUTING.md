@@ -203,7 +203,7 @@ cargo test -p neverwrite-vault      # Single crate
 - **Electron** — desktop shell and IPC bridge
 - **Tokio** — async runtime
 - **notify** — filesystem watching
-- **tiny_http** — local API server for web clipper communication (port 32145)
+- **Node HTTP server** — local desktop API for web clipper communication (`127.0.0.1:32145`)
 
 ### Key patterns
 
@@ -220,6 +220,7 @@ For development, these optional variables can override default runtime paths:
 | `NEVERWRITE_CODEX_ACP_BIN` | Override Codex ACP runtime binary |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Override Claude ACP runtime binary |
 | `NEVERWRITE_GEMINI_ACP_BIN` | Override Gemini ACP runtime binary |
+| `NEVERWRITE_KILO_ACP_BIN` | Override Kilo ACP runtime binary |
 | `NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS` | Allow unpacked extension origins |
 
 ## Versioning

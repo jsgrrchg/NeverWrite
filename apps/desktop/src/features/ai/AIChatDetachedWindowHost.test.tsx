@@ -144,6 +144,20 @@ describe("AIChatDetachedWindowHost", () => {
         expect(eventBridgeMock).toHaveBeenCalledWith(true);
     });
 
+    it("initializes detached chat support before any chat tab mounts", async () => {
+        const initialize = vi.fn().mockResolvedValue(undefined);
+        useChatStore.setState({
+            initialize,
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        renderComponent(<AIChatDetachedWindowHost />);
+        await flushPromises();
+
+        expect(initialize).toHaveBeenCalledWith({
+            createDefaultSession: false,
+        });
+    });
+
     it("keeps detached windows quiet until they have a chat tab", () => {
         renderComponent(<AIChatDetachedWindowHost />);
 

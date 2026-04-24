@@ -22,20 +22,23 @@ NeverWrite is built upon open-source software. Below is a summary of the license
 governing our direct and transitive dependencies, grouped by license type.
 
 ### License Summary
-| License              | Scope                                                    |
-| -------------------- | -------------------------------------------------------- |
-| MIT                  | Majority of frontend and backend dependencies            |
-| Apache-2.0           | TypeScript, pdfjs-dist, Tauri (dual), agent-client-protocol |
-| MIT OR Apache-2.0    | Most Rust crates (serde, tokio, regex, etc.)             |
-| MPL-2.0              | cssparser, selectors, spellbook                          |
-| Unicode-3.0          | ICU libraries (icu_*, zerovec, yoke, litemap)            |
-| ISC                  | ring (partial), rustls-webpki, libloading                |
-| BSD-3-Clause         | subtle, alloc-no-stdlib, brotli (dual)                   |
-| Zlib                 | foldhash, tinyvec, dispatch2                             |
-| CC0-1.0              | notify                                                   |
-| Unlicense OR MIT     | aho-corasick, memchr, walkdir, byteorder                 |
+| License                  | Scope                                               |
+| ------------------------ | --------------------------------------------------- |
+| MIT                      | Majority of frontend and backend dependencies       |
+| Apache-2.0               | TypeScript, pdfjs-dist, agent-client-protocol       |
+| MIT OR Apache-2.0        | Most Rust crates (serde, tokio, regex, etc.)        |
+| MPL-2.0                  | cssparser, selectors, spellbook                     |
+| LGPL/MPL dictionary terms | Bundled and downloadable Hunspell dictionaries     |
+| Unicode-3.0              | ICU libraries (icu_*, zerovec, yoke, litemap)       |
+| ISC                      | ring (partial), rustls-webpki, libloading           |
+| BSD-3-Clause             | subtle, alloc-no-stdlib, brotli (dual)              |
+| Zlib                     | foldhash, tinyvec, dispatch2                        |
+| CC0-1.0                  | notify                                              |
+| Unlicense OR MIT         | aho-corasick, memchr, walkdir, byteorder            |
 
-No GPL or strong-copyleft dependencies are used in this project.
+No GPL-only runtime code dependencies are used in this project. Spellcheck
+dictionaries are tracked separately because some packs use disjunctive
+dictionary licenses.
 
 ---
 
@@ -51,13 +54,12 @@ No GPL or strong-copyleft dependencies are used in this project.
 | vite, @vitejs/plugin-react     | MIT                |
 | typescript                     | Apache-2.0         |
 
-### Tauri
-| Package                        | License               |
-| ------------------------------ | --------------------- |
-| @tauri-apps/api                | Apache-2.0 OR MIT     |
-| @tauri-apps/cli                | Apache-2.0 OR MIT     |
-| @tauri-apps/plugin-dialog      | MIT OR Apache-2.0     |
-| @tauri-apps/plugin-opener      | MIT OR Apache-2.0     |
+### Electron Runtime
+| Package                        | License |
+| ------------------------------ | ------- |
+| electron                       | MIT     |
+| electron-builder               | MIT     |
+| electron-updater               | MIT     |
 
 ### Editor (CodeMirror 6)
 
@@ -89,12 +91,17 @@ No GPL or strong-copyleft dependencies are used in this project.
 | Package                        | License     |
 | ------------------------------ | ----------- |
 | @excalidraw/excalidraw         | MIT         |
+| @iconify-json/catppuccin       | MIT         |
+| @lezer/common                 | MIT         |
+| @lezer/highlight              | MIT         |
 | @xterm/xterm                   | MIT         |
 | @xterm/addon-fit               | MIT         |
 | @xterm/addon-search            | MIT         |
 | @xterm/addon-web-links         | MIT         |
 | katex                          | MIT         |
+| papaparse                      | MIT         |
 | pdfjs-dist                     | Apache-2.0  |
+| react-datasheet-grid           | MIT         |
 | react-force-graph-2d           | MIT         |
 | react-force-graph-3d           | MIT         |
 | @chenglou/pretext              | MIT         |
@@ -117,13 +124,14 @@ No GPL or strong-copyleft dependencies are used in this project.
 
 ## Web Clipper Dependencies (npm)
 
-| Package          | License |
-| ---------------- | ------- |
-| defuddle         | MIT     |
-| dompurify        | MIT     |
-| react-markdown   | MIT     |
-| remark-gfm       | MIT     |
-| wxt              | MIT     |
+| Package                 | License |
+| ----------------------- | ------- |
+| defuddle                | MIT     |
+| dompurify               | MIT     |
+| react-markdown          | MIT     |
+| remark-gfm              | MIT     |
+| @wxt-dev/module-react   | MIT     |
+| wxt                     | MIT     |
 
 ---
 
@@ -133,15 +141,13 @@ No GPL or strong-copyleft dependencies are used in this project.
 
 | Crate                      | License               |
 | -------------------------- | --------------------- |
-| tauri                      | Apache-2.0 OR MIT     |
-| tauri-build                | Apache-2.0 OR MIT     |
-| tauri-plugin-dialog        | Apache-2.0 OR MIT     |
-| tauri-plugin-opener        | Apache-2.0 OR MIT     |
+| agent-client-protocol      | Apache-2.0            |
 | serde, serde_json          | MIT OR Apache-2.0     |
 | tokio                      | MIT                   |
 | tokio-util                 | MIT                   |
 | async-trait                | MIT OR Apache-2.0     |
 | reqwest                    | MIT OR Apache-2.0     |
+| uuid                       | Apache-2.0 OR MIT     |
 
 ### Vault & Index
 
@@ -165,7 +171,6 @@ No GPL or strong-copyleft dependencies are used in this project.
 
 | Crate              | License                        |
 | ------------------ | ------------------------------ |
-| keyring            | MIT OR Apache-2.0              |
 | sha2               | MIT OR Apache-2.0              |
 | ring               | Apache-2.0 AND ISC             |
 | rustls             | MIT OR Apache-2.0 AND ISC      |
@@ -184,13 +189,6 @@ No GPL or strong-copyleft dependencies are used in this project.
 | Crate          | License |
 | -------------- | ------- |
 | portable-pty   | MIT     |
-
-### HTTP
-
-| Crate          | License           |
-| -------------- | ----------------- |
-| tiny_http      | MIT OR Apache-2.0 |
-| base64         | MIT OR Apache-2.0 |
 
 ### Internationalization (Unicode)
 
@@ -215,6 +213,16 @@ No GPL or strong-copyleft dependencies are used in this project.
 > **Note:** MPL-2.0 is a weak copyleft license. Modifications to these specific
 > files must be released under MPL-2.0, but this does not affect the rest of
 > the codebase.
+
+### Spellcheck Dictionaries
+
+| Dictionary | License |
+| ---------- | ------- |
+| en-US      | LGPL-2.1+ wordlist; BSD-style affix file |
+| es-ES      | GPL-3.0+ / LGPL-3.0+ / MPL-1.1+ |
+
+The bundled dictionary metadata lives in
+`apps/desktop/native-backend/resources/spellcheck/catalog.json`.
 
 ---
 
@@ -241,7 +249,7 @@ Original source: https://github.com/zed-industries/codex
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
 | `src/thread.rs`       | Extended to support AI review flow, multi-vault sessions, and custom diff streaming |
-| `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.10.0 compatibility        |
+| `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.10.2 compatibility        |
 
 ### `vendor/Claude-agent-acp-upstream` — Anthropic (Apache-2.0)
 
@@ -270,4 +278,4 @@ Original source: https://github.com/zed-industries/codex
 
 ---
 
-*This file is auto-generated from project dependency metadata. Last updated: 2026-03-30.*
+*This file is maintained from project dependency metadata. Last updated: 2026-04-24.*

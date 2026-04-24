@@ -76,7 +76,7 @@ Use exact origins only. Wildcards are intentionally unsupported.
 - Context menu entry: `Open NeverWrite Side Panel`
 - Keyboard shortcut: `Ctrl+Shift+S` on Windows/Linux, `Command+Shift+S` on macOS
 
-## Phase 3 Features
+## Current Features
 
 - Templates support variables such as `{{title}}`, `{{url}}`, `{{content}}`, `{{tags}}`, and `{{folder}}`.
 - Custom templates can be scoped per vault and/or per domain from the Settings view.
@@ -89,6 +89,7 @@ When NeverWrite desktop is running, the extension also tries a direct local inte
 
 - Base URL: `http://127.0.0.1:32145/api/web-clipper`
 - Endpoints used by the extension:
+  - `POST /pair`
   - `GET /health`
   - `GET /themes`
   - `POST /folders`
@@ -101,9 +102,9 @@ This local API is used to:
 - save clips directly into the desktop app with explicit success/error feedback
 - open the created note in the editor and show a desktop toast on success
 
-On first successful contact, the clipper pairs with the desktop app and stores a
-local token in `browser.storage.local`. Subsequent requests must send both the
-extension identity and that token.
+On first successful contact, the clipper pairs with the desktop app through
+`POST /pair` and stores a local token in `browser.storage.local`. Subsequent
+requests must send both the extension identity and that token.
 
 If the local API is unavailable, the extension falls back to the deep-link handoff flow.
 

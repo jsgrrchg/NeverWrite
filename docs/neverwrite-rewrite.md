@@ -6,12 +6,12 @@ This document records the clean-cut completion of the technical rebrand.
 
 - NeverWrite is the only canonical technical identity in the product.
 - Local persistence, app identity, deep links, headers, metadata, env vars, and release docs use a single naming convention.
-- Compatibility aliases were removed instead of being carried forward.
+- New code and documentation use the canonical NeverWrite names only. Retired aliases are not part of the documented contract.
 
 ### What changed
 
 - Desktop, Electron, frontend persistence helpers, and web clipper contracts now operate only with `neverwrite*` naming.
-- Runtime and build overrides use only `NEVERWRITE_*` environment variables.
+- Runtime and build overrides are documented with `NEVERWRITE_*` environment variables.
 - App support paths, hidden state directories, storage keys, and file-preview schemes now use the canonical NeverWrite names only.
 - ACP metadata, diff metadata, status identifiers, and user-input payload prefixes now use the canonical NeverWrite contract end to end.
 - Workspace crate/package identifiers and related imports were renamed to the NeverWrite namespace.
@@ -22,7 +22,7 @@ This document records the clean-cut completion of the technical rebrand.
 - Desktop Rust build/test surface
 - Desktop frontend tests
 - Web clipper compile + tests
-- Repo-wide eradication audit for retired technical naming
+- Repo-wide eradication audit for retired technical naming.
 
 ### Notes
 
