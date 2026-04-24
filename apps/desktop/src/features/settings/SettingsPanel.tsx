@@ -3013,6 +3013,19 @@ export function SettingsPanel({
     const desktopPlatform = getDesktopPlatform();
     const standaloneWindow = standalone ? getCurrentWebviewWindow() : null;
     const isStandaloneWindows = standalone && desktopPlatform === "windows";
+    // Standalone Settings uses the native window material (macOS vibrancy,
+    // Windows 11 acrylic) on the top bar and left sidebar. The outer shell
+    // stays transparent so the material shows through; the content pane
+    // re-anchors to a solid bg so only the chrome is translucent.
+    const useWindowMaterial =
+        standalone &&
+        (desktopPlatform === "macos" || desktopPlatform === "windows");
+    const shellBackground = useWindowMaterial
+        ? "transparent"
+        : "var(--bg-primary)";
+    const chromeBackground = useWindowMaterial
+        ? "var(--sidebar-vibrancy-tint, var(--bg-secondary))"
+        : "var(--bg-secondary)";
     const [active, setActive] = useState<Category>(resolvedInitialCategory);
     const [search, setSearch] = useState("");
     const activeInfo = CATEGORIES.find((c) => c.id === active)!;
@@ -3076,7 +3089,7 @@ export function SettingsPanel({
                 ...(standalone
                     ? { height: "100vh" }
                     : { position: "fixed", inset: 0, zIndex: 100 }),
-                backgroundColor: "var(--bg-primary)",
+                backgroundColor: shellBackground,
                 display: "flex",
                 flexDirection: "column",
             }}
@@ -3124,7 +3137,7 @@ export function SettingsPanel({
                     paddingRight: isStandaloneWindows ? 6 : 20,
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
-                    backgroundColor: "var(--bg-secondary)",
+                    backgroundColor: chromeBackground,
                     cursor: standalone ? "default" : undefined,
                 }}
             >
@@ -3193,7 +3206,7 @@ export function SettingsPanel({
                         borderRight: "1px solid var(--border)",
                         display: "flex",
                         flexDirection: "column",
-                        backgroundColor: "var(--bg-secondary)",
+                        backgroundColor: chromeBackground,
                         overflow: "hidden",
                     }}
                 >
@@ -3338,6 +3351,7 @@ export function SettingsPanel({
                         flex: 1,
                         overflowY: "auto",
                         padding: "0 48px 48px",
+                        backgroundColor: "var(--bg-primary)",
                     }}
                 >
                     <div style={{ maxWidth: 600 }}>

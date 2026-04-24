@@ -39,7 +39,9 @@ describe("platform helpers", () => {
             decorations: true,
             titleBarStyle: "overlay",
             hiddenTitle: true,
-            trafficLightPosition: { x: 14, y: 20 },
+            // y=11 vertically centers the 12px traffic lights in the 34px
+            // WindowChrome bar — same origin on every macOS version.
+            trafficLightPosition: { x: 14, y: 11 },
         });
     });
 

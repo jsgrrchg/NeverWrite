@@ -996,28 +996,14 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 }}
                 showLeadingInset
                 onLeadingInsetMouseDown={startWindowDrag}
-                shellStyle={
-                    desktopPlatform === "macos" ||
-                    desktopPlatform === "windows"
-                        ? {
-                              // Detached note windows share the main shell's
-                              // translucent surface: paint the same frosted
-                              // tint as the sidebar and let the native window
-                              // material (macOS vibrancy / Windows acrylic)
-                              // provide the blur. No emulated backdrop-filter
-                              // — it fights the OS material and produces a
-                              // muddy double-blur.
-                              background: "var(--sidebar-vibrancy-tint)",
-                              borderBottom: "1px solid var(--border)",
-                          }
-                        : {
-                              background:
-                                  "color-mix(in srgb, var(--bg-tertiary) 92%, transparent)",
-                              borderBottom: "1px solid var(--border)",
-                              backdropFilter: "blur(18px)",
-                              boxShadow: "0 1px 0 rgba(255,255,255,0.04)",
-                          }
-                }
+                shellStyle={{
+                    // Detached note windows adopt the same chrome as an
+                    // in-window pane bar: solid --bg-secondary surface with a
+                    // single bottom border. Keeps the tear-off visually
+                    // consistent with the panes the user just dragged from.
+                    background: "var(--bg-secondary)",
+                    borderBottom: "1px solid var(--border)",
+                }}
                 barStyle={{ padding: "0 6px" }}
             >
                 {windowMode === "main" && (
@@ -1178,18 +1164,15 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         tabStripOverflowState.hasOverflow ||
                                         undefined
                                     }
-                                    className="no-drag flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-center"
+                                    className="no-drag relative flex min-w-0 shrink overflow-x-auto scrollbar-hidden items-end self-stretch"
                                     style={{
                                         gap: tabLayout.stripGap,
                                         padding: `0 ${tabLayout.stripPaddingX}px`,
-                                        borderRadius: 12,
                                         background: detachPreviewActive
                                             ? "color-mix(in srgb, var(--accent) 8%, transparent)"
                                             : externalFileDropActive
                                               ? "color-mix(in srgb, var(--accent) 10%, transparent)"
-                                              : draggingTabId
-                                                ? "color-mix(in srgb, var(--bg-primary) 42%, transparent)"
-                                                : "transparent",
+                                              : "transparent",
                                         boxShadow: detachPreviewActive
                                             ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent)"
                                             : externalFileDropActive
@@ -1315,38 +1298,37 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         width: tabLayout.tabWidth,
                                                         minWidth:
                                                             tabLayout.tabWidth,
-                                                        height: 30,
-                                                        borderRadius: 9,
+                                                        maxWidth: 240,
+                                                        height: 33,
                                                         flexShrink: 0,
+                                                        boxSizing: "border-box",
                                                         gap: tabLayout.tabGap,
                                                         padding: `0 ${tabLayout.tabPaddingX}px`,
-                                                        backgroundColor:
-                                                            isActive
-                                                                ? "var(--bg-primary)"
-                                                                : "color-mix(in srgb, var(--bg-primary) 44%, transparent)",
+                                                        borderRight:
+                                                            "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
+                                                        background: isActive
+                                                            ? "var(--bg-primary)"
+                                                            : "transparent",
                                                         color: isActive
                                                             ? "var(--text-primary)"
                                                             : "var(--text-secondary)",
-                                                        border: isActive
-                                                            ? "1px solid color-mix(in srgb, var(--accent) 12%, var(--border))"
-                                                            : "1px solid color-mix(in srgb, var(--border) 48%, transparent)",
+                                                        boxShadow: isActive
+                                                            ? "inset 0 -2px 0 0 var(--accent)"
+                                                            : "none",
+                                                        zIndex: isActive
+                                                            ? 10
+                                                            : isDragging
+                                                              ? 20
+                                                              : 0,
                                                         opacity: isDragging
                                                             ? DRAGGING_TAB_PLACEHOLDER_OPACITY
                                                             : 1,
-                                                        zIndex: isDragging
-                                                            ? 20
-                                                            : 0,
                                                         transform: isDragging
-                                                            ? `translateX(${dragOffsetX}px) scale(1.02)`
+                                                            ? `translateX(${dragOffsetX}px)`
                                                             : undefined,
                                                         transition: isDragging
                                                             ? "none"
-                                                            : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease",
-                                                        boxShadow: isDragging
-                                                            ? "0 10px 28px rgba(0, 0, 0, 0.2)"
-                                                            : isActive
-                                                              ? "0 10px 24px rgba(15, 23, 42, 0.08)"
-                                                              : "none",
+                                                            : "transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1), background 150ms ease, color 150ms ease, box-shadow 150ms ease",
                                                         willChange: isDragging
                                                             ? "transform"
                                                             : undefined,

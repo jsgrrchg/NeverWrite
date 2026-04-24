@@ -55,8 +55,11 @@ export function isMacOSTahoe(): boolean {
 }
 
 const TRAFFIC_LIGHT_X = 14;
-const TRAFFIC_LIGHT_Y_LEGACY = 20;
-const TRAFFIC_LIGHT_Y_TAHOE = 17;
+// Traffic-light Y is chosen to vertically center the ~12px native buttons
+// inside the 34px WindowChrome bar: (34 - 12) / 2 = 11. Keeping the same
+// offset on legacy and Tahoe means the tab bar and traffic lights line up
+// identically regardless of macOS version.
+const TRAFFIC_LIGHT_Y = 11;
 const TRAFFIC_LIGHT_SPACER_LEGACY = 68;
 const TRAFFIC_LIGHT_SPACER_TAHOE = 72;
 const TITLEBAR_PADDING_TOP_LEGACY = 0;
@@ -65,7 +68,7 @@ const TITLEBAR_PADDING_TOP_TAHOE = 0;
 export function getTrafficLightPosition(): { x: number; y: number } {
     return {
         x: TRAFFIC_LIGHT_X,
-        y: isMacOSTahoe() ? TRAFFIC_LIGHT_Y_TAHOE : TRAFFIC_LIGHT_Y_LEGACY,
+        y: TRAFFIC_LIGHT_Y,
     };
 }
 

@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, nativeTheme } from "electron";
 import { ELECTRON_IPC } from "../shared/ipc";
 import { removeWindowVaultRoute } from "./shellState";
 
@@ -8,11 +8,36 @@ const DEFAULT_HEIGHT = 960;
 const MIN_WIDTH = 700;
 const MIN_HEIGHT = 560;
 
-// Custom traffic-light position on macOS. Kept in one place so both the
-// BrowserWindow constructor and `setWindowButtonVisibility` callers can
-// re-apply it — Electron resets the position back to the macOS default when
-// the buttons are hidden and shown again, so we re-assert it on show.
-const MAC_TRAFFIC_LIGHT_POSITION = { x: 14, y: 20 } as const;
+// Traffic-light Y is chosen to vertically center the ~12px native buttons
+// inside the 34px WindowChrome tab bar: (34 - 12) / 2 = 11. The renderer
+// uses the same origin (see `getTrafficLightPosition` in utils/platform.ts)
+// so main-provided defaults and renderer overrides stay in sync. When the
+// two disagree the tab bar drifts past the traffic lights — exactly the
+// tear-off regression reported after the Tauri → Electron move.
+const TRAFFIC_LIGHT_X = 14;
+const TRAFFIC_LIGHT_Y = 11;
+
+function getDefaultTrafficLightPosition(): { x: number; y: number } {
+    return { x: TRAFFIC_LIGHT_X, y: TRAFFIC_LIGHT_Y };
+}
+
+function readTrafficLightPosition(
+    options: Record<string, unknown> | undefined,
+): { x: number; y: number } {
+    const raw = options?.trafficLightPosition;
+    if (raw && typeof raw === "object") {
+        const record = raw as Record<string, unknown>;
+        if (
+            typeof record.x === "number" &&
+            typeof record.y === "number" &&
+            Number.isFinite(record.x) &&
+            Number.isFinite(record.y)
+        ) {
+            return { x: record.x, y: record.y };
+        }
+    }
+    return getDefaultTrafficLightPosition();
+}
 
 const windowsByLabel = new Map<string, BrowserWindow>();
 const labelsByWebContentsId = new Map<number, string>();
@@ -110,6 +135,16 @@ function getNumberOption(
         : fallback;
 }
 
+function getOptionalNumber(
+    options: Record<string, unknown> | undefined,
+    key: string,
+): number | undefined {
+    const value = options?.[key];
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined;
+}
+
 function bindWindowLifecycle(label: string, window: BrowserWindow) {
     const webContentsId = window.webContents.id;
     windowsByLabel.set(label, window);
@@ -181,26 +216,96 @@ export function createAppWindow(
             (typeof options?.search === "string" ? options.search : ""),
     );
 
+    // A "chromeless" window is a transient overlay (drag ghost preview, etc.)
+    // that opts out of the full titlebar chrome by passing decorations:false.
+    // These must not get hiddenInset, vibrancy, or traffic lights — otherwise
+    // Electron still paints a traffic-light inset over a transparent frame
+    // which leaks through as a dark halo.
+    const chromeless = options?.decorations === false;
+
+    // The main window and the settings window both render a tinted left
+    // sidebar / top bar that covers the leading inset, so sidebar vibrancy
+    // plays nicely on them. Other satellites (drag ghost previews, detached
+    // panels) have no such chrome, so vibrancy would leave the traffic lights
+    // floating over the wallpaper — keep those anchored to a solid theme
+    // background.
+    const isMainWindow = label === "main";
+    const isSettingsWindow = label === "settings";
+    const supportsWindowMaterial =
+        !chromeless && (isMainWindow || isSettingsWindow);
+    const usesVibrancy = isMac && supportsWindowMaterial;
+    const solidChromeFallback = nativeTheme.shouldUseDarkColors
+        ? "#18181b"
+        : "#fafafa";
+
+    const initialX = getOptionalNumber(options, "x");
+    const initialY = getOptionalNumber(options, "y");
+    const hasExplicitPosition = initialX !== undefined || initialY !== undefined;
+    const wantsCenter = !hasExplicitPosition
+        && getBooleanOption(options, "center", false);
+    const wantsShow = getBooleanOption(options, "visible", true);
+    const wantsFocus = getBooleanOption(options, "focus", true);
+
+    // Only satellite windows get a custom trafficLightPosition. The main
+    // window keeps titleBarStyle:"hiddenInset" (below) which places the
+    // buttons at the macOS-native spot — overriding that position here
+    // would drift the buttons away from the sidebar-toggle row.
+    const trafficLightPosition = isMac && !chromeless && !isMainWindow
+        ? readTrafficLightPosition(options)
+        : undefined;
+
     const window = new BrowserWindow({
         title: getTitle(label, options),
         width: getNumberOption(options, "width", DEFAULT_WIDTH),
         height: getNumberOption(options, "height", DEFAULT_HEIGHT),
         minWidth: getNumberOption(options, "minWidth", MIN_WIDTH),
         minHeight: getNumberOption(options, "minHeight", MIN_HEIGHT),
-        show: getBooleanOption(options, "visible", true),
-        backgroundColor: isMac || isWindows ? "#00000000" : "#ffffff",
-        backgroundMaterial: isWindows ? "acrylic" : undefined,
-        titleBarStyle: isMac ? "hiddenInset" : isWindows ? "hidden" : "default",
-        titleBarOverlay: isWindows
+        x: initialX,
+        y: initialY,
+        center: wantsCenter,
+        show: wantsShow,
+        resizable: getBooleanOption(options, "resizable", true),
+        skipTaskbar: getBooleanOption(options, "skipTaskbar", false),
+        alwaysOnTop: getBooleanOption(options, "alwaysOnTop", false),
+        frame: !chromeless,
+        transparent: chromeless
+            ? getBooleanOption(options, "transparent", true)
+            : false,
+        backgroundColor: chromeless
+            ? "#00000000"
+            : usesVibrancy
+                ? "#00000000"
+                : isMac
+                    ? solidChromeFallback
+                    : isWindows
+                        ? "#00000000"
+                        : "#ffffff",
+        backgroundMaterial: !chromeless && isWindows ? "acrylic" : undefined,
+        // macOS split:
+        //  - main window: "hiddenInset" keeps macOS' native traffic-light
+        //    placement aligned with the sidebar-toggle row, as it was pre-
+        //    migration.
+        //  - satellite windows: "hidden" so our explicit trafficLightPosition
+        //    is honored verbatim — "hiddenInset" adds an implicit vertical
+        //    offset that changed on macOS ≥ 26 (Tahoe) with the NSButton
+        //    resize (VSCode hit the same regression: microsoft/vscode#279769).
+        titleBarStyle: chromeless
+            ? "default"
+            : isMac
+                ? (isMainWindow ? "hiddenInset" : "hidden")
+                : isWindows
+                    ? "hidden"
+                    : "default",
+        titleBarOverlay: !chromeless && isWindows
             ? {
                   color: "#00000000",
                   height: 34,
                   symbolColor: "#f4f4f5",
               }
             : undefined,
-        trafficLightPosition: isMac ? MAC_TRAFFIC_LIGHT_POSITION : undefined,
-        vibrancy: isMac ? "sidebar" : undefined,
-        visualEffectState: isMac ? "active" : undefined,
+        trafficLightPosition,
+        vibrancy: usesVibrancy ? "sidebar" : undefined,
+        visualEffectState: usesVibrancy ? "active" : undefined,
         webPreferences: {
             preload: preloadPath(),
             contextIsolation: true,
@@ -217,6 +322,17 @@ export function createAppWindow(
     } else {
         void window.loadFile(rendererEntry.path, {
             search: rendererEntry.search,
+        });
+    }
+
+    // When the renderer asks for focus alongside an auto-shown window, defer
+    // the focus call until the web contents are actually ready to paint so
+    // the new satellite window raises above its parent instead of flashing
+    // under it.
+    if (wantsShow && wantsFocus) {
+        window.once("ready-to-show", () => {
+            if (window.isDestroyed()) return;
+            window.focus();
         });
     }
 
@@ -281,10 +397,13 @@ export function windowCommand(
                 window.setWindowButtonVisibility(visible);
                 // Electron drops the custom trafficLightPosition when the
                 // buttons are hidden and shown again, so we re-apply it here
-                // whenever we bring them back. Otherwise the overlay reveal
-                // flashes them at the macOS default offset.
-                if (visible) {
-                    window.setWindowButtonPosition(MAC_TRAFFIC_LIGHT_POSITION);
+                // whenever we bring them back. Skip the main window: it uses
+                // the native hiddenInset placement and setting any position
+                // would shift it away from that default.
+                if (visible && label !== "main") {
+                    window.setWindowButtonPosition(
+                        getDefaultTrafficLightPosition(),
+                    );
                 }
             }
             return null;
