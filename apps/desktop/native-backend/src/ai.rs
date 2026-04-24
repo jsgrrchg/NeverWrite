@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     mpsc::{self, Sender},
@@ -1286,7 +1287,7 @@ async fn run_acp_actor_inner(
             tokio::task::spawn_local(fut);
         },
     );
-    let connection = std::rc::Rc::new(connection);
+    let connection = Rc::new(connection);
     tokio::task::spawn_local({
         let event_tx = event_tx.clone();
         let runtime_id = spec.runtime_id.clone();
@@ -1353,7 +1354,7 @@ async fn run_acp_actor_inner(
 
 async fn handle_acp_command(
     command: AcpCommand,
-    connection: &ClientSideConnection,
+    connection: &Rc<ClientSideConnection>,
     client: &NativeAcpClient,
     permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
 ) {
@@ -1363,36 +1364,40 @@ async fn handle_acp_command(
             content,
             response_tx,
         } => {
-            let message_id = client.begin_message(&session_id);
-            let result = connection
-                .prompt(PromptRequest::new(
-                    SessionId::new(session_id.clone()),
-                    vec![ContentBlock::from(content)],
-                ))
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            client.end_thinking(&session_id);
-            if client.current_message_id(&session_id).is_none() {
-                client.emit(
-                    AI_MESSAGE_STARTED_EVENT,
-                    AiMessageStartedPayload {
-                        session_id: session_id.clone(),
-                        message_id: message_id.clone(),
-                    },
-                );
-            }
-            client.end_message(&session_id);
-            if let Err(error) = &result {
-                client.emit(
-                    AI_SESSION_ERROR_EVENT,
-                    AiSessionErrorPayload {
-                        session_id: Some(session_id),
-                        message: error.clone(),
-                    },
-                );
-            }
-            let _ = response_tx.send(result);
+            let connection = Rc::clone(connection);
+            let client = client.clone();
+            tokio::task::spawn_local(async move {
+                let message_id = client.begin_message(&session_id);
+                let result = connection
+                    .prompt(PromptRequest::new(
+                        SessionId::new(session_id.clone()),
+                        vec![ContentBlock::from(content)],
+                    ))
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                client.end_thinking(&session_id);
+                if client.current_message_id(&session_id).is_none() {
+                    client.emit(
+                        AI_MESSAGE_STARTED_EVENT,
+                        AiMessageStartedPayload {
+                            session_id: session_id.clone(),
+                            message_id: message_id.clone(),
+                        },
+                    );
+                }
+                client.end_message(&session_id);
+                if let Err(error) = &result {
+                    client.emit(
+                        AI_SESSION_ERROR_EVENT,
+                        AiSessionErrorPayload {
+                            session_id: Some(session_id),
+                            message: error.clone(),
+                        },
+                    );
+                }
+            });
+            let _ = response_tx.send(Ok(()));
         }
         AcpCommand::SetModel {
             session_id,
