@@ -155,7 +155,6 @@ export interface SidebarShellProps {
 export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
     const sidebarView = useLayoutStore((s) => s.sidebarView);
     const setSidebarView = useLayoutStore((s) => s.setSidebarView);
-    const expandSidebar = useLayoutStore((s) => s.expandSidebar);
     const toggleSidebar = useLayoutStore((s) => s.toggleSidebar);
 
     const updateAvailable = useAppUpdateStore((state) => !!state.status?.update);
@@ -164,12 +163,14 @@ export function SidebarShell({ onOpenSettings }: SidebarShellProps) {
         ? Math.max(28, getTrafficLightSpacerWidth() / 2 + 12)
         : 0;
 
+    // Tab clicks only switch the view; they never change the docked/peek
+    // state. Docking is an explicit action (toggle button or shortcut), so
+    // browsing views inside the Arc peek overlay keeps the sidebar hidden.
     const handleSelectView = useCallback(
         (view: SidebarView) => {
             setSidebarView(view);
-            expandSidebar();
         },
-        [expandSidebar, setSidebarView],
+        [setSidebarView],
     );
 
     const currentView = sidebarView;

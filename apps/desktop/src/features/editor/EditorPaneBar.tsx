@@ -377,7 +377,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     return (
         <>
             <div
-                className="flex items-center shrink-0"
+                className="drag flex items-center shrink-0"
                 style={{
                     height: 33,
                     minHeight: 33,
@@ -484,7 +484,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                             role="tab"
                                             tabIndex={0}
                                             aria-selected={isActive}
-                                            className="group inline-flex shrink-0 items-center text-left"
+                                            className="no-drag group inline-flex shrink-0 items-center text-left"
                                             onPointerDown={(event) =>
                                                 isEditing
                                                     ? undefined

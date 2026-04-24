@@ -243,19 +243,12 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
         })),
     activateRightView: (view) =>
         set((state) => {
-            if (state.rightPanelCollapsed) {
-                persistBoolean(RIGHT_PANEL_COLLAPSED_KEY, false);
-                safeStorageSetItem(RIGHT_PANEL_VIEW_KEY, view);
-                return {
-                    rightPanelCollapsed: false,
-                    rightPanelExpanded: false,
-                    rightPanelView: view,
-                };
-            }
-            if (state.rightPanelView === view) {
-                persistBoolean(RIGHT_PANEL_COLLAPSED_KEY, true);
-                return { rightPanelCollapsed: true, rightPanelExpanded: false };
-            }
+            // Tab clicks only update which view is shown — they never change
+            // docked/collapsed state. While the panel is hidden (incl. during
+            // an Arc peek), switching views keeps the peek flow intact; while
+            // docked, picking another tab just swaps the body. Docking is an
+            // explicit action (toggle button or shortcut).
+            if (state.rightPanelView === view) return state;
             safeStorageSetItem(RIGHT_PANEL_VIEW_KEY, view);
             return {
                 rightPanelView: view,
