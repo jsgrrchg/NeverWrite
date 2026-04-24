@@ -269,6 +269,24 @@
     --diff-update: #1d4ed8;
     --diff-warn: #92400e;
     --diff-move: #a16207;
+    --catppuccin-icon-rosewater: #dc8a78;
+    --catppuccin-icon-flamingo: #dd7878;
+    --catppuccin-icon-pink: #ea76cb;
+    --catppuccin-icon-mauve: #8839ef;
+    --catppuccin-icon-red: #d20f39;
+    --catppuccin-icon-maroon: #e64553;
+    --catppuccin-icon-peach: #fe640b;
+    --catppuccin-icon-yellow: #df8e1d;
+    --catppuccin-icon-green: #40a02b;
+    --catppuccin-icon-teal: #179299;
+    --catppuccin-icon-sky: #04a5e5;
+    --catppuccin-icon-sapphire: #209fb5;
+    --catppuccin-icon-blue: #1e66f5;
+    --catppuccin-icon-lavender: #7287fd;
+    --catppuccin-icon-text: #4c4f69;
+    --catppuccin-icon-overlay1: #8c8fa1;
+    --catppuccin-icon-wally-blue: #1e66f5;
+    --catppuccin-icon-wally-gold: #df8e1d;
 }
 
 .dark {
@@ -290,6 +308,24 @@
     --diff-update: #60a5fa;
     --diff-warn: #fbbf24;
     --diff-move: #fcd34d;
+    --catppuccin-icon-rosewater: #f4dbd6;
+    --catppuccin-icon-flamingo: #f0c6c6;
+    --catppuccin-icon-pink: #f5bde6;
+    --catppuccin-icon-mauve: #c6a0f6;
+    --catppuccin-icon-red: #ed8796;
+    --catppuccin-icon-maroon: #ee99a0;
+    --catppuccin-icon-peach: #f5a97f;
+    --catppuccin-icon-yellow: #eed49f;
+    --catppuccin-icon-green: #a6da95;
+    --catppuccin-icon-teal: #8bd5ca;
+    --catppuccin-icon-sky: #91d7e3;
+    --catppuccin-icon-sapphire: #7dc4e4;
+    --catppuccin-icon-blue: #8aadf4;
+    --catppuccin-icon-lavender: #b7bdf8;
+    --catppuccin-icon-text: #cad3f5;
+    --catppuccin-icon-overlay1: #8087a2;
+    --catppuccin-icon-wally-blue: #8aadf4;
+    --catppuccin-icon-wally-gold: #eed49f;
 }
 
 * {

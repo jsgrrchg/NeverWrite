@@ -12,6 +12,7 @@ import {
     getDangerButtonStyle,
     getNeutralButtonStyle,
 } from "./editedFilesReviewStyles";
+import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 
 /* ------------------------------------------------------------------ */
 /*  Full variant (review tab)                                          */
@@ -135,6 +136,7 @@ function FullRow({
                     className="h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{ backgroundColor: tone.accent }}
                 />
+                <FileTypeIcon fileName={file.path} opacity={0.78} size={14} />
 
                 {/* File info (clickable toggle) */}
                 <button
@@ -308,6 +310,7 @@ function CompactRow({
                     className="h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{ backgroundColor: tone.accent }}
                 />
+                <FileTypeIcon fileName={file.path} opacity={0.74} size={12} />
                 <span
                     className="min-w-0 flex-1 truncate"
                     style={{

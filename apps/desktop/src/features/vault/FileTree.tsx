@@ -6,7 +6,6 @@ import {
     canOpenVaultFileEntryInApp,
     closeOpenTabsForVaultPath,
     getVaultEntryDisplayName,
-    isImageLikeVaultEntry,
     moveVaultEntryToTrash,
     openVaultFileEntry,
 } from "../../app/utils/vaultEntries";
@@ -45,6 +44,8 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
+import { FolderTypeIcon } from "../../components/icons/FolderTypeIcon";
 import { emitFileTreeNoteDrag } from "../ai/dragEvents";
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
@@ -424,198 +425,6 @@ function ChevronIcon({ open, size = 13 }: { open: boolean; size?: number }) {
     );
 }
 
-function FolderIcon({ open, size = 15 }: { open: boolean; size?: number }) {
-    const fill = "var(--icon-muted)";
-    if (open) {
-        return (
-            <svg
-                width={size}
-                height={size}
-                viewBox="0 0 16 16"
-                fill="none"
-                style={{ flexShrink: 0 }}
-            >
-                <path
-                    d="M1.5 3.5A1 1 0 0 1 2.5 2.5H6l1.5 1.5h5a1 1 0 0 1 1 1V5H2.5V3.5Z"
-                    fill={fill}
-                    opacity="0.85"
-                />
-                <path
-                    d="M1 5.5h13l-1.5 7.5H2.5L1 5.5Z"
-                    fill={fill}
-                    opacity="0.65"
-                />
-            </svg>
-        );
-    }
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0 }}
-        >
-            <path
-                d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                fill={fill}
-                opacity="0.65"
-            />
-        </svg>
-    );
-}
-
-function NoteIcon({ size = 13 }: { size?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0, opacity: 0.45 }}
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <path
-                d="M6 8h4M6 10.5h3"
-                stroke="currentColor"
-                strokeWidth="0.8"
-                strokeLinecap="round"
-            />
-        </svg>
-    );
-}
-
-function PdfIcon({ size = 13 }: { size?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0, opacity: 0.6 }}
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="#e24b3b"
-                strokeWidth="1"
-            />
-            <path
-                d="M9.5 1.5V5H13"
-                stroke="#e24b3b"
-                strokeWidth="0.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
-            <text
-                x="5"
-                y="12"
-                fontSize="4.5"
-                fontWeight="700"
-                fill="#e24b3b"
-                fontFamily="sans-serif"
-            >
-                PDF
-            </text>
-        </svg>
-    );
-}
-
-function GenericFileIcon({ size = 13 }: { size?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0, opacity: 0.58 }}
-        >
-            <path
-                d="M4 1.5h5.5L13 5v9a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 14V3A1.5 1.5 0 0 1 4 1.5Z"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <path
-                d="M9.5 1.5V5H13"
-                stroke="currentColor"
-                strokeWidth="0.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
-        </svg>
-    );
-}
-
-function MapFileIcon({ size = 13 }: { size?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0, opacity: 0.58 }}
-        >
-            <rect
-                x="2"
-                y="2"
-                width="12"
-                height="12"
-                rx="1.5"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <circle cx="8" cy="5.5" r="1.3" fill="currentColor" />
-            <circle cx="5" cy="10.5" r="1.3" fill="currentColor" />
-            <circle cx="11" cy="10.5" r="1.3" fill="currentColor" />
-            <path
-                d="M7.15 6.65 5.7 9.3M8.85 6.65l1.45 2.65"
-                stroke="currentColor"
-                strokeWidth="0.85"
-                strokeLinecap="round"
-            />
-        </svg>
-    );
-}
-
-function ImageFileIcon({ size = 13 }: { size?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ flexShrink: 0, opacity: 0.58 }}
-        >
-            <rect
-                x="2"
-                y="2.5"
-                width="12"
-                height="11"
-                rx="1.5"
-                stroke="currentColor"
-                strokeWidth="1"
-            />
-            <circle
-                cx="5.5"
-                cy="5.8"
-                r="1.2"
-                stroke="currentColor"
-                strokeWidth="0.8"
-            />
-            <path
-                d="M2.5 11l3-3.5 2.5 2.5 1.5-1.5 4 3.5"
-                stroke="currentColor"
-                strokeWidth="0.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            />
-        </svg>
-    );
-}
-
 function TreeIndentGuides({
     depth,
     metrics,
@@ -984,7 +793,8 @@ const FlatTreeRowView = memo(
                             open={!!isExpanded}
                             size={metrics.smallIcon}
                         />
-                        <FolderIcon
+                        <FolderTypeIcon
+                            folderName={row.path}
                             open={!!isExpanded}
                             size={metrics.mediumIcon}
                         />
@@ -1076,7 +886,8 @@ const FlatTreeRowView = memo(
                 >
                     <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
-                    <FolderIcon
+                    <FolderTypeIcon
+                        folderName={row.path}
                         open={!!isExpanded || isDragOver}
                         size={metrics.mediumIcon}
                     />
@@ -1100,9 +911,17 @@ const FlatTreeRowView = memo(
                 >
                     <TreeIndentGuides depth={row.depth} metrics={metrics} />
                     {row.mode === "folder" ? (
-                        <FolderIcon open={false} size={metrics.mediumIcon} />
+                        <FolderTypeIcon
+                            folderName={row.path}
+                            open={false}
+                            size={metrics.mediumIcon}
+                        />
                     ) : (
-                        <NoteIcon size={metrics.smallIcon} />
+                        <FileTypeIcon
+                            fileName="New note.md"
+                            kind="note"
+                            size={metrics.smallIcon}
+                        />
                     )}
                     <input
                         ref={createInputRef}
@@ -1180,7 +999,12 @@ const FlatTreeRowView = memo(
                     }}
                 >
                     <TreeIndentGuides depth={row.depth} metrics={metrics} />
-                    <PdfIcon size={metrics.smallIcon} />
+                    <FileTypeIcon
+                        fileName={entry.relative_path}
+                        kind="pdf"
+                        mimeType={entry.mime_type}
+                        size={metrics.smallIcon}
+                    />
                     <span className={TREE_LABEL_CLASSNAME}>
                         {getVaultEntryDisplayName(entry, showExtensions)}
                     </span>
@@ -1206,13 +1030,11 @@ const FlatTreeRowView = memo(
                         }}
                     >
                         <TreeIndentGuides depth={row.depth} metrics={metrics} />
-                        {entry.extension.toLowerCase() === "excalidraw" ? (
-                            <MapFileIcon size={metrics.smallIcon} />
-                        ) : isImageLikeVaultEntry(entry) ? (
-                            <ImageFileIcon size={metrics.smallIcon} />
-                        ) : (
-                            <GenericFileIcon size={metrics.smallIcon} />
-                        )}
+                        <FileTypeIcon
+                            fileName={entry.relative_path}
+                            mimeType={entry.mime_type}
+                            size={metrics.smallIcon}
+                        />
                         <input
                             ref={renameInputRef}
                             defaultValue={entry.file_name}
@@ -1297,13 +1119,11 @@ const FlatTreeRowView = memo(
                     }}
                 >
                     <TreeIndentGuides depth={row.depth} metrics={metrics} />
-                    {entry.extension.toLowerCase() === "excalidraw" ? (
-                        <MapFileIcon size={metrics.smallIcon} />
-                    ) : isImageLikeVaultEntry(entry) ? (
-                        <ImageFileIcon size={metrics.smallIcon} />
-                    ) : (
-                        <GenericFileIcon size={metrics.smallIcon} />
-                    )}
+                    <FileTypeIcon
+                        fileName={entry.relative_path}
+                        mimeType={entry.mime_type}
+                        size={metrics.smallIcon}
+                    />
                     <span className={TREE_LABEL_CLASSNAME}>
                         {getVaultEntryDisplayName(entry, showExtensions)}
                     </span>
@@ -1329,7 +1149,11 @@ const FlatTreeRowView = memo(
                     }}
                 >
                     <TreeIndentGuides depth={row.depth} metrics={metrics} />
-                    <NoteIcon size={metrics.smallIcon} />
+                    <FileTypeIcon
+                        fileName={note.path || note.id}
+                        kind="note"
+                        size={metrics.smallIcon}
+                    />
                     <input
                         ref={renameInputRef}
                         defaultValue={getNoteRenameValue(note, showExtensions)}
@@ -1408,7 +1232,11 @@ const FlatTreeRowView = memo(
                 }}
             >
                 <TreeIndentGuides depth={row.depth} metrics={metrics} />
-                <NoteIcon size={metrics.smallIcon} />
+                <FileTypeIcon
+                    fileName={note.path || note.id}
+                    kind="note"
+                    size={metrics.smallIcon}
+                />
                 <span className={TREE_LABEL_CLASSNAME}>
                     {getNoteDisplayName(note, showExtensions)}
                 </span>
