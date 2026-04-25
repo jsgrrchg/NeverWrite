@@ -175,6 +175,14 @@ function resetAppToActualSize() {
 
 type RightPanelTab = "outline" | "links";
 
+// The right panel lives outside the center column, so its tab bar starts at
+// Y=0 of the window. On Windows that zone is owned by the native
+// `titleBarOverlay` (34px tall caption strip anchored to the window's
+// top-right), which would otherwise paint min/max/close on top of the tab
+// bar. Reserve a matching 34px drag strip at the top of the panel — same
+// pattern as `EditorChromeBar` for the center column.
+const IS_WINDOWS_DESKTOP = getDesktopPlatform() === "windows";
+
 const RIGHT_PANEL_TABS: Array<{
     value: RightPanelTab;
     label: string;
@@ -311,6 +319,20 @@ function RightPanel() {
     const toggleRightPanel = useLayoutStore((s) => s.toggleRightPanel);
     return (
         <div className="flex h-full min-h-0 flex-col overflow-hidden">
+            {IS_WINDOWS_DESKTOP && (
+                <div
+                    aria-hidden="true"
+                    data-right-panel-titlebar-inset
+                    style={
+                        {
+                            height: 34,
+                            flexShrink: 0,
+                            WebkitAppRegion: "drag",
+                            backgroundColor: "var(--sidebar-vibrancy-tint)",
+                        } as React.CSSProperties
+                    }
+                />
+            )}
             <RightPanelTabBar
                 view={rightPanelView}
                 onSelect={activateRightView}
