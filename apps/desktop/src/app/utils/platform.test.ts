@@ -58,8 +58,9 @@ describe("platform helpers", () => {
             titlebarPaddingTop: 0,
             windowControlsSide: "right",
         });
-        expect(getManagedWindowChromeOptions()).toEqual({
-            decorations: false,
-        });
+        // No chrome overrides on Windows: satellite windows use the same
+        // main-process path as the main window so DWM paints native acrylic
+        // and caption buttons.
+        expect(getManagedWindowChromeOptions()).toEqual({});
     });
 });

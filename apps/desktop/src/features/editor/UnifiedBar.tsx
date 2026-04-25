@@ -137,8 +137,13 @@ interface UnifiedBarProps {
 
 export function UnifiedBar({ windowMode }: UnifiedBarProps) {
     const desktopPlatform = getDesktopPlatform();
+    // Detached note windows on Windows now use the native `titleBarOverlay`
+    // (min/max/close painted by DWM in the top-right 140px), so the trailing
+    // drag zone has to reserve that width — otherwise tabs slide under the
+    // caption buttons. Main windows already reserve 152 (140 for the native
+    // controls + 12 for the right-panel toggle and its margins).
     const trailingDragZoneWidth =
-        windowMode === "main" ? 152 : desktopPlatform === "windows" ? 16 : 8;
+        windowMode === "main" ? 152 : desktopPlatform === "windows" ? 140 : 8;
     const focusedPane = useEditorStore(selectEditorPaneState);
     const tabs = focusedPane.tabs;
     const activeTabId = focusedPane.activeTabId;

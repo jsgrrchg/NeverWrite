@@ -3212,7 +3212,11 @@ export function SettingsPanel({
                     alignItems: "center",
                     position: "relative",
                     padding: "0 20px",
-                    paddingRight: isStandaloneWindows ? 6 : 20,
+                    // Standalone settings on Windows now gets native
+                    // caption buttons via `titleBarOverlay` in the top-right
+                    // 140px — reserve that space so the header content never
+                    // slides under them.
+                    paddingRight: isStandaloneWindows ? 140 : 20,
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
                     backgroundColor: chromeBackground,

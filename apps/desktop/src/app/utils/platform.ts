@@ -98,10 +98,15 @@ export function getWindowChromeLayout(): WindowChromeLayout {
 }
 
 export function getManagedWindowChromeOptions(): ManagedWindowChromeOptions {
+    // On Windows we intentionally return no options so satellite windows
+    // (settings, detached note, vault) go through the main-process window
+    // factory the same way the main window does — getting native acrylic
+    // via `backgroundMaterial` and native caption buttons via
+    // `titleBarOverlay`. Passing `decorations: false` here used to force
+    // them chromeless, which suppressed the acrylic and hid the native
+    // min/max/close buttons.
     if (getDesktopPlatform() === "windows") {
-        return {
-            decorations: false,
-        };
+        return {};
     }
 
     if (getDesktopPlatform() !== "macos") {
