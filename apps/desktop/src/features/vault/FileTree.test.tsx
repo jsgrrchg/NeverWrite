@@ -106,6 +106,41 @@ function buildFileEntry(path: string, mimeType = "text/plain") {
 }
 
 describe("FileTree", () => {
+    it("preserves expanded folders when the tree unmounts and remounts", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "Projects/Draft/Alpha",
+                path: "/vault/Projects/Draft/Alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "Projects/Hidden/Beta",
+                path: "/vault/Projects/Hidden/Beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        const firstRender = renderComponent(<FileTree />);
+        await expandFolder(user, "Projects");
+        await expandFolder(user, "Draft");
+
+        expect(screen.getByText("Alpha")).toBeInTheDocument();
+        expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+
+        firstRender.unmount();
+        renderComponent(<FileTree />);
+
+        expect(screen.getByText("Draft")).toBeInTheDocument();
+        expect(screen.getByText("Alpha")).toBeInTheDocument();
+        expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+    });
+
     it("lets the virtualized tree grow horizontally for long labels", async () => {
         const user = userEvent.setup();
 

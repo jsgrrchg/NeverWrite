@@ -69,6 +69,7 @@ type SortMode =
 
 const SORT_KEY = "neverwrite:sort-mode";
 const REVEAL_KEY = "neverwrite:reveal-active";
+const EXPANDED_FOLDERS_KEY_PREFIX = "neverwrite:file-tree-expanded-folders:";
 const VIRTUAL_OVERSCAN = 40;
 
 const SORT_OPTIONS: { id: SortMode; label: string }[] = [
@@ -244,6 +245,34 @@ function getAllFolderPaths(
         }
     }
     return paths;
+}
+
+function getExpandedFoldersStorageKey(vaultPath: string | null) {
+    return `${EXPANDED_FOLDERS_KEY_PREFIX}${encodeURIComponent(vaultPath ?? "")}`;
+}
+
+function readExpandedFolders(vaultPath: string | null) {
+    if (!vaultPath) return new Set<string>();
+    try {
+        const parsed = JSON.parse(
+            safeStorageGetItem(getExpandedFoldersStorageKey(vaultPath)) ??
+                "[]",
+        );
+        if (!Array.isArray(parsed)) return new Set<string>();
+        return new Set(
+            parsed.filter((path): path is string => typeof path === "string"),
+        );
+    } catch {
+        return new Set<string>();
+    }
+}
+
+function writeExpandedFolders(vaultPath: string | null, expanded: Set<string>) {
+    if (!vaultPath) return;
+    safeStorageSetItem(
+        getExpandedFoldersStorageKey(vaultPath),
+        JSON.stringify([...expanded].sort()),
+    );
 }
 
 function flattenTreeRows(
@@ -1464,7 +1493,7 @@ export function FileTree() {
         () => safeStorageGetItem(REVEAL_KEY) === "true",
     );
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-        new Set(),
+        () => readExpandedFolders(vaultPath),
     );
     const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(
         new Set(),
@@ -1512,6 +1541,8 @@ export function FileTree() {
     const lastClickedRowKeyRef = useRef<string | null>(null);
     const flatRowsRef = useRef<FlatTreeRow[]>([]);
     const renameGuardRef = useRef(false);
+    const expandedFoldersVaultPathRef = useRef(vaultPath);
+    const skipExpandedFoldersPersistRef = useRef(false);
 
     // Virtualization state
     const [viewportHeight, setViewportHeight] = useState(600);
@@ -1827,6 +1858,21 @@ export function FileTree() {
             window.removeEventListener("resize", syncViewportMetrics);
         };
     }, []);
+
+    useEffect(() => {
+        if (expandedFoldersVaultPathRef.current === vaultPath) return;
+        expandedFoldersVaultPathRef.current = vaultPath;
+        skipExpandedFoldersPersistRef.current = true;
+        setExpandedFolders(readExpandedFolders(vaultPath));
+    }, [vaultPath]);
+
+    useEffect(() => {
+        if (skipExpandedFoldersPersistRef.current) {
+            skipExpandedFoldersPersistRef.current = false;
+            return;
+        }
+        writeExpandedFolders(vaultPath, expandedFolders);
+    }, [expandedFolders, vaultPath]);
 
     useEffect(() => {
         return subscribeSafeStorage((event) => {
