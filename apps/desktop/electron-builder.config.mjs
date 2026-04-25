@@ -146,6 +146,11 @@ export default {
             to: "native-backend",
             filter: ["**/*"],
         },
+        {
+            from: "build/icons",
+            to: "icons",
+            filter: ["icon.ico", "icon.png"],
+        },
     ],
     protocols: [
         {
@@ -181,11 +186,17 @@ export default {
     win: {
         icon: path.join("build", "icons", "icon.ico"),
         verifyUpdateCodeSignature: false,
+        // Electron Builder's Windows rcedit path can try to unpack a full
+        // winCodeSign archive with Darwin symlinks, which fails on Windows
+        // hosts without symlink privileges. The afterPack hook stamps the exe
+        // with the local rcedit package instead.
+        signAndEditExecutable: false,
         target: ["nsis"],
     },
     nsis: {
         oneClick: false,
         perMachine: false,
+        shortcutName: "NeverWrite",
         allowElevation: true,
         allowToChangeInstallationDirectory: false,
         differentialPackage: true,

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, nativeTheme } from "electron";
 import { ELECTRON_IPC } from "../shared/ipc";
@@ -52,6 +54,32 @@ function rendererHtmlPath() {
     return fileURLToPath(
         new URL(/* @vite-ignore */ "../renderer/index.html", import.meta.url),
     );
+}
+
+export function resolveWindowIconPath({
+    platform = process.platform,
+    isPackaged = app.isPackaged,
+    resourcesPath = process.resourcesPath,
+    appPath = app.getAppPath(),
+}: {
+    platform?: NodeJS.Platform;
+    isPackaged?: boolean;
+    resourcesPath?: string;
+    appPath?: string;
+} = {}) {
+    if (platform === "darwin") {
+        return undefined;
+    }
+
+    const iconFilename = platform === "win32" ? "icon.ico" : "icon.png";
+    return isPackaged
+        ? path.join(resourcesPath, "icons", iconFilename)
+        : path.join(appPath, "build", "icons", iconFilename);
+}
+
+function getWindowIconPath() {
+    const iconPath = resolveWindowIconPath();
+    return iconPath && fs.existsSync(iconPath) ? iconPath : undefined;
 }
 
 export function resolveRendererDevUrl(
@@ -270,6 +298,7 @@ export function createAppWindow(
 
     const window = new BrowserWindow({
         title: getTitle(label, options),
+        icon: getWindowIconPath(),
         width: getNumberOption(options, "width", DEFAULT_WIDTH),
         height: getNumberOption(options, "height", DEFAULT_HEIGHT),
         minWidth: getNumberOption(options, "minWidth", MIN_WIDTH),

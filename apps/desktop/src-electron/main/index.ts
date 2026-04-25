@@ -10,6 +10,9 @@ import {
     registerPreviewProtocolHandler,
 } from "./ipc";
 
+const WINDOWS_APP_USER_MODEL_ID =
+    process.env.NEVERWRITE_ELECTRON_APP_ID?.trim() || "com.neverwrite";
+
 protocol.registerSchemesAsPrivileged([
     {
         scheme: "neverwrite-file",
@@ -24,6 +27,9 @@ protocol.registerSchemesAsPrivileged([
 
 function configureAppIdentity() {
     app.setName("NeverWrite");
+    if (process.platform === "win32") {
+        app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID);
+    }
     if (process.platform === "darwin") {
         app.setAboutPanelOptions({
             applicationName: "NeverWrite",

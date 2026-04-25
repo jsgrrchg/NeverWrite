@@ -1,21 +1,43 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { rcedit } from "rcedit";
 
 const REQUIRED_RESOURCE_PATHS = {
     darwin: [
+        "icons/icon.png",
         "native-backend/neverwrite-native-backend",
         "native-backend/binaries/codex-acp",
         "native-backend/embedded/node/bin/node",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
     ],
     win32: [
+        "icons/icon.ico",
         "native-backend/neverwrite-native-backend.exe",
         "native-backend/binaries/codex-acp.exe",
         "native-backend/embedded/node/bin/node.exe",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
     ],
 };
+const DEFAULT_PRODUCT_NAME = "NeverWrite";
+const PROJECT_DIR = path.dirname(import.meta.dirname);
+
+function normalizeWindowsVersion(version) {
+    const parts = String(version)
+        .split(/[^\d]+/)
+        .filter(Boolean)
+        .slice(0, 4);
+
+    if (parts.length === 0) {
+        return "0.0.0";
+    }
+
+    while (parts.length < 3) {
+        parts.push("0");
+    }
+
+    return parts.join(".");
+}
 
 function resolveResourcesDir(packContext) {
     if (packContext.electronPlatformName === "darwin") {
@@ -44,6 +66,45 @@ function resolveResourcesDir(packContext) {
     throw new Error(
         `Unsupported electron platform for bundle verification: ${packContext.electronPlatformName}`,
     );
+}
+
+async function stampWindowsExecutable(packContext) {
+    if (packContext.electronPlatformName !== "win32") {
+        return;
+    }
+
+    const appInfo = packContext.packager.appInfo;
+    const productName = appInfo.productName || DEFAULT_PRODUCT_NAME;
+    const productFilename = appInfo.productFilename || productName;
+    const exePath = path.join(packContext.appOutDir, `${productFilename}.exe`);
+    const iconPath = path.join(PROJECT_DIR, "build", "icons", "icon.ico");
+
+    if (!fs.existsSync(exePath)) {
+        throw new Error(`Packaged Windows executable is missing: ${exePath}`);
+    }
+    if (!fs.existsSync(iconPath)) {
+        throw new Error(`Windows app icon is missing: ${iconPath}`);
+    }
+
+    const version = normalizeWindowsVersion(appInfo.version || "0.0.0");
+    const copyright =
+        appInfo.copyright ||
+        `Copyright (C) ${new Date().getFullYear()} ${productName}`;
+
+    await rcedit(exePath, {
+        "version-string": {
+            CompanyName: appInfo.companyName || productName,
+            FileDescription: productName,
+            ProductName: productName,
+            InternalName: productFilename,
+            OriginalFilename: `${productFilename}.exe`,
+            LegalCopyright: copyright,
+        },
+        "file-version": version,
+        "product-version": version,
+        icon: iconPath,
+        "requested-execution-level": "asInvoker",
+    });
 }
 
 function assertExecutableMode(absolutePath) {
@@ -95,6 +156,8 @@ function assertEmbeddedNodeRuntime(packContext, resourcesDir) {
 }
 
 export default async function verifyElectronBundle(packContext) {
+    await stampWindowsExecutable(packContext);
+
     const resourcesDir = resolveResourcesDir(packContext);
     const requiredPaths = REQUIRED_RESOURCE_PATHS[packContext.electronPlatformName];
 
