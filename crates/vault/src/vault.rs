@@ -169,19 +169,16 @@ impl Vault {
 
     /// Converts a path to an entry_id (relative path without extension).
     pub fn path_to_entry_id(&self, path: &Path) -> String {
-        path.strip_prefix(&self.root)
-            .unwrap_or(path)
-            .with_extension("")
-            .to_string_lossy()
-            .to_string()
+        path_to_portable_string(
+            path.strip_prefix(&self.root)
+                .unwrap_or(path)
+                .with_extension(""),
+        )
     }
 
     /// Converts a path to a relative_path with extension.
     pub fn path_to_relative_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string()
+        path_to_portable_string(path.strip_prefix(&self.root).unwrap_or(path))
     }
 
     pub fn resolve_relative_path(&self, relative_path: &str) -> Result<PathBuf, VaultError> {
@@ -499,11 +496,11 @@ impl Vault {
 
     /// Converts an absolute path to a note_id (relative path without the .md extension).
     pub fn path_to_id(&self, path: &Path) -> String {
-        path.strip_prefix(&self.root)
-            .unwrap_or(path)
-            .with_extension("")
-            .to_string_lossy()
-            .to_string()
+        path_to_portable_string(
+            path.strip_prefix(&self.root)
+                .unwrap_or(path)
+                .with_extension(""),
+        )
     }
 
     /// Converts an already validated note_id to the file's absolute path.
@@ -773,6 +770,10 @@ fn build_vault_entry(
     })
 }
 
+fn path_to_portable_string(path: impl AsRef<Path>) -> String {
+    path.as_ref().to_string_lossy().replace('\\', "/")
+}
+
 fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, std::io::Error> {
     let mut current = Some(path);
     while let Some(candidate) = current {
@@ -910,7 +911,7 @@ fn guess_mime_type(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{guess_mime_type, is_supported_text_path};
+    use super::{guess_mime_type, is_supported_text_path, Vault};
     use std::path::Path;
 
     #[test]
@@ -938,5 +939,38 @@ mod tests {
         assert!(is_supported_text_path(Path::new("src/main.py")));
         assert!(is_supported_text_path(Path::new("src/App.svelte")));
         assert!(is_supported_text_path(Path::new(".env.local")));
+    }
+
+    #[test]
+    fn vault_relative_dtos_use_forward_slashes() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let nested_dir = vault_dir.path().join("Folder").join("Nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join("main.ts"), "export const value = 1;\n").unwrap();
+        std::fs::write(nested_dir.join("Note.md"), "# Note\n").unwrap();
+
+        let vault = Vault::open(vault_dir.path().to_path_buf()).unwrap();
+        let entries = vault.discover_vault_entries().unwrap();
+
+        let source_entry = entries
+            .iter()
+            .find(|entry| entry.file_name == "main.ts")
+            .unwrap();
+        assert_eq!(source_entry.id, "Folder/Nested/main.ts");
+        assert_eq!(source_entry.relative_path, "Folder/Nested/main.ts");
+        assert!(!source_entry.relative_path.contains('\\'));
+
+        let note_entry = entries
+            .iter()
+            .find(|entry| entry.file_name == "Note.md")
+            .unwrap();
+        assert_eq!(note_entry.id, "Folder/Nested/Note");
+        assert_eq!(note_entry.relative_path, "Folder/Nested/Note.md");
+        assert!(!note_entry.id.contains('\\'));
+        assert!(!note_entry.relative_path.contains('\\'));
+
+        let notes = vault.discover_markdown_files().unwrap();
+        assert_eq!(notes[0].id, "Folder/Nested/Note");
+        assert!(!notes[0].id.contains('\\'));
     }
 }

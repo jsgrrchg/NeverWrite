@@ -230,13 +230,55 @@ function moveEntryFolderPath(
 
 async function loadVaultEntriesSnapshot(vaultPath: string) {
     try {
-        return await invoke<VaultEntryDto[]>("list_vault_entries", {
+        const entries = await invoke<VaultEntryDto[]>("list_vault_entries", {
             vaultPath,
         });
+        return normalizeVaultEntries(entries);
     } catch (error) {
         logError("vault-store", "Failed to load vault entries snapshot", error);
         return null;
     }
+}
+
+function normalizeVaultRelativePath(path: string) {
+    return path.replace(/\\/g, "/");
+}
+
+function normalizeNote(note: NoteDto): NoteDto {
+    return {
+        ...note,
+        id: normalizeVaultRelativePath(note.id),
+    };
+}
+
+function normalizeVaultEntry(entry: VaultEntryDto): VaultEntryDto {
+    return {
+        ...entry,
+        id: normalizeVaultRelativePath(entry.id),
+        relative_path: normalizeVaultRelativePath(entry.relative_path),
+    };
+}
+
+function normalizeVaultNotes(notes: NoteDto[]) {
+    return notes.map(normalizeNote);
+}
+
+function normalizeVaultEntries(entries: VaultEntryDto[]) {
+    return entries.map(normalizeVaultEntry);
+}
+
+function normalizeVaultNoteChange(change: VaultNoteChange): VaultNoteChange {
+    return {
+        ...change,
+        note: change.note ? normalizeNote(change.note) : change.note,
+        note_id: change.note_id
+            ? normalizeVaultRelativePath(change.note_id)
+            : change.note_id,
+        entry: change.entry ? normalizeVaultEntry(change.entry) : change.entry,
+        relative_path: change.relative_path
+            ? normalizeVaultRelativePath(change.relative_path)
+            : change.relative_path,
+    };
 }
 
 function normalizeOpenState(
@@ -469,8 +511,8 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
                     set((state) => ({
                         vaultPath: path,
-                        notes,
-                        entries,
+                        notes: normalizeVaultNotes(notes),
+                        entries: normalizeVaultEntries(entries),
                         isLoading: false,
                         error: null,
                         vaultOpenState: openState,
@@ -557,7 +599,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
             );
             set((state) => ({
                 entries: Array.isArray(nextEntries)
-                    ? nextEntries
+                    ? normalizeVaultEntries(nextEntries)
                     : state.entries,
                 vaultRevision: state.vaultRevision + 1,
                 structureRevision: state.structureRevision + 1,
@@ -578,9 +620,11 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 invoke<number>("get_graph_revision", { vaultPath }),
             ]);
             set((state) => ({
-                notes: Array.isArray(nextNotes) ? nextNotes : state.notes,
+                notes: Array.isArray(nextNotes)
+                    ? normalizeVaultNotes(nextNotes)
+                    : state.notes,
                 entries: Array.isArray(nextEntries)
-                    ? nextEntries
+                    ? normalizeVaultEntries(nextEntries)
                     : state.entries,
                 vaultRevision: state.vaultRevision + 1,
                 contentRevision: state.contentRevision + 1,
@@ -596,20 +640,24 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
 
     applyVaultNoteChange: (change) => {
         set((state) => {
+            const normalizedChange = normalizeVaultNoteChange(change);
             const startMs = perfNow();
-            const nextNotes = updateNotesWithChange(state.notes, change);
+            const nextNotes = updateNotesWithChange(
+                state.notes,
+                normalizedChange,
+            );
             const structureChanged = didResolverStructureChange(
                 state.notes,
-                change,
+                normalizedChange,
             );
-            perfCount(`vault.applyNoteChange.${change.kind}`);
+            perfCount(`vault.applyNoteChange.${normalizedChange.kind}`);
             perfMeasure(
-                `vault.applyNoteChange.${change.kind}.duration`,
+                `vault.applyNoteChange.${normalizedChange.kind}.duration`,
                 startMs,
                 {
                     beforeCount: state.notes.length,
                     afterCount: nextNotes.length,
-                    changedNotePresent: change.note ? 1 : 0,
+                    changedNotePresent: normalizedChange.note ? 1 : 0,
                     structureChanged: structureChanged ? 1 : 0,
                 },
             );
@@ -652,13 +700,13 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 title: string;
             }>("create_note", { vaultPath, path, content: "" });
             const now = Math.floor(Date.now() / 1000);
-            const note: NoteDto = {
+            const note = normalizeNote({
                 id: detail.id,
                 path: detail.path,
                 title: detail.title,
                 modified_at: now,
                 created_at: now,
-            };
+            });
             const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((s) => ({
                 notes: [...s.notes, note],
@@ -679,10 +727,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     createFolder: async (path) => {
         try {
             const vaultPath = get().vaultPath ?? "";
-            const entry = await invoke<VaultEntryDto>("create_folder", {
-                vaultPath,
-                path,
-            });
+            const entry = normalizeVaultEntry(
+                await invoke<VaultEntryDto>("create_folder", {
+                    vaultPath,
+                    path,
+                }),
+            );
             const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((state) => ({
                 entries: Array.isArray(nextEntries)
@@ -904,14 +954,14 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 title: string;
             }>("rename_note", { vaultPath, noteId, newPath });
             const existing = get().notes.find((n) => n.id === noteId);
-            const updated: NoteDto = {
+            const updated = normalizeNote({
                 id: detail.id,
                 path: detail.path,
                 title: detail.title,
                 modified_at: Math.floor(Date.now() / 1000),
                 created_at:
                     existing?.created_at ?? Math.floor(Date.now() / 1000),
-            };
+            });
             const nextEntries = await loadVaultEntriesSnapshot(vaultPath);
             set((s) => ({
                 notes: s.notes.map((n) => (n.id === noteId ? updated : n)),
@@ -935,13 +985,12 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     renameNoteAsFile: async (noteId, newRelativePath) => {
         try {
             const vaultPath = get().vaultPath ?? "";
-            const updated = await invoke<VaultEntryDto>(
-                "convert_note_to_file",
-                {
+            const updated = normalizeVaultEntry(
+                await invoke<VaultEntryDto>("convert_note_to_file", {
                     vaultPath,
                     noteId,
                     newRelativePath,
-                },
+                }),
             );
             const oldRelativePath = `${noteId}.md`;
             const nextEntries = await loadVaultEntriesSnapshot(vaultPath);

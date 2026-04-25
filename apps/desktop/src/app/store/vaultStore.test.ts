@@ -40,6 +40,77 @@ function fileEntry(path: string): VaultEntryDto {
 }
 
 describe("vaultStore", () => {
+    it("normalizes Windows-style vault DTO paths when opening a vault", async () => {
+        const invokeMock = mockInvoke();
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "start_open_vault") return null;
+            if (command === "get_vault_open_state") {
+                return { stage: "ready", message: "Vault ready" };
+            }
+            if (command === "list_notes") {
+                return [
+                    {
+                        id: "src\\notes\\alpha",
+                        path: "C:\\vault\\src\\notes\\alpha.md",
+                        title: "Alpha",
+                        modified_at: 1,
+                        created_at: 1,
+                    },
+                ];
+            }
+            if (command === "list_vault_entries") {
+                return [
+                    {
+                        id: "src\\app",
+                        path: "C:\\vault\\src\\app",
+                        relative_path: "src\\app",
+                        title: "app",
+                        file_name: "app",
+                        extension: "",
+                        kind: "folder",
+                        modified_at: 1,
+                        created_at: 1,
+                        size: 0,
+                        mime_type: null,
+                    },
+                    {
+                        id: "src\\app\\main.ts",
+                        path: "C:\\vault\\src\\app\\main.ts",
+                        relative_path: "src\\app\\main.ts",
+                        title: "main",
+                        file_name: "main.ts",
+                        extension: "ts",
+                        kind: "file",
+                        modified_at: 1,
+                        created_at: 1,
+                        size: 10,
+                        mime_type: "text/typescript",
+                    },
+                ];
+            }
+            if (command === "get_graph_revision") return 1;
+
+            throw new Error(`Unexpected command: ${command}`);
+        });
+
+        await useVaultStore.getState().openVault("C:\\vault");
+
+        expect(useVaultStore.getState().notes[0]?.id).toBe(
+            "src/notes/alpha",
+        );
+        expect(useVaultStore.getState().entries).toEqual([
+            expect.objectContaining({
+                id: "src/app",
+                relative_path: "src/app",
+            }),
+            expect.objectContaining({
+                id: "src/app/main.ts",
+                relative_path: "src/app/main.ts",
+            }),
+        ]);
+    });
+
     it("refreshes entries after creating a note", async () => {
         const invokeMock = mockInvoke();
 

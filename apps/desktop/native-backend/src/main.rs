@@ -2810,11 +2810,10 @@ fn get_file_times(path: &Path) -> (u64, u64) {
 }
 
 fn build_vault_file_detail(vault: &Vault, relative_path: &str) -> Result<VaultFileDetail, String> {
+    let path = resolve_vault_scoped_path(vault, relative_path, ScopedPathIntent::ReadExisting)?;
+    let normalized_relative_path = vault.path_to_relative_path(&path);
     let content = vault
-        .read_text_file(relative_path)
-        .map_err(|error| error.to_string())?;
-    let path = vault
-        .resolve_scoped_path(relative_path, ScopedPathIntent::ReadExisting)
+        .read_text_file(&normalized_relative_path)
         .map_err(|error| error.to_string())?;
     let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
     let entry = vault
@@ -2822,7 +2821,7 @@ fn build_vault_file_detail(vault: &Vault, relative_path: &str) -> Result<VaultFi
         .map_err(|error| error.to_string())?;
     Ok(VaultFileDetail {
         path: path.to_string_lossy().to_string(),
-        relative_path: relative_path.to_string(),
+        relative_path: normalized_relative_path,
         file_name: path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
@@ -3249,6 +3248,53 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn listed_vault_entry_relative_path_can_read_file() {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let nested_dir = vault_dir.path().join("src").join("app");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(nested_dir.join("main.ts"), "export const value = 1;\n").unwrap();
+
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let entries = invoke(
+            &backend,
+            "list_vault_entries",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        let relative_path = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry.get("file_name").and_then(Value::as_str) == Some("main.ts"))
+            .and_then(|entry| entry.get("relative_path").and_then(Value::as_str))
+            .unwrap();
+        assert_eq!(relative_path, "src/app/main.ts");
+        assert!(!relative_path.contains('\\'));
+
+        let detail = invoke(
+            &backend,
+            "read_vault_file",
+            json!({
+                "vaultPath": vault_path,
+                "relativePath": relative_path,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            detail.get("relative_path").and_then(Value::as_str),
+            Some("src/app/main.ts")
+        );
+        assert_eq!(
+            detail.get("content").and_then(Value::as_str),
+            Some("export const value = 1;\n")
+        );
     }
 
     #[test]
