@@ -254,6 +254,20 @@ export function createAppWindow(
         ? readTrafficLightPosition(options)
         : undefined;
 
+    // Windows decoration strategy mirrors the working setup in `Comando`:
+    // do NOT set `frame` or `transparent` explicitly when the window opts
+    // into the native acrylic chrome. Combining `titleBarStyle: "hidden"`
+    // with `backgroundMaterial: "acrylic"` and a transparent
+    // `titleBarOverlay` lets DWM paint the acrylic surface and caption
+    // buttons natively. Setting `frame: true` or `transparent: false`
+    // alongside acrylic was observed to suppress the material entirely
+    // (sidebars went literally see-through to the desktop) and to swallow
+    // the native caption buttons.
+    const isWindowsAcrylic = isWindows && !chromeless;
+    const windowsCaptionSymbol = nativeTheme.shouldUseDarkColors
+        ? "#f4f4f5"
+        : "#1c1c1c";
+
     const window = new BrowserWindow({
         title: getTitle(label, options),
         width: getNumberOption(options, "width", DEFAULT_WIDTH),
@@ -267,20 +281,20 @@ export function createAppWindow(
         resizable: getBooleanOption(options, "resizable", true),
         skipTaskbar: getBooleanOption(options, "skipTaskbar", false),
         alwaysOnTop: getBooleanOption(options, "alwaysOnTop", false),
-        frame: !chromeless,
-        transparent: chromeless
-            ? getBooleanOption(options, "transparent", true)
-            : false,
+        ...(chromeless
+            ? {
+                  frame: false,
+                  transparent: getBooleanOption(options, "transparent", true),
+              }
+            : {}),
         backgroundColor: chromeless
             ? "#00000000"
-            : usesVibrancy
+            : usesVibrancy || isWindowsAcrylic
                 ? "#00000000"
                 : isMac
                     ? solidChromeFallback
-                    : isWindows
-                        ? "#00000000"
-                        : "#ffffff",
-        backgroundMaterial: !chromeless && isWindows ? "acrylic" : undefined,
+                    : "#ffffff",
+        backgroundMaterial: isWindowsAcrylic ? "acrylic" : undefined,
         // macOS split:
         //  - main window: "hiddenInset" keeps macOS' native traffic-light
         //    placement aligned with the sidebar-toggle row, as it was pre-
@@ -296,11 +310,11 @@ export function createAppWindow(
                 : isWindows
                     ? "hidden"
                     : "default",
-        titleBarOverlay: !chromeless && isWindows
+        titleBarOverlay: isWindowsAcrylic
             ? {
                   color: "#00000000",
                   height: 34,
-                  symbolColor: "#f4f4f5",
+                  symbolColor: windowsCaptionSymbol,
               }
             : undefined,
         trafficLightPosition,
