@@ -21,6 +21,7 @@ import { APP_BRAND_NAME } from "../../../app/utils/branding";
 interface AIAuthTerminalModalProps {
     open: boolean;
     runtimeId: string;
+    methodId?: string;
     runtimeName: string;
     vaultPath: string | null;
     customBinaryPath?: string;
@@ -62,6 +63,7 @@ function getRunningStatusLabel(runtimeName: string) {
 export function AIAuthTerminalModal({
     open,
     runtimeId,
+    methodId,
     runtimeName,
     vaultPath,
     customBinaryPath,
@@ -156,6 +158,7 @@ export function AIAuthTerminalModal({
             try {
                 const nextSnapshot = await aiStartAuthTerminalSession({
                     runtimeId,
+                    methodId,
                     vaultPath,
                     customBinaryPath,
                 });
@@ -201,7 +204,7 @@ export function AIAuthTerminalModal({
                 void unlisten();
             });
         };
-    }, [open, runtimeId, vaultPath, customBinaryPath, onRefreshSetup]);
+    }, [open, runtimeId, methodId, vaultPath, customBinaryPath, onRefreshSetup]);
 
     const handleClose = useCallback(() => {
         const sessionId = sessionIdRef.current;
@@ -227,6 +230,7 @@ export function AIAuthTerminalModal({
         try {
             const nextSnapshot = await aiStartAuthTerminalSession({
                 runtimeId,
+                methodId,
                 vaultPath,
                 customBinaryPath,
             });
@@ -243,7 +247,14 @@ export function AIAuthTerminalModal({
             setBusy(false);
             await onRefreshSetup(runtimeId);
         }
-    }, [customBinaryPath, onRefreshSetup, runtimeId, runtimeName, vaultPath]);
+    }, [
+        customBinaryPath,
+        methodId,
+        onRefreshSetup,
+        runtimeId,
+        runtimeName,
+        vaultPath,
+    ]);
 
     const sessionView = useMemo<TerminalSessionView>(
         () => ({

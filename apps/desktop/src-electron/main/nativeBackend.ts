@@ -1,5 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+    spawn,
+    spawnSync,
+    type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { app } from "electron";
@@ -187,6 +192,63 @@ function resolveWorkspaceRoot() {
         : path.resolve(app.getAppPath(), "..", "..");
 }
 
+function uniquePathEntries(entries: string[]) {
+    const seen = new Set<string>();
+    return entries.filter((entry) => {
+        const trimmed = entry.trim();
+        if (!trimmed || seen.has(trimmed)) return false;
+        seen.add(trimmed);
+        return true;
+    });
+}
+
+function splitPath(value?: string) {
+    return value ? value.split(path.delimiter).filter(Boolean) : [];
+}
+
+function readLoginShellPath() {
+    if (process.platform === "win32") return [];
+    const shell = process.env.SHELL?.trim() || "/bin/zsh";
+    if (!fs.existsSync(shell)) return [];
+
+    const result = spawnSync(shell, ["-l", "-c", 'printf "%s" "$PATH"'], {
+        encoding: "utf8",
+        timeout: 1500,
+        windowsHide: true,
+        env: process.env,
+    });
+
+    if (result.error || result.status !== 0) return [];
+    return splitPath(result.stdout);
+}
+
+function buildSidecarPath() {
+    if (process.platform === "win32") {
+        return process.env.PATH;
+    }
+
+    const home = os.homedir();
+    const commonToolPaths = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+        path.join(home, ".local", "bin"),
+        path.join(home, ".bun", "bin"),
+        path.join(home, ".cargo", "bin"),
+    ];
+
+    return uniquePathEntries([
+        ...readLoginShellPath(),
+        ...splitPath(process.env.PATH),
+        ...commonToolPaths,
+    ]).join(path.delimiter);
+}
+
 class UnavailableNativeBackendBridge implements NativeBackendBridge {
     private readonly message: string;
 
@@ -223,10 +285,12 @@ class NativeBackendSidecar implements NativeBackendBridge {
     ) {
         this.emitEvent = emitEvent;
         const workspaceRoot = resolveWorkspaceRoot();
+        const sidecarPath = buildSidecarPath();
         this.child = spawn(executablePath, [], {
             stdio: ["pipe", "pipe", "pipe"],
             env: {
                 ...process.env,
+                ...(sidecarPath ? { PATH: sidecarPath } : {}),
                 NEVERWRITE_APP_DATA_DIR: app.getPath("userData"),
                 NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR: path.dirname(executablePath),
                 ...(workspaceRoot ? { NEVERWRITE_WORKSPACE_ROOT: workspaceRoot } : {}),

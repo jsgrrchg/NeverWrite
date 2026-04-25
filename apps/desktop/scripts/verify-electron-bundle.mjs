@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 const REQUIRED_RESOURCE_PATHS = {
     darwin: [
@@ -56,6 +57,43 @@ function assertExecutableMode(absolutePath) {
     }
 }
 
+function assertEmbeddedNodeRuntime(packContext, resourcesDir) {
+    if (packContext.electronPlatformName !== "darwin") {
+        return;
+    }
+
+    const nodeBinary = path.join(
+        resourcesDir,
+        "native-backend",
+        "embedded",
+        "node",
+        "bin",
+        "node",
+    );
+    const otool = spawnSync("otool", ["-L", nodeBinary], { encoding: "utf8" });
+    if (otool.status !== 0 || !otool.stdout.includes("@rpath/libnode")) {
+        return;
+    }
+
+    const nodeLibDir = path.join(
+        resourcesDir,
+        "native-backend",
+        "embedded",
+        "node",
+        "lib",
+    );
+    const libnode = fs.existsSync(nodeLibDir)
+        ? fs
+              .readdirSync(nodeLibDir)
+              .find((entry) => /^libnode\..+\.dylib$/.test(entry))
+        : null;
+    if (!libnode) {
+        throw new Error(
+            `Packaged embedded Node runtime is missing libnode.dylib in: ${nodeLibDir}`,
+        );
+    }
+}
+
 export default async function verifyElectronBundle(packContext) {
     const resourcesDir = resolveResourcesDir(packContext);
     const requiredPaths = REQUIRED_RESOURCE_PATHS[packContext.electronPlatformName];
@@ -85,4 +123,6 @@ export default async function verifyElectronBundle(packContext) {
             assertExecutableMode(absolutePath);
         }
     }
+
+    assertEmbeddedNodeRuntime(packContext, resourcesDir);
 }

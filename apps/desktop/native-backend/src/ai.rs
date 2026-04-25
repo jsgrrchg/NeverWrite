@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Sender},
     Arc, Mutex,
 };
@@ -24,14 +25,18 @@ use neverwrite_ai::{
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
     AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityPayload, ToolDiffState,
-    AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PERMISSION_REQUEST_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
-    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
-    KILO_RUNTIME_ID,
+    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
+    AI_AUTH_TERMINAL_STARTED_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
+    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_RUNTIME_CONNECTION_EVENT,
+    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
+    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
+    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
+    GEMINI_RUNTIME_ID, KILO_RUNTIME_ID,
 };
-use serde::Deserialize;
+use portable_pty::{
+    native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{process::Command, runtime::Builder, sync::oneshot, task::LocalSet};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -48,6 +53,10 @@ const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
+const AUTH_TERMINAL_DEFAULT_COLS: u16 = 100;
+const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
+const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
+const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 
 #[derive(Debug, Clone)]
 struct TerminalExitMeta {
@@ -110,6 +119,32 @@ struct AiRuntimeSetupPayload {
     anthropic_custom_headers: Option<AiSecretPatch>,
     #[serde(default)]
     anthropic_auth_token: Option<AiSecretPatch>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiAuthTerminalStartInput {
+    runtime_id: String,
+    method_id: Option<String>,
+    vault_path: Option<String>,
+    custom_binary_path: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiAuthTerminalWriteInput {
+    session_id: String,
+    data: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiAuthTerminalResizeInput {
+    session_id: String,
+    cols: u16,
+    rows: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,6 +236,69 @@ struct AcpSessionHandle {
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum AiAuthTerminalStatus {
+    Starting,
+    Running,
+    Exited,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiAuthTerminalSessionSnapshot {
+    session_id: String,
+    runtime_id: String,
+    program: String,
+    display_name: String,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    buffer: String,
+    status: AiAuthTerminalStatus,
+    exit_code: Option<i32>,
+    error_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthTerminalLaunchConfig {
+    program: PathBuf,
+    args: Vec<String>,
+    display_name: String,
+    cwd: PathBuf,
+    env: HashMap<String, String>,
+    runtime_id: String,
+}
+
+struct AuthTerminalHandle {
+    snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl AuthTerminalHandle {
+    fn snapshot(&self) -> Result<AiAuthTerminalSessionSnapshot, String> {
+        self.snapshot
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))
+            .map(|snapshot| snapshot.clone())
+    }
+
+    fn release_runtime_resources(&self, terminate_process: bool) {
+        release_auth_terminal_runtime_resources(
+            &self.master,
+            &self.writer,
+            &self.child,
+            &self.killer,
+            terminate_process,
+        );
+    }
+}
+
 #[derive(Debug)]
 enum AcpCommand {
     Prompt {
@@ -241,6 +339,8 @@ pub(crate) struct NativeAi {
     event_tx: Sender<RpcOutput>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    auth_terminal_sessions: Arc<Mutex<HashMap<String, AuthTerminalHandle>>>,
+    auth_terminal_counter: Arc<AtomicU64>,
 }
 
 impl NativeAi {
@@ -250,6 +350,8 @@ impl NativeAi {
             event_tx,
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
+            auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
+            auth_terminal_counter: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -706,8 +808,249 @@ impl NativeAi {
         self.agent_writes.has_recent_match(path)
     }
 
-    pub(crate) fn auth_terminal_unavailable(&self) -> Result<Value, String> {
-        Err("AI auth terminal is not available in Electron yet. Real AI runtime setup requires the shared AI runtime extraction.".to_string())
+    pub(crate) fn start_auth_terminal_session(&self, args: &Value) -> Result<Value, String> {
+        let input: AiAuthTerminalStartInput = input_from_args(args)?;
+        validate_runtime_id(&input.runtime_id)?;
+
+        let mut setup = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?
+            .setup
+            .get(&input.runtime_id)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(custom_binary_path) =
+            input.custom_binary_path.and_then(normalize_optional_string)
+        {
+            setup.custom_binary_path = Some(custom_binary_path);
+        }
+
+        let session_id = format!(
+            "authterm-{}",
+            self.auth_terminal_counter.fetch_add(1, Ordering::Relaxed)
+        );
+        let method_id = input
+            .method_id
+            .and_then(normalize_optional_string)
+            .unwrap_or_else(|| default_terminal_auth_method(&input.runtime_id).to_string());
+        let cwd = resolve_auth_terminal_cwd(input.vault_path.as_deref())?;
+        let launch_config =
+            auth_terminal_launch_config(&input.runtime_id, &method_id, &setup, cwd)?;
+        let snapshot = self.spawn_auth_terminal_session(
+            session_id,
+            launch_config,
+            input.cols.unwrap_or(AUTH_TERMINAL_DEFAULT_COLS),
+            input.rows.unwrap_or(AUTH_TERMINAL_DEFAULT_ROWS),
+        )?;
+        Ok(json!(snapshot))
+    }
+
+    pub(crate) fn write_auth_terminal_session(&self, args: &Value) -> Result<Value, String> {
+        let input: AiAuthTerminalWriteInput = input_from_args(args)?;
+        let (writer, snapshot) = {
+            let sessions = self
+                .auth_terminal_sessions
+                .lock()
+                .map_err(|error| format!("Internal auth terminal state error: {error}"))?;
+            let session = sessions
+                .get(&input.session_id)
+                .ok_or_else(|| format!("Auth terminal session not found: {}", input.session_id))?;
+            (Arc::clone(&session.writer), Arc::clone(&session.snapshot))
+        };
+
+        let mut writer_guard = writer
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?;
+        let writer = if let Some(writer) = writer_guard.as_mut() {
+            writer
+        } else {
+            let status = snapshot
+                .lock()
+                .map(|snapshot| snapshot.status.clone())
+                .unwrap_or(AiAuthTerminalStatus::Error);
+            return Err(match status {
+                AiAuthTerminalStatus::Exited => {
+                    "Auth terminal session has already exited".to_string()
+                }
+                AiAuthTerminalStatus::Error => {
+                    "Auth terminal session is no longer available".to_string()
+                }
+                _ => "Auth terminal writer is not available".to_string(),
+            });
+        };
+        writer
+            .write_all(input.data.as_bytes())
+            .map_err(|error| format!("Failed to write to auth terminal: {error}"))?;
+        writer
+            .flush()
+            .map_err(|error| format!("Failed to flush auth terminal input: {error}"))?;
+        Ok(json!(null))
+    }
+
+    pub(crate) fn resize_auth_terminal_session(&self, args: &Value) -> Result<Value, String> {
+        let input: AiAuthTerminalResizeInput = input_from_args(args)?;
+        let (snapshot, master) = {
+            let sessions = self
+                .auth_terminal_sessions
+                .lock()
+                .map_err(|error| format!("Internal auth terminal state error: {error}"))?;
+            let session = sessions
+                .get(&input.session_id)
+                .ok_or_else(|| format!("Auth terminal session not found: {}", input.session_id))?;
+            (Arc::clone(&session.snapshot), Arc::clone(&session.master))
+        };
+
+        let cols = input.cols.max(1);
+        let rows = input.rows.max(1);
+        let master_guard = master
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?;
+        if let Some(master) = master_guard.as_ref() {
+            master
+                .resize(PtySize {
+                    cols,
+                    rows,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|error| format!("Failed to resize auth terminal PTY: {error}"))?;
+        }
+
+        let mut snapshot = snapshot
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?;
+        snapshot.cols = cols;
+        snapshot.rows = rows;
+        Ok(json!(snapshot.clone()))
+    }
+
+    pub(crate) fn close_auth_terminal_session(&self, args: &Value) -> Result<Value, String> {
+        let session_id = required_string(args, &["sessionId", "session_id"])?;
+        let handle = self
+            .auth_terminal_sessions
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?
+            .remove(&session_id);
+        if let Some(handle) = handle {
+            handle.closed.store(true, Ordering::Relaxed);
+            handle.release_runtime_resources(true);
+        }
+        Ok(json!(null))
+    }
+
+    pub(crate) fn get_auth_terminal_session_snapshot(&self, args: &Value) -> Result<Value, String> {
+        let session_id = required_string(args, &["sessionId", "session_id"])?;
+        let sessions = self
+            .auth_terminal_sessions
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?;
+        Ok(json!(sessions
+            .get(&session_id)
+            .ok_or_else(|| format!("Auth terminal session not found: {session_id}"))?
+            .snapshot()?))
+    }
+
+    fn spawn_auth_terminal_session(
+        &self,
+        session_id: String,
+        launch_config: AuthTerminalLaunchConfig,
+        cols: u16,
+        rows: u16,
+    ) -> Result<AiAuthTerminalSessionSnapshot, String> {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                cols,
+                rows,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| format!("Failed to create auth terminal PTY: {error}"))?;
+
+        let master = Arc::new(Mutex::new(Some(pair.master)));
+        let mut command = CommandBuilder::new(&launch_config.program);
+        command.args(&launch_config.args);
+        command.cwd(&launch_config.cwd);
+        command.env("TERM", "xterm-256color");
+        command.env("COLUMNS", cols.to_string());
+        command.env("LINES", rows.to_string());
+        for (key, value) in &launch_config.env {
+            command.env(key, value);
+        }
+
+        let child = pair.slave.spawn_command(command).map_err(|error| {
+            format!(
+                "Failed to start {} sign-in terminal: {error}",
+                launch_config.display_name
+            )
+        })?;
+        let killer = child.clone_killer();
+        let writer = master
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?
+            .as_ref()
+            .ok_or_else(|| "Auth terminal PTY is not available".to_string())?
+            .take_writer()
+            .map_err(|error| format!("Failed to open auth terminal writer: {error}"))?;
+        let reader = master
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?
+            .as_ref()
+            .ok_or_else(|| "Auth terminal PTY is not available".to_string())?
+            .try_clone_reader()
+            .map_err(|error| format!("Failed to open auth terminal reader: {error}"))?;
+
+        let snapshot = Arc::new(Mutex::new(AiAuthTerminalSessionSnapshot {
+            session_id: session_id.clone(),
+            runtime_id: launch_config.runtime_id,
+            program: launch_config.program.display().to_string(),
+            display_name: launch_config.display_name,
+            cwd: launch_config.cwd.to_string_lossy().into_owned(),
+            cols,
+            rows,
+            buffer: String::new(),
+            status: AiAuthTerminalStatus::Running,
+            exit_code: None,
+            error_message: None,
+        }));
+
+        let handle = AuthTerminalHandle {
+            snapshot: Arc::clone(&snapshot),
+            master: Arc::clone(&master),
+            writer: Arc::new(Mutex::new(Some(writer))),
+            child: Arc::new(Mutex::new(Some(child))),
+            killer: Arc::new(Mutex::new(Some(killer))),
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+
+        spawn_auth_terminal_output_reader(
+            reader,
+            Arc::clone(&handle.snapshot),
+            Arc::clone(&handle.closed),
+            self.event_tx.clone(),
+        );
+        spawn_auth_terminal_exit_monitor(
+            Arc::clone(&handle.master),
+            Arc::clone(&handle.writer),
+            Arc::clone(&handle.child),
+            Arc::clone(&handle.killer),
+            Arc::clone(&handle.snapshot),
+            Arc::clone(&handle.closed),
+            self.event_tx.clone(),
+        );
+
+        let created_snapshot = handle.snapshot()?;
+        emit_auth_terminal_started(&self.event_tx, &created_snapshot);
+
+        self.auth_terminal_sessions
+            .lock()
+            .map_err(|error| format!("Internal auth terminal state error: {error}"))?
+            .insert(session_id, handle);
+
+        Ok(created_snapshot)
     }
 
     fn update_session<F>(&self, session_id: &str, update: F) -> Result<Value, String>
@@ -2214,23 +2557,27 @@ struct ResolvedAcpCommand {
 }
 
 fn resolve_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> ResolvedAcpCommand {
+    with_runtime_args(runtime_id, resolve_base_acp_command(runtime_id, setup))
+}
+
+fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> ResolvedAcpCommand {
     if let Some(raw) = std::env::var_os(runtime_bin_env_var(runtime_id)) {
         let resolved =
             resolve_command_candidate(&raw.to_string_lossy(), AiRuntimeBinarySource::Env);
         if resolved.display.is_some() {
-            return with_runtime_args(runtime_id, resolved);
+            return resolved;
         }
     }
 
     if let Some(raw) = setup.custom_binary_path.as_deref() {
         let resolved = resolve_command_candidate(raw, AiRuntimeBinarySource::Custom);
         if resolved.display.is_some() {
-            return with_runtime_args(runtime_id, resolved);
+            return resolved;
         }
     }
 
     if let Some(resolved) = resolve_packaged_acp_command(runtime_id) {
-        return with_runtime_args(runtime_id, resolved);
+        return resolved;
     }
 
     if runtime_id == CODEX_RUNTIME_ID {
@@ -2258,15 +2605,12 @@ fn resolve_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> ResolvedA
     }
 
     if let Some(path) = find_program_on_path(default_executable_name(runtime_id)) {
-        return with_runtime_args(
-            runtime_id,
-            ResolvedAcpCommand {
-                display: Some(path.display().to_string()),
-                program: Some(path),
-                args: Vec::new(),
-                source: AiRuntimeBinarySource::Env,
-            },
-        );
+        return ResolvedAcpCommand {
+            display: Some(path.display().to_string()),
+            program: Some(path),
+            args: Vec::new(),
+            source: AiRuntimeBinarySource::Env,
+        };
     }
 
     ResolvedAcpCommand {
@@ -2339,6 +2683,122 @@ fn runtime_binary_name(base: &str) -> String {
         format!("{base}.exe")
     } else {
         base.to_string()
+    }
+}
+
+fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
+    match runtime_id {
+        CLAUDE_RUNTIME_ID => "claude-ai-login",
+        GEMINI_RUNTIME_ID => "login_with_google",
+        KILO_RUNTIME_ID => "kilo-login",
+        _ => "terminal-login",
+    }
+}
+
+fn auth_terminal_launch_config(
+    runtime_id: &str,
+    method_id: &str,
+    setup: &RuntimeSetupState,
+    cwd: PathBuf,
+) -> Result<AuthTerminalLaunchConfig, String> {
+    validate_runtime_id(runtime_id)?;
+    let mut resolved = resolve_base_acp_command(runtime_id, setup);
+    let program = resolved.program.take().ok_or_else(|| {
+        format!(
+            "No {} runtime binary is configured.",
+            runtime_name(runtime_id)
+        )
+    })?;
+    let mut args = resolved.args;
+    let display_name = match (runtime_id, method_id) {
+        (CLAUDE_RUNTIME_ID, "claude-ai-login") => {
+            args.extend([
+                "--cli".to_string(),
+                "auth".to_string(),
+                "login".to_string(),
+                "--claudeai".to_string(),
+            ]);
+            "Claude Login".to_string()
+        }
+        (CLAUDE_RUNTIME_ID, "console-login") => {
+            args.extend([
+                "--cli".to_string(),
+                "auth".to_string(),
+                "login".to_string(),
+                "--console".to_string(),
+            ]);
+            "Anthropic Console Login".to_string()
+        }
+        (CLAUDE_RUNTIME_ID, "claude-login") => {
+            args.push("--cli".to_string());
+            "Claude Login".to_string()
+        }
+        (GEMINI_RUNTIME_ID, "login_with_google") => "Gemini Login".to_string(),
+        (KILO_RUNTIME_ID, "kilo-login") => {
+            args.extend(["auth".to_string(), "login".to_string()]);
+            "Kilo Login".to_string()
+        }
+        _ => {
+            return Err(format!(
+                "Unsupported terminal auth method for {}: {}",
+                runtime_name(runtime_id),
+                method_id
+            ))
+        }
+    };
+
+    Ok(AuthTerminalLaunchConfig {
+        program,
+        args,
+        display_name,
+        cwd,
+        env: setup.env.clone(),
+        runtime_id: runtime_id.to_string(),
+    })
+}
+
+fn resolve_auth_terminal_cwd(requested_cwd: Option<&str>) -> Result<PathBuf, String> {
+    if let Some(path) = requested_cwd
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if path.is_dir() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "The auth terminal working directory does not exist: {}",
+            path.to_string_lossy()
+        ));
+    }
+
+    if let Some(home) = home_dir() {
+        return Ok(home);
+    }
+
+    std::env::current_dir()
+        .map_err(|error| format!("Failed to resolve auth terminal working directory: {error}"))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                let drive = std::env::var_os("HOMEDRIVE")?;
+                let path = std::env::var_os("HOMEPATH")?;
+                Some(PathBuf::from(format!(
+                    "{}{}",
+                    PathBuf::from(drive).to_string_lossy(),
+                    PathBuf::from(path).to_string_lossy()
+                )))
+            })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
     }
 }
 
@@ -2878,6 +3338,207 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
+fn release_auth_terminal_runtime_resources(
+    master: &Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: &Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: &Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: &Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
+    terminate_process: bool,
+) {
+    if terminate_process {
+        if let Ok(mut killer_guard) = killer.lock() {
+            if let Some(killer) = killer_guard.as_mut() {
+                let _ = killer.kill();
+            }
+        }
+    }
+
+    if let Ok(mut writer_guard) = writer.lock() {
+        writer_guard.take();
+    }
+    if let Ok(mut child_guard) = child.lock() {
+        child_guard.take();
+    }
+    if let Ok(mut killer_guard) = killer.lock() {
+        killer_guard.take();
+    }
+    if let Ok(mut master_guard) = master.lock() {
+        master_guard.take();
+    }
+}
+
+fn spawn_auth_terminal_output_reader(
+    mut reader: Box<dyn Read + Send>,
+    snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
+    closed: Arc<AtomicBool>,
+    event_tx: Sender<RpcOutput>,
+) {
+    thread::spawn(move || {
+        let mut buffer = [0_u8; AUTH_TERMINAL_OUTPUT_CHUNK_SIZE];
+        loop {
+            if closed.load(Ordering::Relaxed) {
+                break;
+            }
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    if closed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                    let session_id = match snapshot.lock() {
+                        Ok(mut snapshot) => {
+                            append_auth_terminal_buffer(&mut snapshot.buffer, &chunk);
+                            snapshot.session_id.clone()
+                        }
+                        Err(_) => break,
+                    };
+                    emit_auth_terminal_output(&event_tx, &session_id, chunk);
+                }
+                Err(error) => {
+                    if !closed.load(Ordering::Relaxed) {
+                        let (session_id, message) = match snapshot.lock() {
+                            Ok(mut snapshot) => {
+                                snapshot.status = AiAuthTerminalStatus::Error;
+                                snapshot.error_message =
+                                    Some(format!("Failed to read auth terminal output: {error}"));
+                                (
+                                    snapshot.session_id.clone(),
+                                    snapshot.error_message.clone().unwrap_or_default(),
+                                )
+                            }
+                            Err(_) => break,
+                        };
+                        emit_auth_terminal_error(&event_tx, &session_id, message);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn spawn_auth_terminal_exit_monitor(
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
+    snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
+    closed: Arc<AtomicBool>,
+    event_tx: Sender<RpcOutput>,
+) {
+    thread::spawn(move || loop {
+        if closed.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let exit_status = {
+            let mut child_guard = match child.lock() {
+                Ok(child_guard) => child_guard,
+                Err(_) => break,
+            };
+            let Some(process) = child_guard.as_mut() else {
+                break;
+            };
+
+            match process.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    let (session_id, message) = {
+                        let mut snapshot_guard = match snapshot.lock() {
+                            Ok(snapshot_guard) => snapshot_guard,
+                            Err(_) => break,
+                        };
+                        snapshot_guard.status = AiAuthTerminalStatus::Error;
+                        snapshot_guard.exit_code = None;
+                        snapshot_guard.error_message =
+                            Some(format!("Failed to monitor auth terminal process: {error}"));
+                        (
+                            snapshot_guard.session_id.clone(),
+                            snapshot_guard.error_message.clone().unwrap_or_else(|| {
+                                "Failed to monitor auth terminal process".to_string()
+                            }),
+                        )
+                    };
+                    release_auth_terminal_runtime_resources(
+                        &master, &writer, &child, &killer, false,
+                    );
+                    emit_auth_terminal_error(&event_tx, &session_id, message);
+                    break;
+                }
+            }
+        };
+
+        if let Some(exit_status) = exit_status {
+            let snapshot = {
+                let mut snapshot_guard = match snapshot.lock() {
+                    Ok(snapshot_guard) => snapshot_guard,
+                    Err(_) => break,
+                };
+                snapshot_guard.status = AiAuthTerminalStatus::Exited;
+                snapshot_guard.exit_code = i32::try_from(exit_status.exit_code()).ok();
+                snapshot_guard.error_message = None;
+                snapshot_guard.clone()
+            };
+            release_auth_terminal_runtime_resources(&master, &writer, &child, &killer, false);
+            emit_auth_terminal_exited(&event_tx, &snapshot);
+            break;
+        }
+
+        thread::sleep(AUTH_TERMINAL_MONITOR_INTERVAL);
+    });
+}
+
+fn append_auth_terminal_buffer(buffer: &mut String, chunk: &str) {
+    buffer.push_str(chunk);
+    if buffer.len() <= MAX_TERMINAL_SUMMARY_CHARS {
+        return;
+    }
+    let excess = buffer.len() - MAX_TERMINAL_SUMMARY_CHARS;
+    let trim_to = buffer
+        .char_indices()
+        .map(|(index, _)| index)
+        .find(|index| *index >= excess)
+        .unwrap_or(excess);
+    buffer.drain(..trim_to);
+}
+
+fn emit_auth_terminal_started(
+    event_tx: &Sender<RpcOutput>,
+    snapshot: &AiAuthTerminalSessionSnapshot,
+) {
+    emit_event(event_tx, AI_AUTH_TERMINAL_STARTED_EVENT, json!(snapshot));
+}
+
+fn emit_auth_terminal_output(event_tx: &Sender<RpcOutput>, session_id: &str, chunk: String) {
+    emit_event(
+        event_tx,
+        AI_AUTH_TERMINAL_OUTPUT_EVENT,
+        json!({
+            "sessionId": session_id,
+            "chunk": chunk,
+        }),
+    );
+}
+
+fn emit_auth_terminal_exited(
+    event_tx: &Sender<RpcOutput>,
+    snapshot: &AiAuthTerminalSessionSnapshot,
+) {
+    emit_event(event_tx, AI_AUTH_TERMINAL_EXITED_EVENT, json!(snapshot));
+}
+
+fn emit_auth_terminal_error(event_tx: &Sender<RpcOutput>, session_id: &str, message: String) {
+    emit_event(
+        event_tx,
+        AI_AUTH_TERMINAL_ERROR_EVENT,
+        json!({
+            "sessionId": session_id,
+            "message": message,
+        }),
+    );
+}
+
 fn touch_session(state: &mut NativeAiInner, session_id: &str) {
     state.session_order.retain(|id| id != session_id);
     state.session_order.insert(0, session_id.to_string());
@@ -3348,5 +4009,53 @@ mod tests {
         let (saw_tool_activity_diffs, saw_permission_diffs) = event_thread.join().unwrap();
         assert!(saw_tool_activity_diffs);
         assert!(saw_permission_diffs);
+    }
+
+    #[test]
+    fn auth_terminal_launch_config_uses_selected_claude_method() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            CLAUDE_RUNTIME_ID,
+            "console-login",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.args,
+            vec![
+                "--cli".to_string(),
+                "auth".to_string(),
+                "login".to_string(),
+                "--console".to_string()
+            ]
+        );
+        assert_eq!(config.display_name, "Anthropic Console Login");
+    }
+
+    #[test]
+    fn auth_terminal_launch_config_does_not_use_acp_args_for_login() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            KILO_RUNTIME_ID,
+            "kilo-login",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(config.args, vec!["auth".to_string(), "login".to_string()]);
+        assert_eq!(config.display_name, "Kilo Login");
     }
 }

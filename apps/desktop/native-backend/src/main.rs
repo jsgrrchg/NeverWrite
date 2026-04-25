@@ -879,11 +879,13 @@ impl NativeBackend {
             "ai_prune_session_histories" => self.ai_prune_session_histories(args),
             "ai_get_text_file_hash" => self.ai_get_text_file_hash(args),
             "ai_restore_text_file" => self.ai_restore_text_file(args),
-            "ai_start_auth_terminal_session"
-            | "ai_write_auth_terminal_session"
-            | "ai_resize_auth_terminal_session"
-            | "ai_close_auth_terminal_session"
-            | "ai_get_auth_terminal_session_snapshot" => self.ai.auth_terminal_unavailable(),
+            "ai_start_auth_terminal_session" => self.ai.start_auth_terminal_session(&args),
+            "ai_write_auth_terminal_session" => self.ai.write_auth_terminal_session(&args),
+            "ai_resize_auth_terminal_session" => self.ai.resize_auth_terminal_session(&args),
+            "ai_close_auth_terminal_session" => self.ai.close_auth_terminal_session(&args),
+            "ai_get_auth_terminal_session_snapshot" => {
+                self.ai.get_auth_terminal_session_snapshot(&args)
+            }
             "devtools_create_terminal_session"
             | "devtools_write_terminal_session"
             | "devtools_resize_terminal_session"

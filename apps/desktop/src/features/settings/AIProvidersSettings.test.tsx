@@ -378,6 +378,7 @@ describe("AIProvidersSettings", () => {
         await waitFor(() => {
             expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledWith({
                 runtimeId: "kilo-acp",
+                methodId: "kilo-login",
                 vaultPath: null,
                 customBinaryPath: undefined,
             });

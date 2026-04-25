@@ -10,6 +10,7 @@ const stagedDir = path.join(appRoot, "out", "native-backend");
 const binariesDir = path.join(stagedDir, "binaries");
 const embeddedDir = path.join(stagedDir, "embedded");
 const embeddedAssetsDir = path.join(appRoot, "embedded");
+const embeddedNodeCacheDir = path.join(appRoot, ".cache", "embedded-node");
 const vendorClaudeEmbeddedDir = path.join(
     workspaceRoot,
     "vendor",
@@ -117,6 +118,25 @@ function envSuffixForTarget(targetTriple) {
     throw new Error(`Unsupported target for environment suffix: ${targetTriple}`);
 }
 
+function embeddedNodeVersion() {
+    return (
+        process.env.NEVERWRITE_EMBEDDED_NODE_VERSION?.trim() ||
+        process.version.replace(/^v/, "")
+    );
+}
+
+function nodeDistForTarget(targetTriple) {
+    if (targetTriple === "aarch64-apple-darwin") return "darwin-arm64";
+    if (targetTriple === "x86_64-apple-darwin") return "darwin-x64";
+    if (targetTriple === "aarch64-pc-windows-msvc") return "win-arm64";
+    if (targetTriple === "x86_64-pc-windows-msvc") return "win-x64";
+    throw new Error(`Unsupported embedded Node target: ${targetTriple}`);
+}
+
+function nodeArchiveExtension(targetTriple) {
+    return targetTriple.includes("windows") ? "zip" : "tar.gz";
+}
+
 async function resolveBuiltBinary({
     envKeys,
     fallbackPath,
@@ -154,16 +174,85 @@ function nodeSourceFromBinary(configuredNodeBinary) {
     };
 }
 
+async function downloadFile(url, destinationPath) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(
+            `Failed to download ${url}: ${response.status} ${response.statusText}`,
+        );
+    }
+    await fs.writeFile(destinationPath, Buffer.from(await response.arrayBuffer()));
+}
+
+async function extractZip(archivePath, destinationDir) {
+    if (process.platform === "win32") {
+        await run(
+            "powershell",
+            [
+                "-NoProfile",
+                "-Command",
+                `Expand-Archive -Path '${archivePath}' -DestinationPath '${destinationDir}' -Force`,
+            ],
+            appRoot,
+        );
+        return;
+    }
+
+    await run("unzip", ["-q", archivePath, "-d", destinationDir], appRoot);
+}
+
+async function downloadOfficialNodeSource(targetTriple) {
+    const version = embeddedNodeVersion();
+    const dist = `node-v${version}-${nodeDistForTarget(targetTriple)}`;
+    const destination = path.join(embeddedNodeCacheDir, dist);
+    const isWindows = targetTriple.includes("windows");
+    const nodeBinary = isWindows
+        ? path.join(destination, executableNameForTarget("node", targetTriple))
+        : path.join(destination, "bin", executableNameForTarget("node", targetTriple));
+    if (await pathExists(nodeBinary)) {
+        return {
+            kind: isWindows ? "portable-bin-directory" : "directory",
+            sourcePath: destination,
+        };
+    }
+
+    await fs.rm(destination, { recursive: true, force: true });
+    await fs.mkdir(embeddedNodeCacheDir, { recursive: true });
+
+    const extension = nodeArchiveExtension(targetTriple);
+    const archivePath = path.join(embeddedNodeCacheDir, `${dist}.${extension}`);
+    const url = `https://nodejs.org/dist/v${version}/${dist}.${extension}`;
+    await downloadFile(url, archivePath);
+
+    if (extension === "zip") {
+        await extractZip(archivePath, embeddedNodeCacheDir);
+    } else {
+        await run("tar", ["-xzf", archivePath, "-C", embeddedNodeCacheDir], appRoot);
+    }
+
+    if (!(await pathExists(nodeBinary))) {
+        throw new Error(
+            `Downloaded embedded Node archive did not contain the expected binary: ${nodeBinary}`,
+        );
+    }
+
+    return {
+        kind: isWindows ? "portable-bin-directory" : "directory",
+        sourcePath: destination,
+    };
+}
+
 async function resolveEmbeddedNodeSource(targetTriple) {
     if (isMacUniversalTarget(targetTriple)) {
-        const arm64Binary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64?.trim();
-        const x64Binary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64?.trim();
+        const arm64Source = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64?.trim()
+            ? nodeSourceFromBinary(process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64.trim())
+            : await downloadOfficialNodeSource("aarch64-apple-darwin");
+        const x64Source = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64?.trim()
+            ? nodeSourceFromBinary(process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64.trim())
+            : await downloadOfficialNodeSource("x86_64-apple-darwin");
 
-        if (!arm64Binary || !x64Binary) {
-            throw new Error(
-                "Universal macOS packaging requires NEVERWRITE_EMBEDDED_NODE_BIN_ARM64 and NEVERWRITE_EMBEDDED_NODE_BIN_X64.",
-            );
-        }
+        const arm64Binary = path.join(arm64Source.sourcePath, "bin", "node");
+        const x64Binary = path.join(x64Source.sourcePath, "bin", "node");
         for (const [label, binaryPath] of [
             ["arm64", arm64Binary],
             ["x64", x64Binary],
@@ -179,16 +268,15 @@ async function resolveEmbeddedNodeSource(targetTriple) {
             kind: "universal-directory",
             arm64Binary,
             x64Binary,
-            sourcePath: nodeSourceFromBinary(arm64Binary).sourcePath,
+            arm64SourcePath: arm64Source.sourcePath,
+            x64SourcePath: x64Source.sourcePath,
+            sourcePath: arm64Source.sourcePath,
         };
     }
 
     const configuredNodeBinary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN?.trim();
     if (!configuredNodeBinary) {
-        return {
-            kind: "directory",
-            sourcePath: path.join(embeddedAssetsDir, "node"),
-        };
+        return downloadOfficialNodeSource(targetTriple);
     }
 
     return nodeSourceFromBinary(configuredNodeBinary);
@@ -229,6 +317,7 @@ async function stageEmbeddedNodeRuntime(nodeSource) {
     if (nodeSource.kind === "directory") {
         await fs.cp(nodeSource.sourcePath, destinationNodeRoot, {
             recursive: true,
+            dereference: true,
         });
         return;
     }
@@ -258,11 +347,33 @@ async function stageUniversalEmbeddedNodeRuntime(nodeSource) {
     const destinationNodeRoot = path.join(embeddedDir, "node");
     await fs.cp(nodeSource.sourcePath, destinationNodeRoot, {
         recursive: true,
+        dereference: true,
     });
     await lipoCreate(
         [nodeSource.arm64Binary, nodeSource.x64Binary],
         path.join(destinationNodeRoot, "bin", "node"),
     );
+
+    const arm64LibDir = path.join(nodeSource.arm64SourcePath, "lib");
+    const x64LibDir = path.join(nodeSource.x64SourcePath, "lib");
+    if (!(await pathExists(arm64LibDir)) || !(await pathExists(x64LibDir))) {
+        return;
+    }
+
+    for (const entry of await fs.readdir(arm64LibDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.startsWith("libnode") || !entry.name.endsWith(".dylib")) {
+            continue;
+        }
+        const arm64Lib = path.join(arm64LibDir, entry.name);
+        const x64Lib = path.join(x64LibDir, entry.name);
+        if (!(await pathExists(x64Lib))) {
+            continue;
+        }
+        await lipoCreate(
+            [arm64Lib, x64Lib],
+            path.join(destinationNodeRoot, "lib", entry.name),
+        );
+    }
 }
 
 async function ensureExecutableIfNeeded(filePath) {

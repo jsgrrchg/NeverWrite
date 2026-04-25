@@ -16,6 +16,7 @@ CLAUDE.md
 .PERSONAL
 .trash/
 apps/desktop/embedded/
+apps/desktop/.cache/
 # Vendored runtimes are committed intentionally. Ignore only local build/install
 # byproducts inside vendor/, not the vendored source trees themselves.
 vendor/**/target/

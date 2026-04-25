@@ -327,10 +327,17 @@ async function main() {
     await client.invoke("start_open_vault", { path: vaultPath });
 
     const runtimes = await client.invoke("ai_list_runtimes");
-    assert(
-      runtimes.some((runtime) => runtime.runtime.id === "codex-acp"),
-      "codex runtime descriptor missing",
-    );
+    for (const runtimeId of [
+      "codex-acp",
+      "claude-acp",
+      "gemini-acp",
+      "kilo-acp",
+    ]) {
+      assert(
+        runtimes.some((runtime) => runtime.runtime.id === runtimeId),
+        `${runtimeId} runtime descriptor missing`,
+      );
+    }
 
     const setup = await client.invoke("ai_get_setup_status", {
       runtimeId: "codex-acp",
@@ -514,12 +521,12 @@ async function main() {
       })
       .then(
         () => {
-          throw new Error("auth terminal should be unavailable");
+          throw new Error("codex auth terminal should be rejected");
         },
         (error) => {
           assert(
-            error.message.includes("not available in Electron"),
-            "auth terminal error should be explicit",
+            error.message.includes("Unsupported terminal auth method"),
+            "codex auth terminal error should be explicit",
           );
         },
       );

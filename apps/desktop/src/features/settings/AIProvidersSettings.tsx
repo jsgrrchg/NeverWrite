@@ -743,6 +743,7 @@ export function AIProvidersSettings() {
     const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
     const [authTerminalRequest, setAuthTerminalRequest] = useState<{
         runtimeId: string;
+        methodId: string;
         runtimeName: string;
         customBinaryPath?: string;
     } | null>(null);
@@ -855,6 +856,7 @@ export function AIProvidersSettings() {
             ) {
                 setAuthTerminalRequest({
                     runtimeId: input.runtimeId,
+                    methodId: input.methodId,
                     runtimeName: getRuntimeDisplayName(
                         input.runtimeId,
                         runtime?.runtime.name,
@@ -1570,6 +1572,7 @@ export function AIProvidersSettings() {
                 <AIAuthTerminalModal
                     open
                     runtimeId={authTerminalRequest.runtimeId}
+                    methodId={authTerminalRequest.methodId}
                     runtimeName={authTerminalRequest.runtimeName}
                     vaultPath={vaultPath}
                     customBinaryPath={authTerminalRequest.customBinaryPath}

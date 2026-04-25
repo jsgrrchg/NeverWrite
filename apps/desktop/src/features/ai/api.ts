@@ -317,6 +317,7 @@ export async function aiStartAuth(
 
 export async function aiStartAuthTerminalSession(input: {
     runtimeId: string;
+    methodId?: string;
     vaultPath: string | null;
     customBinaryPath?: string;
     cols?: number;
@@ -327,6 +328,7 @@ export async function aiStartAuthTerminalSession(input: {
         {
             input: {
                 runtimeId: input.runtimeId,
+                methodId: input.methodId ?? null,
                 vaultPath: input.vaultPath ?? null,
                 customBinaryPath: input.customBinaryPath ?? null,
                 cols: input.cols ?? null,
