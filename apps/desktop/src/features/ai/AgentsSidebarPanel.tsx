@@ -2,6 +2,7 @@ import {
     useCallback,
     useEffect,
     useMemo,
+    useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -96,6 +97,30 @@ function formatAgentTimestamp(timestamp: number): string {
 
 function compareByUpdatedAtDesc(a: AIChatSession, b: AIChatSession) {
     return getSessionUpdatedAt(b) - getSessionUpdatedAt(a);
+}
+
+function isSessionWorking(session: AIChatSession) {
+    return deriveActivityIndicator(session)?.tone === "working";
+}
+
+function compareOpenSessions(
+    a: AIChatSession,
+    b: AIChatSession,
+    workingOrder: ReadonlyMap<string, number>,
+) {
+    const aOrder = workingOrder.get(a.sessionId);
+    const bOrder = workingOrder.get(b.sessionId);
+    const aWorking = aOrder !== undefined;
+    const bWorking = bOrder !== undefined;
+
+    if (aWorking && bWorking) {
+        // Keep actively streaming agents from reshuffling on every update.
+        return aOrder - bOrder;
+    }
+    if (aWorking !== bWorking) {
+        return aWorking ? -1 : 1;
+    }
+    return compareByUpdatedAtDesc(a, b);
 }
 
 function scaleMetric(base: number, scale: number, min: number) {
@@ -212,6 +237,41 @@ export function AgentsSidebarPanel() {
         });
     }, [hasFilter, normalizedFilter, sessions]);
 
+    const workingOrderRef = useRef<Map<string, number>>(new Map());
+    const workingCounterRef = useRef(0);
+    const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
+
+    useEffect(() => {
+        const map = workingOrderRef.current;
+        const liveSessionIds = new Set<string>();
+        let changed = false;
+
+        for (const session of sessions) {
+            liveSessionIds.add(session.sessionId);
+            const working = isSessionWorking(session);
+            const tracked = map.has(session.sessionId);
+            if (working && !tracked) {
+                workingCounterRef.current += 1;
+                map.set(session.sessionId, workingCounterRef.current);
+                changed = true;
+            } else if (!working && tracked) {
+                map.delete(session.sessionId);
+                changed = true;
+            }
+        }
+
+        for (const trackedId of Array.from(map.keys())) {
+            if (!liveSessionIds.has(trackedId)) {
+                map.delete(trackedId);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            setWorkingOrderRevision((value) => value + 1);
+        }
+    }, [sessions]);
+
     const { pinnedSessions, openSessions, otherSessions } = useMemo(() => {
         const pinned: AIChatSession[] = [];
         const open: AIChatSession[] = [];
@@ -231,14 +291,18 @@ export function AgentsSidebarPanel() {
             if (bPinned !== aPinned) return bPinned - aPinned;
             return compareByUpdatedAtDesc(a, b);
         });
-        open.sort(compareByUpdatedAtDesc);
+        open.sort((a, b) =>
+            compareOpenSessions(a, b, workingOrderRef.current),
+        );
         other.sort(compareByUpdatedAtDesc);
         return {
             pinnedSessions: pinned,
             openSessions: open,
             otherSessions: other,
         };
-    }, [filteredSessions, openSessionIds, pinnedEntries]);
+        // workingOrderRevision keeps this memo in sync with the ref-backed map.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [filteredSessions, openSessionIds, pinnedEntries, workingOrderRevision]);
 
     const totalCount = sessions.length;
     const filteredCount = filteredSessions.length;
