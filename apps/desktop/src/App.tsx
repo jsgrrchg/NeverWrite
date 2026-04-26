@@ -3,7 +3,6 @@ import { useShallow } from "zustand/react/shallow";
 import { getCurrentWindow } from "@neverwrite/runtime";
 import { listen } from "@neverwrite/runtime";
 import { getCurrentWebview } from "@neverwrite/runtime";
-import { getAllWebviewWindows } from "@neverwrite/runtime";
 import { open } from "@neverwrite/runtime";
 import { invoke } from "@neverwrite/runtime";
 import { resolveDeferredUnlisten } from "./app/utils/deferredUnlisten";
@@ -42,7 +41,6 @@ import {
 import { bootstrapDetachedWindow } from "./app/detachedWindowBootstrap";
 import {
     buildWindowSessionEntry,
-    readWindowSessionSnapshot,
     refreshWindowSessionSnapshot,
     restoreWindowSession,
     writeWindowSessionEntry,
@@ -101,6 +99,8 @@ import { resetChatStore, useChatStore } from "./features/ai/store/chatStore";
 import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
 import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu";
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
+import { ClipNotification } from "./features/clip/ClipNotification";
+import { useClipImportStore } from "./features/clip/clipImportStore";
 import { useAppUpdateStore } from "./features/updates/store";
 import {
     buildWindowOperationalState,
@@ -128,17 +128,9 @@ interface WebClipperSavedPayload {
 
 const WEB_CLIPPER_CLIP_SAVED_EVENT = "neverwrite:web-clipper/clip-saved";
 const WEB_CLIPPER_ROUTE_CLIP_EVENT = "neverwrite:web-clipper/route-clip";
-const WEB_CLIPPER_ROUTE_POLL_MS = 100;
-const WEB_CLIPPER_ROUTE_TIMEOUT_MS = 10_000;
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
-
-function waitForWindowRoute(ms: number) {
-    return new Promise<void>((resolve) => {
-        window.setTimeout(resolve, ms);
-    });
-}
 
 function cycleEditorTabs(backward: boolean) {
     const state = useEditorStore.getState();
@@ -1306,7 +1298,7 @@ export default function App() {
         };
     }, [vaultPath, windowMode]);
 
-    const openWebClipperClip = useCallback(
+    const showWebClipperSavedNotice = useCallback(
         (payload: WebClipperSavedPayload) => {
             const currentWindowLabel = getCurrentWindowLabel();
             const currentVaultPath = useVaultStore.getState().vaultPath;
@@ -1320,85 +1312,21 @@ export default function App() {
                 return;
             }
 
-            useEditorStore
-                .getState()
-                .openNote(payload.noteId, payload.title, payload.content);
+            useClipImportStore.getState().showNotice({
+                id: payload.requestId,
+                title: payload.title,
+                message: "Saved to vault.",
+                relativePath: payload.relativePath,
+            });
         },
         [],
     );
 
     const routeWebClipperClip = useCallback(
-        async (payload: WebClipperSavedPayload) => {
-            if (getCurrentWindowLabel() !== "main") {
-                return;
-            }
-            if (useVaultStore.getState().vaultPath === payload.vaultPath) {
-                openWebClipperClip({
-                    ...payload,
-                    targetWindowLabel: getCurrentWindowLabel(),
-                });
-                return;
-            }
-
-            const currentWindowLabel = getCurrentWindowLabel();
-            let targetLabel =
-                readWindowSessionSnapshot().find(
-                    (entry) =>
-                        entry.kind === "vault" &&
-                        entry.vaultPath === payload.vaultPath,
-                )?.label ?? null;
-
-            if (!targetLabel) {
-                const existingLabels = new Set(
-                    (await getAllWebviewWindows()).map(
-                        (window) => window.label,
-                    ),
-                );
-
-                await openVaultWindow(payload.vaultPath);
-
-                const deadline = Date.now() + WEB_CLIPPER_ROUTE_TIMEOUT_MS;
-                while (Date.now() <= deadline) {
-                    const matchingEntry = readWindowSessionSnapshot().find(
-                        (entry) =>
-                            entry.kind === "vault" &&
-                            entry.vaultPath === payload.vaultPath &&
-                            !existingLabels.has(entry.label),
-                    );
-                    if (matchingEntry) {
-                        targetLabel = matchingEntry.label;
-                        break;
-                    }
-                    await waitForWindowRoute(WEB_CLIPPER_ROUTE_POLL_MS);
-                }
-            }
-
-            if (!targetLabel || targetLabel === currentWindowLabel) {
-                if (useVaultStore.getState().vaultPath === payload.vaultPath) {
-                    openWebClipperClip({
-                        ...payload,
-                        targetWindowLabel: currentWindowLabel,
-                    });
-                }
-                return;
-            }
-
-            const currentWindow = getCurrentWindow();
-            const targetWindow = (await getAllWebviewWindows()).find(
-                (window) => window.label === targetLabel,
-            );
-
-            await targetWindow?.setFocus?.();
-            await currentWindow.emitTo(
-                targetLabel,
-                WEB_CLIPPER_CLIP_SAVED_EVENT,
-                {
-                    ...payload,
-                    targetWindowLabel: targetLabel,
-                } satisfies WebClipperSavedPayload,
-            );
+        (payload: WebClipperSavedPayload) => {
+            showWebClipperSavedNotice(payload);
         },
-        [openWebClipperClip],
+        [showWebClipperSavedNotice],
     );
 
     useRegisterCommands(openSettings, windowMode === "main");
@@ -2030,7 +1958,7 @@ export default function App() {
                 WEB_CLIPPER_CLIP_SAVED_EVENT,
                 (event) => {
                     if (disposed) return;
-                    openWebClipperClip(event.payload);
+                    showWebClipperSavedNotice(event.payload);
                 },
             ),
             {
@@ -2045,7 +1973,7 @@ export default function App() {
             disposed = true;
             unlisten?.();
         };
-    }, [openWebClipperClip, windowMode]);
+    }, [showWebClipperSavedNotice, windowMode]);
 
     useEffect(() => {
         if (windowMode !== "main") return;
@@ -2158,6 +2086,7 @@ export default function App() {
             </div>
 
             <YouTubeModalHost />
+            <ClipNotification />
             <CommandPalette />
             <QuickSwitcher />
         </div>

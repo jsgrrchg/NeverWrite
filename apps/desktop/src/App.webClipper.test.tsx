@@ -1,6 +1,5 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import {
-    getAllWebviewWindows,
     getCurrentWindow,
     invoke,
     listen,
@@ -21,6 +20,7 @@ import {
     useChatTabsStore,
 } from "./features/ai/store/chatTabsStore";
 import { useChatStore } from "./features/ai/store/chatStore";
+import { useClipImportStore } from "./features/clip/clipImportStore";
 import { flushPromises, renderComponent } from "./test/test-utils";
 
 const MENU_ACTION_EVENT = "menu-action";
@@ -184,9 +184,7 @@ describe("App web clipper routing", () => {
         );
 
         vi.mocked(readWindowSessionSnapshot).mockReturnValue([]);
-        vi.mocked(getAllWebviewWindows).mockResolvedValue([
-            { label: "main", setFocus: vi.fn() },
-        ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>);
+        useClipImportStore.setState({ notice: null });
 
         useVaultStore.setState({
             vaultPath: "/vaults/a",
@@ -476,7 +474,7 @@ describe("App web clipper routing", () => {
         expect(useVaultStore.getState().openVault).not.toHaveBeenCalled();
     });
 
-    it("opens clip-saved payloads without switching the current vault", async () => {
+    it("shows a saved notice for clip-saved payloads without opening the note", async () => {
         const openVault = vi.fn(async () => {});
         const openNote = vi.fn();
 
@@ -503,11 +501,10 @@ describe("App web clipper routing", () => {
         });
 
         expect(openVault).not.toHaveBeenCalled();
-        expect(openNote).toHaveBeenCalledWith(
-            payload.noteId,
-            payload.title,
-            payload.content,
-        );
+        expect(openNote).not.toHaveBeenCalled();
+        expect(screen.getByText("Web clip saved")).toBeInTheDocument();
+        expect(screen.getByText(payload.title)).toBeInTheDocument();
+        expect(screen.getByText(payload.relativePath)).toBeInTheDocument();
     });
 
     it("ignores clip-saved payloads targeted to another window or vault", async () => {
@@ -549,6 +546,8 @@ describe("App web clipper routing", () => {
         });
 
         expect(openNote).not.toHaveBeenCalled();
+        expect(screen.queryByText("Other window")).not.toBeInTheDocument();
+        expect(screen.queryByText("Other vault")).not.toBeInTheDocument();
     });
 
     it("does not read text files from disk when no matching text tab is open", async () => {
@@ -564,7 +563,9 @@ describe("App web clipper routing", () => {
                     vault_path: "/vaults/a",
                     kind: "upsert",
                     entry: {
+                        id: "src/ghost.ts",
                         kind: "file",
+                        relative_path: "src/ghost.ts",
                         mime_type: "text/plain",
                     },
                     relative_path: "src/ghost.ts",
@@ -585,43 +586,19 @@ describe("App web clipper routing", () => {
         vi.useRealTimers();
     });
 
-    it("routes fallback clips through a new vault window and emits to that label", async () => {
-        const targetWindowFocus = vi.fn();
-        let snapshotReads = 0;
-        vi.mocked(readWindowSessionSnapshot).mockImplementation(() => {
-            snapshotReads += 1;
-            if (snapshotReads < 2) {
-                return [];
-            }
-            return [
-                {
-                    label: "vault-b",
-                    kind: "vault",
-                    vaultPath: "/vaults/b",
-                },
-            ];
-        });
-        vi.mocked(getAllWebviewWindows)
-            .mockResolvedValueOnce([
-                { label: "main", setFocus: vi.fn() },
-            ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>)
-            .mockResolvedValueOnce([
-                { label: "main", setFocus: vi.fn() },
-                { label: "vault-b", setFocus: targetWindowFocus },
-            ] as unknown as Awaited<ReturnType<typeof getAllWebviewWindows>>);
-
+    it("does not open a vault window for routed clip saves", async () => {
         renderComponent(<App />);
         await flushPromises();
         expect(eventHandlers.has(WEB_CLIPPER_ROUTE_CLIP_EVENT)).toBe(true);
 
         const payload = {
             requestId: "req-2",
-            vaultPath: "/vaults/b",
+            vaultPath: "/vaults/a",
             targetWindowLabel: null,
             noteId: "notes/clip",
-            title: "Clip B",
-            relativePath: "Clips/Clip B.md",
-            content: "# Clip B",
+            title: "Clip A",
+            relativePath: "Clips/Clip A.md",
+            content: "# Clip A",
         };
 
         await act(async () => {
@@ -631,14 +608,12 @@ describe("App web clipper routing", () => {
         });
         await flushPromises();
 
-        expect(openVaultWindow).toHaveBeenCalledWith("/vaults/b");
-        expect(getCurrentWindow().emitTo).toHaveBeenCalledWith(
-            "vault-b",
+        expect(openVaultWindow).not.toHaveBeenCalled();
+        expect(getCurrentWindow().emitTo).not.toHaveBeenCalledWith(
+            expect.any(String),
             WEB_CLIPPER_CLIP_SAVED_EVENT,
-            {
-                ...payload,
-                targetWindowLabel: "vault-b",
-            },
+            expect.anything(),
         );
+        expect(screen.getByText("Clip A")).toBeInTheDocument();
     });
 });
