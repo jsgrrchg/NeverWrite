@@ -1,7 +1,7 @@
-use agent_client_protocol::{
-    Agent, AgentAuthCapabilities, AgentCapabilities, AuthEnvVar, AuthMethod, AuthMethodAgent,
+use acp::schema::{
+    AgentAuthCapabilities, AgentCapabilities, AuthEnvVar, AuthMethod, AuthMethodAgent,
     AuthMethodEnvVar, AuthMethodId, AuthenticateRequest, AuthenticateResponse, CancelNotification,
-    ClientCapabilities, CloseSessionRequest, CloseSessionResponse, Error, Implementation,
+    ClientCapabilities, CloseSessionRequest, CloseSessionResponse, Implementation,
     InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
     LoadSessionRequest, LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse,
     McpCapabilities, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
@@ -10,15 +10,17 @@ use agent_client_protocol::{
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
     SetSessionModeResponse, SetSessionModelRequest, SetSessionModelResponse,
 };
-use codex_config::types::{McpServerConfig, McpServerTransportConfig};
+use acp::{Agent, Client, ConnectTo, ConnectionTo, Error};
+use agent_client_protocol as acp;
+use codex_config::{McpServerConfig, McpServerTransportConfig};
 use codex_core::{
     NewThread, RolloutRecorder, SortDirection, ThreadManager, ThreadSortKey, config::Config,
     find_thread_path_by_id_str, parse_cursor,
 };
 use codex_exec_server::{EnvironmentManager, EnvironmentManagerArgs, ExecServerRuntimePaths};
 use codex_login::{
-    AuthManager, CODEX_API_KEY_ENV_VAR, CodexAuth, OPENAI_API_KEY_ENV_VAR, auth,
-    auth::{read_codex_api_key_from_env, read_openai_api_key_from_env},
+    CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
+    auth::{AuthManager, CodexAuth, read_codex_api_key_from_env, read_openai_api_key_from_env},
 };
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::{
@@ -26,10 +28,8 @@ use codex_protocol::{
     protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
 };
 use std::{
-    cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 use tracing::{debug, info};
@@ -37,7 +37,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::thread::Thread;
 
-/// The Codex implementation of the ACP Agent trait.
+/// The Codex implementation of the ACP Agent.
 ///
 /// This bridges the ACP protocol with the existing codex-rs infrastructure,
 /// allowing codex to be used as an ACP agent.
@@ -51,7 +51,7 @@ pub struct CodexAgent {
     /// Thread manager for handling sessions
     thread_manager: ThreadManager,
     /// Active sessions mapped by `SessionId`
-    sessions: Rc<RefCell<HashMap<SessionId, Rc<Thread>>>>,
+    sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
     /// Session working directories for filesystem sandboxing
     session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>>,
 }
@@ -61,13 +61,13 @@ const SESSION_TITLE_MAX_GRAPHEMES: usize = 120;
 
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
-    pub fn new(config: Config) -> Self {
-        let auth_manager = AuthManager::shared_from_config(&config, false);
-        let local_runtime_paths = ExecServerRuntimePaths::from_optional_paths(
-            std::env::current_exe().ok(),
-            config.codex_linux_sandbox_exe.clone(),
-        )
-        .expect("codex-acp requires valid exec runtime paths");
+    pub fn new(config: Config, codex_linux_sandbox_exe: Option<PathBuf>) -> std::io::Result<Self> {
+        let auth_manager = AuthManager::shared(
+            config.codex_home.to_path_buf(),
+            false,
+            config.cli_auth_credentials_store_mode,
+            Some(config.chatgpt_base_url.clone()),
+        );
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
@@ -80,28 +80,214 @@ impl CodexAgent {
                 default_mode_request_user_input: false,
             },
             Arc::new(EnvironmentManager::new(EnvironmentManagerArgs::from_env(
-                local_runtime_paths,
+                ExecServerRuntimePaths::new(std::env::current_exe()?, codex_linux_sandbox_exe)?,
             ))),
             None,
         );
-        Self {
+        Ok(Self {
             auth_manager,
             client_capabilities,
             config,
             thread_manager,
-            sessions: Rc::default(),
+            sessions: Arc::default(),
             session_roots,
-        }
+        })
+    }
+
+    /// Build and run the ACP agent, serving requests over the given transport.
+    pub async fn serve(
+        self: Arc<Self>,
+        transport: impl ConnectTo<Agent> + 'static,
+    ) -> acp::Result<()> {
+        let agent = self;
+        Agent
+            .builder()
+            .name("codex-acp")
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: InitializeRequest, responder, _cx| {
+                        responder.respond_with_result(agent.initialize(request).await)
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: AuthenticateRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.authenticate(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: LogoutRequest, responder, cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.logout(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: NewSessionRequest, responder, cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        let session_cx = cx.clone();
+                        cx.spawn(async move {
+                            responder
+                                .respond_with_result(agent.new_session(request, session_cx).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: LoadSessionRequest, responder, cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        let session_cx = cx.clone();
+                        cx.spawn(async move {
+                            responder
+                                .respond_with_result(agent.load_session(request, session_cx).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: ListSessionsRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.list_sessions(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: CloseSessionRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.close_session(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: PromptRequest, responder, cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.prompt(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_notification(
+                {
+                    let agent = agent.clone();
+                    async move |notification: CancelNotification, cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            if let Err(e) = agent.cancel(notification).await {
+                                tracing::error!("Error handling cancel: {:?}", e);
+                            }
+                            Ok(())
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_notification!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: SetSessionModeRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.set_session_mode(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: SetSessionModelRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(agent.set_session_model(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
+                    async move |request: SetSessionConfigOptionRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        cx.spawn(async move {
+                            responder
+                                .respond_with_result(agent.set_session_config_option(request).await)
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .connect_to(transport)
+            .await
     }
 
     fn session_id_from_thread_id(thread_id: ThreadId) -> SessionId {
         SessionId::new(thread_id.to_string())
     }
 
-    fn get_thread(&self, session_id: &SessionId) -> Result<Rc<Thread>, Error> {
+    fn get_thread(&self, session_id: &SessionId) -> Result<Arc<Thread>, Error> {
         Ok(self
             .sessions
-            .borrow()
+            .lock()
+            .unwrap()
             .get(session_id)
             .ok_or_else(|| Error::resource_not_found(None))?
             .clone())
@@ -150,19 +336,19 @@ impl CodexAgent {
                                 },
                                 env_http_headers: None,
                             },
-                            experimental_environment: None,
                             required: false,
                             enabled: true,
-                            supports_parallel_tool_calls: false,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
-                            default_tools_approval_mode: None,
                             disabled_tools: None,
                             enabled_tools: None,
                             disabled_reason: None,
                             scopes: None,
                             oauth_resource: None,
                             tools: Default::default(),
+                            experimental_environment: None,
+                            supports_parallel_tool_calls: false,
+                            default_tools_approval_mode: None,
                         },
                     );
                 }
@@ -189,19 +375,19 @@ impl CodexAgent {
                                 env_vars: vec![],
                                 cwd: Some(cwd.to_path_buf()),
                             },
-                            experimental_environment: None,
                             required: false,
                             enabled: true,
-                            supports_parallel_tool_calls: false,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
-                            default_tools_approval_mode: None,
                             disabled_tools: None,
                             enabled_tools: None,
                             disabled_reason: None,
                             scopes: None,
                             oauth_resource: None,
                             tools: Default::default(),
+                            experimental_environment: None,
+                            supports_parallel_tool_calls: false,
+                            default_tools_approval_mode: None,
                         },
                     );
                 }
@@ -244,8 +430,7 @@ impl CodexAgent {
     }
 }
 
-#[async_trait::async_trait(?Send)]
-impl Agent for CodexAgent {
+impl CodexAgent {
     async fn initialize(&self, request: InitializeRequest) -> Result<InitializeResponse, Error> {
         let InitializeRequest {
             protocol_version,
@@ -308,8 +493,8 @@ impl Agent for CodexAgent {
             CodexAuthMethod::ChatGpt => {
                 // Perform browser/device login via codex-rs, then report success/failure to the client.
                 let opts = codex_login::ServerOptions::new(
-                    self.config.codex_home.clone().to_path_buf(),
-                    auth::CLIENT_ID.to_string(),
+                    self.config.codex_home.to_path_buf(),
+                    codex_login::auth::CLIENT_ID.to_string(),
                     None,
                     self.config.cli_auth_credentials_store_mode,
                 );
@@ -360,7 +545,11 @@ impl Agent for CodexAgent {
         Ok(LogoutResponse::new())
     }
 
-    async fn new_session(&self, request: NewSessionRequest) -> Result<NewSessionResponse, Error> {
+    async fn new_session(
+        &self,
+        request: NewSessionRequest,
+        cx: ConnectionTo<Client>,
+    ) -> Result<NewSessionResponse, Error> {
         // Check before sending if authentication was successful or not
         self.check_auth().await?;
 
@@ -388,18 +577,20 @@ impl Agent for CodexAgent {
             .lock()
             .unwrap()
             .insert(session_id.clone(), config.cwd.to_path_buf());
-        let thread = Rc::new(Thread::new(
+        let thread = Arc::new(Thread::new(
             session_id.clone(),
             thread,
             self.auth_manager.clone(),
             self.thread_manager.get_models_manager(),
             self.client_capabilities.clone(),
             config.clone(),
+            cx,
         ));
         let load = thread.load().await?;
 
         self.sessions
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .insert(session_id.clone(), thread);
 
         debug!("Created new session with {} MCP servers", num_mcp_servers);
@@ -413,6 +604,7 @@ impl Agent for CodexAgent {
     async fn load_session(
         &self,
         request: LoadSessionRequest,
+        cx: ConnectionTo<Client>,
     ) -> Result<LoadSessionResponse, Error> {
         info!("Loading session: {}", request.session_id);
         // Check before sending if authentication was successful or not
@@ -438,7 +630,7 @@ impl Agent for CodexAgent {
         let rollout_items = match &history {
             InitialHistory::Resumed(resumed) => resumed.history.clone(),
             InitialHistory::Forked(items) => items.clone(),
-            InitialHistory::New | InitialHistory::Cleared => Vec::new(),
+            InitialHistory::Cleared | InitialHistory::New => Vec::new(),
         };
 
         let mut config = self.build_session_config(&cwd, mcp_servers)?;
@@ -458,13 +650,14 @@ impl Agent for CodexAgent {
 
         Self::sync_config_with_session(&mut config, &session_configured)?;
 
-        let thread = Rc::new(Thread::new(
+        let thread = Arc::new(Thread::new(
             session_id.clone(),
             thread,
             self.auth_manager.clone(),
             self.thread_manager.get_models_manager(),
             self.client_capabilities.clone(),
             config.clone(),
+            cx,
         ));
 
         thread.replay_history(rollout_items).await?;
@@ -475,7 +668,7 @@ impl Agent for CodexAgent {
             .lock()
             .unwrap()
             .insert(session_id.clone(), config.cwd.to_path_buf());
-        self.sessions.borrow_mut().insert(session_id, thread);
+        self.sessions.lock().unwrap().insert(session_id, thread);
 
         Ok(LoadSessionResponse::new()
             .modes(load.modes)
@@ -558,7 +751,7 @@ impl Agent for CodexAgent {
                     .map_err(Error::into_internal_error)?,
             )
             .await;
-        self.sessions.borrow_mut().remove(&request.session_id);
+        self.sessions.lock().unwrap().remove(&request.session_id);
         self.session_roots
             .lock()
             .unwrap()
@@ -718,62 +911,4 @@ fn format_session_title(message: &str) -> Option<String> {
     } else {
         Some(truncate_graphemes(trimmed, SESSION_TITLE_MAX_GRAPHEMES))
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use codex_core::config::ConfigOverrides;
-    use codex_protocol::{
-        config_types::{ApprovalsReviewer, ServiceTier},
-        openai_models::ReasoningEffort,
-        protocol::{AskForApproval, SandboxPolicy},
-    };
-
-    #[tokio::test]
-    async fn sync_config_with_session_restores_runtime_state() -> anyhow::Result<()> {
-        let mut config = Config::load_with_cli_overrides_and_harness_overrides(
-            vec![],
-            ConfigOverrides::default(),
-        )
-        .await?;
-        let session_configured = SessionConfiguredEvent {
-            session_id: ThreadId::new(),
-            forked_from_id: None,
-            thread_name: Some("Fast session".to_string()),
-            model: "gpt-5".to_string(),
-            model_provider_id: "openai".to_string(),
-            service_tier: Some(ServiceTier::Fast),
-            approval_policy: AskForApproval::OnFailure,
-            approvals_reviewer: ApprovalsReviewer::default(),
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            permission_profile: None,
-            cwd: std::env::current_dir()?.try_into()?,
-            reasoning_effort: Some(ReasoningEffort::High),
-            history_log_id: 0,
-            history_entry_count: 0,
-            initial_messages: None,
-            network_proxy: None,
-            rollout_path: None,
-        };
-
-        CodexAgent::sync_config_with_session(&mut config, &session_configured)?;
-
-        assert_eq!(config.model.as_deref(), Some("gpt-5"));
-        assert_eq!(config.model_provider_id, "openai");
-        assert_eq!(config.service_tier, Some(ServiceTier::Fast));
-        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
-        assert_eq!(
-            *config.permissions.approval_policy.get(),
-            AskForApproval::OnFailure
-        );
-        assert!(matches!(
-            config.permissions.sandbox_policy.get(),
-            SandboxPolicy::DangerFullAccess
-        ));
-        assert_eq!(config.cwd.to_path_buf(), std::env::current_dir()?);
-
-        Ok(())
-    }
-
 }
