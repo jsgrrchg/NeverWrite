@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Sender},
@@ -10,14 +9,17 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_client_protocol::{
-    Agent, Client, ClientCapabilities, ClientSideConnection, ContentBlock, ContentChunk,
-    FileSystemCapabilities, Implementation, InitializeRequest, NewSessionRequest, PermissionOption,
-    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
-    SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, SetSessionModelRequest,
-    ToolCall, ToolCallContent, ToolCallStatus,
+use agent_client_protocol::schema::{
+    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, FileSystemCapabilities,
+    Implementation, InitializeRequest, Meta, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
 };
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
     AiMessageCompletedPayload, AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption,
@@ -38,7 +40,7 @@ use portable_pty::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::{process::Command, runtime::Builder, sync::oneshot, task::LocalSet};
+use tokio::{process::Command, runtime::Builder, sync::oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::RpcOutput;
@@ -1232,12 +1234,7 @@ impl NativeAcpClient {
         );
     }
 
-    fn record_terminal_meta(
-        &self,
-        session_id: &str,
-        tool_call_id: &str,
-        meta: Option<&agent_client_protocol::Meta>,
-    ) {
+    fn record_terminal_meta(&self, session_id: &str, tool_call_id: &str, meta: Option<&Meta>) {
         let Some(meta) = meta else {
             return;
         };
@@ -1374,10 +1371,7 @@ impl NativeAcpClient {
             );
         }
     }
-}
 
-#[async_trait::async_trait(?Send)]
-impl Client for NativeAcpClient {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
@@ -1542,8 +1536,7 @@ fn start_acp_session(
                 return;
             }
         };
-        let local = LocalSet::new();
-        local.block_on(&runtime, async move {
+        runtime.block_on(async move {
             run_acp_actor(
                 spec,
                 event_tx,
@@ -1622,82 +1615,124 @@ async fn run_acp_actor_inner(
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
     };
     let permission_waiters = client.permission_waiters.clone();
-    let (connection, io_task) = ClientSideConnection::new(
-        client.clone(),
-        stdin.compat_write(),
-        stdout.compat(),
-        |fut| {
-            tokio::task::spawn_local(fut);
-        },
-    );
-    let connection = Rc::new(connection);
-    tokio::task::spawn_local({
-        let event_tx = event_tx.clone();
-        let runtime_id = spec.runtime_id.clone();
-        async move {
-            let result = io_task.await.map_err(|error| error.to_string());
-            let message = match result {
-                Ok(()) => "The AI runtime process exited.".to_string(),
-                Err(error) => format!("The AI runtime process disconnected unexpectedly: {error}"),
-            };
+    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let session_created = Arc::new(AtomicBool::new(false));
+    let session_created_for_connection = Arc::clone(&session_created);
+    let disconnect_runtime_id = spec.runtime_id.clone();
+    let event_tx_for_connection = event_tx.clone();
+
+    let result = Client
+        .builder()
+        .name("neverwrite")
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: RequestPermissionRequest,
+                            responder,
+                            cx: ConnectionTo<Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.request_permission(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: SessionNotification, _cx: ConnectionTo<Agent>| {
+                    client.session_notification(notification).await
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
+            connection
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::LATEST)
+                        .client_capabilities(
+                            ClientCapabilities::new().fs(FileSystemCapabilities::new()),
+                        )
+                        .client_info(
+                            Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
+                                .title("NeverWrite"),
+                        ),
+                )
+                .block_task()
+                .await?;
+            emit_event(
+                &event_tx_for_connection,
+                AI_RUNTIME_CONNECTION_EVENT,
+                json!(AiRuntimeConnectionPayload {
+                    runtime_id: spec.runtime_id.clone(),
+                    status: "ready".to_string(),
+                    message: None,
+                }),
+            );
+            let response = connection
+                .send_request(NewSessionRequest::new(spec.cwd.clone()))
+                .block_task()
+                .await?;
+            let session = session_from_acp_response(
+                &spec.runtime_id,
+                response.session_id.0.to_string(),
+                response.models,
+                response.modes,
+                response.config_options,
+            );
+            client
+                .tool_diffs
+                .register_session_cwd(&session.session_id, spec.cwd.clone());
+            session_created_for_connection.store(true, Ordering::Relaxed);
+            let _ = created_tx.send(Ok(session));
+            loop {
+                tokio::select! {
+                    maybe_command = command_rx.recv() => {
+                        let Some(command) = maybe_command else {
+                            return Ok(());
+                        };
+                        handle_acp_command(command, &connection, &client, &permission_waiters).await;
+                    }
+                    wait_result = child.wait() => {
+                        let message = wait_result
+                            .map(acp_child_exit_message)
+                            .unwrap_or_else(|error| {
+                                format!("Failed to wait for AI runtime process: {error}")
+                            });
+                        return Err(agent_client_protocol::Error::internal_error().data(message));
+                    }
+                }
+            }
+        })
+        .await;
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if session_created.load(Ordering::Relaxed) => {
             emit_event(
                 &event_tx,
                 AI_RUNTIME_CONNECTION_EVENT,
                 json!(AiRuntimeConnectionPayload {
-                    runtime_id,
+                    runtime_id: disconnect_runtime_id,
                     status: "error".to_string(),
-                    message: Some(message),
+                    message: Some(format!(
+                        "The AI runtime process disconnected unexpectedly: {error}"
+                    )),
                 }),
             );
+            Ok(())
         }
-    });
-    connection
-        .initialize(
-            InitializeRequest::new(ProtocolVersion::LATEST)
-                .client_capabilities(ClientCapabilities::new().fs(FileSystemCapabilities::new()))
-                .client_info(
-                    Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
-                        .title("NeverWrite"),
-                ),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    emit_event(
-        &event_tx,
-        AI_RUNTIME_CONNECTION_EVENT,
-        json!(AiRuntimeConnectionPayload {
-            runtime_id: spec.runtime_id.clone(),
-            status: "ready".to_string(),
-            message: None,
-        }),
-    );
-    let response = connection
-        .new_session(NewSessionRequest::new(spec.cwd.clone()))
-        .await
-        .map_err(|error| error.to_string())?;
-    let session = session_from_acp_response(
-        &spec.runtime_id,
-        response.session_id.0.to_string(),
-        response.models,
-        response.modes,
-        response.config_options,
-    );
-    client
-        .tool_diffs
-        .register_session_cwd(&session.session_id, spec.cwd.clone());
-    let _ = created_tx.send(Ok(session));
-    tokio::task::spawn_local(async move {
-        let _ = child.wait().await;
-    });
-    while let Some(command) = command_rx.recv().await {
-        handle_acp_command(command, &connection, &client, &permission_waiters).await;
+        Err(error) => Err(error.to_string()),
     }
-    Ok(())
 }
 
 async fn handle_acp_command(
     command: AcpCommand,
-    connection: &Rc<ClientSideConnection>,
+    connection: &ConnectionTo<Agent>,
     client: &NativeAcpClient,
     permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
 ) {
@@ -1707,15 +1742,16 @@ async fn handle_acp_command(
             content,
             response_tx,
         } => {
-            let connection = Rc::clone(connection);
+            let connection = connection.clone();
             let client = client.clone();
-            tokio::task::spawn_local(async move {
+            tokio::spawn(async move {
                 let message_id = client.begin_message(&session_id);
                 let result = connection
-                    .prompt(PromptRequest::new(
+                    .send_request(PromptRequest::new(
                         SessionId::new(session_id.clone()),
                         vec![ContentBlock::from(content)],
                     ))
+                    .block_task()
                     .await
                     .map(|_| ())
                     .map_err(|error| error.to_string());
@@ -1748,10 +1784,11 @@ async fn handle_acp_command(
             response_tx,
         } => {
             let result = connection
-                .set_session_model(SetSessionModelRequest::new(
+                .send_request(SetSessionModelRequest::new(
                     SessionId::new(session_id),
                     model_id,
                 ))
+                .block_task()
                 .await
                 .map(|_| ())
                 .map_err(|error| error.to_string());
@@ -1763,10 +1800,11 @@ async fn handle_acp_command(
             response_tx,
         } => {
             let result = connection
-                .set_session_mode(SetSessionModeRequest::new(
+                .send_request(SetSessionModeRequest::new(
                     SessionId::new(session_id),
                     mode_id,
                 ))
+                .block_task()
                 .await
                 .map(|_| ())
                 .map_err(|error| error.to_string());
@@ -1779,11 +1817,12 @@ async fn handle_acp_command(
             response_tx,
         } => {
             let result = connection
-                .set_session_config_option(SetSessionConfigOptionRequest::new(
+                .send_request(SetSessionConfigOptionRequest::new(
                     SessionId::new(session_id),
                     option_id,
                     value.as_str(),
                 ))
+                .block_task()
                 .await
                 .map(|_| ())
                 .map_err(|error| error.to_string());
@@ -1794,10 +1833,7 @@ async fn handle_acp_command(
             response_tx,
         } => {
             let result = connection
-                .cancel(agent_client_protocol::CancelNotification::new(
-                    SessionId::new(session_id),
-                ))
-                .await
+                .send_notification(CancelNotification::new(SessionId::new(session_id)))
                 .map_err(|error| error.to_string());
             let _ = response_tx.send(result);
         }
@@ -1832,9 +1868,9 @@ async fn handle_acp_command(
 fn session_from_acp_response(
     runtime_id: &str,
     session_id: String,
-    models_state: Option<agent_client_protocol::SessionModelState>,
-    modes_state: Option<agent_client_protocol::SessionModeState>,
-    config_options: Option<Vec<agent_client_protocol::SessionConfigOption>>,
+    models_state: Option<SessionModelState>,
+    modes_state: Option<SessionModeState>,
+    config_options: Option<Vec<SessionConfigOption>>,
 ) -> AiSession {
     let mapped_models = models_state
         .as_ref()
@@ -1878,16 +1914,21 @@ fn session_from_acp_response(
     }
 }
 
+fn acp_child_exit_message(status: std::process::ExitStatus) -> String {
+    if status.success() {
+        "The AI runtime process exited.".to_string()
+    } else {
+        format!("The AI runtime process exited with status {status}.")
+    }
+}
+
 #[derive(Default)]
 struct MappedSessionModels {
     models: Vec<AiModelOption>,
     efforts_by_model: HashMap<String, Vec<String>>,
 }
 
-fn map_session_models(
-    runtime_id: &str,
-    state: &agent_client_protocol::SessionModelState,
-) -> MappedSessionModels {
+fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSessionModels {
     let mut mapped = MappedSessionModels::default();
 
     for model in &state.available_models {
@@ -1918,10 +1959,7 @@ fn map_session_models(
     mapped
 }
 
-fn map_session_modes(
-    runtime_id: &str,
-    state: &agent_client_protocol::SessionModeState,
-) -> Vec<AiModeOption> {
+fn map_session_modes(runtime_id: &str, state: &SessionModeState) -> Vec<AiModeOption> {
     state
         .available_modes
         .iter()
@@ -1937,18 +1975,18 @@ fn map_session_modes(
 
 fn map_session_config_options(
     runtime_id: &str,
-    options: Vec<agent_client_protocol::SessionConfigOption>,
+    options: Vec<SessionConfigOption>,
 ) -> Vec<AiConfigOption> {
     options
         .into_iter()
         .filter_map(|option| {
             let select = match option.kind {
-                agent_client_protocol::SessionConfigKind::Select(select) => select,
+                SessionConfigKind::Select(select) => select,
                 _ => return None,
             };
             let select_options = match select.options {
-                agent_client_protocol::SessionConfigSelectOptions::Ungrouped(options) => options,
-                agent_client_protocol::SessionConfigSelectOptions::Grouped(groups) => {
+                SessionConfigSelectOptions::Ungrouped(options) => options,
+                SessionConfigSelectOptions::Grouped(groups) => {
                     groups.into_iter().flat_map(|group| group.options).collect()
                 }
                 _ => Vec::new(),
@@ -1977,7 +2015,7 @@ fn map_session_config_options(
 
 fn map_config_option_category(
     option_id: &str,
-    category: Option<&agent_client_protocol::SessionConfigOptionCategory>,
+    category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
     let normalized_id = option_id.to_ascii_lowercase();
     if matches!(
@@ -1988,16 +2026,10 @@ fn map_config_option_category(
     }
 
     match category {
-        Some(agent_client_protocol::SessionConfigOptionCategory::Mode) => {
-            AiConfigOptionCategory::Mode
-        }
-        Some(agent_client_protocol::SessionConfigOptionCategory::Model) => {
-            AiConfigOptionCategory::Model
-        }
-        Some(agent_client_protocol::SessionConfigOptionCategory::ThoughtLevel) => {
-            AiConfigOptionCategory::Reasoning
-        }
-        Some(agent_client_protocol::SessionConfigOptionCategory::Other(value))
+        Some(SessionConfigOptionCategory::Mode) => AiConfigOptionCategory::Mode,
+        Some(SessionConfigOptionCategory::Model) => AiConfigOptionCategory::Model,
+        Some(SessionConfigOptionCategory::ThoughtLevel) => AiConfigOptionCategory::Reasoning,
+        Some(SessionConfigOptionCategory::Other(value))
             if matches!(
                 value.as_str(),
                 "thought_level" | "effort" | "reasoning" | "reasoning_effort"
@@ -2012,7 +2044,7 @@ fn map_config_option_category(
 fn ensure_reasoning_config_option(
     runtime_id: &str,
     mut config_options: Vec<AiConfigOption>,
-    models_state: Option<&agent_client_protocol::SessionModelState>,
+    models_state: Option<&SessionModelState>,
     efforts_by_model: &HashMap<String, Vec<String>>,
 ) -> Vec<AiConfigOption> {
     if config_options
@@ -2070,7 +2102,7 @@ fn ensure_reasoning_config_option(
 }
 
 fn selected_model_id(
-    models_state: Option<&agent_client_protocol::SessionModelState>,
+    models_state: Option<&SessionModelState>,
     config_options: &[AiConfigOption],
 ) -> Option<String> {
     config_options
@@ -2086,7 +2118,7 @@ fn selected_model_id(
 }
 
 fn selected_mode_id(
-    modes_state: Option<&agent_client_protocol::SessionModeState>,
+    modes_state: Option<&SessionModeState>,
     config_options: &[AiConfigOption],
 ) -> Option<String> {
     config_options
@@ -2106,12 +2138,10 @@ fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload 
         option_id: option.option_id.0.to_string(),
         name: option.name,
         kind: match option.kind {
-            agent_client_protocol::PermissionOptionKind::AllowOnce => "allow_once".to_string(),
-            agent_client_protocol::PermissionOptionKind::AllowAlways => "allow_always".to_string(),
-            agent_client_protocol::PermissionOptionKind::RejectOnce => "reject_once".to_string(),
-            agent_client_protocol::PermissionOptionKind::RejectAlways => {
-                "reject_always".to_string()
-            }
+            PermissionOptionKind::AllowOnce => "allow_once".to_string(),
+            PermissionOptionKind::AllowAlways => "allow_always".to_string(),
+            PermissionOptionKind::RejectOnce => "reject_once".to_string(),
+            PermissionOptionKind::RejectAlways => "reject_always".to_string(),
             _ => "other".to_string(),
         },
     }
@@ -2176,7 +2206,7 @@ fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
     })
 }
 
-fn terminal_output_from_meta(meta: &agent_client_protocol::Meta) -> Option<String> {
+fn terminal_output_from_meta(meta: &Meta) -> Option<String> {
     meta.get("terminal_output")
         .and_then(|value| value.as_object())
         .and_then(|object| object.get("data"))
@@ -2184,7 +2214,7 @@ fn terminal_output_from_meta(meta: &agent_client_protocol::Meta) -> Option<Strin
         .map(ToString::to_string)
 }
 
-fn terminal_exit_from_meta(meta: &agent_client_protocol::Meta) -> Option<TerminalExitMeta> {
+fn terminal_exit_from_meta(meta: &Meta) -> Option<TerminalExitMeta> {
     let object = meta.get("terminal_exit")?.as_object()?;
     let exit_code = object.get("exit_code").and_then(|value| value.as_i64());
     let signal = object
@@ -2232,18 +2262,18 @@ fn call_state_key(session_id: &str, tool_call_id: &str) -> String {
     format!("{session_id}::{tool_call_id}")
 }
 
-fn tool_kind_label(kind: &agent_client_protocol::ToolKind) -> String {
+fn tool_kind_label(kind: &ToolKind) -> String {
     match kind {
-        agent_client_protocol::ToolKind::Read => "read",
-        agent_client_protocol::ToolKind::Edit => "edit",
-        agent_client_protocol::ToolKind::Delete => "delete",
-        agent_client_protocol::ToolKind::Move => "move",
-        agent_client_protocol::ToolKind::Search => "search",
-        agent_client_protocol::ToolKind::Execute => "execute",
-        agent_client_protocol::ToolKind::Think => "think",
-        agent_client_protocol::ToolKind::Fetch => "fetch",
-        agent_client_protocol::ToolKind::SwitchMode => "switch_mode",
-        agent_client_protocol::ToolKind::Other => "other",
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Delete => "delete",
+        ToolKind::Move => "move",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Think => "think",
+        ToolKind::Fetch => "fetch",
+        ToolKind::SwitchMode => "switch_mode",
+        ToolKind::Other => "other",
         _ => "other",
     }
     .to_string()
@@ -3561,7 +3591,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::{
+    use agent_client_protocol::schema::{
         Meta, ModelInfo, PermissionOptionKind, SessionConfigOption, SessionConfigOptionCategory,
         SessionConfigSelectOption, SessionModelState, SessionNotification, SessionUpdate,
         ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -3750,10 +3780,10 @@ mod tests {
                 "content": "new text",
             }));
 
-        run_client_future(Client::session_notification(
-            &client,
-            SessionNotification::new("session-1", SessionUpdate::ToolCall(tool_call)),
-        ))
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
         .unwrap();
 
         let event = event_rx
@@ -3804,10 +3834,10 @@ mod tests {
                 "file_path": "note.md",
                 "content": "after",
             }));
-        run_client_future(Client::session_notification(
-            &client,
-            SessionNotification::new("session-1", SessionUpdate::ToolCall(pending)),
-        ))
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(pending),
+        )))
         .unwrap();
         let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
 
@@ -3817,10 +3847,10 @@ mod tests {
                 .status(ToolCallStatus::Completed)
                 .content(vec![ToolCallContent::from("File updated")]),
         );
-        run_client_future(Client::session_notification(
-            &client,
-            SessionNotification::new("session-1", SessionUpdate::ToolCallUpdate(completed)),
-        ))
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(completed),
+        )))
         .unwrap();
 
         let event = event_rx
@@ -3862,10 +3892,10 @@ mod tests {
         let started = ToolCall::new(ToolCallId::from("tool-1"), "Run tests")
             .kind(ToolKind::Execute)
             .status(ToolCallStatus::InProgress);
-        run_client_future(Client::session_notification(
-            &client,
-            SessionNotification::new("session-1", SessionUpdate::ToolCall(started)),
-        ))
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(started),
+        )))
         .unwrap();
         let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
 
@@ -3874,10 +3904,10 @@ mod tests {
                 "terminal_output".to_string(),
                 json!({ "data": "running tests\n" }),
             )]));
-        run_client_future(Client::session_notification(
-            &client,
-            SessionNotification::new("session-1", SessionUpdate::ToolCallUpdate(update)),
-        ))
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(update),
+        )))
         .unwrap();
 
         let event = event_rx
@@ -3906,10 +3936,10 @@ mod tests {
                 (ACP_STATUS_EMPHASIS_KEY.to_string(), json!("info")),
             ]));
 
-        run_client_future(Client::session_notification(
-            &client,
-            SessionNotification::new("session-1", SessionUpdate::ToolCall(tool_call)),
-        ))
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
         .unwrap();
 
         let event = event_rx
@@ -4004,7 +4034,7 @@ mod tests {
                 PermissionOptionKind::AllowOnce,
             )],
         );
-        run_client_future(Client::request_permission(&client, request)).unwrap();
+        run_client_future(client.request_permission(request)).unwrap();
 
         let (saw_tool_activity_diffs, saw_permission_diffs) = event_thread.join().unwrap();
         assert!(saw_tool_activity_diffs);

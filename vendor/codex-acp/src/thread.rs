@@ -1,25 +1,27 @@
 use std::{
-    cell::RefCell,
     collections::{HashMap, HashSet},
-    ops::DerefMut,
+    future::Future,
     path::{Path, PathBuf},
-    rc::Rc,
+    pin::Pin,
     sync::{Arc, LazyLock, Mutex},
 };
 
 use agent_client_protocol::{
-    AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate, Client, ClientCapabilities,
-    ConfigOptionUpdate, Content, ContentBlock, ContentChunk, Diff, EmbeddedResource,
-    EmbeddedResourceResource, Error, LoadSessionResponse, Meta, ModelId, ModelInfo,
-    PermissionOption, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
-    SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
-    SessionModeState, SessionModelState, SessionNotification, SessionUpdate, StopReason, Terminal,
-    TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
-    UsageUpdate,
+    Client, ConnectionTo, Error,
+    schema::{
+        AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate, ClientCapabilities,
+        ConfigOptionUpdate, Content, ContentBlock, ContentChunk, Diff, EmbeddedResource,
+        EmbeddedResourceResource, LoadSessionResponse, Meta, ModelId, ModelInfo, PermissionOption,
+        PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptRequest,
+        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+        ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
+        SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
+        SessionModeState, SessionModelState, SessionNotification, SessionUpdate, StopReason,
+        Terminal, TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId,
+        ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        UnstructuredCommandInput, UsageUpdate,
+    },
 };
 use codex_apply_patch::parse_patch;
 use codex_core::{
@@ -75,10 +77,32 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::{
-    ACP_CLIENT,
-    prompt_args::{CustomPrompt, expand_custom_prompt, parse_slash_name},
-};
+use crate::prompt_args::{CustomPrompt, expand_custom_prompt, parse_slash_name};
+
+/// Abstraction over the ACP connection for sending notifications and requests
+/// back to the client.
+trait ClientSender: Send + Sync + 'static {
+    fn send_session_notification(&self, notif: SessionNotification) -> Result<(), Error>;
+    fn request_permission(
+        &self,
+        req: RequestPermissionRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<RequestPermissionResponse, Error>> + Send + '_>>;
+}
+
+struct AcpConnection(ConnectionTo<Client>);
+
+impl ClientSender for AcpConnection {
+    fn send_session_notification(&self, notif: SessionNotification) -> Result<(), Error> {
+        self.0.send_notification(notif)
+    }
+
+    fn request_permission(
+        &self,
+        req: RequestPermissionRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<RequestPermissionResponse, Error>> + Send + '_>> {
+        Box::pin(async move { self.0.send_request(req).block_task().await })
+    }
+}
 
 static APPROVAL_PRESETS: LazyLock<Vec<ApprovalPreset>> = LazyLock::new(builtin_approval_presets);
 const INIT_COMMAND_PROMPT: &str = include_str!("./prompt_for_init_command.md");
@@ -156,7 +180,7 @@ struct NeverWriteDiffHunkLine {
 
 /// Trait for abstracting over the `CodexThread` to make testing easier.
 #[async_trait::async_trait]
-pub trait CodexThreadImpl {
+pub trait CodexThreadImpl: Send + Sync {
     async fn submit(&self, op: Op) -> Result<String, CodexErr>;
     async fn next_event(&self) -> Result<Event, CodexErr>;
 }
@@ -173,7 +197,7 @@ impl CodexThreadImpl for CodexThread {
 }
 
 #[async_trait::async_trait]
-pub trait ModelsManagerImpl {
+pub trait ModelsManagerImpl: Send + Sync {
     async fn get_model(&self, model_id: &Option<String>) -> String;
     async fn list_models(&self) -> Vec<ModelPreset>;
 }
@@ -260,13 +284,14 @@ impl Thread {
         models_manager: Arc<dyn ModelsManagerImpl>,
         client_capabilities: Arc<Mutex<ClientCapabilities>>,
         config: Config,
+        cx: ConnectionTo<Client>,
     ) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (resolution_tx, resolution_rx) = mpsc::unbounded_channel();
 
         let actor = ThreadActor::new(
             auth,
-            SessionClient::new(session_id, client_capabilities),
+            SessionClient::new(session_id, cx, client_capabilities),
             thread.clone(),
             models_manager,
             config,
@@ -274,7 +299,7 @@ impl Thread {
             resolution_tx,
             resolution_rx,
         );
-        let handle = tokio::task::spawn_local(actor.spawn());
+        let handle = tokio::spawn(actor.spawn());
 
         Self {
             thread,
@@ -1179,7 +1204,7 @@ impl PromptState {
         let resolution_tx = self.resolution_tx.clone();
         let submission_id = self.submission_id.clone();
         let resolved_request_key = request_key.clone();
-        let handle = tokio::task::spawn_local(async move {
+        let handle = tokio::spawn(async move {
             let response = client.request_permission(tool_call, options).await;
             drop(
                 resolution_tx.send(ThreadMessage::PermissionRequestResolved {
@@ -3147,15 +3172,19 @@ fn parse_command_tool_call(parsed_cmd: Vec<ParsedCommand>, cwd: &Path) -> ParseC
 #[derive(Clone)]
 struct SessionClient {
     session_id: SessionId,
-    client: Arc<dyn Client>,
+    client: Arc<dyn ClientSender>,
     client_capabilities: Arc<Mutex<ClientCapabilities>>,
 }
 
 impl SessionClient {
-    fn new(session_id: SessionId, client_capabilities: Arc<Mutex<ClientCapabilities>>) -> Self {
+    fn new(
+        session_id: SessionId,
+        cx: ConnectionTo<Client>,
+        client_capabilities: Arc<Mutex<ClientCapabilities>>,
+    ) -> Self {
         Self {
             session_id,
-            client: ACP_CLIENT.get().expect("Client should be set").clone(),
+            client: Arc::new(AcpConnection(cx)),
             client_capabilities,
         }
     }
@@ -3163,7 +3192,7 @@ impl SessionClient {
     #[cfg(test)]
     fn with_client(
         session_id: SessionId,
-        client: Arc<dyn Client>,
+        client: Arc<dyn ClientSender>,
         client_capabilities: Arc<Mutex<ClientCapabilities>>,
     ) -> Self {
         Self {
@@ -3190,8 +3219,7 @@ impl SessionClient {
     async fn send_notification(&self, update: SessionUpdate) {
         if let Err(e) = self
             .client
-            .session_notification(SessionNotification::new(self.session_id.clone(), update))
-            .await
+            .send_session_notification(SessionNotification::new(self.session_id.clone(), update))
         {
             error!("Failed to send session notification: {:?}", e);
         }
@@ -3306,7 +3334,7 @@ struct ThreadActor<A> {
     /// The configuration for the thread.
     config: Config,
     /// The custom prompts loaded for this workspace.
-    custom_prompts: Rc<RefCell<Vec<CustomPrompt>>>,
+    custom_prompts: Arc<Mutex<Vec<CustomPrompt>>>,
     /// The models available for this thread.
     models_manager: Arc<dyn ModelsManagerImpl>,
     /// Internal sender used to route spawned interaction results back to the actor.
@@ -3338,7 +3366,7 @@ impl<A: Auth> ThreadActor<A> {
             client,
             thread,
             config,
-            custom_prompts: Rc::default(),
+            custom_prompts: Arc::default(),
             models_manager,
             resolution_tx,
             submissions: HashMap::new(),
@@ -3390,8 +3418,8 @@ impl<A: Auth> ThreadActor<A> {
 
                 // Have this happen after the session is loaded by putting it
                 // in a separate task
-                tokio::task::spawn_local(async move {
-                    let mut new_custom_prompts = load_custom_prompts
+                tokio::spawn(async move {
+                    let new_custom_prompts = load_custom_prompts
                         .await
                         .map_err(|_| Error::internal_error())
                         .flatten()
@@ -3413,10 +3441,7 @@ impl<A: Auth> ThreadActor<A> {
                             )),
                         );
                     }
-                    std::mem::swap(
-                        custom_prompts.borrow_mut().deref_mut(),
-                        &mut new_custom_prompts,
-                    );
+                    *custom_prompts.lock().unwrap() = new_custom_prompts;
 
                     client
                         .send_notification(SessionUpdate::AvailableCommandsUpdate(
@@ -3542,7 +3567,7 @@ impl<A: Auth> ThreadActor<A> {
 
     async fn load_custom_prompts(&mut self) -> oneshot::Receiver<Result<Vec<CustomPrompt>, Error>> {
         let (response_tx, response_rx) = oneshot::channel();
-        drop(response_tx.send(Ok(self.custom_prompts.borrow().clone())));
+        drop(response_tx.send(Ok(self.custom_prompts.lock().unwrap().clone())));
         response_rx
     }
 
@@ -4117,9 +4142,12 @@ impl<A: Auth> ThreadActor<A> {
                     return Err(Error::auth_required());
                 }
                 _ => {
-                    if let Some(prompt) =
-                        expand_custom_prompt(name, rest, self.custom_prompts.borrow().as_ref())
-                            .map_err(|e| Error::invalid_params().data(e.user_message()))?
+                    if let Some(prompt) = expand_custom_prompt(
+                        name,
+                        rest,
+                        self.custom_prompts.lock().unwrap().as_ref(),
+                    )
+                    .map_err(|e| Error::invalid_params().data(e.user_message()))?
                     {
                         op = Op::UserInput {
                             environments: None,
@@ -5377,14 +5405,11 @@ fn extract_slash_command(content: &[UserInput]) -> Option<(&str, &str)> {
 mod tests {
     use std::sync::atomic::AtomicUsize;
 
-    use agent_client_protocol::TextContent;
+    use agent_client_protocol::schema::TextContent;
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_features::Feature;
     use codex_protocol::config_types::{ModeKind, ServiceTier};
-    use tokio::{
-        sync::{Mutex, mpsc::UnboundedSender},
-        task::LocalSet,
-    };
+    use tokio::sync::{Mutex, mpsc::UnboundedSender};
 
     use super::*;
 
@@ -5406,7 +5431,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5442,7 +5467,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5484,7 +5509,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5530,7 +5555,7 @@ mod tests {
                 anyhow::Ok(options)
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?
@@ -5575,7 +5600,7 @@ mod tests {
                 anyhow::Ok(options)
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?
@@ -5612,7 +5637,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5648,7 +5673,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5708,7 +5733,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5779,7 +5804,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5831,7 +5856,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5887,7 +5912,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -5943,7 +5968,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -6001,7 +6026,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -6064,7 +6089,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -6118,7 +6143,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;
@@ -6270,7 +6295,7 @@ mod tests {
         Arc<StubClient>,
         Arc<StubCodexThread>,
         UnboundedSender<ThreadMessage>,
-        LocalSet,
+        tokio::task::JoinHandle<()>,
     )> {
         setup_with_config(custom_prompts, |_| {}).await
     }
@@ -6283,7 +6308,7 @@ mod tests {
         Arc<StubClient>,
         Arc<StubCodexThread>,
         UnboundedSender<ThreadMessage>,
-        LocalSet,
+        tokio::task::JoinHandle<()>,
     )> {
         let session_id = SessionId::new("test");
         let client = Arc::new(StubClient::new());
@@ -6311,11 +6336,10 @@ mod tests {
             resolution_tx,
             resolution_rx,
         );
-        actor.custom_prompts = Rc::new(RefCell::new(custom_prompts));
+        actor.custom_prompts = Arc::new(std::sync::Mutex::new(custom_prompts));
 
-        let local_set = LocalSet::new();
-        local_set.spawn_local(actor.spawn());
-        Ok((session_id, client, conversation, message_tx, local_set))
+        let handle = tokio::spawn(actor.spawn());
+        Ok((session_id, client, conversation, message_tx, handle))
     }
 
     struct StubAuth;
@@ -6627,18 +6651,18 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait(?Send)]
-    impl Client for StubClient {
-        async fn request_permission(
-            &self,
-            _args: RequestPermissionRequest,
-        ) -> Result<RequestPermissionResponse, Error> {
-            unimplemented!()
-        }
-
-        async fn session_notification(&self, args: SessionNotification) -> Result<(), Error> {
+    impl ClientSender for StubClient {
+        fn send_session_notification(&self, args: SessionNotification) -> Result<(), Error> {
             self.notifications.lock().unwrap().push(args);
             Ok(())
+        }
+
+        fn request_permission(
+            &self,
+            _args: RequestPermissionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<RequestPermissionResponse, Error>> + Send + '_>>
+        {
+            Box::pin(async { unimplemented!() })
         }
     }
 
@@ -6660,7 +6684,7 @@ mod tests {
                 anyhow::Ok(())
             },
             async {
-                local_set.await;
+                drop(local_set.await);
                 anyhow::Ok(())
             }
         )?;

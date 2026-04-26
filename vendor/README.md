@@ -36,10 +36,15 @@ That means the directory is intentionally reproducible, but not yet minimal.
 ## Current Baselines
 
 - `codex-acp/`
-  - upstream baseline: `zed-industries/codex-acp` `0.11.1`
-  - synced against upstream commit `c3e95ca414f57a3db8a5bf5714719a102b98e0b5`
+  - upstream baseline: `zed-industries/codex-acp` `0.12.0`
+  - synced against upstream commit `ee9418a65befdf08c3793d9a92dd4a083f545fcf`
   - OpenAI Codex Rust crates: `rust-v0.124.0` (`e9fb49366c93a1478ec71cc41ecee415a197d036`)
+  - vendor ACP SDK: `agent-client-protocol` `0.11.1`
   - local NeverWrite delta remains intentionally bounded and currently lives in:
+    - `vendor/codex-acp/Cargo.toml`
+    - `vendor/codex-acp/src/lib.rs`
+    - `vendor/codex-acp/src/codex_agent.rs`
+    - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
   - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.29.0`
@@ -53,9 +58,16 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - canonical `neverwrite*` ACP metadata for status, plan updates, diffs and `user_input_request`
 - reconstruction of `unified_diff` into `old_text`, `new_text` and hunk metadata for inline review and edited-files flows
 - mode and approval-preset stability when Codex expands writable roots under `workspace-write`
+- custom slash-prompt expansion and Fast service-tier controls exposed to the desktop UI
+- session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
 - actor lifecycle behavior that does not keep the internal message channel alive after external senders disappear
 
-When updating Codex again, treat `c3e95ca` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
+When updating Codex again, treat `ee9418a` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
+
+The desktop backend and `crates/ai` are now aligned with
+`agent-client-protocol = 0.11.1`, matching the vendored Codex ACP runtime.
+The native backend tests cover the reconstructed diff, permission, and status
+metadata paths that NeverWrite depends on.
 
 ## Updating Vendored Runtimes
 
