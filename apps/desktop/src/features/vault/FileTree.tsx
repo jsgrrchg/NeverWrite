@@ -1,4 +1,12 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
+import {
+    useState,
+    useRef,
+    useEffect,
+    useLayoutEffect,
+    useCallback,
+    useMemo,
+    memo,
+} from "react";
 import { confirm, open } from "@neverwrite/runtime";
 import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
@@ -25,6 +33,7 @@ import {
     selectFocusedEditorTab,
     type NoteTab,
 } from "../../app/store/editorStore";
+import { useLayoutStore } from "../../app/store/layoutStore";
 import {
     buildEntryMovePath,
     buildNoteMoveOperations,
@@ -113,14 +122,9 @@ const TREE_ROW_BOX_STYLE = {
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
-// `--bg-tertiary` opaque gives a consistent, subtle delta against the
-// sidebar in both modes: a touch darker in light (sidebar is near-white,
-// bg-tertiary ≈ #ebebeb) and a touch lighter in dark (sidebar tint ≈ #1c1c1c,
-// bg-tertiary ≈ #2e2e2e). Avoids the light-mode wash-out that `bg-secondary`
-// at 65% produced, and the over-bright surface that `bg-primary` at high
-// alpha produced on light themes with warm vibrancy casts.
-const TREE_STICKY_ROW_BACKGROUND = "var(--bg-tertiary)";
-const TREE_STICKY_ROW_BACKDROP_FILTER = "saturate(180%) blur(14px)";
+const TREE_STICKY_CHROME_BACKGROUND =
+    "var(--sidebar-vibrancy-tint, var(--bg-secondary))";
+const TREE_STICKY_CHROME_BACKDROP_FILTER = "blur(10px)";
 // Drop shadow applied only to the deepest sticky folder wrapper,
 // not to individual rows — avoids stacking noise.
 const TREE_STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
@@ -128,6 +132,7 @@ const TREE_LABEL_CLASSNAME = "shrink-0 whitespace-nowrap";
 const TREE_GUIDE_COLOR = "var(--tree-guide-color)";
 const FILE_TREE_CONTEXT_MENU_VIEWPORT_MARGIN = 32;
 const FILE_TREE_CONTEXT_MENU_MIN_HEIGHT = 180;
+const FILE_TREE_SCROLL_RESTORE_MAX_ATTEMPTS = 12;
 
 // --- Tree building ---
 
@@ -457,9 +462,11 @@ function ChevronIcon({ open, size = 13 }: { open: boolean; size?: number }) {
 function TreeIndentGuides({
     depth,
     metrics,
+    offsetX = 0,
 }: {
     depth: number;
     metrics: TreeMetrics;
+    offsetX?: number;
 }) {
     if (depth <= 0) {
         return null;
@@ -480,7 +487,8 @@ function TreeIndentGuides({
                     metrics.basePadding +
                     Math.round(
                         level * metrics.indentStep + metrics.indentStep / 2,
-                    );
+                    ) +
+                    offsetX;
                 return (
                     <span
                         key={level}
@@ -718,7 +726,7 @@ interface FlatTreeRowViewProps {
     onRenameEntryConfirm: (entry: VaultEntryDto, newName: string) => void;
     onRenameCancel: () => void;
     showExtensions: boolean;
-    stickyTop?: number;
+    stickyContentOffsetX?: number;
 }
 
 const FlatTreeRowView = memo(
@@ -762,12 +770,14 @@ const FlatTreeRowView = memo(
         onRenameEntryConfirm,
         onRenameCancel,
         showExtensions,
-        stickyTop,
+        stickyContentOffsetX = 0,
     }: FlatTreeRowViewProps) {
         const renameInputRef = useRef<HTMLInputElement>(null);
         const createInputRef = useRef<HTMLInputElement>(null);
         const paddingLeft =
-            row.depth * metrics.indentStep + metrics.basePadding;
+            row.depth * metrics.indentStep +
+            metrics.basePadding +
+            stickyContentOffsetX;
         const noteOffset = Math.round(14 * metrics.scale);
 
         const isFolder = row.kind === "folder";
@@ -817,7 +827,11 @@ const FlatTreeRowView = memo(
                             ...TREE_ROW_BOX_STYLE,
                         }}
                     >
-                        <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                        <TreeIndentGuides
+                            depth={row.depth}
+                            metrics={metrics}
+                            offsetX={stickyContentOffsetX}
+                        />
                         <ChevronIcon
                             open={!!isExpanded}
                             size={metrics.smallIcon}
@@ -897,23 +911,18 @@ const FlatTreeRowView = memo(
                                     backgroundColor:
                                         "color-mix(in srgb, var(--accent) 22%, transparent)",
                                 }
-                              : stickyTop != null
-                                ? {
-                                      backgroundColor:
-                                          TREE_STICKY_ROW_BACKGROUND,
-                                      backdropFilter:
-                                          TREE_STICKY_ROW_BACKDROP_FILTER,
-                                      WebkitBackdropFilter:
-                                          TREE_STICKY_ROW_BACKDROP_FILTER,
-                                  }
-                                : {}),
+                              : {}),
                         outline: isDragOver
                             ? "1px solid var(--accent)"
                             : "none",
                         opacity: isDraggingFolder ? 0.4 : 1,
                     }}
                 >
-                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                    <TreeIndentGuides
+                        depth={row.depth}
+                        metrics={metrics}
+                        offsetX={stickyContentOffsetX}
+                    />
                     <ChevronIcon open={!!isExpanded} size={metrics.smallIcon} />
                     <FolderTypeIcon
                         folderName={row.path}
@@ -938,7 +947,11 @@ const FlatTreeRowView = memo(
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
-                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                    <TreeIndentGuides
+                        depth={row.depth}
+                        metrics={metrics}
+                        offsetX={stickyContentOffsetX}
+                    />
                     {row.mode === "folder" ? (
                         <FolderTypeIcon
                             folderName={row.path}
@@ -1027,7 +1040,11 @@ const FlatTreeRowView = memo(
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
-                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                    <TreeIndentGuides
+                        depth={row.depth}
+                        metrics={metrics}
+                        offsetX={stickyContentOffsetX}
+                    />
                     <FileTypeIcon
                         fileName={entry.relative_path}
                         kind="pdf"
@@ -1058,7 +1075,11 @@ const FlatTreeRowView = memo(
                             ...TREE_ROW_BOX_STYLE,
                         }}
                     >
-                        <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                        <TreeIndentGuides
+                            depth={row.depth}
+                            metrics={metrics}
+                            offsetX={stickyContentOffsetX}
+                        />
                         <FileTypeIcon
                             fileName={entry.relative_path}
                             mimeType={entry.mime_type}
@@ -1147,7 +1168,11 @@ const FlatTreeRowView = memo(
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
-                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                    <TreeIndentGuides
+                        depth={row.depth}
+                        metrics={metrics}
+                        offsetX={stickyContentOffsetX}
+                    />
                     <FileTypeIcon
                         fileName={entry.relative_path}
                         mimeType={entry.mime_type}
@@ -1177,7 +1202,11 @@ const FlatTreeRowView = memo(
                         ...TREE_ROW_BOX_STYLE,
                     }}
                 >
-                    <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                    <TreeIndentGuides
+                        depth={row.depth}
+                        metrics={metrics}
+                        offsetX={stickyContentOffsetX}
+                    />
                     <FileTypeIcon
                         fileName={note.path || note.id}
                         kind="note"
@@ -1260,7 +1289,11 @@ const FlatTreeRowView = memo(
                     ...TREE_ROW_BOX_STYLE,
                 }}
             >
-                <TreeIndentGuides depth={row.depth} metrics={metrics} />
+                <TreeIndentGuides
+                    depth={row.depth}
+                    metrics={metrics}
+                    offsetX={stickyContentOffsetX}
+                />
                 <FileTypeIcon
                     fileName={note.path || note.id}
                     kind="note"
@@ -1277,7 +1310,9 @@ const FlatTreeRowView = memo(
         // Callback props are stable (ref-backed) so they don't need comparison.
         if (prev.row !== next.row) return false;
         if (prev.metrics !== next.metrics) return false;
-        if (prev.stickyTop !== next.stickyTop) return false;
+        if (prev.stickyContentOffsetX !== next.stickyContentOffsetX) {
+            return false;
+        }
         if (prev.renamingNoteId !== next.renamingNoteId) return false;
         if (prev.renamingFolderPath !== next.renamingFolderPath) return false;
         if (prev.renamingEntryPath !== next.renamingEntryPath) return false;
@@ -1441,6 +1476,12 @@ interface DragState {
 
 export function FileTree() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
+    const getFileTreeScrollTop = useLayoutStore(
+        (s) => s.getFileTreeScrollTop,
+    );
+    const setFileTreeScrollTop = useLayoutStore(
+        (s) => s.setFileTreeScrollTop,
+    );
     const notes = useVaultStore((s) => s.notes);
     const entries = useVaultStore((s) => s.entries ?? []);
     const structureRevision = useVaultStore((s) => s.structureRevision);
@@ -1536,6 +1577,7 @@ export function FileTree() {
     const dragOverPathRef = useRef<string | null>(null);
     const wasJustDraggingRef = useRef(false);
     const rafScrollRef = useRef(0);
+    const restoreScrollRafRef = useRef<number | null>(null);
     const pendingRevealRef = useRef<string | null>(null);
     const lastClickedEntryPathRef = useRef<string | null>(null);
     const lastClickedRowKeyRef = useRef<string | null>(null);
@@ -1543,6 +1585,8 @@ export function FileTree() {
     const renameGuardRef = useRef(false);
     const expandedFoldersVaultPathRef = useRef(vaultPath);
     const skipExpandedFoldersPersistRef = useRef(false);
+    const restoredScrollVaultPathRef = useRef<string | null>(null);
+    const suppressRevealActivePathRef = useRef<string | null>(null);
 
     // Virtualization state
     const [viewportHeight, setViewportHeight] = useState(600);
@@ -1831,8 +1875,84 @@ export function FileTree() {
         [stickyFolders],
     );
 
+    // Restore the file list scroll when the sidebar remounts after switching
+    // views. The position is kept in memory only, so app launches still start
+    // from the top.
+    useLayoutEffect(() => {
+        const restoreKey = vaultPath || "__no_vault__";
+        if (restoredScrollVaultPathRef.current === restoreKey) return;
+
+        const savedScrollTop = getFileTreeScrollTop(vaultPath);
+        if (savedScrollTop <= 0) {
+            restoredScrollVaultPathRef.current = restoreKey;
+            return;
+        }
+
+        if (displayRows.length === 0) return;
+
+        let cancelled = false;
+        let attempt = 0;
+        suppressRevealActivePathRef.current = activeTreePath;
+
+        const cancelPendingRestore = () => {
+            if (restoreScrollRafRef.current === null) return;
+            cancelAnimationFrame(restoreScrollRafRef.current);
+            restoreScrollRafRef.current = null;
+        };
+
+        const applySavedScrollTop = () => {
+            const el = treeScrollRef.current;
+            if (!el) return true;
+
+            const maxScrollTop = Math.max(
+                0,
+                Math.max(el.scrollHeight, totalHeight) - el.clientHeight,
+            );
+            const nextScrollTop = Math.min(savedScrollTop, maxScrollTop);
+            el.scrollTop = nextScrollTop;
+            setScrollTop(nextScrollTop);
+            setFileTreeScrollTop(vaultPath, nextScrollTop);
+
+            if (
+                savedScrollTop <= maxScrollTop ||
+                attempt >= FILE_TREE_SCROLL_RESTORE_MAX_ATTEMPTS
+            ) {
+                restoredScrollVaultPathRef.current = restoreKey;
+                return true;
+            }
+
+            return false;
+        };
+
+        const retryRestore = () => {
+            restoreScrollRafRef.current = null;
+            if (cancelled || applySavedScrollTop()) return;
+
+            attempt += 1;
+            restoreScrollRafRef.current =
+                requestAnimationFrame(retryRestore);
+        };
+
+        if (!applySavedScrollTop()) {
+            attempt += 1;
+            restoreScrollRafRef.current = requestAnimationFrame(retryRestore);
+        }
+
+        return () => {
+            cancelled = true;
+            cancelPendingRestore();
+        };
+    }, [
+        displayRows.length,
+        activeTreePath,
+        getFileTreeScrollTop,
+        setFileTreeScrollTop,
+        totalHeight,
+        vaultPath,
+    ]);
+
     // Track viewport size
-    useEffect(() => {
+    useLayoutEffect(() => {
         const el = treeScrollRef.current;
         if (!el) return;
         const syncViewportMetrics = () => {
@@ -1844,8 +1964,11 @@ export function FileTree() {
 
         if (typeof ResizeObserver === "undefined") {
             window.addEventListener("resize", syncViewportMetrics);
-            return () =>
+            return () => {
+                cancelAnimationFrame(rafScrollRef.current);
+                setFileTreeScrollTop(vaultPath, el.scrollTop);
                 window.removeEventListener("resize", syncViewportMetrics);
+            };
         }
 
         const ro = new ResizeObserver(() => {
@@ -1854,10 +1977,12 @@ export function FileTree() {
         ro.observe(el);
         window.addEventListener("resize", syncViewportMetrics);
         return () => {
+            cancelAnimationFrame(rafScrollRef.current);
+            setFileTreeScrollTop(vaultPath, el.scrollTop);
             ro.disconnect();
             window.removeEventListener("resize", syncViewportMetrics);
         };
-    }, []);
+    }, [setFileTreeScrollTop, vaultPath]);
 
     useEffect(() => {
         if (expandedFoldersVaultPathRef.current === vaultPath) return;
@@ -1881,13 +2006,14 @@ export function FileTree() {
         });
     }, []);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const el = treeScrollRef.current;
         if (!el) return;
 
         const maxScrollTop = Math.max(0, totalHeight - el.clientHeight);
         if (el.scrollTop > maxScrollTop) {
             el.scrollTop = maxScrollTop;
+            setFileTreeScrollTop(vaultPath, maxScrollTop);
         }
 
         if (scrollTop !== el.scrollTop) {
@@ -1899,17 +2025,23 @@ export function FileTree() {
         viewportHeight,
         displayRows.length,
         metrics.rowHeight,
+        setFileTreeScrollTop,
+        vaultPath,
     ]);
 
     // RAF-batched scroll handler
     const handleTreeScroll = useCallback(() => {
+        const el = treeScrollRef.current;
+        if (!el) return;
+        setFileTreeScrollTop(vaultPath, el.scrollTop);
         cancelAnimationFrame(rafScrollRef.current);
         rafScrollRef.current = requestAnimationFrame(() => {
             const el = treeScrollRef.current;
             if (!el) return;
-            setScrollTop(el.scrollTop);
+            const nextScrollTop = el.scrollTop;
+            setScrollTop(nextScrollTop);
         });
-    }, []);
+    }, [setFileTreeScrollTop, vaultPath]);
 
     const handleRenameCancel = useCallback(() => {
         setRenamingNoteId(null);
@@ -1930,13 +2062,14 @@ export function FileTree() {
                 totalHeight - container.clientHeight,
             );
             const top = Math.min(maxScrollTop, Math.max(0, nextScrollTop));
+            setFileTreeScrollTop(vaultPath, top);
             if (typeof container.scrollTo === "function") {
                 container.scrollTo({ top, behavior });
                 return;
             }
             container.scrollTop = top;
         },
-        [metrics.rowHeight, totalHeight],
+        [metrics.rowHeight, setFileTreeScrollTop, totalHeight, vaultPath],
     );
 
     // Clear stale single-item selection when the active file changes
@@ -1950,6 +2083,8 @@ export function FileTree() {
     // Reveal active: scroll to the active tree row using index-based calculation
     useEffect(() => {
         if (!revealActive || !activeTreePath) return;
+        if (suppressRevealActivePathRef.current === activeTreePath) return;
+        suppressRevealActivePathRef.current = null;
 
         const rowIdx = displayRows.findIndex(
             (row) =>
@@ -4351,6 +4486,12 @@ export function FileTree() {
                                             top,
                                             ...TREE_STICKY_CHROME_STYLE,
                                             zIndex: 20 - row.depth,
+                                            background:
+                                                TREE_STICKY_CHROME_BACKGROUND,
+                                            backdropFilter:
+                                                TREE_STICKY_CHROME_BACKDROP_FILTER,
+                                            WebkitBackdropFilter:
+                                                TREE_STICKY_CHROME_BACKDROP_FILTER,
                                             // Only the deepest sticky folder casts a shadow
                                             ...(i ===
                                                 stickyFolders.length - 1 && {
@@ -4361,7 +4502,9 @@ export function FileTree() {
                                     >
                                         <FlatTreeRowView
                                             row={row}
-                                            stickyTop={0}
+                                            stickyContentOffsetX={
+                                                TREE_VIEWPORT_SIDE_PADDING_PX
+                                            }
                                             metrics={metrics}
                                             activeNoteId={activeNoteId}
                                             activeEntryPath={activeEntryPath}

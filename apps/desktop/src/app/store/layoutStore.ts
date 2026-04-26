@@ -81,6 +81,12 @@ interface LayoutStore {
     editorPaneSizes: number[];
     ensureEditorPaneSizeCount: (count: number) => void;
     setEditorPaneSizes: (count: number, sizes: number[]) => void;
+    fileTreeScrollTopByVault: Record<string, number>;
+    getFileTreeScrollTop: (vaultPath: string | null | undefined) => number;
+    setFileTreeScrollTop: (
+        vaultPath: string | null | undefined,
+        scrollTop: number,
+    ) => void;
 }
 
 type LayoutSnapshot = Pick<
@@ -170,6 +176,10 @@ function persistEditorPaneSizes(value: number[]) {
     safeStorageSetItem(EDITOR_PANE_SIZES_KEY, JSON.stringify(value));
 }
 
+function getFileTreeScrollKey(vaultPath: string | null | undefined) {
+    return vaultPath || "__no_vault__";
+}
+
 function createDefaultState(): LayoutSnapshot {
     return {
         sidebarCollapsed: false,
@@ -182,9 +192,10 @@ function createDefaultState(): LayoutSnapshot {
     };
 }
 
-export const useLayoutStore = create<LayoutStore>((set) => ({
+export const useLayoutStore = create<LayoutStore>((set, get) => ({
     ...createDefaultState(),
     rightPanelExpanded: false,
+    fileTreeScrollTopByVault: {},
     setSidebarView: (view) => {
         safeStorageSetItem(SIDEBAR_VIEW_KEY, view);
         set({ sidebarView: view });
@@ -296,6 +307,25 @@ export const useLayoutStore = create<LayoutStore>((set) => ({
         const nextSizes = normalizeEditorPaneSizesForCount(count, sizes);
         persistEditorPaneSizes(nextSizes);
         set({ editorPaneSizes: nextSizes });
+    },
+    getFileTreeScrollTop: (vaultPath) => {
+        const key = getFileTreeScrollKey(vaultPath);
+        return get().fileTreeScrollTopByVault[key] ?? 0;
+    },
+    setFileTreeScrollTop: (vaultPath, scrollTop) => {
+        const key = getFileTreeScrollKey(vaultPath);
+        const nextScrollTop = Math.max(0, Math.round(scrollTop));
+        set((state) => {
+            if (state.fileTreeScrollTopByVault[key] === nextScrollTop) {
+                return state;
+            }
+            return {
+                fileTreeScrollTopByVault: {
+                    ...state.fileTreeScrollTopByVault,
+                    [key]: nextScrollTop,
+                },
+            };
+        });
     },
 }));
 

@@ -16,6 +16,7 @@ import {
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import {
     renderComponent,
     setEditorTabs,
@@ -139,6 +140,89 @@ describe("FileTree", () => {
         expect(screen.getByText("Draft")).toBeInTheDocument();
         expect(screen.getByText("Alpha")).toBeInTheDocument();
         expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+    });
+
+    it("restores scroll position when the tree unmounts and remounts", async () => {
+        setVaultNotes(
+            Array.from({ length: 80 }, (_, index) => {
+                const paddedIndex = String(index).padStart(2, "0");
+                return {
+                    id: `note-${paddedIndex}`,
+                    path: `/vault/note-${paddedIndex}.md`,
+                    title: `Note ${paddedIndex}`,
+                    modified_at: 1,
+                    created_at: 1,
+                };
+            }),
+        );
+
+        const firstRender = renderComponent(<FileTree />);
+        const firstViewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(firstViewport, "clientHeight", {
+            configurable: true,
+            value: 120,
+        });
+        firstViewport.scrollTop = 420;
+        fireEvent.scroll(firstViewport);
+
+        firstRender.unmount();
+        renderComponent(<FileTree />);
+
+        const secondViewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(secondViewport, "clientHeight", {
+            configurable: true,
+            value: 120,
+        });
+
+        await waitFor(() => {
+            expect(secondViewport.scrollTop).toBe(420);
+        });
+    });
+
+    it("keeps restored scroll position even when reveal active is enabled", async () => {
+        safeStorageSetItem("neverwrite:reveal-active", "true");
+        setVaultNotes(
+            Array.from({ length: 80 }, (_, index) => {
+                const paddedIndex = String(index).padStart(2, "0");
+                return {
+                    id: `note-${paddedIndex}`,
+                    path: `/vault/note-${paddedIndex}.md`,
+                    title: `Note ${paddedIndex}`,
+                    modified_at: 1,
+                    created_at: 1,
+                };
+            }),
+        );
+        setEditorTabs([
+            {
+                id: "tab-note-00",
+                noteId: "note-00",
+                title: "Note 00",
+                content: "Note 00",
+            },
+        ]);
+
+        const firstRender = renderComponent(<FileTree />);
+        const firstViewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(firstViewport, "clientHeight", {
+            configurable: true,
+            value: 120,
+        });
+        firstViewport.scrollTop = 420;
+        fireEvent.scroll(firstViewport);
+
+        firstRender.unmount();
+        renderComponent(<FileTree />);
+
+        const secondViewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(secondViewport, "clientHeight", {
+            configurable: true,
+            value: 120,
+        });
+
+        await waitFor(() => {
+            expect(secondViewport.scrollTop).toBe(420);
+        });
     });
 
     it("lets the virtualized tree grow horizontally for long labels", async () => {
