@@ -268,7 +268,6 @@ function renderTimelineRow(
         readOnly?: boolean;
         pillMetrics: ReturnType<typeof getChatPillMetrics>;
         chatFontSize: number;
-        chatFontFamily: EditorFontFamily;
         visibleWorkCycleId?: string | null;
         recentDiffWorkCycleIds?: string[];
         onPermissionResponse?: (requestId: string, optionId?: string) => void;
@@ -295,7 +294,6 @@ function renderTimelineRow(
             message={row.message}
             pillMetrics={options.pillMetrics}
             chatFontSize={options.chatFontSize}
-            chatFontFamily={options.chatFontFamily}
             visibleWorkCycleId={options.visibleWorkCycleId}
             recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
             onPermissionResponse={
@@ -479,14 +477,12 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             readOnly,
             pillMetrics,
             chatFontSize,
-            chatFontFamily,
             visibleWorkCycleId,
             recentDiffWorkCycleIds,
             onPermissionResponse,
             onUserInputResponse,
         }),
         [
-            chatFontFamily,
             chatFontSize,
             onPermissionResponse,
             onUserInputResponse,

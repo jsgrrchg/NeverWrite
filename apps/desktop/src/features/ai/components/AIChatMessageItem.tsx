@@ -1,24 +1,16 @@
 import {
     memo,
     useCallback,
-    useEffect,
     useMemo,
     useRef,
     useState,
-    type CSSProperties,
     type MouseEvent,
     type ReactElement,
-    type ReactNode,
 } from "react";
 import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import type { EditorFontFamily } from "../../../app/store/settingsStore";
-import {
-    getPretextMeasurementRevision,
-    subscribePretextInvalidation,
-} from "../../../app/services/pretextService";
 import type { AIChatMessage, AIFileDiff } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
@@ -48,9 +40,6 @@ import {
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
 import { useSettingsStore } from "../../../app/store/settingsStore";
-import { estimateChatTextMessageHeight } from "./chatTextPretext";
-
-const PRETEXT_RESERVE_SETTLE_MS = 120;
 
 interface UserMentionContextMenuPayload {
     label: string;
@@ -245,204 +234,18 @@ function renderUserContent(
     return parts;
 }
 
-function PretextReservedTextMessage({
-    content,
-    role,
-    chatFontSize,
-    chatFontFamily,
-    className,
-    style,
-    children,
-}: {
-    content: string;
-    role: "assistant" | "user";
-    chatFontSize: number;
-    chatFontFamily: EditorFontFamily;
-    className?: string;
-    style?: CSSProperties;
-    children: ReactNode;
-}) {
-    const shellRef = useRef<HTMLDivElement>(null);
-    const contentRef = useRef<HTMLDivElement>(null);
-    const [contentWidth, setContentWidth] = useState(0);
-    const [contentHeight, setContentHeight] = useState(0);
-    const [reserveActive, setReserveActive] = useState(true);
-    const reserveSettledRef = useRef(false);
-    const [pretextRevision, setPretextRevision] = useState(() =>
-        getPretextMeasurementRevision(),
-    );
-
-    useEffect(() => {
-        return subscribePretextInvalidation(() => {
-            setPretextRevision(getPretextMeasurementRevision());
-        });
-    }, []);
-
-    useEffect(() => {
-        const shell = shellRef.current;
-        if (!shell) {
-            return;
-        }
-
-        const sync = () => {
-            setContentWidth(shell.clientWidth);
-        };
-
-        let resizeObserver: ResizeObserver | null = null;
-        sync();
-
-        if (typeof ResizeObserver === "function") {
-            resizeObserver = new ResizeObserver(() => {
-                sync();
-            });
-            resizeObserver.observe(shell);
-        } else {
-            window.addEventListener("resize", sync);
-        }
-
-        return () => {
-            resizeObserver?.disconnect();
-            if (!resizeObserver) {
-                window.removeEventListener("resize", sync);
-            }
-        };
-    }, []);
-
-    useEffect(() => {
-        const node = contentRef.current;
-        if (!node) {
-            return;
-        }
-
-        const measure = () => {
-            const nextHeight = Math.ceil(
-                node.getBoundingClientRect().height || node.offsetHeight || 0,
-            );
-            setContentHeight((current) =>
-                current === nextHeight ? current : nextHeight,
-            );
-        };
-
-        let resizeObserver: ResizeObserver | null = null;
-        measure();
-
-        if (typeof ResizeObserver === "function") {
-            resizeObserver = new ResizeObserver(() => {
-                measure();
-            });
-            resizeObserver.observe(node);
-        }
-
-        return () => {
-            resizeObserver?.disconnect();
-        };
-    }, [children]);
-
-    const estimatedHeight = useMemo(() => {
-        void pretextRevision;
-        return contentWidth > 0
-            ? estimateChatTextMessageHeight({
-                  content,
-                  contentWidth,
-                  role,
-                  chatFontSize,
-                  chatFontFamily,
-              })
-            : 0;
-    }, [
-        chatFontFamily,
-        chatFontSize,
-        content,
-        contentWidth,
-        pretextRevision,
-        role,
-    ]);
-
-    // Reset settled flag only when content or font environment changes —
-    // width-only changes should NOT re-activate the reservation.
-    useEffect(() => {
-        reserveSettledRef.current = false;
-    }, [content, pretextRevision]);
-
-    useEffect(() => {
-        if (reserveSettledRef.current) return;
-
-        if (estimatedHeight <= 0) {
-            const resetTimeoutId = window.setTimeout(() => {
-                setReserveActive(false);
-            }, 0);
-            return () => {
-                window.clearTimeout(resetTimeoutId);
-            };
-        }
-
-        const activateFrameId = window.requestAnimationFrame(() => {
-            setReserveActive(true);
-        });
-        const timeoutId = window.setTimeout(() => {
-            reserveSettledRef.current = true;
-            setReserveActive(false);
-        }, PRETEXT_RESERVE_SETTLE_MS);
-
-        return () => {
-            window.cancelAnimationFrame(activateFrameId);
-            window.clearTimeout(timeoutId);
-        };
-    }, [content, contentWidth, estimatedHeight, pretextRevision]);
-
-    useEffect(() => {
-        if (reserveActive && contentHeight >= estimatedHeight - 1) {
-            reserveSettledRef.current = true;
-            const settleTimeoutId = window.setTimeout(() => {
-                setReserveActive(false);
-            }, 0);
-            return () => {
-                window.clearTimeout(settleTimeoutId);
-            };
-        }
-    }, [contentHeight, estimatedHeight, reserveActive]);
-
-    const reservedMinHeight =
-        reserveActive && estimatedHeight > contentHeight
-            ? estimatedHeight
-            : undefined;
-
-    return (
-        <div
-            ref={shellRef}
-            className={className}
-            style={{
-                ...style,
-                minHeight: reservedMinHeight,
-            }}
-        >
-            <div ref={contentRef} className="min-w-0 max-w-full">
-                {children}
-            </div>
-        </div>
-    );
-}
-
 function UserTextMessage({
     message,
     pillMetrics,
-    chatFontSize,
-    chatFontFamily,
 }: {
     message: AIChatMessage;
     pillMetrics: ChatPillMetrics;
-    chatFontSize: number;
-    chatFontFamily: EditorFontFamily;
 }) {
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<UserMentionContextMenuPayload> | null>(null);
 
     return (
-        <PretextReservedTextMessage
-            content={message.content}
-            role="user"
-            chatFontSize={chatFontSize}
-            chatFontFamily={chatFontFamily}
+        <div
             className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
             style={{
                 color: "var(--text-primary)",
@@ -513,7 +316,7 @@ function UserTextMessage({
                     }
                 />
             ) : null}
-        </PretextReservedTextMessage>
+        </div>
     );
 }
 
@@ -523,7 +326,6 @@ interface AIChatMessageItemProps {
     readOnly?: boolean;
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
-    chatFontFamily?: EditorFontFamily;
     visibleWorkCycleId?: string | null;
     recentDiffWorkCycleIds?: string[];
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
@@ -3081,7 +2883,6 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     readOnly = false,
     pillMetrics,
     chatFontSize = 14,
-    chatFontFamily = "system",
     visibleWorkCycleId = null,
     recentDiffWorkCycleIds = [],
     onPermissionResponse,
@@ -3101,8 +2902,6 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
             <UserTextMessage
                 message={message}
                 pillMetrics={pillMetrics}
-                chatFontSize={chatFontSize}
-                chatFontFamily={chatFontFamily}
             />
         );
     }
@@ -3169,11 +2968,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     // Assistant text — flat, no card
     return (
-        <PretextReservedTextMessage
-            content={message.content}
-            role="assistant"
-            chatFontSize={chatFontSize}
-            chatFontFamily={chatFontFamily}
+        <div
             className="min-w-0 max-w-full"
             style={{
                 color: "var(--text-primary)",
@@ -3186,6 +2981,6 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 pillMetrics={pillMetrics}
                 chatFontSize={chatFontSize}
             />
-        </PretextReservedTextMessage>
+        </div>
     );
 });

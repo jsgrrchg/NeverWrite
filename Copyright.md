@@ -104,7 +104,6 @@ dictionary licenses.
 | react-datasheet-grid           | MIT         |
 | react-force-graph-2d           | MIT         |
 | react-force-graph-3d           | MIT         |
-| @chenglou/pretext              | MIT         |
 
 ### Dev Dependencies
 
