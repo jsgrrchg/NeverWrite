@@ -322,7 +322,7 @@ enum AcpCommand {
         session_id: String,
         option_id: String,
         value: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
+        response_tx: mpsc::Sender<Result<Vec<SessionConfigOption>, String>>,
     },
     Cancel {
         session_id: String,
@@ -542,6 +542,7 @@ impl NativeAi {
         let created = start_acp_session(
             spec,
             self.event_tx.clone(),
+            Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
         )?;
@@ -655,23 +656,21 @@ impl NativeAi {
 
     pub(crate) fn set_config_option(&self, args: &Value) -> Result<Value, String> {
         let input: AiSetConfigOptionInput = input_from_args(args)?;
-        if let Some(handle) = self.session_handle(&input.session_id)? {
-            handle.set_config_option(&input.session_id, &input.option_id, &input.value)?;
-        }
+        let config_options = self
+            .session_handle(&input.session_id)?
+            .map(|handle| {
+                handle.set_config_option(&input.session_id, &input.option_id, &input.value)
+            })
+            .transpose()?;
         self.update_session(&input.session_id, |session| {
-            if input.option_id == "model" {
-                session.model_id = input.value.clone();
+            if let Some(config_options) = config_options {
+                let mapped_options =
+                    map_session_config_options(&session.runtime_id, config_options);
+                apply_config_options_to_session(session, mapped_options);
+                return Ok(());
             }
-            if input.option_id == "mode" {
-                session.mode_id = input.value.clone();
-            }
-            let option = session
-                .config_options
-                .iter_mut()
-                .find(|option| option.id == input.option_id)
-                .ok_or_else(|| format!("AI config option not found: {}", input.option_id))?;
-            option.value = input.value;
-            Ok(())
+
+            apply_local_config_option_selection(session, &input.option_id, input.value)
         })
     }
 
@@ -1127,10 +1126,10 @@ struct CreatedAcpSession {
 }
 
 impl AcpSessionHandle {
-    fn request(
+    fn request<T>(
         &self,
-        build: impl FnOnce(mpsc::Sender<Result<(), String>>) -> AcpCommand,
-    ) -> Result<(), String> {
+        build: impl FnOnce(mpsc::Sender<Result<T, String>>) -> AcpCommand,
+    ) -> Result<T, String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.command_tx
             .send(build(response_tx))
@@ -1167,7 +1166,7 @@ impl AcpSessionHandle {
         session_id: &str,
         option_id: &str,
         value: &str,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<SessionConfigOption>, String> {
         self.request(|response_tx| AcpCommand::SetConfigOption {
             session_id: session_id.to_string(),
             option_id: option_id.to_string(),
@@ -1195,6 +1194,7 @@ impl AcpSessionHandle {
 #[derive(Clone)]
 struct NativeAcpClient {
     event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
     message_ids: Arc<Mutex<HashMap<String, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
@@ -1209,6 +1209,58 @@ impl NativeAcpClient {
         if let Ok(value) = serde_json::to_value(payload) {
             emit_event(&self.event_tx, event_name, value);
         }
+    }
+
+    fn emit_session_update_from_result(&self, result: Result<Option<AiSession>, String>) {
+        match result {
+            Ok(Some(session)) => self.emit(AI_SESSION_UPDATED_EVENT, session),
+            Ok(None) => {}
+            Err(message) => self.emit(
+                AI_SESSION_ERROR_EVENT,
+                AiSessionErrorPayload {
+                    session_id: None,
+                    message,
+                },
+            ),
+        }
+    }
+
+    fn apply_config_options_update(
+        &self,
+        session_id: &str,
+        config_options: Vec<SessionConfigOption>,
+    ) -> Result<Option<AiSession>, String> {
+        let mut state = self
+            .session_state
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let Some(managed) = state.sessions.get_mut(session_id) else {
+            return Ok(None);
+        };
+        let mapped_options =
+            map_session_config_options(&managed.session.runtime_id, config_options);
+        apply_config_options_to_session(&mut managed.session, mapped_options);
+        let session = managed.session.clone();
+        touch_session(&mut state, session_id);
+        Ok(Some(session))
+    }
+
+    fn apply_current_mode_update(
+        &self,
+        session_id: &str,
+        mode_id: String,
+    ) -> Result<Option<AiSession>, String> {
+        let mut state = self
+            .session_state
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let Some(managed) = state.sessions.get_mut(session_id) else {
+            return Ok(None);
+        };
+        apply_mode_update_to_session(&mut managed.session, &mode_id);
+        let session = managed.session.clone();
+        touch_session(&mut state, session_id);
+        Ok(Some(session))
     }
 
     fn emit_tool_activity(&self, session_id: &str, tool_call: &ToolCall) {
@@ -1511,6 +1563,15 @@ impl NativeAcpClient {
                     },
                 );
             }
+            SessionUpdate::ConfigOptionUpdate(update) => {
+                let result = self.apply_config_options_update(&session_id, update.config_options);
+                self.emit_session_update_from_result(result);
+            }
+            SessionUpdate::CurrentModeUpdate(update) => {
+                let result = self
+                    .apply_current_mode_update(&session_id, update.current_mode_id.0.to_string());
+                self.emit_session_update_from_result(result);
+            }
             _ => {}
         }
         Ok(())
@@ -1520,6 +1581,7 @@ impl NativeAcpClient {
 fn start_acp_session(
     spec: AcpProcessSpec,
     event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
 ) -> Result<CreatedAcpSession, String> {
@@ -1540,6 +1602,7 @@ fn start_acp_session(
             run_acp_actor(
                 spec,
                 event_tx,
+                session_state,
                 tool_diffs,
                 agent_writes,
                 command_rx,
@@ -1555,6 +1618,7 @@ fn start_acp_session(
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
@@ -1563,6 +1627,7 @@ async fn run_acp_actor(
     let result = run_acp_actor_inner(
         spec,
         event_tx,
+        session_state,
         tool_diffs,
         agent_writes,
         &mut command_rx,
@@ -1577,6 +1642,7 @@ async fn run_acp_actor(
 async fn run_acp_actor_inner(
     spec: AcpProcessSpec,
     event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
@@ -1606,6 +1672,7 @@ async fn run_acp_actor_inner(
         .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
+        session_state,
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -1824,7 +1891,7 @@ async fn handle_acp_command(
                 ))
                 .block_task()
                 .await
-                .map(|_| ())
+                .map(|response| response.config_options)
                 .map_err(|error| error.to_string());
             let _ = response_tx.send(result);
         }
@@ -2131,6 +2198,57 @@ fn selected_mode_id(
                 .map(|state| state.current_mode_id.0.to_string())
                 .filter(|value| !value.trim().is_empty())
         })
+}
+
+fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<AiConfigOption>) {
+    if let Some(model_id) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|option| strip_effort_suffix(&option.value).to_string())
+        .filter(|value| !value.trim().is_empty())
+    {
+        session.model_id = model_id;
+    }
+    if let Some(mode_id) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+        .map(|option| option.value.clone())
+        .filter(|value| !value.trim().is_empty())
+    {
+        session.mode_id = mode_id;
+    }
+    session.config_options = config_options;
+}
+
+fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
+    session.mode_id = mode_id.to_string();
+    if let Some(option) = session
+        .config_options
+        .iter_mut()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+    {
+        option.value = mode_id.to_string();
+    }
+}
+
+fn apply_local_config_option_selection(
+    session: &mut AiSession,
+    option_id: &str,
+    value: String,
+) -> Result<(), String> {
+    if option_id == "model" {
+        session.model_id = strip_effort_suffix(&value).to_string();
+    }
+    if option_id == "mode" {
+        session.mode_id = value.clone();
+    }
+    let option = session
+        .config_options
+        .iter_mut()
+        .find(|option| option.id == option_id)
+        .ok_or_else(|| format!("AI config option not found: {option_id}"))?;
+    option.value = value;
+    Ok(())
 }
 
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
@@ -3592,17 +3710,26 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        Meta, ModelInfo, PermissionOptionKind, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOption, SessionModelState, SessionNotification, SessionUpdate,
-        ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigSelectOption, SessionModelState,
+        SessionNotification, SessionUpdate, ToolCallContent, ToolCallId, ToolCallUpdate,
+        ToolCallUpdateFields, ToolKind,
     };
     use std::fs;
     use std::sync::mpsc;
     use std::time::Duration as StdDuration;
 
     fn test_client(event_tx: mpsc::Sender<RpcOutput>) -> NativeAcpClient {
+        test_client_with_state(event_tx, Arc::new(Mutex::new(NativeAiInner::default())))
+    }
+
+    fn test_client_with_state(
+        event_tx: mpsc::Sender<RpcOutput>,
+        session_state: Arc<Mutex<NativeAiInner>>,
+    ) -> NativeAcpClient {
         NativeAcpClient {
             event_tx,
+            session_state,
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -3732,6 +3859,163 @@ mod tests {
             mapped[0].category,
             AiConfigOptionCategory::Reasoning
         ));
+    }
+
+    #[test]
+    fn applying_config_options_removes_stale_reasoning_option() {
+        let mut session = new_session_with_id(CLAUDE_RUNTIME_ID, "session-1".to_string()).unwrap();
+        session.model_id = "claude-sonnet-4-5".to_string();
+        session.config_options = map_session_config_options(
+            CLAUDE_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "claude-sonnet-4-5",
+                    vec![
+                        SessionConfigSelectOption::new("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+                        SessionConfigSelectOption::new("claude-haiku-4-5", "Claude Haiku 4.5"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Model),
+                SessionConfigOption::select(
+                    "effort",
+                    "Effort",
+                    "high",
+                    vec![
+                        SessionConfigSelectOption::new("medium", "Medium"),
+                        SessionConfigSelectOption::new("high", "High"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Other("effort".to_string())),
+            ],
+        );
+
+        let haiku_options = map_session_config_options(
+            CLAUDE_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "claude-haiku-4-5",
+                    vec![
+                        SessionConfigSelectOption::new("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+                        SessionConfigSelectOption::new("claude-haiku-4-5", "Claude Haiku 4.5"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Model),
+                SessionConfigOption::select(
+                    "mode",
+                    "Mode",
+                    "default",
+                    vec![SessionConfigSelectOption::new("default", "Default")],
+                )
+                .category(SessionConfigOptionCategory::Mode),
+            ],
+        );
+
+        apply_config_options_to_session(&mut session, haiku_options);
+
+        assert_eq!(session.model_id, "claude-haiku-4-5");
+        assert_eq!(session.mode_id, "default");
+        assert!(session
+            .config_options
+            .iter()
+            .all(|option| !matches!(option.category, AiConfigOptionCategory::Reasoning)));
+    }
+
+    #[test]
+    fn config_option_update_notification_updates_cached_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        let mut session = new_session_with_id(CLAUDE_RUNTIME_ID, "session-1".to_string()).unwrap();
+        session.model_id = "claude-sonnet-4-5".to_string();
+        session.config_options = map_session_config_options(
+            CLAUDE_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "claude-sonnet-4-5",
+                    vec![
+                        SessionConfigSelectOption::new("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+                        SessionConfigSelectOption::new("claude-haiku-4-5", "Claude Haiku 4.5"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Model),
+                SessionConfigOption::select(
+                    "effort",
+                    "Effort",
+                    "high",
+                    vec![SessionConfigSelectOption::new("high", "High")],
+                )
+                .category(SessionConfigOptionCategory::Other("effort".to_string())),
+            ],
+        );
+        session_state.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+            },
+        );
+
+        let updated_options = vec![
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                "claude-haiku-4-5",
+                vec![
+                    SessionConfigSelectOption::new("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+                    SessionConfigSelectOption::new("claude-haiku-4-5", "Claude Haiku 4.5"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "default",
+                vec![SessionConfigSelectOption::new("default", "Default")],
+            )
+            .category(SessionConfigOptionCategory::Mode),
+        ];
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(updated_options)),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("session update event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            payload.get("model_id").and_then(Value::as_str),
+            Some("claude-haiku-4-5")
+        );
+        let session = session_state
+            .lock()
+            .unwrap()
+            .sessions
+            .get("session-1")
+            .unwrap()
+            .session
+            .clone();
+        assert!(session
+            .config_options
+            .iter()
+            .all(|option| !matches!(option.category, AiConfigOptionCategory::Reasoning)));
     }
 
     #[test]
