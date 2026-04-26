@@ -41,7 +41,7 @@ import {
     appendScreenshotPart,
     createEmptyComposerParts,
 } from "../composerParts";
-import { getSessionTitle } from "../sessionPresentation";
+import { getSessionTitle, getSessionTitleText } from "../sessionPresentation";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -330,11 +330,11 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         }
     }, [session, sessionId]);
 
-    const sessionTitle = session ? getSessionTitle(session) : "Chat";
+    const sessionTitle = session ? getSessionTitleText(session) : "Chat";
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId) return;
-        startEditing(sessionId, getSessionTitle(session));
+        startEditing(sessionId, getSessionTitleText(session));
     }, [session, sessionId, startEditing]);
 
     const commitTitleEdit = useCallback(() => {
@@ -359,9 +359,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         >
             {/* Compact local session header for the workspace chat tab */}
             <div
-                className="flex items-center gap-2 px-3 py-1.5 text-xs shrink-0"
+                className="flex items-center gap-2 px-3 py-1 text-xs shrink-0"
                 style={{
-                    height: 39,
+                    height: 31,
                     boxSizing: "border-box",
                     borderBottom: "1px solid var(--border)",
                     color: "var(--text-secondary)",
@@ -370,7 +370,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 {editingKey === sessionId ? (
                     <input
                         ref={inputRef}
-                        className="min-w-0 flex-1 truncate bg-transparent font-medium outline-none"
+                        className="min-w-0 flex-1 overflow-hidden whitespace-nowrap bg-transparent font-medium outline-none"
                         style={{
                             color: "var(--text-primary)",
                             border: "none",
@@ -392,7 +392,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     />
                 ) : (
                     <span
-                        className="flex-1 truncate font-medium"
+                        className="min-w-0 flex-1 overflow-hidden whitespace-nowrap font-medium"
                         onDoubleClick={startTitleEdit}
                         title="Double-click to rename"
                         style={{ color: "var(--text-primary)" }}
