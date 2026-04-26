@@ -21,6 +21,7 @@ export interface Settings {
     justifyText: boolean;
     livePreviewEnabled: boolean;
     inlineReviewEnabled: boolean;
+    pdfFilter: PdfFilterMode;
     tabSize: 2 | 4;
     editorSpellcheck: boolean;
     spellcheckPrimaryLanguage: SpellcheckLanguage;
@@ -77,6 +78,7 @@ export type EditorFontFamily =
 export type TabOpenBehavior = "history" | "new_tab";
 export type SpellcheckLanguage = "system" | string;
 export type SpellcheckSecondaryLanguage = string | null;
+export type PdfFilterMode = "none" | "dark" | "sepia" | "grayscale";
 
 const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "system",
@@ -101,6 +103,13 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "newspaper",
     "condensed",
     "andale",
+];
+
+const VALID_PDF_FILTER_MODES: PdfFilterMode[] = [
+    "none",
+    "dark",
+    "sepia",
+    "grayscale",
 ];
 
 export const EDITOR_FONT_FAMILY_OPTIONS: {
@@ -151,6 +160,7 @@ const defaults: Settings = {
     justifyText: false,
     livePreviewEnabled: true,
     inlineReviewEnabled: true,
+    pdfFilter: "none",
     tabSize: 2,
     editorSpellcheck: false,
     spellcheckPrimaryLanguage: "system",
@@ -197,6 +207,12 @@ function normalizeIntInRange(
 function normalizeTabSize(value: unknown): 2 | 4 {
     const normalized = normalizeIntInRange(value, defaults.tabSize, 2, 4);
     return normalized <= 2 ? 2 : 4;
+}
+
+function normalizePdfFilterMode(value: unknown): PdfFilterMode {
+    return VALID_PDF_FILTER_MODES.includes(value as PdfFilterMode)
+        ? (value as PdfFilterMode)
+        : defaults.pdfFilter;
 }
 
 function normalizeSpellcheckLanguageTag(value: string) {
@@ -337,6 +353,7 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             inlineReviewEnabled:
                 parsed.state.inlineReviewEnabled ??
                 defaults.inlineReviewEnabled,
+            pdfFilter: normalizePdfFilterMode(parsed.state.pdfFilter),
             tabSize: normalizeTabSize(parsed.state.tabSize),
             editorSpellcheck:
                 parsed.state.editorSpellcheck ?? defaults.editorSpellcheck,
@@ -431,6 +448,7 @@ function pickSettings(state: SettingsStore): Settings {
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,
+        pdfFilter: state.pdfFilter,
         tabSize: state.tabSize,
         editorSpellcheck: state.editorSpellcheck,
         spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,

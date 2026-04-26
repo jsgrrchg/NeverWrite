@@ -30,6 +30,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
+        expect(useSettingsStore.getState().pdfFilter).toBe("none");
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
@@ -45,6 +46,7 @@ describe("settingsStore developer mode", () => {
             .getState()
             .setSetting("developerTerminalEnabled", false);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+        useSettingsStore.getState().setSetting("pdfFilter", "sepia");
         useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
         useSettingsStore.getState().setSetting("agentsSidebarScale", 125);
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
@@ -54,6 +56,7 @@ describe("settingsStore developer mode", () => {
             false,
         );
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().pdfFilter).toBe("sepia");
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(125);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(750);
@@ -66,6 +69,7 @@ describe("settingsStore developer mode", () => {
                 developerModeEnabled: true,
                 developerTerminalEnabled: false,
                 inlineReviewEnabled: false,
+                pdfFilter: "sepia",
                 fileTreeStickyFolders: false,
                 agentsSidebarScale: 125,
                 editorAutosaveDelayMs: 750,
@@ -95,6 +99,22 @@ describe("settingsStore developer mode", () => {
                 spellcheckSecondaryLanguage: "en-US",
             },
         });
+    });
+
+    it("normalizes invalid persisted PDF filters to normal", () => {
+        localStorage.setItem(
+            "neverwrite:settings",
+            JSON.stringify({
+                state: {
+                    pdfFilter: "solarized",
+                },
+            }),
+        );
+
+        disposeSettingsStoreRuntime();
+        initializeSettingsStore();
+
+        expect(useSettingsStore.getState().pdfFilter).toBe("none");
     });
 
     it("keeps spellcheck languages per vault across vault changes", () => {

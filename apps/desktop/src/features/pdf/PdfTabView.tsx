@@ -20,6 +20,10 @@ import {
     selectEditorPaneActiveTab,
     type PdfTab,
 } from "../../app/store/editorStore";
+import {
+    useSettingsStore,
+    type PdfFilterMode,
+} from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePreviewUrl";
 import { formatZoomPercentage } from "../../app/utils/zoom";
@@ -40,8 +44,7 @@ const PDF_TEXT_CONTENT_OPTIONS = {
     disableNormalization: true,
 } as const;
 
-type PdfFilter = "none" | "dark" | "sepia" | "grayscale";
-const PDF_FILTERS: { mode: PdfFilter; label: string; css: string }[] = [
+const PDF_FILTERS: { mode: PdfFilterMode; label: string; css: string }[] = [
     { mode: "none", label: "Normal", css: "none" },
     { mode: "dark", label: "Dark", css: "invert(1) hue-rotate(180deg)" },
     { mode: "sepia", label: "Sepia", css: "sepia(1)" },
@@ -268,7 +271,8 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         hasSelection: boolean;
     }> | null>(null);
 
-    const [pdfFilter, setPdfFilter] = useState<PdfFilter>("none");
+    const pdfFilter = useSettingsStore((s) => s.pdfFilter);
+    const setSetting = useSettingsStore((s) => s.setSetting);
     const [loadedPdf, setLoadedPdf] = useState<LoadedPdfState | null>(null);
     const [errorState, setErrorState] = useState<PdfErrorState | null>(null);
     const [pageMetrics, setPageMetrics] = useState<PdfPageMetric[] | null>(
@@ -761,13 +765,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         [],
     );
 
-    const activeFilter = PDF_FILTERS.find((f) => f.mode === pdfFilter)!;
+    const activeFilter =
+        PDF_FILTERS.find((f) => f.mode === pdfFilter) ?? PDF_FILTERS[0];
     const cycleFilter = useCallback(() => {
-        setPdfFilter((current) => {
-            const index = PDF_FILTERS.findIndex((f) => f.mode === current);
-            return PDF_FILTERS[(index + 1) % PDF_FILTERS.length].mode;
-        });
-    }, []);
+        const index = PDF_FILTERS.findIndex((f) => f.mode === pdfFilter);
+        const nextFilter = PDF_FILTERS[(index + 1) % PDF_FILTERS.length].mode;
+        setSetting("pdfFilter", nextFilter);
+    }, [pdfFilter, setSetting]);
 
     useEffect(() => {
         if (!scrollContainer) return;

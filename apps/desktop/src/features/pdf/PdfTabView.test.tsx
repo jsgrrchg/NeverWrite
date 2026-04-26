@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PdfTabView } from "./PdfTabView";
@@ -9,6 +9,7 @@ import {
     setVaultEntries,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 
 const { getDocumentMock } = vi.hoisted(() => ({
     getDocumentMock: vi.fn(),
@@ -387,6 +388,56 @@ describe("PdfTabView", () => {
             expect(textLayer).toHaveAttribute("data-selectable", "true");
             expect(textLayer?.querySelector("span")).toBeInTheDocument();
         });
+    });
+
+    it("remembers the selected PDF filter after switching away and back", async () => {
+        const user = userEvent.setup();
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 1,
+                zoom: 1,
+                viewMode: "single",
+            },
+            {
+                kind: "note",
+                id: "note-tab",
+                noteId: "note-1",
+                title: "Note",
+                content: "A note",
+            },
+        ]);
+
+        renderComponent(<PdfTabView />);
+
+        await screen.findByTitle("Filter: Normal");
+        await user.click(screen.getByTitle("Filter: Normal"));
+        await user.click(screen.getByTitle("Filter: Dark"));
+
+        expect(useSettingsStore.getState().pdfFilter).toBe("sepia");
+        expect(screen.getByTitle("Filter: Sepia")).toBeInTheDocument();
+
+        act(() => useEditorStore.getState().switchTab("note-tab"));
+        expect(screen.getByText("No PDF tab active")).toBeInTheDocument();
+
+        act(() => useEditorStore.getState().switchTab("pdf-tab"));
+
+        expect(await screen.findByTitle("Filter: Sepia")).toBeInTheDocument();
     });
 
     it("shows PDF context menu actions for copy and select all", async () => {
