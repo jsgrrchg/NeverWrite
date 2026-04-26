@@ -64,11 +64,10 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 
 When updating Codex again, treat `ee9418a` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
-The desktop backend currently remains on `agent-client-protocol = 0.10.2`.
-That is intentional for now: the backend and sidecar communicate over the ACP
-JSON transport instead of sharing Rust ACP types directly, and the native
-backend tests cover the reconstructed diff, permission, and status metadata
-paths that NeverWrite depends on.
+The desktop backend and `crates/ai` are now aligned with
+`agent-client-protocol = 0.11.1`, matching the vendored Codex ACP runtime.
+The native backend tests cover the reconstructed diff, permission, and status
+metadata paths that NeverWrite depends on.
 
 ## Updating Vendored Runtimes
 

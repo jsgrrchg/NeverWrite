@@ -5,7 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use agent_client_protocol::{ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind};
+use agent_client_protocol::schema::{
+    Diff, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+};
 use serde::Deserialize;
 
 use crate::{AiFileDiffHunkPayload, AiFileDiffPayload};
@@ -552,7 +554,7 @@ fn reconstruct_edit_diff_payload(
     })
 }
 
-fn diff_previous_path(diff: &agent_client_protocol::Diff, cwd: Option<&Path>) -> Option<String> {
+fn diff_previous_path(diff: &Diff, cwd: Option<&Path>) -> Option<String> {
     diff.meta
         .as_ref()
         .and_then(|meta| meta.get(ACP_DIFF_PREVIOUS_PATH_KEY))
@@ -560,7 +562,7 @@ fn diff_previous_path(diff: &agent_client_protocol::Diff, cwd: Option<&Path>) ->
         .map(|path| to_display_path(&resolve_tool_path(path, cwd), cwd))
 }
 
-fn diff_hunks(diff: &agent_client_protocol::Diff) -> Option<Vec<AiFileDiffHunkPayload>> {
+fn diff_hunks(diff: &Diff) -> Option<Vec<AiFileDiffHunkPayload>> {
     diff.meta
         .as_ref()
         .and_then(|meta| meta.get(ACP_DIFF_HUNKS_KEY))
@@ -574,7 +576,7 @@ fn has_reliable_old_text(old_text: Option<&str>) -> bool {
 }
 
 fn classify_diff_kind(
-    diff: &agent_client_protocol::Diff,
+    diff: &Diff,
     raw_input: Option<&serde_json::Value>,
     previous_path: Option<&String>,
 ) -> &'static str {
@@ -601,7 +603,7 @@ fn classify_diff_kind(
 }
 
 fn map_diff_payload(
-    diff: &agent_client_protocol::Diff,
+    diff: &Diff,
     raw_input: Option<&serde_json::Value>,
     cwd: Option<&Path>,
 ) -> AiFileDiffPayload {
@@ -638,7 +640,7 @@ fn map_diff_payload(
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use agent_client_protocol::{
+    use agent_client_protocol::schema::{
         Content, Diff, Meta, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
         ToolCallUpdateFields,
     };

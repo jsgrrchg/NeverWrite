@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-agent-client-protocol = { version = "=0.10.2", features = ["unstable"] }
-async-trait = "0.1"
+agent-client-protocol = { version = "=0.11.1", features = ["unstable"] }
 neverwrite-diff = { path = "../../../crates/diff" }
 neverwrite-ai = { path = "../../../crates/ai" }
 neverwrite-index = { path = "../../../crates/index" }
