@@ -255,7 +255,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| `src/acp-agent.ts`    | Extended with model relabeling, custom tool handling, and integration with NeverWrite's agent orchestration |
+| Vendored snapshot     | No local source delta; synced to upstream `@agentclientprotocol/claude-agent-acp` `0.31.0` with rebuilt `dist/` runtime files |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at

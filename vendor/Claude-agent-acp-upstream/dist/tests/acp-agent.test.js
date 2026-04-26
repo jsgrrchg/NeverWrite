@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "child_process";
 import { ClientSideConnection, ndJsonStream, } from "@agentclientprotocol/sdk";
 import { nodeToWebWritable, nodeToWebReadable } from "../utils.js";
 import { markdownEscape, toolInfoFromToolUse, toDisplayPath, toolUpdateFromToolResult, toolUpdateFromEditToolResponse, } from "../tools.js";
-import { toAcpNotifications, promptToClaude, ClaudeAcpAgent, claudeCliPath } from "../acp-agent.js";
+import { toAcpNotifications, promptToClaude, isLocalCommandMetadata, stripLocalCommandMetadata, ClaudeAcpAgent, claudeCliPath, describeAlwaysAllow, } from "../acp-agent.js";
 import { Pushable } from "../utils.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "crypto";
@@ -156,12 +156,6 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
             },
             name: "compact",
         });
-        // Error case (no previous message)
-        await connection.prompt({
-            prompt: [{ type: "text", text: "/compact" }],
-            sessionId: newSessionResponse.sessionId,
-        });
-        expect(client.takeReceivedText()).toBe("Compacting...\n\nCompacting completed.");
         // Send something
         await connection.prompt({
             prompt: [{ type: "text", text: "Hi" }],
@@ -169,12 +163,11 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
         });
         // Clear response
         client.takeReceivedText();
-        // Test with instruction
         await connection.prompt({
             prompt: [
                 {
                     type: "text",
-                    text: "/compact greeting",
+                    text: "/compact",
                 },
             ],
             sessionId: newSessionResponse.sessionId,
@@ -955,6 +948,86 @@ describe("toolUpdateFromEditToolResponse", () => {
         expect(toolUpdateFromEditToolResponse(toolResponse)).toEqual({});
     });
 });
+describe("stripLocalCommandMetadata", () => {
+    it("returns null for strings that are pure marker metadata", () => {
+        expect(stripLocalCommandMetadata("<command-name>/model</command-name>")).toBeNull();
+        expect(stripLocalCommandMetadata("<local-command-stdout>out</local-command-stdout>")).toBeNull();
+        expect(stripLocalCommandMetadata("<local-command-stderr>err</local-command-stderr>")).toBeNull();
+        expect(stripLocalCommandMetadata("<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>opus</command-args>")).toBeNull();
+    });
+    it("returns the string unchanged for real content", () => {
+        expect(stripLocalCommandMetadata("hi")).toBe("hi");
+        expect(stripLocalCommandMetadata("please run /model with args")).toBe("please run /model with args");
+    });
+    // Regression: in the original bug report the entire /model preamble and
+    // the user's real "hi" prompt were concatenated into a single message.
+    // We want to strip the marker tags and preserve the real prose, not drop
+    // the whole message.
+    it("strips marker tags from mixed-content strings, preserving real prose", () => {
+        const mixed = "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>opus</command-args>" +
+            "<local-command-stdout>Set model to opus (claude-opus-4-7)</local-command-stdout>" +
+            "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>opus[1m]</command-args>" +
+            "<local-command-stdout>Set model to opus[1m] (claude-opus-4-7[1m])</local-command-stdout>" +
+            "hi";
+        const stripped = stripLocalCommandMetadata(mixed);
+        expect(typeof stripped).toBe("string");
+        expect(stripped).not.toContain("<command-name>");
+        expect(stripped).not.toContain("<command-message>");
+        expect(stripped).not.toContain("<command-args>");
+        expect(stripped).not.toContain("<local-command-stdout>");
+        expect(stripped.trimEnd()).toMatch(/hi$/);
+    });
+    it("drops marker-only blocks from mixed arrays, keeping real blocks", () => {
+        const result = stripLocalCommandMetadata([
+            { type: "text", text: "<command-name>/model</command-name>" },
+            { type: "text", text: "<local-command-stdout>ok</local-command-stdout>" },
+            { type: "text", text: "hi" },
+        ]);
+        expect(result).toEqual([{ type: "text", text: "hi" }]);
+    });
+    it("returns null when every block is a marker", () => {
+        expect(stripLocalCommandMetadata([
+            { type: "text", text: "<command-name>/model</command-name>" },
+            { type: "text", text: "<local-command-stdout>ok</local-command-stdout>" },
+        ])).toBeNull();
+    });
+    it("strips tags inside a text block while keeping the trailing prose", () => {
+        const result = stripLocalCommandMetadata([
+            {
+                type: "text",
+                text: "<command-name>/model</command-name><local-command-stdout>ok</local-command-stdout>hi",
+            },
+        ]);
+        expect(result).toEqual([{ type: "text", text: "hi" }]);
+    });
+    it("leaves non-text blocks alone", () => {
+        const image = { type: "image", source: { type: "base64", data: "", media_type: "image/png" } };
+        const result = stripLocalCommandMetadata([
+            { type: "text", text: "<command-name>/model</command-name>" },
+            image,
+        ]);
+        expect(result).toEqual([image]);
+    });
+    it("handles null/undefined/non-container shapes", () => {
+        expect(stripLocalCommandMetadata(null)).toBeNull();
+        expect(stripLocalCommandMetadata(undefined)).toBeUndefined();
+        expect(stripLocalCommandMetadata({ arbitrary: "object" })).toEqual({ arbitrary: "object" });
+    });
+});
+describe("isLocalCommandMetadata", () => {
+    it("is true when stripping leaves nothing", () => {
+        expect(isLocalCommandMetadata("<command-name>/model</command-name>")).toBe(true);
+        expect(isLocalCommandMetadata([{ type: "text", text: "<command-name>/model</command-name>" }])).toBe(true);
+    });
+    it("is false when real content survives stripping", () => {
+        expect(isLocalCommandMetadata("hi")).toBe(false);
+        expect(isLocalCommandMetadata("<command-name>/model</command-name>hi")).toBe(false);
+        expect(isLocalCommandMetadata([
+            { type: "text", text: "<command-name>/model</command-name>" },
+            { type: "text", text: "hi" },
+        ])).toBe(false);
+    });
+});
 describe("escape markdown", () => {
     it("should escape markdown characters", () => {
         let text = "Hello *world*!";
@@ -1024,7 +1097,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("SDK behavior", () => {
             },
         });
         const { value } = await q.next();
-        expect(value).toMatchObject({ type: "system", subtype: "init", session_id: sessionId });
+        expect(value).toMatchObject({ type: "system", session_id: sessionId });
     }, 10000);
 });
 describe("permission requests", () => {
@@ -1084,6 +1157,64 @@ describe("permission requests", () => {
             expect(requestStructure.toolCall.content).toBeDefined();
             expect(Array.isArray(requestStructure.toolCall.content)).toBe(true);
         }
+    });
+    describe("describeAlwaysAllow", () => {
+        it("falls back to naming the whole tool when no suggestions are provided", () => {
+            expect(describeAlwaysAllow(undefined, "Bash")).toBe("Always Allow all Bash");
+            expect(describeAlwaysAllow([], "Read")).toBe("Always Allow all Read");
+        });
+        it("includes the scoped rule content from a suggestion", () => {
+            const label = describeAlwaysAllow([
+                {
+                    type: "addRules",
+                    rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+                    behavior: "allow",
+                    destination: "session",
+                },
+            ], "Bash");
+            expect(label).toBe("Always Allow Bash(npm test:*)");
+        });
+        it("indicates a tool-wide rule when the suggestion has no ruleContent", () => {
+            const label = describeAlwaysAllow([
+                {
+                    type: "addRules",
+                    rules: [{ toolName: "Read" }],
+                    behavior: "allow",
+                    destination: "session",
+                },
+            ], "Read");
+            expect(label).toBe("Always Allow all Read");
+        });
+        it("joins multiple rules and directory suggestions", () => {
+            const label = describeAlwaysAllow([
+                {
+                    type: "addRules",
+                    rules: [
+                        { toolName: "Bash", ruleContent: "git status" },
+                        { toolName: "Bash", ruleContent: "git diff:*" },
+                    ],
+                    behavior: "allow",
+                    destination: "session",
+                },
+                {
+                    type: "addDirectories",
+                    directories: ["/tmp/work"],
+                    destination: "session",
+                },
+            ], "Bash");
+            expect(label).toBe("Always Allow Bash(git status), Bash(git diff:*) and access to /tmp/work");
+        });
+        it("ignores non-allow rules and falls back when nothing is left", () => {
+            const label = describeAlwaysAllow([
+                {
+                    type: "addRules",
+                    rules: [{ toolName: "Bash", ruleContent: "rm -rf:*" }],
+                    behavior: "deny",
+                    destination: "session",
+                },
+            ], "Bash");
+            expect(label).toBe("Always Allow all Bash");
+        });
     });
 });
 describe("stop reason propagation", () => {
@@ -1313,6 +1444,74 @@ describe("stop reason propagation", () => {
             prompt: [{ type: "text", text: "test" }],
         })).rejects.toThrow("Internal error");
     });
+    it("forwards SDKAssistantMessage.error as structured data on internal errors", async () => {
+        const agent = createMockAgent();
+        const assistantMessage = {
+            type: "assistant",
+            parent_tool_use_id: null,
+            error: "rate_limit",
+            uuid: randomUUID(),
+            session_id: "test-session",
+            message: {
+                id: "msg-1",
+                type: "message",
+                role: "assistant",
+                container: null,
+                model: "claude-sonnet-4-20250514",
+                content: [],
+                stop_reason: "stop_sequence",
+                stop_sequence: null,
+                usage: {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+                    service_tier: null,
+                    cache_creation: {
+                        ephemeral_1h_input_tokens: 0,
+                        ephemeral_5m_input_tokens: 0,
+                    },
+                },
+            },
+        };
+        injectSession(agent, [
+            assistantMessage,
+            createResultMessage({
+                subtype: "success",
+                stop_reason: "end_turn",
+                is_error: true,
+                result: "You've hit your limit · resets 8pm",
+            }),
+        ]);
+        const err = await agent
+            .prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        })
+            .then(() => null, (e) => e);
+        expect(err).not.toBeNull();
+        expect(err.data).toEqual({ errorKind: "rate_limit" });
+    });
+    it("omits errorKind data when no SDKAssistantMessage.error was observed", async () => {
+        const agent = createMockAgent();
+        injectSession(agent, [
+            createResultMessage({
+                subtype: "success",
+                stop_reason: "end_turn",
+                is_error: true,
+                result: "Something went wrong",
+            }),
+        ]);
+        const err = await agent
+            .prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        })
+            .then(() => null, (e) => e);
+        expect(err).not.toBeNull();
+        expect(err.data).toBeUndefined();
+    });
 });
 describe("session/close", () => {
     function createMockAgent() {
@@ -1360,7 +1559,7 @@ describe("session/close", () => {
         const agent = createMockAgent();
         const session = injectSession(agent, "session-1");
         expect(agent.sessions["session-1"]).toBeDefined();
-        const result = await agent.unstable_closeSession({ sessionId: "session-1" });
+        const result = await agent.closeSession({ sessionId: "session-1" });
         expect(result).toEqual({});
         expect(agent.sessions["session-1"]).toBeUndefined();
         expect(session.query.interrupt).toHaveBeenCalled();
@@ -1370,18 +1569,18 @@ describe("session/close", () => {
         const agent = createMockAgent();
         const session = injectSession(agent, "session-2");
         expect(session.abortController.signal.aborted).toBe(false);
-        await agent.unstable_closeSession({ sessionId: "session-2" });
+        await agent.closeSession({ sessionId: "session-2" });
         expect(session.abortController.signal.aborted).toBe(true);
     });
     it("should throw when closing a non-existent session", async () => {
         const agent = createMockAgent();
-        await expect(agent.unstable_closeSession({ sessionId: "non-existent" })).rejects.toThrow("Session not found");
+        await expect(agent.closeSession({ sessionId: "non-existent" })).rejects.toThrow("Session not found");
     });
     it("should not affect other sessions when closing one", async () => {
         const agent = createMockAgent();
         injectSession(agent, "session-a");
         injectSession(agent, "session-b");
-        await agent.unstable_closeSession({ sessionId: "session-a" });
+        await agent.closeSession({ sessionId: "session-a" });
         expect(agent.sessions["session-a"]).toBeUndefined();
         expect(agent.sessions["session-b"]).toBeDefined();
     });
@@ -1434,7 +1633,7 @@ describe("getOrCreateSession param change detection", () => {
     it("returns cached session when params are unchanged", async () => {
         const agent = createMockAgent();
         const session = injectSession(agent, "s1", { cwd: "/project" });
-        await agent.unstable_resumeSession({
+        await agent.resumeSession({
             sessionId: "s1",
             cwd: "/project",
             mcpServers: [],
@@ -1452,7 +1651,7 @@ describe("getOrCreateSession param change detection", () => {
         const createSessionSpy = vi
             .spyOn(agent, "createSession")
             .mockRejectedValue(new Error("mock"));
-        await expect(agent.unstable_resumeSession({ sessionId: "s1", cwd: "/new", mcpServers: [] })).rejects.toThrow("mock");
+        await expect(agent.resumeSession({ sessionId: "s1", cwd: "/new", mcpServers: [] })).rejects.toThrow("mock");
         // Old session should have been fully torn down
         expect(session.settingsManager.dispose).toHaveBeenCalled();
         expect(session.abortController.signal.aborted).toBe(true);
@@ -1467,7 +1666,7 @@ describe("getOrCreateSession param change detection", () => {
         const createSessionSpy = vi
             .spyOn(agent, "createSession")
             .mockRejectedValue(new Error("mock"));
-        await expect(agent.unstable_resumeSession({
+        await expect(agent.resumeSession({
             sessionId: "s1",
             cwd: "/project",
             mcpServers: [{ name: "new-server", command: "node", args: ["server.js"], env: [] }],
@@ -1488,7 +1687,7 @@ describe("getOrCreateSession param change detection", () => {
             mcpServers: servers,
         });
         // Same servers but reversed order — should NOT trigger teardown
-        await agent.unstable_resumeSession({
+        await agent.resumeSession({
             sessionId: "s1",
             cwd: "/project",
             mcpServers: [...servers].reverse(),

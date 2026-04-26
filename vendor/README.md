@@ -47,7 +47,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.29.0`
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.31.0`
 
 ## Current Codex Delta
 

@@ -1,5 +1,5 @@
 import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModelState, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModelRequest, SetSessionModelResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, TerminalHandle, TerminalOutputResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { CanUseTool, ModelInfo, Options, PermissionMode, Query, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -136,7 +136,22 @@ export type ToolUseCache = {
     };
 };
 export declare function claudeCliPath(): Promise<string>;
+/**
+ * Return user-message content with local-command marker tags removed, or
+ * `null` if nothing meaningful remains (caller should skip the message).
+ * Preserves real prose that's mixed in alongside the markers — e.g. a
+ * message like `<command-name>…</command-name>hi` becomes `hi`.
+ */
+export declare function stripLocalCommandMetadata(content: unknown): unknown | null;
+export declare function isLocalCommandMetadata(content: unknown): boolean;
 export declare function resolvePermissionMode(defaultMode?: unknown): PermissionMode;
+/**
+ * Builds the label for the "Always Allow" permission option so the user can see
+ * the exact scope they are committing to. Uses the SDK-provided suggestions
+ * when available (e.g. `Bash(npm test:*)`) and falls back to naming the whole
+ * tool so "Always Allow" is never a blank check without disclosure.
+ */
+export declare function describeAlwaysAllow(suggestions: PermissionUpdate[] | undefined, toolName: string): string;
 export declare class ClaudeAcpAgent implements Agent {
     sessions: {
         [key: string]: Session;
@@ -153,7 +168,7 @@ export declare class ClaudeAcpAgent implements Agent {
     initialize(request: InitializeRequest): Promise<InitializeResponse>;
     newSession(params: NewSessionRequest): Promise<NewSessionResponse>;
     unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse>;
-    unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse>;
+    resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse>;
     loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse>;
     listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse>;
     authenticate(_params: AuthenticateRequest): Promise<void>;
@@ -164,7 +179,7 @@ export declare class ClaudeAcpAgent implements Agent {
     private teardownSession;
     /** Tear down all active sessions. Called when the ACP connection closes. */
     dispose(): Promise<void>;
-    unstable_closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse>;
+    closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse>;
     unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse | void>;
     setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse>;
     setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse>;
