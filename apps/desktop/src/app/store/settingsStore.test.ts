@@ -30,6 +30,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
         expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
+        expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
@@ -132,6 +133,33 @@ describe("settingsStore developer mode", () => {
         );
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+    });
+
+    it("does not enable spellcheck for a new vault migrated from legacy global settings", () => {
+        localStorage.setItem(
+            "neverwrite:settings",
+            JSON.stringify({
+                state: {
+                    editorSpellcheck: true,
+                    developerModeEnabled: true,
+                },
+            }),
+        );
+
+        useVaultStore.setState({ vaultPath: "/vaults/new" });
+
+        expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
+        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/new") ?? "",
+            ),
+        ).toMatchObject({
+            state: {
+                editorSpellcheck: false,
+                developerModeEnabled: true,
+            },
+        });
     });
 
     it("migrates legacy global spellcheck settings into existing vault settings", () => {

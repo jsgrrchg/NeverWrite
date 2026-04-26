@@ -1,11 +1,21 @@
 import type { ContextMenuEntry } from "../../components/context-menu/ContextMenu";
-import { createGraphTab, isGraphTab } from "../../app/store/editorTabs";
 import {
+    createGraphTab,
+    createNoteTab,
+    isGraphTab,
+} from "../../app/store/editorTabs";
+import {
+    selectEditorPaneState,
     selectEditorWorkspaceTabs,
     useEditorStore,
 } from "../../app/store/editorStore";
 import { createNewChatInWorkspace } from "../ai/chatPaneMovement";
 import { useChatStore } from "../ai/store/chatStore";
+import {
+    isSearchTab,
+    SEARCH_NOTE_ID,
+    SEARCH_TAB_TITLE,
+} from "../search/searchTab";
 import { openUntitledMarkdownNote } from "./markdownNoteCreation";
 
 async function createNewNote(paneId?: string) {
@@ -34,6 +44,25 @@ async function createNewChat(runtimeId?: string, paneId?: string) {
 
 function createNewTerminal(paneId?: string) {
     useEditorStore.getState().openTerminal({ paneId });
+}
+
+function openSearch(paneId?: string) {
+    const editor = useEditorStore.getState();
+    const targetPane =
+        (paneId
+            ? editor.panes.find((pane) => pane.id === paneId)
+            : selectEditorPaneState(editor)) ?? selectEditorPaneState(editor);
+    const existingSearchTab = targetPane.tabs.find(isSearchTab);
+
+    if (existingSearchTab) {
+        editor.switchTab(existingSearchTab.id);
+        return;
+    }
+
+    editor.insertExternalTabInPane(
+        createNoteTab(SEARCH_NOTE_ID, SEARCH_TAB_TITLE, ""),
+        targetPane.id,
+    );
 }
 
 function openGraph(paneId?: string) {
@@ -76,6 +105,10 @@ export function buildNewTabContextMenuEntries(options?: {
             action: () => {
                 void createNewNote(paneId);
             },
+        },
+        {
+            label: SEARCH_TAB_TITLE,
+            action: () => openSearch(paneId),
         },
         {
             label: "New Agent",

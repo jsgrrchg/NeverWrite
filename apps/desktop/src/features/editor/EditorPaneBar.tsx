@@ -19,6 +19,7 @@ import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
 import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import { useInlineRename } from "../ai/components/useInlineRename";
+import { isSearchTab, SEARCH_TAB_TITLE } from "../search/searchTab";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -53,6 +54,10 @@ function getTabLabel(
     if (isChatTab(tab)) {
         const session = chatSessionsById[tab.sessionId];
         return session ? getSessionTitle(session) : tab.title;
+    }
+
+    if (isSearchTab(tab)) {
+        return SEARCH_TAB_TITLE;
     }
 
     if (fileTreeShowExtensions && isNoteTab(tab)) {

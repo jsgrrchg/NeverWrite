@@ -19,6 +19,7 @@ import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
 import { SearchView } from "../search/SearchView";
+import { isSearchTab } from "../search/searchTab";
 import { PdfTabView } from "../pdf/PdfTabView";
 import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorkspaceView";
 import { AIReviewView } from "../ai/components/AIReviewView";
@@ -90,6 +91,7 @@ function renderEditorPanelView(
     view: EditorPanelView,
     paneId?: string,
     emptyStateMessage?: string,
+    activeTabId?: string,
 ) {
     switch (view) {
         case "pdf":
@@ -116,7 +118,9 @@ function renderEditorPanelView(
                 </React.Suspense>
             );
         case "search":
-            return <SearchView />;
+            return activeTabId ? (
+                <SearchView key={activeTabId} tabId={activeTabId} />
+            ) : null;
         case "graph":
             return null;
         default:
@@ -149,7 +153,7 @@ export function EditorPaneContent({
         if (isMapTab(tab)) return "map";
         if (isGraphTab(tab)) return "graph";
         if (!isNoteTab(tab)) return "editor";
-        if (tab.noteId === "__search__") return "search";
+        if (isSearchTab(tab)) return "search";
         return "editor";
     })();
     const paneTabs = useEditorStore(
@@ -197,7 +201,12 @@ export function EditorPaneContent({
             ))}
             {!isGraphActive &&
                 !isTerminalActive &&
-                renderEditorPanelView(view, paneId, emptyStateMessage)}
+                renderEditorPanelView(
+                    view,
+                    paneId,
+                    emptyStateMessage,
+                    activeTab?.id,
+                )}
         </div>
     );
 }

@@ -784,6 +784,80 @@ describe("EditorPaneBar", () => {
         ).toEqual(["tab-b"]);
     });
 
+    it("opens one search tab per pane from the pane plus-button context menu", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useSettingsStore.setState({ fileTreeShowExtensions: true });
+        const getPane = (paneId: string) =>
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === paneId);
+        const getSearchTab = (paneId: string) =>
+            getPane(paneId)?.tabs.find(
+                (tab) => tab.kind === "note" && tab.noteId === "__search__",
+            );
+        const { unmount } = renderComponent(
+            <EditorPaneBar paneId="primary" isFocused />,
+        );
+
+        let newTabButton = document.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        fireEvent.click(await screen.findByRole("button", { name: "Search" }));
+
+        await waitFor(() => {
+            expect(getSearchTab("primary")).toBeDefined();
+        });
+        const primaryPane = getPane("primary");
+        const primarySearchTab = getSearchTab("primary");
+        expect(primarySearchTab?.title).toBe("Search");
+        expect(primaryPane?.activeTabId).toBe(primarySearchTab?.id);
+        expect(screen.getByText("Search")).toBeInTheDocument();
+        expect(screen.queryByText("__search__.md")).toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        fireEvent.click(await screen.findByRole("button", { name: "Search" }));
+
+        const refreshedPrimaryPane = getPane("primary");
+        expect(
+            refreshedPrimaryPane?.tabs.filter(
+                (tab) => tab.kind === "note" && tab.noteId === "__search__",
+            ),
+        ).toHaveLength(1);
+        expect(refreshedPrimaryPane?.activeTabId).toBe(primarySearchTab?.id);
+
+        unmount();
+        renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
+
+        newTabButton = document.querySelector(
+            '[data-new-tab-button="true"]',
+        ) as HTMLElement | null;
+        expect(newTabButton).not.toBeNull();
+
+        fireEvent.contextMenu(newTabButton!);
+        fireEvent.click(await screen.findByRole("button", { name: "Search" }));
+
+        await waitFor(() => {
+            expect(getSearchTab("secondary")).toBeDefined();
+        });
+        const state = useEditorStore.getState();
+        const secondaryPane = getPane("secondary");
+        const secondarySearchTab = getSearchTab("secondary");
+        expect(secondarySearchTab?.title).toBe("Search");
+        expect(secondarySearchTab?.id).not.toBe(primarySearchTab?.id);
+        expect(secondaryPane?.activeTabId).toBe(secondarySearchTab?.id);
+        expect(
+            state.panes
+                .flatMap((pane) => pane.tabs)
+                .filter(
+                    (tab) =>
+                        tab.kind === "note" && tab.noteId === "__search__",
+                ),
+        ).toHaveLength(2);
+    });
+
     it("creates a workspace terminal from the pane plus-button context menu", async () => {
         useVaultStore.setState({ vaultPath: "/vault" });
         useSettingsStore.setState({

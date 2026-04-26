@@ -58,6 +58,7 @@ import { renderEditorTabActivityIndicator } from "./EditorTabActivityIndicator";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
 import { useCommandStore } from "../command-palette/store/commandStore";
+import { isSearchTab, SEARCH_TAB_TITLE } from "../search/searchTab";
 import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
@@ -1218,11 +1219,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                         const isActive = tab.id === activeTabId;
                                         const isDragging =
                                             tab.id === draggingTabId;
-                                        const tabTooltip = isNoteTab(tab)
-                                            ? tab.noteId
-                                            : tab.kind === "file"
-                                              ? tab.relativePath
-                                              : tab.title;
+                                        const tabTooltip = isSearchTab(tab)
+                                            ? SEARCH_TAB_TITLE
+                                            : isNoteTab(tab)
+                                              ? tab.noteId
+                                              : tab.kind === "file"
+                                                ? tab.relativePath
+                                                : tab.title;
 
                                         return (
                                             <Fragment key={tab.id}>
@@ -1360,8 +1363,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                                 tabLayout.titleFontSize,
                                                         }}
                                                     >
-                                                        {fileTreeShowExtensions &&
-                                                        isNoteTab(tab)
+                                                        {isSearchTab(tab)
+                                                            ? SEARCH_TAB_TITLE
+                                                            : fileTreeShowExtensions &&
+                                                                isNoteTab(tab)
                                                             ? `${
                                                                   tab.noteId
                                                                       .split(

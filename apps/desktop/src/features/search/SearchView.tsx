@@ -66,18 +66,52 @@ const OPERATORS = [
     },
 ] as const;
 
-export function SearchView() {
+interface SearchViewStateSnapshot {
+    query: string;
+    results: AdvancedSearchResultDto[];
+    hasSearched: boolean;
+    sortBy: SortBy;
+    sortAsc: boolean;
+    showBuilder: boolean;
+}
+
+const searchViewStateByTabId = new Map<string, SearchViewStateSnapshot>();
+
+function readSearchViewState(tabId: string): SearchViewStateSnapshot {
+    return (
+        searchViewStateByTabId.get(tabId) ?? {
+            query: "",
+            results: [],
+            hasSearched: false,
+            sortBy: "relevance",
+            sortAsc: false,
+            showBuilder: false,
+        }
+    );
+}
+
+interface SearchViewProps {
+    tabId: string;
+}
+
+export function SearchView({ tabId }: SearchViewProps) {
     const inputRef = useRef<HTMLInputElement>(null);
-    const [query, setQuery] = useState("");
-    const [results, setResults] = useState<AdvancedSearchResultDto[]>([]);
-    const [hasSearched, setHasSearched] = useState(false);
+    const initialState = useMemo(() => readSearchViewState(tabId), [tabId]);
+    const [query, setQuery] = useState(initialState.query);
+    const [results, setResults] = useState<AdvancedSearchResultDto[]>(
+        initialState.results,
+    );
+    const [hasSearched, setHasSearched] = useState(initialState.hasSearched);
     const [isSearching, setIsSearching] = useState(false);
-    const [sortBy, setSortBy] = useState<SortBy>("relevance");
-    const [sortAsc, setSortAsc] = useState(false);
+    const [sortBy, setSortBy] = useState<SortBy>(initialState.sortBy);
+    const [sortAsc, setSortAsc] = useState(initialState.sortAsc);
     const [history, setHistory] = useState<string[]>([]);
-    const [showBuilder, setShowBuilder] = useState(false);
+    const [showBuilder, setShowBuilder] = useState(initialState.showBuilder);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const searchRequestIdRef = useRef(0);
+    const restoredResultRef = useRef(
+        initialState.query.trim().length > 0 && initialState.hasSearched,
+    );
 
     const openNote = useEditorStore((s) => s.openNote);
     const openPdf = useEditorStore((s) => s.openPdf);
@@ -91,6 +125,17 @@ export function SearchView() {
         inputRef.current?.focus();
         setHistory(getSearchHistory());
     }, []);
+
+    useEffect(() => {
+        searchViewStateByTabId.set(tabId, {
+            query,
+            results,
+            hasSearched,
+            sortBy,
+            sortAsc,
+            showBuilder,
+        });
+    }, [tabId, query, results, hasSearched, sortBy, sortAsc, showBuilder]);
 
     const doSearch = useCallback(
         async (q: string, sort: SortBy, asc: boolean) => {
@@ -128,6 +173,10 @@ export function SearchView() {
         if (timerRef.current) clearTimeout(timerRef.current);
         if (!query.trim()) {
             searchRequestIdRef.current += 1;
+            return;
+        }
+        if (restoredResultRef.current) {
+            restoredResultRef.current = false;
             return;
         }
         timerRef.current = setTimeout(

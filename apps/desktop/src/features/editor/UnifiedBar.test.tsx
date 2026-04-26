@@ -833,6 +833,9 @@ describe("UnifiedBar tab strip drop", () => {
             screen.getByRole("button", { name: "New Agent" }),
         ).toBeInTheDocument();
         expect(
+            screen.getByRole("button", { name: "Search" }),
+        ).toBeInTheDocument();
+        expect(
             screen.getByRole("button", { name: "Open Graph" }),
         ).toBeInTheDocument();
         expect(

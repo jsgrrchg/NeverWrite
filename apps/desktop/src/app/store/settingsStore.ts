@@ -152,7 +152,7 @@ const defaults: Settings = {
     livePreviewEnabled: true,
     inlineReviewEnabled: true,
     tabSize: 2,
-    editorSpellcheck: true,
+    editorSpellcheck: false,
     spellcheckPrimaryLanguage: "system",
     spellcheckSecondaryLanguage: null,
     grammarCheckEnabled: false,
@@ -462,7 +462,15 @@ function migrateGlobalSettings(vaultPath: string) {
             safeStorageGetItem(SETTINGS_KEY_FALLBACK),
         );
         if (!global) return;
-        safeStorageSetItem(vaultKey, JSON.stringify({ state: global }));
+        safeStorageSetItem(
+            vaultKey,
+            JSON.stringify({
+                state: {
+                    ...global,
+                    editorSpellcheck: defaults.editorSpellcheck,
+                },
+            }),
+        );
     } catch {
         // localStorage unavailable
     }
