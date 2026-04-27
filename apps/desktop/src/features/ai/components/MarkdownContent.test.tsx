@@ -22,6 +22,29 @@ const pillMetrics = {
 };
 
 describe("MarkdownContent", () => {
+    it("renders inline pills with full wrapping labels", () => {
+        const longLabel =
+            "2026 - The Case for No Reliable Narrator in Long Research Notes";
+
+        renderComponent(
+            <MarkdownContent
+                content={`Review [[${longLabel}]].`}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        const pill = screen.getByRole("button", { name: longLabel });
+        const label = pill.querySelector("span");
+
+        expect(pill).toBeInTheDocument();
+        expect(label).toHaveTextContent(longLabel);
+        expect(label).toHaveStyle({
+            overflowWrap: "anywhere",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+        });
+    });
+
     it("renders relative markdown note links as internal file pills", () => {
         setVaultNotes([
             {

@@ -25,11 +25,7 @@ import {
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
-import {
-    getChatPillMetrics,
-    truncatePillLabel,
-    type ChatPillMetrics,
-} from "./chatPillMetrics";
+import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import type {
     AIAvailableCommand,
     AIChatFileSummary,
@@ -38,7 +34,11 @@ import type {
     AIComposerPart,
     AIMentionSuggestion,
 } from "../types";
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+    CSSProperties,
+    MouseEvent as ReactMouseEvent,
+    ReactNode,
+} from "react";
 import { openChatNoteById } from "../chatNoteNavigation";
 import { openAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
@@ -51,6 +51,16 @@ import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
+
+type ComposerPillLayoutStyle = Pick<
+    CSSProperties,
+    | "maxWidth"
+    | "overflow"
+    | "overflowWrap"
+    | "textOverflow"
+    | "whiteSpace"
+    | "wordBreak"
+>;
 
 interface AIChatComposerProps {
     parts: AIComposerPart[];
@@ -195,11 +205,38 @@ function getFallbackSlashCommands(runtimeId?: string) {
     return COMMON_SLASH_COMMANDS;
 }
 
+export function getComposerPillLayoutStyle(
+    metrics: ChatPillMetrics,
+    options: { compact?: boolean } = {},
+): ComposerPillLayoutStyle {
+    if (options.compact === true) {
+        return {
+            maxWidth: `${metrics.maxWidth}px`,
+            overflow: "hidden",
+            overflowWrap: "normal",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            wordBreak: "normal",
+        };
+    }
+
+    return {
+        maxWidth: "100%",
+        overflow: "visible",
+        overflowWrap: "anywhere",
+        textOverflow: "clip",
+        whiteSpace: "normal",
+        wordBreak: "break-word",
+    };
+}
+
 function applyComposerPillStyles(
     element: HTMLSpanElement,
     metrics: ChatPillMetrics,
     palette: { background: string; color: string },
+    options: { compact?: boolean } = {},
 ) {
+    const layout = getComposerPillLayoutStyle(metrics, options);
     element.style.display = "inline-flex";
     element.style.alignItems = "center";
     element.style.padding = `${metrics.paddingY}px ${metrics.paddingX}px`;
@@ -212,7 +249,12 @@ function applyComposerPillStyles(
     element.style.lineHeight = String(metrics.lineHeight);
     element.style.verticalAlign = "baseline";
     element.style.transform = `translateY(${metrics.offsetY}px)`;
-    element.style.whiteSpace = "nowrap";
+    element.style.whiteSpace = String(layout.whiteSpace);
+    element.style.maxWidth = String(layout.maxWidth);
+    element.style.overflow = String(layout.overflow);
+    element.style.overflowWrap = String(layout.overflowWrap);
+    element.style.textOverflow = String(layout.textOverflow);
+    element.style.wordBreak = String(layout.wordBreak);
 }
 
 function getPillMetricsSignature(metrics: ChatPillMetrics) {
@@ -238,7 +280,7 @@ function createMentionNode(
     element.dataset.label = part.label;
     element.dataset.path = part.path;
     element.contentEditable = "false";
-    element.textContent = truncatePillLabel(part.label);
+    element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
     return element;
 }
@@ -256,7 +298,7 @@ function createFileMentionNode(
         element.dataset.mimeType = part.mimeType;
     }
     element.contentEditable = "false";
-    element.textContent = truncatePillLabel(part.label);
+    element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
     return element;
 }
@@ -270,7 +312,7 @@ function createFolderMentionNode(
     element.dataset.folderPath = part.folderPath;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = truncatePillLabel(part.label);
+    element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.folder);
     return element;
 }
@@ -308,8 +350,10 @@ function createSelectionMentionNode(
     element.dataset.startLine = String(part.startLine);
     element.dataset.endLine = String(part.endLine);
     element.contentEditable = "false";
-    element.textContent = truncatePillLabel(part.label);
-    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent);
+    element.textContent = part.label;
+    applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.accent, {
+        compact: true,
+    });
     return element;
 }
 
@@ -323,7 +367,7 @@ function createScreenshotNode(
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = truncatePillLabel(part.label);
+    element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
     return element;
 }
@@ -338,7 +382,7 @@ function createFileAttachmentNode(
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
     element.contentEditable = "false";
-    element.textContent = truncatePillLabel(part.label);
+    element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
     return element;
 }

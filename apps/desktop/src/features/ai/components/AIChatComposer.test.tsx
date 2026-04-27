@@ -11,7 +11,11 @@ import {
     setVaultNotes,
 } from "../../../test/test-utils";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
-import { AIChatComposer } from "./AIChatComposer";
+import {
+    AIChatComposer,
+    getComposerPillLayoutStyle,
+} from "./AIChatComposer";
+import { getChatPillMetrics } from "./chatPillMetrics";
 
 afterEach(() => {
     act(() => {
@@ -96,6 +100,34 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("lets regular composer pills show their full label", () => {
+        expect(getComposerPillLayoutStyle(getChatPillMetrics(14))).toMatchObject(
+            {
+                maxWidth: "100%",
+                overflow: "visible",
+                overflowWrap: "anywhere",
+                textOverflow: "clip",
+                whiteSpace: "normal",
+                wordBreak: "break-word",
+            },
+        );
+    });
+
+    it("keeps selection composer pills compact", () => {
+        expect(
+            getComposerPillLayoutStyle(getChatPillMetrics(14), {
+                compact: true,
+            }),
+        ).toMatchObject({
+            maxWidth: "161px",
+            overflow: "hidden",
+            overflowWrap: "normal",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            wordBreak: "normal",
+        });
+    });
+
     it("renders a custom placeholder while the agent is loading", () => {
         renderComposer({
             disabled: true,

@@ -1,5 +1,5 @@
 import type { CSSProperties, MouseEventHandler } from "react";
-import { truncatePillLabel, type ChatPillMetrics } from "./chatPillMetrics";
+import { type ChatPillMetrics } from "./chatPillMetrics";
 import { CHAT_PILL_VARIANTS, type ChatPillVariant } from "./chatPillPalette";
 
 interface ChatInlinePillProps {
@@ -28,7 +28,7 @@ export function ChatInlinePill({
         alignItems: "center",
         margin: `0 ${metrics.gapX}px`,
         padding: `${metrics.paddingY}px ${metrics.paddingX}px`,
-        maxInlineSize: metrics.maxWidth,
+        maxInlineSize: "100%",
         borderRadius: metrics.radius,
         background: palette.background,
         color: palette.color,
@@ -38,7 +38,7 @@ export function ChatInlinePill({
         cursor: clickable ? "pointer" : "default",
         fontFamily: "inherit",
         verticalAlign: "baseline",
-        overflow: "hidden",
+        overflowWrap: "anywhere",
         transform: `translateY(${metrics.offsetY}px)`,
         opacity: clickable ? 0.85 : 1,
         transition: clickable ? "opacity 80ms ease" : undefined,
@@ -50,12 +50,12 @@ export function ChatInlinePill({
                 display: "block",
                 minWidth: 0,
                 maxWidth: "100%",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                overflowWrap: "anywhere",
+                whiteSpace: "normal",
+                wordBreak: "break-word",
             }}
         >
-            {truncatePillLabel(label)}
+            {label}
         </span>
     );
 
