@@ -911,15 +911,6 @@ impl NativeBackend {
             | "delete_vault_snapshot"
             | "register_window_vault_route"
             | "unregister_window_vault_route" => Ok(json!(null)),
-            "get_app_update_configuration" | "check_for_app_update" => Ok(json!({
-                "enabled": false,
-                "currentVersion": "0.1.0",
-                "channel": "electron-sidecar-spike",
-                "endpoint": null,
-                "message": "Updates are disabled in the Electron sidecar spike.",
-                "update": null
-            })),
-            "download_and_install_app_update" => Ok(json!(null)),
             _ => Err(format!(
                 "Native backend command is not implemented yet: {command}"
             )),

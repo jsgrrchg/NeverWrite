@@ -948,15 +948,6 @@ export class ElectronVaultBackend {
             case "register_window_vault_route":
             case "unregister_window_vault_route":
                 return null;
-            case "get_app_update_configuration":
-                return this.appUpdater.getConfiguration();
-            case "check_for_app_update":
-                return this.appUpdater.checkForUpdates();
-            case "download_and_install_app_update":
-                return this.appUpdater.downloadAndInstallUpdate(
-                    String(args.version ?? ""),
-                    String(args.target ?? ""),
-                );
             case "web_clipper_ready_vaults":
                 return this.webClipperReadyVaults();
             case "web_clipper_list_folders":
@@ -1077,6 +1068,22 @@ export class ElectronVaultBackend {
                 return { handled: true, result: null };
             case "unregister_window_vault_route":
                 unregisterWindowVaultRoute(args);
+                return { handled: true, result: null };
+            case "get_app_update_configuration":
+                return {
+                    handled: true,
+                    result: this.appUpdater.getConfiguration(),
+                };
+            case "check_for_app_update":
+                return {
+                    handled: true,
+                    result: await this.appUpdater.checkForUpdates(),
+                };
+            case "download_and_install_app_update":
+                await this.appUpdater.downloadAndInstallUpdate(
+                    String(args.version ?? ""),
+                    String(args.target ?? ""),
+                );
                 return { handled: true, result: null };
             default:
                 return { handled: false };
