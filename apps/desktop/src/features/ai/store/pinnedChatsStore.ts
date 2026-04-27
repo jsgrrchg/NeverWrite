@@ -107,10 +107,3 @@ export const usePinnedChatsStore = create<PinnedChatsStore>((set) => ({
             return { entries: next };
         }),
 }));
-
-export function getChatPinnedAt(
-    entries: Record<string, PinnedChatEntry>,
-    sessionId: string,
-): number | null {
-    return entries[sessionId]?.pinnedAt ?? null;
-}
