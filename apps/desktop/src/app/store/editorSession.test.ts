@@ -331,6 +331,57 @@ describe("editorSession", () => {
         expect(restored?.activeTabId).toBe("chat-1");
     });
 
+    it("persists and restores pane pinned tab ids", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "terminal-1",
+                            kind: "terminal",
+                            terminalId: "runtime-1",
+                            title: "Terminal 1",
+                            cwd: "/vaults/project-alpha",
+                        },
+                        {
+                            id: "terminal-2",
+                            kind: "terminal",
+                            terminalId: "runtime-2",
+                            title: "Terminal 2",
+                            cwd: "/vaults/project-alpha",
+                        },
+                    ],
+                    pinnedTabIds: ["terminal-2"],
+                    activeTabId: "terminal-1",
+                    activationHistory: ["terminal-1"],
+                    tabNavigationHistory: ["terminal-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+        });
+
+        expect(session.panes[0]?.tabIds).toEqual([
+            "terminal-2",
+            "terminal-1",
+        ]);
+        expect(session.panes[0]?.pinnedTabIds).toEqual(["terminal-2"]);
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.panes?.[0]?.pinnedTabIds).toEqual(["terminal-2"]);
+        expect(restored?.panes?.[0]?.tabs.map((tab) => tab.id)).toEqual([
+            "terminal-2",
+            "terminal-1",
+        ]);
+    });
+
     it("persists and restores workspace chat history tabs as first-class tabs", async () => {
         const session = buildPersistedSession({
             panes: [

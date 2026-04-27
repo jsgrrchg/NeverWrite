@@ -104,6 +104,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
     const switchTab = useEditorStore((state) => state.switchTab);
     const closeTab = useEditorStore((state) => state.closeTab);
+    const togglePaneTabPinned = useEditorStore(
+        (state) => state.togglePaneTabPinned,
+    );
     const goBack = useEditorStore((state) => state.goBack);
     const goForward = useEditorStore((state) => state.goForward);
     const closePane = useEditorStore((state) => state.closePane);
@@ -147,6 +150,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const paneIndex = paneIds.indexOf(paneId);
     const canCreateSplit = true;
     const hasTabs = pane.tabs.length > 0;
+    const pinnedTabIdSet = new Set(pane.pinnedTabIds);
     const paneLabel = `Pane ${paneIndex + 1}`;
     const activePaneTab =
         pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
@@ -487,6 +491,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 const isActive = tab.id === pane.activeTabId;
                                 const isDragging = tab.id === draggingTabId;
                                 const isEditing = editingKey === tab.id;
+                                const isPinned = pinnedTabIdSet.has(tab.id);
                                 const tabLabel = getTabLabel(
                                     tab,
                                     fileTreeShowExtensions,
@@ -499,9 +504,16 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 registerTabNode(tab.id, node)
                                             }
                                             data-pane-tab-id={tab.id}
+                                            data-pane-tab-pinned={
+                                                isPinned ? "true" : undefined
+                                            }
                                             role="tab"
                                             tabIndex={0}
                                             aria-selected={isActive}
+                                            aria-label={tabLabel}
+                                            title={
+                                                isPinned ? tabLabel : undefined
+                                            }
                                             className="no-drag group inline-flex shrink-0 items-center text-left"
                                             onPointerDown={(event) =>
                                                 isEditing
@@ -574,14 +586,25 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 });
                                             }}
                                             style={{
-                                                width: tabLayout.tabWidth,
-                                                minWidth: tabLayout.tabWidth,
-                                                maxWidth: 240,
+                                                width: isPinned
+                                                    ? 34
+                                                    : tabLayout.tabWidth,
+                                                minWidth: isPinned
+                                                    ? 34
+                                                    : tabLayout.tabWidth,
+                                                maxWidth: isPinned ? 34 : 240,
                                                 height: 33,
                                                 flexShrink: 0,
+                                                justifyContent: isPinned
+                                                    ? "center"
+                                                    : undefined,
                                                 boxSizing: "border-box",
-                                                gap: tabLayout.tabGap,
-                                                padding: `0 ${tabLayout.tabPaddingX}px`,
+                                                gap: isPinned
+                                                    ? 0
+                                                    : tabLayout.tabGap,
+                                                padding: isPinned
+                                                    ? 0
+                                                    : `0 ${tabLayout.tabPaddingX}px`,
                                                 borderRight:
                                                     "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
                                                 background: isActive
@@ -610,7 +633,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                 tab,
                                                 chatSessionsById,
                                             )}
-                                            {isEditing ? (
+                                            {isPinned ? null : isEditing ? (
                                                 <input
                                                     ref={inputRef}
                                                     value={editValue}
@@ -669,26 +692,28 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                     {tabLabel}
                                                 </span>
                                             )}
-                                            <button
-                                                type="button"
-                                                title={`Close ${tabLabel}`}
-                                                onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    void requestCloseTab(
-                                                        tab.id,
-                                                    );
-                                                }}
-                                                className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded px-0.5 text-[10px] transition ${
-                                                    isActive
-                                                        ? "opacity-70 hover:opacity-100"
-                                                        : "opacity-0 group-hover:opacity-70 hover:opacity-100"
-                                                }`}
-                                                style={{
-                                                    color: "var(--text-secondary)",
-                                                }}
-                                            >
-                                                ×
-                                            </button>
+                                            {isPinned ? null : (
+                                                <button
+                                                    type="button"
+                                                    title={`Close ${tabLabel}`}
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        void requestCloseTab(
+                                                            tab.id,
+                                                        );
+                                                    }}
+                                                    className={`ml-0.5 inline-flex shrink-0 items-center justify-center rounded px-0.5 text-[10px] transition ${
+                                                        isActive
+                                                            ? "opacity-70 hover:opacity-100"
+                                                            : "opacity-0 group-hover:opacity-70 hover:opacity-100"
+                                                    }`}
+                                                    style={{
+                                                        color: "var(--text-secondary)",
+                                                    }}
+                                                >
+                                                    ×
+                                                </button>
+                                            )}
                                         </div>
                                     </Fragment>
                                 );
@@ -808,8 +833,16 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         if (!targetTab) {
                             return [];
                         }
+                        const targetTabPinned = pinnedTabIdSet.has(
+                            targetTab.id,
+                        );
 
                         const entries: ContextMenuEntry[] = [
+                            {
+                                label: targetTabPinned ? "Unpin Tab" : "Pin Tab",
+                                action: () =>
+                                    togglePaneTabPinned(paneId, targetTab.id),
+                            },
                             {
                                 label: "Close",
                                 action: () =>
@@ -817,7 +850,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                             },
                         ];
 
-                        if (isChatTab(targetTab)) {
+                        if (!targetTabPinned && isChatTab(targetTab)) {
                             entries.push({
                                 label: "Rename chat",
                                 action: () => beginChatRename(targetTab),
@@ -853,10 +886,13 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                     });
                                 },
                             });
-                            entries.push({
-                                label: "Rename Terminal",
-                                action: () => beginTerminalRename(targetTab),
-                            });
+                            if (!targetTabPinned) {
+                                entries.push({
+                                    label: "Rename Terminal",
+                                    action: () =>
+                                        beginTerminalRename(targetTab),
+                                });
+                            }
                         }
 
                         entries.push({ type: "separator" });

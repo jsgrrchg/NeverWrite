@@ -151,6 +151,7 @@ function makePane(
         Pick<
             ReturnType<typeof createEditorPaneState>,
             | "activeTabId"
+            | "pinnedTabIds"
             | "activationHistory"
             | "tabNavigationHistory"
             | "tabNavigationIndex"
@@ -159,6 +160,7 @@ function makePane(
 ) {
     return createEditorPaneState(id, {
         tabs,
+        pinnedTabIds: overrides.pinnedTabIds,
         activeTabId: overrides.activeTabId ?? tabs[0]?.id ?? null,
         activationHistory: overrides.activationHistory,
         tabNavigationHistory: overrides.tabNavigationHistory,
@@ -216,6 +218,7 @@ beforeEach(() => {
         panes: [makePane("primary")],
         focusedPaneId: "primary",
         tabs: [],
+        pinnedTabIds: [],
         activeTabId: null,
         recentlyClosedTabs: [],
         activationHistory: [],
@@ -3720,6 +3723,94 @@ describe("editorStore tab management", () => {
             "tab-a",
         ]);
         expect(state.activeTabId).toBe("tab-b");
+    });
+
+    it("keeps pinned tabs at the front of their pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().pinPaneTab("primary", "tab-c");
+        useEditorStore.getState().pinPaneTab("primary", "tab-b");
+        useEditorStore.getState().reorderPaneTabs("primary", 2, 0);
+
+        const pane = useEditorStore.getState().panes[0];
+        expect(pane?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-c",
+            "tab-b",
+            "tab-a",
+        ]);
+        expect(pane?.pinnedTabIds).toEqual(["tab-c", "tab-b"]);
+    });
+
+    it("does not carry a tab pin when moving the tab to another pane", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    pinnedTabIds: ["tab-a"],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().moveTabToPane("tab-a", "secondary", 0);
+
+        const secondaryPane = useEditorStore
+            .getState()
+            .panes.find((pane) => pane.id === "secondary");
+        expect(secondaryPane?.tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
+        expect(secondaryPane?.pinnedTabIds).toEqual([]);
     });
 
     it("closes a pane explicitly and merges its tabs into a neighboring pane", () => {

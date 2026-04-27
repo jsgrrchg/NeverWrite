@@ -219,6 +219,55 @@ describe("EditorPaneBar", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("pins a tab per pane and renders it as icon-only chrome", async () => {
+        const user = userEvent.setup();
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-a",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "Alpha",
+                        },
+                        {
+                            id: "tab-c",
+                            kind: "note",
+                            noteId: "notes/c",
+                            title: "Gamma",
+                            content: "Gamma",
+                        },
+                    ],
+                    activeTabId: "tab-c",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(await screen.findByRole("button", { name: "Pin Tab" }));
+
+        const pinnedTab = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(pinnedTab).not.toBeNull();
+        expect(pinnedTab).toHaveAttribute("data-pane-tab-pinned", "true");
+        expect(pinnedTab).toHaveAttribute("title", "Gamma");
+        expect(pinnedTab?.textContent).not.toContain("Gamma");
+        expect(
+            useEditorStore.getState().panes[0]?.pinnedTabIds,
+        ).toEqual(["tab-c"]);
+    });
+
     it("confirms before closing a tab with an active agent", async () => {
         useEditorStore.getState().hydrateWorkspace(
             [
