@@ -59,7 +59,7 @@ import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
 import { useCommandStore } from "../command-palette/store/commandStore";
 import { isSearchTab, SEARCH_TAB_TITLE } from "../search/searchTab";
-import { getTabStripDropIndex, getTabStripScrollTarget } from "./tabStrip";
+import { getTabStripDropIndex, useActiveTabStripReveal } from "./tabStrip";
 import { WindowChrome } from "../../components/layout/WindowChrome";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { REQUEST_CLOSE_ACTIVE_TAB_EVENT } from "./Editor";
@@ -839,41 +839,13 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         };
     }, [tabOrderKey, tabStripRef, vaultPath]);
 
-    useEffect(() => {
-        if (!activeTabId || draggingTabId) return;
-
-        const strip = tabStripRef.current;
-        if (!strip) return;
-
-        const activeNode = strip.querySelector<HTMLElement>(
-            `[data-tab-id="${CSS.escape(activeTabId)}"]`,
-        );
-        if (!activeNode) return;
-
-        const stripLeft = strip.scrollLeft;
-        const stripRight = stripLeft + strip.clientWidth;
-        const nodeLeft = activeNode.offsetLeft;
-        const nodeRight = nodeLeft + activeNode.offsetWidth;
-
-        if (nodeLeft >= stripLeft && nodeRight <= stripRight) {
-            return;
-        }
-
-        const target = getTabStripScrollTarget({
-            stripLeft,
-            stripWidth: strip.clientWidth,
-            scrollWidth: strip.scrollWidth,
-            nodeLeft,
-            nodeWidth: activeNode.offsetWidth,
-        });
-
-        if (target === null || Math.abs(target - strip.scrollLeft) < 1) return;
-
-        strip.scrollTo({
-            left: target,
-            behavior: "smooth",
-        });
-    }, [activeTabId, draggingTabId, tabOrderKey, tabStripRef]);
+    useActiveTabStripReveal({
+        stripRef: tabStripRef,
+        activeTabId,
+        draggingTabId,
+        tabOrderKey,
+        tabIdAttribute: "data-tab-id",
+    });
 
     useEffect(() => {
         let mounted = true;

@@ -440,6 +440,177 @@ describe("EditorPaneBar", () => {
         expect(scrollLeft).toBe(40);
     });
 
+    it("reveals the active pane tab when command navigation selects an offscreen tab", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-a",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "Alpha",
+                        },
+                        {
+                            id: "tab-b",
+                            kind: "note",
+                            noteId: "notes/b",
+                            title: "Beta",
+                            content: "Beta",
+                        },
+                        {
+                            id: "tab-c",
+                            kind: "note",
+                            noteId: "notes/c",
+                            title: "Gamma",
+                            content: "Gamma",
+                        },
+                        {
+                            id: "tab-d",
+                            kind: "note",
+                            noteId: "notes/d",
+                            title: "Delta",
+                            content: "Delta",
+                        },
+                    ],
+                    activeTabId: "tab-a",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const strip = document.querySelector(
+            '[data-pane-tab-strip="primary"]',
+        ) as HTMLElement | null;
+        const targetTab = document.querySelector(
+            '[data-pane-tab-id="tab-d"]',
+        ) as HTMLElement | null;
+        expect(strip).not.toBeNull();
+        expect(targetTab).not.toBeNull();
+
+        let scrollLeft = 0;
+        const scrollTo = vi.fn((options: ScrollToOptions) => {
+            scrollLeft = options.left ?? scrollLeft;
+        });
+        Object.defineProperty(strip!, "scrollLeft", {
+            configurable: true,
+            get: () => scrollLeft,
+            set: (value: number) => {
+                scrollLeft = value;
+            },
+        });
+        Object.defineProperty(strip!, "scrollTo", {
+            configurable: true,
+            value: scrollTo,
+        });
+        defineElementMetric(strip!, "clientWidth", 320);
+        defineElementMetric(strip!, "scrollWidth", 800);
+        defineElementMetric(targetTab!, "offsetLeft", 480);
+        defineElementMetric(targetTab!, "offsetWidth", 160);
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-d");
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(scrollTo).toHaveBeenCalledWith({
+                left: 332,
+                behavior: "auto",
+            });
+        });
+    });
+
+    it("reveals a newly opened pane tab at the end of an overflowing strip", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "tab-a",
+                            kind: "note",
+                            noteId: "notes/a",
+                            title: "Alpha",
+                            content: "Alpha",
+                        },
+                        {
+                            id: "tab-b",
+                            kind: "note",
+                            noteId: "notes/b",
+                            title: "Beta",
+                            content: "Beta",
+                        },
+                    ],
+                    activeTabId: "tab-a",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const strip = document.querySelector(
+            '[data-pane-tab-strip="primary"]',
+        ) as HTMLElement | null;
+        expect(strip).not.toBeNull();
+
+        let scrollLeft = 0;
+        const scrollTo = vi.fn((options: ScrollToOptions) => {
+            scrollLeft = options.left ?? scrollLeft;
+        });
+        Object.defineProperty(strip!, "scrollLeft", {
+            configurable: true,
+            get: () => scrollLeft,
+            set: (value: number) => {
+                scrollLeft = value;
+            },
+        });
+        Object.defineProperty(strip!, "scrollTo", {
+            configurable: true,
+            value: scrollTo,
+        });
+        defineElementMetric(strip!, "clientWidth", 320);
+        defineElementMetric(strip!, "scrollWidth", 800);
+
+        await act(async () => {
+            useEditorStore.getState().insertExternalTabInPane(
+                {
+                    id: "tab-c",
+                    kind: "note",
+                    noteId: "notes/c",
+                    title: "Gamma",
+                    content: "Gamma",
+                },
+                "primary",
+            );
+            await Promise.resolve();
+        });
+
+        const targetTab = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(targetTab).not.toBeNull();
+        defineElementMetric(targetTab!, "offsetLeft", 640);
+        defineElementMetric(targetTab!, "offsetWidth", 160);
+
+        await act(async () => {
+            window.dispatchEvent(new Event("resize"));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => {
+            expect(scrollTo).toHaveBeenCalledWith({
+                left: 480,
+                behavior: "auto",
+            });
+        });
+    });
+
     it("activates a tab on pointer release instead of pointer press", () => {
         useEditorStore.getState().hydrateWorkspace(
             [

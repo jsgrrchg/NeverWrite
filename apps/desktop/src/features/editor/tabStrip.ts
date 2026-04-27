@@ -1,3 +1,5 @@
+import { useLayoutEffect, type RefObject } from "react";
+
 const TAB_REVEAL_PADDING = 12;
 
 export function getTabStripScrollTarget({
@@ -67,4 +69,116 @@ export function getTabStripDropIndex(
     });
 
     return getTabStripInsertIndex(clientX, tabRects);
+}
+
+function escapeCssValue(value: string) {
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+        return CSS.escape(value);
+    }
+
+    return value.replace(/["\\]/g, "\\$&");
+}
+
+function revealActiveTabInStrip({
+    strip,
+    activeTabId,
+    tabIdAttribute,
+}: {
+    strip: HTMLElement;
+    activeTabId: string;
+    tabIdAttribute: string;
+}) {
+    const activeNode = strip.querySelector<HTMLElement>(
+        `[${tabIdAttribute}="${escapeCssValue(activeTabId)}"]`,
+    );
+    if (!activeNode) return;
+
+    const target = getTabStripScrollTarget({
+        stripLeft: strip.scrollLeft,
+        stripWidth: strip.clientWidth,
+        scrollWidth: strip.scrollWidth,
+        nodeLeft: activeNode.offsetLeft,
+        nodeWidth: activeNode.offsetWidth,
+    });
+
+    if (target === null || Math.abs(target - strip.scrollLeft) < 1) {
+        return;
+    }
+
+    if (typeof strip.scrollTo === "function") {
+        strip.scrollTo({
+            left: target,
+            behavior: "auto",
+        });
+        return;
+    }
+
+    strip.scrollLeft = target;
+}
+
+export function useActiveTabStripReveal({
+    stripRef,
+    activeTabId,
+    draggingTabId,
+    tabOrderKey,
+    tabIdAttribute,
+}: {
+    stripRef: RefObject<HTMLDivElement | null>;
+    activeTabId: string | null;
+    draggingTabId: string | null;
+    tabOrderKey: string;
+    tabIdAttribute: string;
+}) {
+    useLayoutEffect(() => {
+        if (!activeTabId || draggingTabId) return;
+
+        const strip = stripRef.current;
+        if (!strip) return;
+
+        let disposed = false;
+        let frame: number | null = null;
+        let resizeObserver: ResizeObserver | null = null;
+
+        const reveal = () => {
+            if (disposed) return;
+            revealActiveTabInStrip({
+                strip,
+                activeTabId,
+                tabIdAttribute,
+            });
+        };
+
+        const scheduleReveal = () => {
+            if (disposed || frame !== null) return;
+            frame = window.requestAnimationFrame(() => {
+                frame = null;
+                reveal();
+            });
+        };
+
+        reveal();
+        scheduleReveal();
+
+        if (typeof ResizeObserver !== "undefined") {
+            resizeObserver = new ResizeObserver(scheduleReveal);
+            resizeObserver.observe(strip);
+        }
+
+        window.addEventListener("resize", scheduleReveal);
+
+        return () => {
+            disposed = true;
+            if (frame !== null) {
+                window.cancelAnimationFrame(frame);
+            }
+            resizeObserver?.disconnect();
+            window.removeEventListener("resize", scheduleReveal);
+        };
+    }, [
+        activeTabId,
+        draggingTabId,
+        stripRef,
+        tabIdAttribute,
+        tabOrderKey,
+    ]);
 }

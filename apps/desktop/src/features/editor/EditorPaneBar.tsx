@@ -38,6 +38,7 @@ import {
 import { renderEditorTabActivityIndicator } from "./EditorTabActivityIndicator";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
+import { useActiveTabStripReveal } from "./tabStrip";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
 import {
@@ -256,6 +257,14 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         tabCount: visualTabs.length,
         freeze: draggingTabId !== null,
         sizingMode: "fixed",
+    });
+    const tabOrderKey = visualTabs.map((tab) => tab.id).join("|");
+    useActiveTabStripReveal({
+        stripRef: tabStripRef,
+        activeTabId: pane.activeTabId,
+        draggingTabId,
+        tabOrderKey,
+        tabIdAttribute: "data-pane-tab-id",
     });
     const draggedPreviewTab =
         dragPreviewTabId === null
