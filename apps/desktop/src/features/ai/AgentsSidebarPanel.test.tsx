@@ -88,16 +88,27 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
-    it("creates a chat directly from the plus button without opening a provider menu", () => {
+    it("opens a provider menu from the plus button before creating a chat", async () => {
         renderComponent(<AgentsSidebarPanel />);
 
         fireEvent.click(screen.getByRole("button", { name: "New chat" }));
 
         expect(
             chatPaneMovementMock.createNewChatInWorkspace,
-        ).toHaveBeenCalledTimes(1);
-        expect(screen.queryByRole("button", { name: "Codex" })).toBeNull();
-        expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
+        ).not.toHaveBeenCalled();
+        expect(
+            await screen.findByRole("button", { name: "Codex" }),
+        ).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+        await waitFor(() => {
+            expect(
+                chatPaneMovementMock.createNewChatInWorkspace,
+            ).toHaveBeenCalledTimes(1);
+        });
+        expect(
+            chatPaneMovementMock.createNewChatInWorkspace,
+        ).toHaveBeenCalledWith("claude-acp");
         expect(
             screen.queryByRole("button", { name: "Add providers" }),
         ).toBeNull();
