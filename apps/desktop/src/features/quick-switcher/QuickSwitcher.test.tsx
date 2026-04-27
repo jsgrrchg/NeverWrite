@@ -10,6 +10,7 @@ import {
     setVaultNotes,
 } from "../../test/test-utils";
 import { useEditorStore } from "../../app/store/editorStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
 
 describe("QuickSwitcher", () => {
@@ -67,6 +68,39 @@ describe("QuickSwitcher", () => {
             "Open Bnotes/open-b",
             "Laternotes/later",
         ]);
+    });
+
+    it("shows Markdown file names when file-oriented tree mode and extensions are enabled", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeShowExtensions: true,
+        });
+        setVaultNotes([
+            {
+                id: ".PERSONAL/Diagnósticos/Listos/2026-03-19-diagnostico",
+                path: "/vault/.PERSONAL/Diagnósticos/Listos/2026-03-19-diagnostico.md",
+                title: "Diagnóstico: falso conflicto externo en el editor durante escritura",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await vi.runAllTimersAsync();
+
+        expect(
+            screen.getByText("2026-03-19-diagnostico.md"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText(
+                "Diagnóstico: falso conflicto externo en el editor durante escritura",
+            ),
+        ).not.toBeInTheDocument();
     });
 
     it("opens an already open note from the filtered results without reading it again", async () => {

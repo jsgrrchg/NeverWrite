@@ -108,6 +108,7 @@ function QuickSwitcherDialog() {
     const entries = useVaultStore((s) => s.entries);
     const openNote = useEditorStore((s) => s.openNote);
     const openPdf = useEditorStore((s) => s.openPdf);
+    const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
     const deferredQuery = useDeferredValue(query);
     const noteMap = useMemo(
@@ -128,11 +129,15 @@ function QuickSwitcherDialog() {
         (note: NoteDto): QuickSwitcherItem => ({
             key: `note:${note.id}`,
             kind: "note",
-            title: note.title,
+            title: getNoteQuickSwitcherTitle(
+                note,
+                fileTreeContentMode,
+                showExtensions,
+            ),
             subtitle: note.id,
             note,
         }),
-        [],
+        [fileTreeContentMode, showExtensions],
     );
 
     const buildEntryItem = useCallback(
@@ -271,8 +276,17 @@ function QuickSwitcherDialog() {
             ...notes.map((note) => ({
                 item: buildNoteItem(note),
                 score: Math.max(
-                    fuzzyScore(deferredQuery, note.title),
+                    fuzzyScore(
+                        deferredQuery,
+                        getNoteQuickSwitcherTitle(
+                            note,
+                            fileTreeContentMode,
+                            showExtensions,
+                        ),
+                    ),
+                    fuzzyScore(deferredQuery, note.path),
                     fuzzyScore(deferredQuery, note.id),
+                    fuzzyScore(deferredQuery, note.title),
                 ),
             })),
             ...searchableEntries.map((entry) => ({
@@ -297,10 +311,12 @@ function QuickSwitcherDialog() {
         deferredQuery,
         entries,
         entryMap,
+        fileTreeContentMode,
         noteMap,
         notes,
         openTabs,
         orderedTabs,
+        showExtensions,
     ]);
     const virtual = useVirtualList(
         listRef,
@@ -606,6 +622,21 @@ function QuickSwitcherDialog() {
             </div>
         </div>
     );
+}
+
+function getNoteFileName(note: NoteDto): string {
+    return note.path.split(/[\\/]/).pop() ?? `${note.title}.md`;
+}
+
+function getNoteQuickSwitcherTitle(
+    note: NoteDto,
+    fileTreeContentMode: "notes_only" | "all_files",
+    showExtensions: boolean,
+): string {
+    if (fileTreeContentMode === "all_files" && showExtensions) {
+        return getNoteFileName(note);
+    }
+    return note.title;
 }
 
 function formatItemSubtitle(item: QuickSwitcherItem): string {
