@@ -248,7 +248,7 @@ Original source: https://github.com/zed-industries/codex
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
 | `src/thread.rs`       | Extended to support AI review flow, multi-vault sessions, and custom diff streaming |
-| `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.10.2 compatibility        |
+| `src/codex_agent.rs`  | Adapted for Agent Client Protocol 0.11.1 compatibility        |
 
 ### `vendor/Claude-agent-acp-upstream` — Anthropic (Apache-2.0)
 
