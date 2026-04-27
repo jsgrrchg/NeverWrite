@@ -226,6 +226,10 @@ function getEditorMode(livePreviewEnabled: boolean): EditorMode {
     return livePreviewEnabled ? "preview" : "source";
 }
 
+function normalizeEditorStateContent(text: string) {
+    return text.replace(/\r\n?/g, "\n");
+}
+
 function getEventTargetElement(target: EventTarget | null) {
     if (target instanceof HTMLElement) return target;
     return target instanceof Node ? target.parentElement : null;
@@ -2919,14 +2923,22 @@ export function Editor({
             markTabSaved(activeNoteId, activeTab.content);
         }
 
-        // Restore saved state or create fresh one (keyed by noteId)
+        // Restore saved state only when it still represents the tab content.
+        // Agent/external reloads can update a background tab while its cached
+        // EditorState still contains the pre-reload document.
         const savedState = tabStatesRef.current.get(activeNoteId);
-        const nextState =
-            savedState ??
-            createEditorState(
-                stripFrontmatter(activeNoteId, activeTab.content),
-                activeNoteId,
-            );
+        const activeBody = stripFrontmatter(activeNoteId, activeTab.content);
+        const savedStateIsCurrent =
+            savedState != null &&
+            normalizeEditorStateContent(savedState.doc.toString()) ===
+                normalizeEditorStateContent(activeBody);
+        if (savedState && !savedStateIsCurrent) {
+            tabStatesRef.current.delete(activeNoteId);
+            tabScrollPositionsRef.current.delete(activeNoteId);
+        }
+        const nextState = savedStateIsCurrent
+            ? savedState
+            : createEditorState(activeBody, activeNoteId);
         // Recreate the EditorView on document switches. Reusing the same view
         // via setState has left the DOM occasionally blank until a later rerender.
         isInternalRef.current = true;

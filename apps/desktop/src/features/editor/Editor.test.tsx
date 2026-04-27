@@ -2339,6 +2339,112 @@ describe("Editor", () => {
         });
     });
 
+    it("uses fresh tab content instead of stale cached note state after a background reload", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "old line",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "other body",
+                },
+            ],
+            "tab-1",
+        );
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
+
+        renderComponent(<Editor />);
+        expect(getEditorView().state.doc.toString()).toBe("old line");
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+            await flushPromises();
+        });
+
+        await act(async () => {
+            useEditorStore.getState().reloadNoteContent("notes/current", {
+                title: "Current",
+                content: "new line",
+                origin: "agent",
+                revision: 1,
+            });
+            await flushPromises();
+        });
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-1");
+            await flushPromises();
+        });
+
+        expect(getEditorView().state.doc.toString()).toBe("new line");
+    });
+
+    it("shows inline diff when returning to a background note updated by the agent", async () => {
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "old line",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "other body",
+                },
+            ],
+            "tab-1",
+        );
+        useSettingsStore.getState().setSetting("livePreviewEnabled", false);
+        useSettingsStore.getState().setSetting("inlineReviewEnabled", true);
+
+        renderComponent(<Editor />);
+        expect(getEditorView().state.doc.toString()).toBe("old line");
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+            await flushPromises();
+        });
+
+        await act(async () => {
+            seedTrackedDiff("notes/current.md", "old line", "new line");
+            useEditorStore.getState().reloadNoteContent("notes/current", {
+                title: "Current",
+                content: "new line",
+                origin: "agent",
+                revision: 1,
+            });
+            await flushPromises();
+        });
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-1");
+            await flushPromises();
+        });
+
+        const view = getEditorView();
+        expect(view.state.doc.toString()).toBe("new line");
+        expect(getChunks(view.state)?.chunks.length).toBe(1);
+
+        await act(async () => {
+            useChatStore.setState({
+                sessionsById: {},
+                sessionOrder: [],
+                activeSessionId: null,
+            });
+            await flushPromises();
+        });
+    });
+
     it("clears merge view when inline review is turned off in source mode", async () => {
         setEditorTabs([
             {
