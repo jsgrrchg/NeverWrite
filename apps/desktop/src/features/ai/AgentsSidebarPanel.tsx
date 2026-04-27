@@ -9,6 +9,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import {
     ContextMenu,
+    type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
@@ -99,6 +100,10 @@ function compareByUpdatedAtDesc(a: AIChatSession, b: AIChatSession) {
     return getSessionUpdatedAt(b) - getSessionUpdatedAt(a);
 }
 
+function getRuntimeMenuLabel(name: string) {
+    return name.trim().replace(/ ACP$/, "");
+}
+
 function isSessionWorking(session: AIChatSession) {
     return deriveActivityIndicator(session)?.tone === "working";
 }
@@ -181,6 +186,7 @@ export function AgentsSidebarPanel() {
     const sessionsById = useChatStore((state) => state.sessionsById);
     const sessionOrder = useChatStore((state) => state.sessionOrder);
     const runtimes = useChatStore((state) => state.runtimes);
+    const selectedRuntimeId = useChatStore((state) => state.selectedRuntimeId);
     const deleteSession = useChatStore((state) => state.deleteSession);
     const renameSession = useChatStore((state) => state.renameSession);
 
@@ -348,11 +354,33 @@ export function AgentsSidebarPanel() {
     const [contextMenu, setContextMenu] = useState<
         ContextMenuState<AIChatSession> | null
     >(null);
+    const [newChatMenu, setNewChatMenu] =
+        useState<ContextMenuState<void> | null>(null);
+
+    const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
+        const sortedRuntimes = [...runtimes].sort((left, right) => {
+            if (left.runtime.id === selectedRuntimeId) return -1;
+            if (right.runtime.id === selectedRuntimeId) return 1;
+            return left.runtime.name.localeCompare(right.runtime.name);
+        });
+
+        if (sortedRuntimes.length === 0) {
+            return [{ label: "No providers available", disabled: true }];
+        }
+
+        return sortedRuntimes.map((runtime) => ({
+            label: getRuntimeMenuLabel(runtime.runtime.name),
+            action: () => {
+                void createNewChatInWorkspace(runtime.runtime.id);
+            },
+        }));
+    }, [runtimes, selectedRuntimeId]);
 
     const handleContextMenu = useCallback(
         (event: ReactMouseEvent<HTMLElement>, session: AIChatSession) => {
             event.preventDefault();
             event.stopPropagation();
+            setNewChatMenu(null);
             setContextMenu({
                 x: event.clientX,
                 y: event.clientY,
@@ -450,8 +478,17 @@ export function AgentsSidebarPanel() {
                 <div className="flex items-center gap-1">
                     <button
                         type="button"
-                        onClick={() => {
-                            void createNewChatInWorkspace();
+                        onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const rect =
+                                event.currentTarget.getBoundingClientRect();
+                            setContextMenu(null);
+                            setNewChatMenu({
+                                x: rect.left,
+                                y: rect.bottom + 4,
+                                payload: undefined,
+                            });
                         }}
                         title="New chat"
                         aria-label="New chat"
@@ -560,6 +597,14 @@ export function AgentsSidebarPanel() {
                             action: () => handleDelete(contextMenu.payload),
                         },
                     ]}
+                />
+            )}
+            {newChatMenu && (
+                <ContextMenu
+                    menu={newChatMenu}
+                    onClose={() => setNewChatMenu(null)}
+                    entries={newChatMenuEntries}
+                    minWidth={132}
                 />
             )}
         </div>

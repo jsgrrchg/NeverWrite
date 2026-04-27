@@ -85,6 +85,7 @@ type WorkspaceGetState<TState> = () => TState;
 
 export interface PaneWorkspaceState {
     tabs: Tab[];
+    pinnedTabIds: string[];
     activeTabId: string | null;
     activationHistory: string[];
     tabNavigationHistory: string[];
@@ -99,6 +100,7 @@ export interface EditorPaneState extends PaneWorkspaceState {
 export interface EditorPaneInput {
     id?: string;
     tabs: TabInput[];
+    pinnedTabIds?: string[];
     activeTabId: string | null;
     activationHistory?: string[];
     tabNavigationHistory?: string[];
@@ -219,6 +221,9 @@ export interface EditorWorkspaceActions {
         index?: number,
     ) => string | null;
     moveTabToPane: (tabId: string, paneId: string, index?: number) => void;
+    pinPaneTab: (paneId: string, tabId: string) => void;
+    unpinPaneTab: (paneId: string, tabId: string) => void;
+    togglePaneTabPinned: (paneId: string, tabId: string) => void;
     reorderPaneTabs: (
         paneId: string,
         fromIndex: number,
@@ -333,11 +338,27 @@ function normalizePaneWorkspaceState(
     const tabs = orderedTabIds
         .map((tabId) => resolvedTabsById[tabId] ?? null)
         .filter((tab): tab is Tab => tab !== null);
-    const tabIds = new Set(tabs.map((tab) => tab.id));
+    const availableTabIds = new Set(tabs.map((tab) => tab.id));
+    const pinnedInputIds = new Set(workspace.pinnedTabIds ?? []);
+    const pinnedTabIds = orderedTabIds.filter(
+        (tabId) => availableTabIds.has(tabId) && pinnedInputIds.has(tabId),
+    );
+    const pinnedIdSet = new Set(pinnedTabIds);
+    const visualTabIds = [
+        ...pinnedTabIds,
+        ...orderedTabIds.filter(
+            (tabId) => availableTabIds.has(tabId) && !pinnedIdSet.has(tabId),
+        ),
+    ];
+    const visualTabsById = new Map(tabs.map((tab) => [tab.id, tab]));
+    const visualTabs = visualTabIds
+        .map((tabId) => visualTabsById.get(tabId) ?? null)
+        .filter((tab): tab is Tab => tab !== null);
+    const tabIds = new Set(visualTabIds);
     const activeTabId =
         workspace.activeTabId && tabIds.has(workspace.activeTabId)
             ? workspace.activeTabId
-            : (tabs[0]?.id ?? null);
+            : (visualTabs[0]?.id ?? null);
 
     const activationHistory = (workspace.activationHistory ?? []).filter((id) =>
         tabIds.has(id),
@@ -366,8 +387,9 @@ function normalizePaneWorkspaceState(
         : -1;
 
     return {
-        tabs,
-        tabIds: orderedTabIds,
+        tabs: visualTabs,
+        pinnedTabIds,
+        tabIds: visualTabIds,
         activeTabId,
         activationHistory,
         tabNavigationHistory,
@@ -458,11 +480,21 @@ function paneStateHasNormalizedTabs(
     pane: EditorPaneState,
     tabsById: Record<string, Tab> | undefined,
 ) {
+    const normalized = createEditorPaneState(pane.id, {
+        ...pane,
+        tabsById,
+    });
+
     return (
         Array.isArray(pane.tabIds) &&
+        Array.isArray(pane.pinnedTabIds) &&
         stringArraysEqual(
             pane.tabIds,
-            pane.tabs.map((tab) => tab.id),
+            normalized.tabIds,
+        ) &&
+        stringArraysEqual(
+            pane.pinnedTabIds,
+            normalized.pinnedTabIds,
         ) &&
         pane.tabIds.every((tabId, index) =>
             tabsById ? tabsById[tabId] === pane.tabs[index] : true,
@@ -1024,6 +1056,7 @@ function insertNormalizedTab(
     state: Pick<
         EditorWorkspaceState,
         | "tabs"
+        | "pinnedTabIds"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
@@ -1048,6 +1081,9 @@ function insertNormalizedTab(
                       );
             return {
                 tabs,
+                pinnedTabIds: state.pinnedTabIds.filter(
+                    (tabId) => tabId !== incoming.id,
+                ),
                 ...activateTab(
                     {
                         ...state,
@@ -1068,6 +1104,9 @@ function insertNormalizedTab(
     tabs.splice(boundedIndex, 0, incoming);
     return {
         tabs,
+        pinnedTabIds: state.pinnedTabIds.filter(
+            (tabId) => tabId !== incoming.id,
+        ),
         ...activateTab(state, incoming.id),
     };
 }
@@ -1076,6 +1115,7 @@ function removeTabFromWorkspaceState(
     state: Pick<
         EditorWorkspaceState,
         | "tabs"
+        | "pinnedTabIds"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
@@ -1133,6 +1173,7 @@ function removeTabFromWorkspaceState(
 
     return {
         tabs,
+        pinnedTabIds: state.pinnedTabIds.filter((id) => id !== tabId),
         activeTabId,
         activationHistory,
         tabNavigationHistory,
@@ -1145,6 +1186,14 @@ function mergePaneStates(
     sourcePane: EditorPaneState,
 ) {
     const tabs = [...targetPane.tabs, ...sourcePane.tabs];
+    const tabIds = new Set(tabs.map((tab) => tab.id));
+    const pinnedTabIds = [
+        ...targetPane.pinnedTabIds,
+        ...sourcePane.pinnedTabIds,
+    ].filter(
+        (tabId, index, items) =>
+            tabIds.has(tabId) && items.indexOf(tabId) === index,
+    );
     const activeTabId = targetPane.activeTabId ?? sourcePane.activeTabId;
     const activationHistory = [
         ...targetPane.activationHistory,
@@ -1160,6 +1209,7 @@ function mergePaneStates(
 
     return createEditorPaneState(targetPane.id, {
         tabs,
+        pinnedTabIds,
         activeTabId,
         activationHistory,
         tabNavigationHistory,
@@ -1427,6 +1477,52 @@ function getTabOpenBehavior() {
 function getNextTerminalTitle(tabs: readonly Tab[]) {
     const count = tabs.filter((tab) => isTerminalTab(tab)).length;
     return `Terminal ${count + 1}`;
+}
+
+function resolvePinnedAwareTabReorder(
+    pane: EditorPaneState,
+    fromIndex: number,
+    toIndex: number,
+) {
+    if (
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= pane.tabs.length ||
+        toIndex >= pane.tabs.length
+    ) {
+        return null;
+    }
+
+    const pinnedIds = new Set(pane.pinnedTabIds);
+    const tab = pane.tabs[fromIndex];
+    if (!tab) {
+        return null;
+    }
+
+    const pinnedCount = pane.pinnedTabIds.length;
+    const isPinned = pinnedIds.has(tab.id);
+    const boundedToIndex = isPinned
+        ? Math.min(Math.max(toIndex, 0), Math.max(0, pinnedCount - 1))
+        : Math.min(Math.max(toIndex, pinnedCount), pane.tabs.length - 1);
+
+    if (fromIndex === boundedToIndex) {
+        return null;
+    }
+
+    const tabs = [...pane.tabs];
+    const [movingTab] = tabs.splice(fromIndex, 1);
+    if (!movingTab) {
+        return null;
+    }
+    tabs.splice(boundedToIndex, 0, movingTab);
+
+    return {
+        tabs,
+        pinnedTabIds: tabs
+            .map((candidate) => candidate.id)
+            .filter((tabId) => pinnedIds.has(tabId)),
+    };
 }
 
 function updatePaneWithTabs(pane: EditorPaneState, tabs: readonly Tab[]) {
@@ -1960,6 +2056,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
         focusedPaneId: INITIAL_EDITOR_PANE_ID,
         tabsById: {},
         tabs: [],
+        pinnedTabIds: [],
         activeTabId: null,
         recentlyClosedTabs: [],
         activationHistory: [],
@@ -3086,6 +3183,80 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             });
         },
 
+        pinPaneTab: (paneId, tabId) => {
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                const pane = workspace.panes.find(
+                    (candidate) => candidate.id === paneId,
+                );
+                if (!pane || !pane.tabIds.includes(tabId)) {
+                    return state;
+                }
+                if (pane.pinnedTabIds.includes(tabId)) {
+                    return state;
+                }
+
+                return buildWorkspaceSnapshot({
+                    panes: workspace.panes.map((candidate) =>
+                        candidate.id === paneId
+                            ? createEditorPaneState(candidate.id, {
+                                  ...candidate,
+                                  pinnedTabIds: [
+                                      ...candidate.pinnedTabIds,
+                                      tabId,
+                                  ],
+                              })
+                            : candidate,
+                    ),
+                    focusedPaneId: workspace.focusedPaneId,
+                    layoutTree: workspace.layoutTree,
+                });
+            });
+        },
+
+        unpinPaneTab: (paneId, tabId) => {
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                const pane = workspace.panes.find(
+                    (candidate) => candidate.id === paneId,
+                );
+                if (!pane || !pane.pinnedTabIds.includes(tabId)) {
+                    return state;
+                }
+
+                return buildWorkspaceSnapshot({
+                    panes: workspace.panes.map((candidate) =>
+                        candidate.id === paneId
+                            ? createEditorPaneState(candidate.id, {
+                                  ...candidate,
+                                  pinnedTabIds:
+                                      candidate.pinnedTabIds.filter(
+                                          (candidateTabId) =>
+                                              candidateTabId !== tabId,
+                                      ),
+                              })
+                            : candidate,
+                    ),
+                    focusedPaneId: workspace.focusedPaneId,
+                    layoutTree: workspace.layoutTree,
+                });
+            });
+        },
+
+        togglePaneTabPinned: (paneId, tabId) => {
+            const pane = getEffectivePaneWorkspace(get()).panes.find(
+                (candidate) => candidate.id === paneId,
+            );
+            if (!pane || !pane.tabIds.includes(tabId)) {
+                return;
+            }
+            if (pane.pinnedTabIds.includes(tabId)) {
+                get().unpinPaneTab(paneId, tabId);
+                return;
+            }
+            get().pinPaneTab(paneId, tabId);
+        },
+
         reorderPaneTabs: (paneId, fromIndex, toIndex) => {
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
@@ -3096,26 +3267,21 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                     return state;
                 }
 
-                if (
-                    fromIndex === toIndex ||
-                    fromIndex < 0 ||
-                    toIndex < 0 ||
-                    fromIndex >= pane.tabs.length ||
-                    toIndex >= pane.tabs.length
-                ) {
+                const reorder = resolvePinnedAwareTabReorder(
+                    pane,
+                    fromIndex,
+                    toIndex,
+                );
+                if (!reorder) {
                     return state;
                 }
-
-                const tabs = [...pane.tabs];
-                const [tab] = tabs.splice(fromIndex, 1);
-                tabs.splice(toIndex, 0, tab);
 
                 return buildWorkspaceSnapshot({
                     panes: workspace.panes.map((candidate) =>
                         candidate.id === paneId
                             ? createEditorPaneState(candidate.id, {
                                   ...candidate,
-                                  tabs,
+                                  ...reorder,
                               })
                             : candidate,
                     ),

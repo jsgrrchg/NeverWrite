@@ -956,50 +956,6 @@ export function applyNonConflictingEditsFallback(
     };
 }
 
-export function keepEditsInRangeFallback(
-    file: TrackedFile,
-    startLine: number,
-    endLine: number,
-): TrackedFile {
-    const syncedFile = syncDerivedLinePatchFallback(file);
-    const currentSpans = syncedFile.unreviewedRanges?.spans ?? [];
-    const remainingSpans = currentSpans.filter(
-        (span) =>
-            !spanMatchesLineRange(
-                syncedFile.diffBase,
-                syncedFile.currentText,
-                span,
-                startLine,
-                endLine,
-            ),
-    );
-    const newDiffBase = rebuildDiffBaseFromPendingSpansFallback(
-        syncedFile.diffBase,
-        syncedFile.currentText,
-        remainingSpans,
-    );
-    const unreviewedRanges =
-        remainingSpans.length === 0
-            ? emptyTextRangePatch()
-            : buildTextRangePatchFromTextsFallback(
-                  newDiffBase,
-                  syncedFile.currentText,
-              );
-    const unreviewedEdits = deriveLinePatchFromTextRangesFallback(
-        newDiffBase,
-        syncedFile.currentText,
-        unreviewedRanges.spans,
-    );
-
-    return {
-        ...syncedFile,
-        diffBase: newDiffBase,
-        unreviewedRanges,
-        unreviewedEdits,
-        version: syncedFile.version + 1,
-    };
-}
-
 export function keepExactSpansFallback(
     file: TrackedFile,
     selectedSpans: AgentTextSpan[],
@@ -1070,80 +1026,6 @@ export function rejectAllEditsFallback(file: TrackedFile): {
             currentText: syncedFile.diffBase,
             unreviewedRanges: emptyTextRangePatch(),
             unreviewedEdits: emptyPatch(),
-            version: syncedFile.version + 1,
-        },
-        undoData,
-    };
-}
-
-export function rejectEditsInRangesFallback(
-    file: TrackedFile,
-    ranges: Array<{ start: number; end: number }>,
-): { file: TrackedFile; undoData: PerFileUndo } {
-    const syncedFile = syncDerivedLinePatchFallback(file);
-    const currentLines = syncedFile.currentText.split("\n");
-    const currentSpans = syncedFile.unreviewedRanges?.spans ?? [];
-    const rejectedSpans = currentSpans.filter((span) =>
-        ranges.some((range) =>
-            spanMatchesLineRange(
-                syncedFile.diffBase,
-                syncedFile.currentText,
-                span,
-                range.start,
-                range.end,
-            ),
-        ),
-    );
-    const remainingSpans = currentSpans.filter(
-        (span) => !rejectedSpans.includes(span),
-    );
-
-    const editsToRestore: PerFileUndo["editsToRestore"] = [];
-    for (const span of rejectedSpans) {
-        const edit = getLineEditForSpan(
-            syncedFile.diffBase,
-            syncedFile.currentText,
-            span,
-        );
-        if (!edit) continue;
-
-        editsToRestore.push({
-            startLine: edit.newStart,
-            endLine: edit.newEnd,
-            text: currentLines.slice(edit.newStart, edit.newEnd).join("\n"),
-        });
-    }
-
-    const newCurrentText = rebuildDiffBaseFromPendingSpansFallback(
-        syncedFile.diffBase,
-        syncedFile.currentText,
-        rejectedSpans,
-    );
-    const unreviewedRanges =
-        remainingSpans.length === 0
-            ? emptyTextRangePatch()
-            : buildTextRangePatchFromTextsFallback(
-                  syncedFile.diffBase,
-                  newCurrentText,
-              );
-    const unreviewedEdits = deriveLinePatchFromTextRangesFallback(
-        syncedFile.diffBase,
-        newCurrentText,
-        unreviewedRanges.spans,
-    );
-
-    const undoData: PerFileUndo = {
-        path: syncedFile.path,
-        editsToRestore,
-        previousStatus: syncedFile.status,
-    };
-
-    return {
-        file: {
-            ...syncedFile,
-            currentText: newCurrentText,
-            unreviewedRanges,
-            unreviewedEdits,
             version: syncedFile.version + 1,
         },
         undoData,

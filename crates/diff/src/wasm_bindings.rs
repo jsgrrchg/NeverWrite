@@ -3,9 +3,8 @@ use wasm_bindgen::prelude::*;
 use crate::{
     apply_non_conflicting_edits, apply_reject_undo, build_text_range_patch_from_texts,
     compute_line_diff, compute_word_diffs_for_hunk, derive_line_patch_from_text_ranges,
-    keep_edits_in_range, keep_exact_spans, map_agent_span_through_text_edits,
-    map_text_position_through_edits, partition_spans_by_overlap,
-    rebuild_diff_base_from_pending_spans, reject_all_edits, reject_edits_in_ranges,
+    keep_exact_spans, map_agent_span_through_text_edits, map_text_position_through_edits,
+    partition_spans_by_overlap, rebuild_diff_base_from_pending_spans, reject_all_edits,
     reject_exact_spans, sync_derived_line_patch, AgentTextSpan, LineEdit, LinePatch, LineRange,
     TextEdit, TrackedFile,
 };
@@ -101,16 +100,6 @@ pub fn apply_non_conflicting_edits_json(
 }
 
 #[wasm_bindgen]
-pub fn keep_edits_in_range_json(
-    file_json: &str,
-    start_line: u32,
-    end_line: u32,
-) -> Result<String, JsValue> {
-    let file: TrackedFile = parse_json(file_json)?;
-    to_json(&keep_edits_in_range(&file, start_line, end_line))
-}
-
-#[wasm_bindgen]
 pub fn keep_exact_spans_json(file_json: &str, spans_json: &str) -> Result<String, JsValue> {
     let file: TrackedFile = parse_json(file_json)?;
     let spans: Vec<AgentTextSpan> = parse_json(spans_json)?;
@@ -121,13 +110,6 @@ pub fn keep_exact_spans_json(file_json: &str, spans_json: &str) -> Result<String
 pub fn reject_all_edits_json(file_json: &str) -> Result<String, JsValue> {
     let file: TrackedFile = parse_json(file_json)?;
     to_json(&reject_all_edits(&file))
-}
-
-#[wasm_bindgen]
-pub fn reject_edits_in_ranges_json(file_json: &str, ranges_json: &str) -> Result<String, JsValue> {
-    let file: TrackedFile = parse_json(file_json)?;
-    let ranges: Vec<LineRange> = parse_json(ranges_json)?;
-    to_json(&reject_edits_in_ranges(&file, &ranges))
 }
 
 #[wasm_bindgen]

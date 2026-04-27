@@ -37,6 +37,7 @@ export const EDITOR_SESSION_VERSION = 2;
 export interface PersistedSessionPane {
     id: string;
     tabs: TabInput[];
+    pinnedTabIds?: string[];
     activeTabId: string | null;
     activationHistory?: string[];
     tabNavigationHistory?: string[];
@@ -46,6 +47,7 @@ export interface PersistedSessionPane {
 export interface PersistedWorkspacePane {
     id: string;
     tabIds: string[];
+    pinnedTabIds?: string[];
     activeTabId: string | null;
     activationHistory?: string[];
     tabNavigationHistory?: string[];
@@ -239,6 +241,7 @@ export interface EditorSessionState {
         id: string;
         tabs: Tab[];
         tabIds?: string[];
+        pinnedTabIds?: string[];
         activeTabId: string | null;
         activationHistory: string[];
         tabNavigationHistory: string[];
@@ -444,6 +447,9 @@ function buildPersistedWorkspacePanes(
             tabIds: pane.tabs
                 .map((tab) => tab.id)
                 .filter((tabId) => Boolean(tabsById[tabId])),
+            pinnedTabIds: pane.pinnedTabIds.filter((tabId) =>
+                Boolean(tabsById[tabId]),
+            ),
             activeTabId:
                 pane.activeTabId &&
                 pane.tabs.some(
@@ -684,6 +690,9 @@ function restoreLegacyPersistedPaneTabs(
         return {
             id: pane.id || `pane-${index + 1}`,
             tabs,
+            pinnedTabIds: (pane.pinnedTabIds ?? []).filter((tabId) =>
+                tabs.some((tab) => tab.id === tabId),
+            ),
             activeTabId,
             activationHistory: (pane.activationHistory ?? []).filter((tabId) =>
                 tabs.some((tab) => tab.id === tabId),
@@ -946,6 +955,9 @@ function restorePersistedWorkspacePanes(
         return {
             id: pane.id || `pane-${index + 1}`,
             tabs,
+            pinnedTabIds: (pane.pinnedTabIds ?? []).filter((tabId) =>
+                availableTabIds.has(tabId),
+            ),
             activeTabId,
             activationHistory: (pane.activationHistory ?? []).filter((tabId) =>
                 availableTabIds.has(tabId),
@@ -1210,6 +1222,7 @@ function buildNormalizedPersistedSessionFromRestored(
                 const normalized = normalizeHydratedSessionTab(tab);
                 return normalized ? [normalized] : [];
             }),
+            pinnedTabIds: pane.pinnedTabIds ?? [],
             activeTabId: pane.activeTabId,
             activationHistory: pane.activationHistory ?? [],
             tabNavigationHistory: pane.tabNavigationHistory ?? [],
@@ -1336,6 +1349,7 @@ function normalizeEditorSessionStateForWorkspace(state: EditorSessionState) {
     const panes = (state.panes ?? []).map((pane) => ({
         ...pane,
         tabIds: pane.tabIds ?? pane.tabs.map((tab) => tab.id),
+        pinnedTabIds: pane.pinnedTabIds ?? [],
     }));
     const paneIds = panes.map((pane) => pane.id);
 

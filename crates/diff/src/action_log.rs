@@ -625,46 +625,6 @@ pub fn apply_non_conflicting_edits(
     next
 }
 
-pub fn keep_edits_in_range(file: &TrackedFile, start_line: u32, end_line: u32) -> TrackedFile {
-    let synced_file = sync_derived_line_patch(file);
-    let current_spans = synced_file
-        .unreviewed_ranges
-        .clone()
-        .unwrap_or_else(empty_text_range_patch)
-        .spans;
-    let (_, remaining_spans) = partition_spans_by_overlap(
-        &current_spans,
-        &[LineRange {
-            start: start_line,
-            end: end_line,
-        }],
-        &synced_file.diff_base,
-        &synced_file.current_text,
-    );
-    let new_diff_base = rebuild_diff_base_from_pending_spans(
-        &synced_file.diff_base,
-        &synced_file.current_text,
-        &remaining_spans,
-    );
-    let unreviewed_ranges = if remaining_spans.is_empty() {
-        empty_text_range_patch()
-    } else {
-        build_text_range_patch_from_texts(&new_diff_base, &synced_file.current_text, None)
-    };
-    let unreviewed_edits = derive_line_patch_from_text_ranges(
-        &new_diff_base,
-        &synced_file.current_text,
-        &unreviewed_ranges.spans,
-    );
-
-    let mut next = synced_file.clone();
-    next.diff_base = new_diff_base;
-    next.unreviewed_ranges = Some(unreviewed_ranges);
-    next.unreviewed_edits = unreviewed_edits;
-    next.version += 1;
-    next
-}
-
 pub fn keep_exact_spans(file: &TrackedFile, selected_spans: &[AgentTextSpan]) -> TrackedFile {
     let synced_file = sync_derived_line_patch(file);
     let current_spans = synced_file
@@ -740,74 +700,6 @@ pub fn reject_all_edits(file: &TrackedFile) -> RejectEditsResult {
 
     RejectEditsResult {
         file: reverted_file,
-        undo_data,
-    }
-}
-
-pub fn reject_edits_in_ranges(file: &TrackedFile, ranges: &[LineRange]) -> RejectEditsResult {
-    let synced_file = sync_derived_line_patch(file);
-    let current_lines: Vec<String> = synced_file
-        .current_text
-        .split('\n')
-        .map(str::to_owned)
-        .collect();
-    let current_spans = synced_file
-        .unreviewed_ranges
-        .clone()
-        .unwrap_or_else(empty_text_range_patch)
-        .spans;
-    let (rejected_spans, remaining_spans) = partition_spans_by_overlap(
-        &current_spans,
-        ranges,
-        &synced_file.diff_base,
-        &synced_file.current_text,
-    );
-
-    let mut edits_to_restore = Vec::new();
-    for span in &rejected_spans {
-        let Some(edit) =
-            get_line_edit_for_span(&synced_file.diff_base, &synced_file.current_text, span)
-        else {
-            continue;
-        };
-
-        edits_to_restore.push(PerFileUndoEdit {
-            start_line: edit.new_start,
-            end_line: edit.new_end,
-            text: clamped_lines_text(&current_lines, edit.new_start, edit.new_end),
-        });
-    }
-
-    let new_current_text = rebuild_diff_base_from_pending_spans(
-        &synced_file.diff_base,
-        &synced_file.current_text,
-        &rejected_spans,
-    );
-    let unreviewed_ranges = if remaining_spans.is_empty() {
-        empty_text_range_patch()
-    } else {
-        build_text_range_patch_from_texts(&synced_file.diff_base, &new_current_text, None)
-    };
-    let unreviewed_edits = derive_line_patch_from_text_ranges(
-        &synced_file.diff_base,
-        &new_current_text,
-        &unreviewed_ranges.spans,
-    );
-
-    let undo_data = PerFileUndo {
-        path: synced_file.path.clone(),
-        edits_to_restore,
-        previous_status: synced_file.status.clone(),
-    };
-
-    let mut next = synced_file.clone();
-    next.current_text = new_current_text;
-    next.unreviewed_ranges = Some(unreviewed_ranges);
-    next.unreviewed_edits = unreviewed_edits;
-    next.version += 1;
-
-    RejectEditsResult {
-        file: next,
         undo_data,
     }
 }
@@ -1006,44 +898,6 @@ mod tests {
                 new_end: 2,
             }]
         );
-    }
-
-    #[test]
-    fn keep_edits_in_range_accepts_hunks() {
-        let file = tracked_file("aaa\nbbb\nccc", "aaa\nBBB\nccc");
-        let accepted = keep_edits_in_range(&file, 1, 2);
-
-        assert_eq!(accepted.diff_base, "aaa\nBBB\nccc");
-        assert!(accepted.unreviewed_edits.edits.is_empty());
-    }
-
-    #[test]
-    fn reject_edits_in_ranges_reverts_selected_hunks() {
-        let file = tracked_file("aaa\nbbb\nccc", "aaa\nBBB\nccc");
-        let rejected = reject_edits_in_ranges(&file, &[LineRange { start: 1, end: 2 }]);
-
-        assert_eq!(rejected.file.current_text, "aaa\nbbb\nccc");
-        assert!(rejected.file.unreviewed_edits.edits.is_empty());
-        assert_eq!(rejected.undo_data.edits_to_restore.len(), 1);
-    }
-
-    #[test]
-    fn keep_edits_in_point_range_accepts_pure_deletions() {
-        let file = tracked_file("aaa\nbbb\nccc", "aaa\nccc");
-        let accepted = keep_edits_in_range(&file, 1, 1);
-
-        assert_eq!(accepted.diff_base, "aaa\nccc");
-        assert!(accepted.unreviewed_edits.edits.is_empty());
-    }
-
-    #[test]
-    fn reject_edits_in_point_ranges_reverts_pure_deletions() {
-        let file = tracked_file("aaa\nbbb\nccc", "aaa\nccc");
-        let rejected = reject_edits_in_ranges(&file, &[LineRange { start: 1, end: 1 }]);
-
-        assert_eq!(rejected.file.current_text, "aaa\nbbb\nccc");
-        assert!(rejected.file.unreviewed_edits.edits.is_empty());
-        assert_eq!(rejected.undo_data.edits_to_restore.len(), 1);
     }
 
     #[test]
