@@ -115,6 +115,13 @@ function findSingleFile(rootDir, matcher, description) {
     return matches[0];
 }
 
+function stripSuffix(value, suffix) {
+    if (!value.endsWith(suffix)) {
+        throw new Error(`Expected "${value}" to end with "${suffix}".`);
+    }
+    return value.slice(0, -suffix.length);
+}
+
 function collectArtifacts(distDir, buildTarget) {
     const metadataFileName = metadataFileNameForBuildTarget(buildTarget);
     const feedPath = findSingleFile(
@@ -145,23 +152,23 @@ function collectArtifacts(distDir, buildTarget) {
         };
     }
 
+    const blockmapPath = findSingleFile(
+        distDir,
+        (filePath) => filePath.endsWith(".exe.blockmap"),
+        "Windows installer blockmap",
+    );
+    const installerPath = stripSuffix(blockmapPath, ".blockmap");
+    if (!fs.existsSync(installerPath)) {
+        throw new Error(
+            `Expected Windows installer next to blockmap at ${installerPath}.`,
+        );
+    }
+
     return {
         feedPath,
-        manualAssetPath: findSingleFile(
-            distDir,
-            (filePath) => filePath.endsWith(".exe"),
-            "NSIS installer",
-        ),
-        updaterAssetPath: findSingleFile(
-            distDir,
-            (filePath) => filePath.endsWith(".exe"),
-            "Windows updater installer",
-        ),
-        blockmapPath: findSingleFile(
-            distDir,
-            (filePath) => filePath.endsWith(".exe.blockmap"),
-            "Windows installer blockmap",
-        ),
+        manualAssetPath: installerPath,
+        updaterAssetPath: installerPath,
+        blockmapPath,
     };
 }
 

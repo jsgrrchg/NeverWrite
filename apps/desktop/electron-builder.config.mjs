@@ -177,7 +177,11 @@ export default {
             "entitlements.mac.inherit.plist",
         ),
         binaries: macAdditionalBinaries,
-        x64ArchFiles: "Contents/Resources/native-backend/**/*",
+        x64ArchFiles: [
+            "Contents/Resources/native-backend/**/*",
+            "Contents/Resources/app.asar.unpacked/node_modules/@napi-rs/canvas-darwin-arm64/**/*",
+            "Contents/Resources/app.asar.unpacked/node_modules/@napi-rs/canvas-darwin-x64/**/*",
+        ],
         target: ["dmg", "zip"],
     },
     dmg: {

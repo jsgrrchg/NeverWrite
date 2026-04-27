@@ -126,6 +126,40 @@ test("stage-electron-release-assets keeps Windows metadata target-specific", () 
         const outputDir = path.join(tempDir, "staged");
         const metadataOut = path.join(tempDir, "metadata", "windows-x64.json");
 
+        writeFile(path.join(distDir, "win-unpacked", "NeverWrite.exe"), "app");
+        writeFile(
+            path.join(
+                distDir,
+                "win-unpacked",
+                "resources",
+                "native-backend",
+                "neverwrite-native-backend.exe",
+            ),
+            "backend",
+        );
+        writeFile(
+            path.join(
+                distDir,
+                "win-unpacked",
+                "resources",
+                "native-backend",
+                "binaries",
+                "codex-acp.exe",
+            ),
+            "codex",
+        );
+        writeFile(
+            path.join(
+                distDir,
+                "win-unpacked",
+                "resources",
+                "native-backend",
+                "embedded",
+                "node",
+                "node.exe",
+            ),
+            "node",
+        );
         writeFile(path.join(distDir, "NeverWrite Setup.exe"), "installer");
         writeFile(
             path.join(distDir, "NeverWrite Setup.exe.blockmap"),
