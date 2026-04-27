@@ -237,6 +237,11 @@ export interface EditorWorkspaceActions {
     updatePdfZoom: (tabId: string, zoom: number) => void;
     updatePdfViewMode: (tabId: string, viewMode: PdfViewMode) => void;
     updatePdfScrollTop: (tabId: string, scrollTop: number) => void;
+    updatePdfScrollPosition: (
+        tabId: string,
+        scrollTop: number,
+        scrollLeft: number,
+    ) => void;
     hydrateWorkspace: (
         panes: EditorPaneInput[],
         focusedPaneId?: string | null,
@@ -3493,6 +3498,58 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                                       : {
                                             ...entry,
                                             scrollTop: nextScrollTop,
+                                        },
+                              ),
+                );
+
+                if (nextTabs === targetPane.tabs) {
+                    return state;
+                }
+
+                return replacePaneInWorkspace(
+                    workspace,
+                    targetPane.id,
+                    createEditorPaneState(targetPane.id, {
+                        ...targetPane,
+                        tabs: nextTabs,
+                        tabsById: state.tabsById,
+                    }),
+                    {
+                        focusedPaneId: workspace.focusedPaneId,
+                        tabsById: state.tabsById,
+                    },
+                );
+            });
+        },
+
+        updatePdfScrollPosition: (tabId, scrollTop, scrollLeft) => {
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                const targetPane = findPaneContainingTab(
+                    workspace.panes,
+                    tabId,
+                );
+                if (!targetPane) {
+                    return state;
+                }
+
+                const nextScrollTop = Math.max(0, Math.round(scrollTop));
+                const nextScrollLeft = Math.max(0, Math.round(scrollLeft));
+                const nextTabs = patchHistoryTabById(
+                    targetPane.tabs,
+                    tabId,
+                    (tab) =>
+                        !isPdfTab(tab)
+                            ? tab
+                            : patchCurrentHistoryEntry(tab, (entry) =>
+                                  entry.kind !== "pdf" ||
+                                  (entry.scrollTop === nextScrollTop &&
+                                      entry.scrollLeft === nextScrollLeft)
+                                      ? entry
+                                      : {
+                                            ...entry,
+                                            scrollTop: nextScrollTop,
+                                            scrollLeft: nextScrollLeft,
                                         },
                               ),
                 );

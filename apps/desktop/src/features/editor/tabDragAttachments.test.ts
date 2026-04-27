@@ -89,6 +89,7 @@ describe("buildTabFileDragDetail", () => {
             zoom: 1,
             viewMode: "continuous",
             scrollTop: 0,
+            scrollLeft: 0,
             history: [],
             historyIndex: 0,
         };

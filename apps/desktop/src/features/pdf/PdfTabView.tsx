@@ -6,6 +6,7 @@ import {
     useState,
     type CSSProperties,
     type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
 } from "react";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { openPath } from "@neverwrite/runtime";
@@ -38,7 +39,11 @@ const CONTINUOUS_PAGE_GAP = 20;
 const CONTINUOUS_OVERSCAN_PX = 1200;
 const CONTINUOUS_MAX_RENDERED_PAGES = 15;
 const VIEWPORT_HEIGHT_FALLBACK = 800;
+const PDF_SURFACE_PADDING_PX = 24;
 const SCROLL_PERSIST_THRESHOLD_PX = 24;
+const SCROLL_EDGE_EPSILON_PX = 2;
+const KEYBOARD_HORIZONTAL_PAN_PX = 120;
+const KEYBOARD_VERTICAL_PAN_PX = 120;
 const PDF_TEXT_CONTENT_OPTIONS = {
     includeMarkedContent: true,
     disableNormalization: true,
@@ -127,10 +132,79 @@ type PdfPageMetric = {
     height: number;
 };
 
+type PdfRenderedPageSize = {
+    width: number;
+    height: number;
+};
+
 type PdfPageLayout = PdfPageMetric & {
     offsetTop: number;
     bottom: number;
 };
+
+type PdfScrollPosition = {
+    top: number;
+    left: number;
+};
+
+function normalizeScrollPosition(position: PdfScrollPosition) {
+    return {
+        top: Math.max(0, Math.round(position.top)),
+        left: Math.max(0, Math.round(position.left)),
+    };
+}
+
+function getMaxScrollLeft(element: HTMLElement) {
+    return Math.max(0, element.scrollWidth - element.clientWidth);
+}
+
+function getMaxScrollTop(element: HTMLElement) {
+    return Math.max(0, element.scrollHeight - element.clientHeight);
+}
+
+function canScrollLeft(element: HTMLElement) {
+    return element.scrollLeft > SCROLL_EDGE_EPSILON_PX;
+}
+
+function canScrollRight(element: HTMLElement) {
+    return (
+        getMaxScrollLeft(element) - element.scrollLeft >
+        SCROLL_EDGE_EPSILON_PX
+    );
+}
+
+function canScrollUp(element: HTMLElement) {
+    return element.scrollTop > SCROLL_EDGE_EPSILON_PX;
+}
+
+function canScrollDown(element: HTMLElement) {
+    return (
+        getMaxScrollTop(element) - element.scrollTop >
+        SCROLL_EDGE_EPSILON_PX
+    );
+}
+
+function scrollPdfSurfaceTo(
+    element: HTMLElement,
+    position: Partial<PdfScrollPosition>,
+) {
+    element.scrollTo({
+        top: Math.max(0, position.top ?? element.scrollTop),
+        left: Math.max(0, position.left ?? element.scrollLeft),
+        behavior: "auto",
+    });
+}
+
+function isEditableEventTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) return false;
+    const tagName = target.tagName.toLowerCase();
+    return (
+        tagName === "input" ||
+        tagName === "textarea" ||
+        tagName === "select" ||
+        target.isContentEditable
+    );
+}
 
 function buildPageLayouts(
     metrics: PdfPageMetric[],
@@ -263,8 +337,16 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const pendingProgrammaticPageRef = useRef<number | null>(null);
     const restoredScrollKeyRef = useRef<string | null>(null);
     const completedScrollRestoreKeyRef = useRef<string | null>(null);
+    const restoreAnimationFrameRef = useRef<number | null>(null);
     const isRestoringScrollRef = useRef(false);
     const lastPersistedScrollTopRef = useRef(tab.scrollTop);
+    const lastPersistedScrollLeftRef = useRef(tab.scrollLeft);
+    const spacePressedRef = useRef(false);
+    const dragPanRef = useRef<{
+        pointerId: number;
+        lastX: number;
+        lastY: number;
+    } | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         pageNumber: number;
         selectedText: string;
@@ -285,11 +367,18 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const [viewportHeight, setViewportHeight] = useState(
         VIEWPORT_HEIGHT_FALLBACK,
     );
+    const [viewportWidth, setViewportWidth] = useState(0);
+    const [singlePageSize, setSinglePageSize] =
+        useState<PdfRenderedPageSize | null>(null);
+    const [isPanModifierActive, setIsPanModifierActive] = useState(false);
+    const [isDraggingToPan, setIsDraggingToPan] = useState(false);
 
     const updatePdfPage = useEditorStore((s) => s.updatePdfPage);
     const updatePdfZoom = useEditorStore((s) => s.updatePdfZoom);
     const updatePdfViewMode = useEditorStore((s) => s.updatePdfViewMode);
-    const updatePdfScrollTop = useEditorStore((s) => s.updatePdfScrollTop);
+    const updatePdfScrollPosition = useEditorStore(
+        (s) => s.updatePdfScrollPosition,
+    );
     const previewUrl = useMemo(
         () => buildVaultPreviewUrlFromAbsolutePath(tab.path, vaultPath),
         [tab.path, vaultPath],
@@ -350,6 +439,28 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         continuousLayouts.length > 0
             ? continuousLayouts[continuousLayouts.length - 1].bottom
             : 0;
+    const continuousContentWidth = useMemo(() => {
+        const availableWidth = Math.max(
+            0,
+            viewportWidth - PDF_SURFACE_PADDING_PX * 2,
+        );
+        const widestPage = continuousLayouts.reduce(
+            (widest, layout) => Math.max(widest, layout.width),
+            0,
+        );
+        return Math.max(availableWidth, widestPage);
+    }, [continuousLayouts, viewportWidth]);
+    const singlePageContentWidth = useMemo(() => {
+        const availableWidth = Math.max(
+            0,
+            viewportWidth - PDF_SURFACE_PADDING_PX * 2,
+        );
+        return Math.max(availableWidth, singlePageSize?.width ?? 0);
+    }, [singlePageSize?.width, viewportWidth]);
+    const pdfContentReady =
+        tab.viewMode === "continuous"
+            ? continuousLayouts.length > 0 && continuousContentWidth > 0
+            : Boolean(singlePageSize && singlePageContentWidth > 0);
 
     const setPdfError = useCallback(
         (message: string) => {
@@ -381,6 +492,89 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         [],
     );
 
+    const syncScrollStateFromContainer = useCallback(
+        (container: HTMLElement) => {
+            setViewportHeight(
+                container.clientHeight || VIEWPORT_HEIGHT_FALLBACK,
+            );
+            setViewportWidth(container.clientWidth || 0);
+            setScrollTop(container.scrollTop);
+        },
+        [],
+    );
+
+    const persistScrollPosition = useCallback(
+        (
+            position: PdfScrollPosition,
+            force = false,
+            allowBeforeRestoreComplete = false,
+        ) => {
+            if (allowBeforeRestoreComplete) {
+                if (restoreAnimationFrameRef.current !== null) {
+                    window.cancelAnimationFrame(restoreAnimationFrameRef.current);
+                    restoreAnimationFrameRef.current = null;
+                }
+                isRestoringScrollRef.current = false;
+                completedScrollRestoreKeyRef.current = scrollRestoreKey;
+            }
+
+            if (
+                isRestoringScrollRef.current ||
+                (!allowBeforeRestoreComplete &&
+                    completedScrollRestoreKeyRef.current !== scrollRestoreKey)
+            ) {
+                return;
+            }
+
+            const normalized = normalizeScrollPosition(position);
+            if (
+                !force &&
+                Math.abs(
+                    normalized.top - lastPersistedScrollTopRef.current,
+                ) < SCROLL_PERSIST_THRESHOLD_PX &&
+                Math.abs(
+                    normalized.left - lastPersistedScrollLeftRef.current,
+                ) < SCROLL_PERSIST_THRESHOLD_PX
+            ) {
+                return;
+            }
+
+            lastPersistedScrollTopRef.current = normalized.top;
+            lastPersistedScrollLeftRef.current = normalized.left;
+            updatePdfScrollPosition(tab.id, normalized.top, normalized.left);
+        },
+        [scrollRestoreKey, tab.id, updatePdfScrollPosition],
+    );
+
+    const panScrollSurfaceBy = useCallback(
+        (deltaLeft: number, deltaTop: number) => {
+            const container = containerRef.current;
+            if (!container) return false;
+
+            const previousTop = container.scrollTop;
+            const previousLeft = container.scrollLeft;
+            scrollPdfSurfaceTo(container, {
+                top: previousTop + deltaTop,
+                left: previousLeft + deltaLeft,
+            });
+            syncScrollStateFromContainer(container);
+            persistScrollPosition(
+                {
+                    top: container.scrollTop,
+                    left: container.scrollLeft,
+                },
+                false,
+                true,
+            );
+
+            return (
+                Math.abs(container.scrollTop - previousTop) > 0 ||
+                Math.abs(container.scrollLeft - previousLeft) > 0
+            );
+        },
+        [persistScrollPosition, syncScrollStateFromContainer],
+    );
+
     const scrollToPage = useCallback(
         (pageNumber: number, behavior: ScrollBehavior) => {
             const container = containerRef.current;
@@ -393,6 +587,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
                 container.scrollTo({
                     top: Math.max(layout.offsetTop, 0),
+                    left: container.scrollLeft,
                     behavior,
                 });
                 return;
@@ -403,6 +598,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
             container.scrollTo({
                 top: Math.max(element.offsetTop - 24, 0),
+                left: container.scrollLeft,
                 behavior,
             });
         },
@@ -414,8 +610,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     }, [effectiveZoom, retryCount, tab.path, tab.viewMode]);
 
     useEffect(() => {
+        setSinglePageSize(null);
+    }, [effectiveZoom, retryCount, tab.page, tab.path]);
+
+    useEffect(() => {
         lastPersistedScrollTopRef.current = tab.scrollTop;
-    }, [tab.id, tab.scrollTop]);
+        lastPersistedScrollLeftRef.current = tab.scrollLeft;
+    }, [tab.id, tab.scrollLeft, tab.scrollTop]);
 
     useEffect(() => {
         queueMicrotask(() => setPageMetrics(null));
@@ -507,58 +708,43 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         if (!scrollContainer) return;
 
         let frame = 0;
-        const persistScrollTop = (nextScrollTop: number, force = false) => {
-            if (
-                isRestoringScrollRef.current ||
-                completedScrollRestoreKeyRef.current !== scrollRestoreKey
-            ) {
-                return;
-            }
-
-            const normalizedScrollTop = Math.max(0, Math.round(nextScrollTop));
-            if (
-                !force &&
-                Math.abs(
-                    normalizedScrollTop - lastPersistedScrollTopRef.current,
-                ) < SCROLL_PERSIST_THRESHOLD_PX
-            ) {
-                return;
-            }
-
-            lastPersistedScrollTopRef.current = normalizedScrollTop;
-            updatePdfScrollTop(tab.id, normalizedScrollTop);
-        };
-        const syncViewportMetrics = () => {
-            const nextScrollTop = scrollContainer.scrollTop;
-            setViewportHeight(
-                scrollContainer.clientHeight || VIEWPORT_HEIGHT_FALLBACK,
-            );
-            setScrollTop(nextScrollTop);
-        };
         const scheduleSync = () => {
-            persistScrollTop(scrollContainer.scrollTop);
+            persistScrollPosition({
+                top: scrollContainer.scrollTop,
+                left: scrollContainer.scrollLeft,
+            });
             window.cancelAnimationFrame(frame);
-            frame = window.requestAnimationFrame(syncViewportMetrics);
+            frame = window.requestAnimationFrame(() =>
+                syncScrollStateFromContainer(scrollContainer),
+            );
         };
 
-        syncViewportMetrics();
+        syncScrollStateFromContainer(scrollContainer);
         scrollContainer.addEventListener("scroll", scheduleSync, {
             passive: true,
         });
         window.addEventListener("resize", scheduleSync);
         return () => {
             window.cancelAnimationFrame(frame);
-            persistScrollTop(scrollContainer.scrollTop, true);
+            persistScrollPosition(
+                {
+                    top: scrollContainer.scrollTop,
+                    left: scrollContainer.scrollLeft,
+                },
+                true,
+            );
             scrollContainer.removeEventListener("scroll", scheduleSync);
             window.removeEventListener("resize", scheduleSync);
         };
-    }, [scrollContainer, scrollRestoreKey, tab.id, updatePdfScrollTop]);
+    }, [
+        persistScrollPosition,
+        scrollContainer,
+        syncScrollStateFromContainer,
+    ]);
 
     useEffect(() => {
         if (!scrollContainer || loading || error) return;
-        if (tab.viewMode === "continuous" && continuousLayouts.length === 0) {
-            return;
-        }
+        if (!pdfContentReady) return;
 
         if (restoredScrollKeyRef.current === scrollRestoreKey) return;
         restoredScrollKeyRef.current = scrollRestoreKey;
@@ -573,30 +759,41 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                   : 0;
 
         const frame = window.requestAnimationFrame(() => {
+            restoreAnimationFrameRef.current = null;
             scrollContainer.scrollTo({
                 top: Math.max(0, targetScrollTop),
+                left: Math.max(0, tab.scrollLeft),
                 behavior: "auto",
             });
-            setScrollTop(scrollContainer.scrollTop);
+            syncScrollStateFromContainer(scrollContainer);
             lastPersistedScrollTopRef.current = Math.max(
                 0,
                 Math.round(scrollContainer.scrollTop),
             );
+            lastPersistedScrollLeftRef.current = Math.max(
+                0,
+                Math.round(scrollContainer.scrollLeft),
+            );
             completedScrollRestoreKeyRef.current = scrollRestoreKey;
             isRestoringScrollRef.current = false;
         });
+        restoreAnimationFrameRef.current = frame;
 
         return () => {
             isRestoringScrollRef.current = false;
+            restoreAnimationFrameRef.current = null;
             window.cancelAnimationFrame(frame);
         };
     }, [
         continuousLayouts,
         error,
         loading,
+        pdfContentReady,
         scrollRestoreKey,
         scrollContainer,
+        syncScrollStateFromContainer,
         tab.page,
+        tab.scrollLeft,
         tab.scrollTop,
         tab.viewMode,
     ]);
@@ -765,6 +962,113 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         [],
     );
 
+    const handlePageDimensions = useCallback(
+        (pageNumber: number, size: PdfRenderedPageSize) => {
+            if (pageNumber !== tab.page) return;
+            setSinglePageSize((current) =>
+                current?.width === size.width && current.height === size.height
+                    ? current
+                    : size,
+            );
+        },
+        [tab.page],
+    );
+
+    const handlePanPointerDown = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (
+                !spacePressedRef.current ||
+                (event.button !== 0 && event.buttons !== 1)
+            ) {
+                return;
+            }
+            event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            dragPanRef.current = {
+                pointerId: event.pointerId,
+                lastX: event.clientX,
+                lastY: event.clientY,
+            };
+            setIsDraggingToPan(true);
+        },
+        [],
+    );
+
+    const handlePanPointerMove = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const dragState = dragPanRef.current;
+            if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+            event.preventDefault();
+            const deltaX = event.clientX - dragState.lastX;
+            const deltaY = event.clientY - dragState.lastY;
+            dragPanRef.current = {
+                pointerId: event.pointerId,
+                lastX: event.clientX,
+                lastY: event.clientY,
+            };
+            panScrollSurfaceBy(-deltaX, -deltaY);
+        },
+        [panScrollSurfaceBy],
+    );
+
+    const handlePanMouseDown = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>) => {
+            if ("PointerEvent" in window) return;
+            if (
+                !spacePressedRef.current ||
+                (event.button !== 0 && event.buttons !== 1)
+            ) {
+                return;
+            }
+            event.preventDefault();
+            dragPanRef.current = {
+                pointerId: -1,
+                lastX: event.clientX,
+                lastY: event.clientY,
+            };
+            setIsDraggingToPan(true);
+        },
+        [],
+    );
+
+    const handlePanMouseMove = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>) => {
+            if ("PointerEvent" in window) return;
+            const dragState = dragPanRef.current;
+            if (!dragState || dragState.pointerId !== -1) return;
+
+            event.preventDefault();
+            const deltaX = event.clientX - dragState.lastX;
+            const deltaY = event.clientY - dragState.lastY;
+            dragPanRef.current = {
+                pointerId: -1,
+                lastX: event.clientX,
+                lastY: event.clientY,
+            };
+            panScrollSurfaceBy(-deltaX, -deltaY);
+        },
+        [panScrollSurfaceBy],
+    );
+
+    const stopMousePan = useCallback(() => {
+        const dragState = dragPanRef.current;
+        if (!dragState || dragState.pointerId !== -1) return;
+        dragPanRef.current = null;
+        setIsDraggingToPan(false);
+    }, []);
+
+    const stopPointerPan = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const dragState = dragPanRef.current;
+            if (!dragState || dragState.pointerId !== event.pointerId) return;
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+            dragPanRef.current = null;
+            setIsDraggingToPan(false);
+        },
+        [],
+    );
+
     const activeFilter =
         PDF_FILTERS.find((f) => f.mode === pdfFilter) ?? PDF_FILTERS[0];
     const cycleFilter = useCallback(() => {
@@ -775,52 +1079,197 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
     useEffect(() => {
         if (!scrollContainer) return;
+        const container = scrollContainer;
 
         function handleWheel(event: WheelEvent) {
-            if (!event.metaKey && !event.ctrlKey) return;
+            if (event.metaKey || event.ctrlKey) {
+                event.preventDefault();
+                return;
+            }
+
+            if (!event.shiftKey) return;
+
+            const horizontalDelta =
+                event.deltaX !== 0 ? event.deltaX : event.deltaY;
+            if (horizontalDelta === 0) return;
+
             event.preventDefault();
+            scrollPdfSurfaceTo(container, {
+                left: container.scrollLeft + horizontalDelta,
+            });
+            syncScrollStateFromContainer(container);
+            persistScrollPosition(
+                {
+                    top: container.scrollTop,
+                    left: container.scrollLeft,
+                },
+                false,
+                true,
+            );
         }
 
         const suppressPinchGesture = (event: Event) => {
             event.preventDefault();
         };
 
-        scrollContainer.addEventListener("wheel", handleWheel, {
+        container.addEventListener("wheel", handleWheel, {
             passive: false,
         });
         for (const eventName of PINCH_GESTURE_EVENTS) {
-            scrollContainer.addEventListener(eventName, suppressPinchGesture, {
+            container.addEventListener(eventName, suppressPinchGesture, {
                 passive: false,
             });
         }
         return () => {
-            scrollContainer.removeEventListener("wheel", handleWheel);
+            container.removeEventListener("wheel", handleWheel);
             for (const eventName of PINCH_GESTURE_EVENTS) {
-                scrollContainer.removeEventListener(
-                    eventName,
-                    suppressPinchGesture,
-                );
+                container.removeEventListener(eventName, suppressPinchGesture);
             }
         };
-    }, [scrollContainer]);
+    }, [persistScrollPosition, scrollContainer, syncScrollStateFromContainer]);
 
     useEffect(() => {
         function handleKeyDown(event: KeyboardEvent) {
-            if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+            if (isEditableEventTarget(event.target)) return;
+
+            if (event.code === "Space") {
+                event.preventDefault();
+                if (!spacePressedRef.current) {
+                    spacePressedRef.current = true;
+                    setIsPanModifierActive(true);
+                }
+                return;
+            }
+
+            const container = containerRef.current;
+
+            if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                if (container && canScrollLeft(container)) {
+                    panScrollSurfaceBy(-KEYBOARD_HORIZONTAL_PAN_PX, 0);
+                } else {
+                    goToPreviousPage();
+                }
+                return;
+            }
+
+            if (event.key === "ArrowRight") {
+                event.preventDefault();
+                if (container && canScrollRight(container)) {
+                    panScrollSurfaceBy(KEYBOARD_HORIZONTAL_PAN_PX, 0);
+                } else {
+                    goToNextPage();
+                }
+                return;
+            }
+
+            if (event.key === "ArrowUp") {
+                event.preventDefault();
+                if (container && canScrollUp(container)) {
+                    panScrollSurfaceBy(0, -KEYBOARD_VERTICAL_PAN_PX);
+                } else if (tab.viewMode === "single") {
+                    goToPreviousPage();
+                }
+                return;
+            }
+
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                if (container && canScrollDown(container)) {
+                    panScrollSurfaceBy(0, KEYBOARD_VERTICAL_PAN_PX);
+                } else if (tab.viewMode === "single") {
+                    goToNextPage();
+                }
+                return;
+            }
+
+            if (event.key === "PageUp") {
                 event.preventDefault();
                 goToPreviousPage();
-            } else if (
-                event.key === "ArrowRight" ||
-                event.key === "ArrowDown"
-            ) {
+                return;
+            }
+
+            if (event.key === "PageDown") {
                 event.preventDefault();
                 goToNextPage();
+                return;
+            }
+
+            if (event.key === "Home") {
+                event.preventDefault();
+                if (tab.viewMode === "continuous" && container) {
+                    scrollPdfSurfaceTo(container, { top: 0 });
+                    syncScrollStateFromContainer(container);
+                    persistScrollPosition(
+                        {
+                            top: container.scrollTop,
+                            left: container.scrollLeft,
+                        },
+                        false,
+                        true,
+                    );
+                } else if (tab.page !== 1) {
+                    updatePdfPage(tab.id, 1);
+                }
+                return;
+            }
+
+            if (event.key === "End") {
+                event.preventDefault();
+                if (tab.viewMode === "continuous" && container) {
+                    scrollPdfSurfaceTo(container, {
+                        top: getMaxScrollTop(container),
+                    });
+                    syncScrollStateFromContainer(container);
+                    persistScrollPosition(
+                        {
+                            top: container.scrollTop,
+                            left: container.scrollLeft,
+                        },
+                        false,
+                        true,
+                    );
+                } else if (tab.page !== numPages) {
+                    updatePdfPage(tab.id, numPages);
+                }
             }
         }
 
+        function handleKeyUp(event: KeyboardEvent) {
+            if (event.code !== "Space") return;
+            spacePressedRef.current = false;
+            setIsPanModifierActive(false);
+            dragPanRef.current = null;
+            setIsDraggingToPan(false);
+        }
+
+        function handleBlur() {
+            spacePressedRef.current = false;
+            setIsPanModifierActive(false);
+            dragPanRef.current = null;
+            setIsDraggingToPan(false);
+        }
+
         window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [goToNextPage, goToPreviousPage]);
+        window.addEventListener("keyup", handleKeyUp);
+        window.addEventListener("blur", handleBlur);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+            window.removeEventListener("keyup", handleKeyUp);
+            window.removeEventListener("blur", handleBlur);
+        };
+    }, [
+        goToNextPage,
+        goToPreviousPage,
+        numPages,
+        panScrollSurfaceBy,
+        persistScrollPosition,
+        syncScrollStateFromContainer,
+        tab.id,
+        tab.page,
+        tab.viewMode,
+        updatePdfPage,
+    ]);
 
     if (loading) {
         return (
@@ -1057,26 +1506,43 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
             <div
                 ref={registerContainerElement}
-                className={`min-w-0 flex-1 overflow-auto ${tab.viewMode === "continuous" ? "" : "flex justify-center"}`}
+                className="min-w-0 flex-1 overflow-auto"
+                data-pdf-scroll-surface="true"
+                onPointerDown={handlePanPointerDown}
+                onPointerMove={handlePanPointerMove}
+                onPointerUp={stopPointerPan}
+                onPointerCancel={stopPointerPan}
+                onMouseDown={handlePanMouseDown}
+                onMouseMove={handlePanMouseMove}
+                onMouseUp={stopMousePan}
+                onMouseLeave={stopMousePan}
                 style={{
-                    padding: 24,
+                    padding: PDF_SURFACE_PADDING_PX,
                     background:
                         "color-mix(in srgb, var(--bg-primary) 92%, #000)",
                     // Preserve native panning in both axes while requiring
                     // explicit toolbar controls for zoom changes.
                     touchAction: "pan-x pan-y",
+                    cursor: isDraggingToPan
+                        ? "grabbing"
+                        : isPanModifierActive
+                          ? "grab"
+                          : undefined,
                 }}
             >
                 {tab.viewMode === "continuous" ? (
                     <div
                         ref={contentRef}
-                        className="min-w-0 w-full"
+                        className="min-w-0"
+                        data-pdf-content="continuous"
                         style={{
                             filter: activeFilter.css,
                             position:
                                 continuousLayouts.length > 0
                                     ? "relative"
                                     : "static",
+                            width: `${continuousContentWidth}px`,
+                            minWidth: `${continuousContentWidth}px`,
                             height:
                                 continuousLayouts.length > 0
                                     ? `${totalContinuousHeight}px`
@@ -1112,9 +1578,12 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                 ) : (
                     <div
                         ref={contentRef}
-                        className="min-w-0 w-full flex justify-center"
+                        className="min-w-0 flex justify-center"
+                        data-pdf-content="single"
                         style={{
                             filter: activeFilter.css,
+                            width: `${singlePageContentWidth}px`,
+                            minWidth: `${singlePageContentWidth}px`,
                         }}
                     >
                         <PdfPageCanvas
@@ -1124,6 +1593,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                             zoom={effectiveZoom}
                             onRenderError={setPdfError}
                             onContextMenu={handlePdfContextMenu}
+                            onPageDimensions={handlePageDimensions}
                         />
                     </div>
                 )}
@@ -1145,6 +1615,7 @@ function PdfPageCanvas({
     zoom,
     onRenderError,
     onContextMenu,
+    onPageDimensions,
     registerElement,
     wrapperStyle,
 }: {
@@ -1155,6 +1626,10 @@ function PdfPageCanvas({
     onContextMenu?: (
         event: ReactMouseEvent<HTMLDivElement>,
         pageNumber: number,
+    ) => void;
+    onPageDimensions?: (
+        pageNumber: number,
+        size: PdfRenderedPageSize,
     ) => void;
     registerElement?: (
         pageNumber: number,
@@ -1203,6 +1678,10 @@ function PdfPageCanvas({
                     "--user-unit",
                     String(page.userUnit ?? 1),
                 );
+                onPageDimensions?.(pageNumber, {
+                    width: displayViewport.width,
+                    height: displayViewport.height,
+                });
 
                 clearTextLayer();
 
@@ -1267,7 +1746,7 @@ function PdfPageCanvas({
             clearTextLayer();
             currentPage?.cleanup?.();
         };
-    }, [onRenderError, pageNumber, pdf, zoom]);
+    }, [onPageDimensions, onRenderError, pageNumber, pdf, zoom]);
 
     return (
         <div

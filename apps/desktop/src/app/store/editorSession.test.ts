@@ -55,6 +55,7 @@ describe("editorSession", () => {
                     zoom: 1.2,
                     viewMode: "single",
                     scrollTop: 320,
+                    scrollLeft: 64,
                     history: [
                         {
                             kind: "pdf",
@@ -65,6 +66,7 @@ describe("editorSession", () => {
                             zoom: 1.2,
                             viewMode: "single",
                             scrollTop: 320,
+                            scrollLeft: 64,
                         },
                     ],
                     historyIndex: 0,
@@ -157,6 +159,7 @@ describe("editorSession", () => {
             kind: "pdf",
             entryId: "docs/spec",
             viewMode: "single",
+            scrollLeft: 64,
         });
         expect(session.tabsById["file-1"]).toMatchObject({
             id: "file-1",

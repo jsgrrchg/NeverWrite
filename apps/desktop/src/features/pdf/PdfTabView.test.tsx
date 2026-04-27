@@ -56,6 +56,7 @@ beforeAll(() => {
                 return;
             }
             this.scrollTop = options?.top ?? this.scrollTop;
+            this.scrollLeft = options?.left ?? this.scrollLeft;
         },
     });
 });
@@ -230,6 +231,7 @@ describe("PdfTabView", () => {
                 zoom: 1,
                 viewMode: "continuous",
                 scrollTop: 14000,
+                scrollLeft: 320,
             },
         ]);
 
@@ -245,6 +247,7 @@ describe("PdfTabView", () => {
 
         await waitFor(() => {
             expect(scrollSurface!.scrollTop).toBe(14000);
+            expect(scrollSurface!.scrollLeft).toBe(320);
             expect(
                 container.querySelector('[data-page-number="18"]'),
             ).toBeTruthy();
@@ -345,6 +348,7 @@ describe("PdfTabView", () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
 
         scrollSurface!.scrollTop = 14000;
+        scrollSurface!.scrollLeft = 420;
         fireEvent.scroll(scrollSurface!);
 
         expect(
@@ -352,6 +356,7 @@ describe("PdfTabView", () => {
         ).toMatchObject({
             kind: "pdf",
             scrollTop: 14000,
+            scrollLeft: 420,
         });
     });
 
@@ -387,6 +392,43 @@ describe("PdfTabView", () => {
             expect(textLayer).toBeInTheDocument();
             expect(textLayer).toHaveAttribute("data-selectable", "true");
             expect(textLayer?.querySelector("span")).toBeInTheDocument();
+        });
+    });
+
+    it("sizes the single-page PDF content to the rendered page width for horizontal scroll", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 1,
+                zoom: 2,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            const content = container.querySelector(
+                '[data-pdf-content="single"]',
+            ) as HTMLDivElement | null;
+            expect(content).toBeTruthy();
+            expect(content!.style.width).toBe("1280px");
+            expect(content!.style.minWidth).toBe("1280px");
         });
     });
 
@@ -555,6 +597,129 @@ describe("PdfTabView", () => {
         await user.click(screen.getByTitle("Zoom in"));
 
         expect(screen.getByText("125%")).toBeInTheDocument();
+    });
+
+    it("maps shift-wheel input to horizontal PDF panning", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 1,
+                zoom: 2,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(container.querySelector("canvas")).toBeInTheDocument();
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
+        const wheelEvent = new WheelEvent("wheel", {
+            bubbles: true,
+            cancelable: true,
+            shiftKey: true,
+            deltaY: 180,
+        });
+
+        act(() => {
+            scrollSurface!.dispatchEvent(wheelEvent);
+        });
+
+        expect(wheelEvent.defaultPrevented).toBe(true);
+        expect(scrollSurface!.scrollLeft).toBe(180);
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "pdf-tab"),
+        ).toMatchObject({
+            kind: "pdf",
+            scrollLeft: 180,
+        });
+    });
+
+    it("supports space-drag panning on the PDF surface", async () => {
+        const pdfDocument = {
+            destroy: vi.fn(),
+            getPage: vi.fn().mockImplementation(async () => createMockPage()),
+            numPages: 1,
+        };
+
+        getDocumentMock.mockReturnValue({
+            destroy: vi.fn(),
+            promise: Promise.resolve(pdfDocument),
+        });
+
+        setEditorTabs([
+            {
+                kind: "pdf",
+                id: "pdf-tab",
+                entryId: "entry-1",
+                title: "Doc",
+                path: "/vault/docs/doc.pdf",
+                page: 1,
+                zoom: 2,
+                viewMode: "single",
+            },
+        ]);
+
+        const { container } = renderComponent(<PdfTabView />);
+
+        await waitFor(() => {
+            expect(container.querySelector("canvas")).toBeInTheDocument();
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+        const scrollSurface = container.querySelector(
+            "div[class*='overflow-auto']",
+        ) as HTMLDivElement | null;
+
+        expect(scrollSurface).toBeTruthy();
+
+        fireEvent.keyDown(window, { key: " ", code: "Space" });
+        fireEvent.mouseDown(scrollSurface!, {
+            button: 0,
+            buttons: 1,
+            clientX: 200,
+            clientY: 200,
+        });
+        fireEvent.mouseMove(scrollSurface!, {
+            buttons: 1,
+            clientX: 120,
+            clientY: 150,
+        });
+        fireEvent.mouseUp(scrollSurface!);
+        fireEvent.keyUp(window, { key: " ", code: "Space" });
+
+        expect(scrollSurface!.scrollLeft).toBe(80);
+        expect(scrollSurface!.scrollTop).toBe(50);
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "pdf-tab"),
+        ).toMatchObject({
+            kind: "pdf",
+            scrollLeft: 80,
+            scrollTop: 50,
+        });
     });
 
     it("preserves pan gestures while suppressing gesture-based pinch zoom on the PDF surface", async () => {

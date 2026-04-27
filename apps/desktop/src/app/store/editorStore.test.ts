@@ -86,11 +86,13 @@ function makePdfTab(overrides: {
     zoom?: number;
     viewMode?: "single" | "continuous";
     scrollTop?: number;
+    scrollLeft?: number;
 }) {
     const page = overrides.page ?? 1;
     const zoom = overrides.zoom ?? 1;
     const viewMode = overrides.viewMode ?? "continuous";
     const scrollTop = overrides.scrollTop ?? 0;
+    const scrollLeft = overrides.scrollLeft ?? 0;
 
     return {
         ...overrides,
@@ -99,6 +101,7 @@ function makePdfTab(overrides: {
         zoom,
         viewMode,
         scrollTop,
+        scrollLeft,
         history: [
             {
                 kind: "pdf" as const,
@@ -109,6 +112,7 @@ function makePdfTab(overrides: {
                 zoom,
                 viewMode,
                 scrollTop,
+                scrollLeft,
             },
         ],
         historyIndex: 0,
@@ -3040,7 +3044,9 @@ describe("editorStore tab management", () => {
         useEditorStore.getState().updatePdfPage("pdf-tab-a", 4);
         useEditorStore.getState().updatePdfZoom("pdf-tab-a", 1.75);
         useEditorStore.getState().updatePdfViewMode("pdf-tab-a", "single");
-        useEditorStore.getState().updatePdfScrollTop("pdf-tab-a", 1248.6);
+        useEditorStore
+            .getState()
+            .updatePdfScrollPosition("pdf-tab-a", 1248.6, 319.4);
 
         const pdfTab = useEditorStore
             .getState()
@@ -3050,6 +3056,7 @@ describe("editorStore tab management", () => {
             zoom: 1.75,
             viewMode: "single",
             scrollTop: 1249,
+            scrollLeft: 319,
         });
         expect(
             isPdfTab(pdfTab) ? pdfTab.history[pdfTab.historyIndex] : null,
@@ -3059,6 +3066,7 @@ describe("editorStore tab management", () => {
             zoom: 1.75,
             viewMode: "single",
             scrollTop: 1249,
+            scrollLeft: 319,
         });
     });
 

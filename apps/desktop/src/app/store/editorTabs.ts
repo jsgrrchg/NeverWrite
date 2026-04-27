@@ -36,6 +36,7 @@ export interface PdfHistoryEntry {
     zoom: number;
     viewMode: PdfViewMode;
     scrollTop: number;
+    scrollLeft: number;
 }
 
 export interface FileHistoryEntry {
@@ -73,13 +74,14 @@ export type NoteHistoryEntryInput = Omit<
 
 export type PdfHistoryEntryInput = Omit<
     PdfHistoryEntry,
-    "kind" | "page" | "zoom" | "viewMode" | "scrollTop"
+    "kind" | "page" | "zoom" | "viewMode" | "scrollTop" | "scrollLeft"
 > & {
     kind?: "pdf";
     page?: number;
     zoom?: number;
     viewMode?: PdfViewMode;
     scrollTop?: number;
+    scrollLeft?: number;
 };
 
 export type FileHistoryEntryInput = Omit<
@@ -129,6 +131,7 @@ export interface PdfTab {
     zoom: number;
     viewMode: PdfViewMode;
     scrollTop: number;
+    scrollLeft: number;
     history: TabHistoryEntry[];
     historyIndex: number;
 }
@@ -221,12 +224,14 @@ export type PdfTabInput = Omit<
     | "zoom"
     | "viewMode"
     | "scrollTop"
+    | "scrollLeft"
 > & {
     kind?: "pdf";
     page?: number;
     zoom?: number;
     viewMode?: PdfViewMode;
     scrollTop?: number;
+    scrollLeft?: number;
     history?: TabHistoryEntryInput[];
     historyIndex?: number;
 };
@@ -485,6 +490,7 @@ export function createPdfHistoryEntry(
     zoom: number,
     viewMode: PdfViewMode,
     scrollTop = 0,
+    scrollLeft = 0,
 ): PdfHistoryEntry {
     return {
         kind: "pdf",
@@ -495,6 +501,7 @@ export function createPdfHistoryEntry(
         zoom,
         viewMode,
         scrollTop,
+        scrollLeft,
     };
 }
 
@@ -573,6 +580,7 @@ export function normalizeHistoryEntry(
                 ? (entry.viewMode ?? "continuous")
                 : "continuous",
             "scrollTop" in entry ? (entry.scrollTop ?? 0) : 0,
+            "scrollLeft" in entry ? (entry.scrollLeft ?? 0) : 0,
         );
     }
 
@@ -620,6 +628,7 @@ export function createHistoryEntryFromTab(tab: HistoryTab): TabHistoryEntry {
             tab.zoom,
             tab.viewMode,
             tab.scrollTop,
+            tab.scrollLeft,
         );
     }
 
@@ -664,6 +673,7 @@ export function buildTabFromHistory(
             zoom: entry.zoom,
             viewMode: entry.viewMode,
             scrollTop: entry.scrollTop,
+            scrollLeft: entry.scrollLeft,
             history,
             historyIndex: safeIndex,
         };
@@ -741,6 +751,7 @@ export function createPdfTab(
         zoom: 1,
         viewMode: "continuous",
         scrollTop: 0,
+        scrollLeft: 0,
         history: [
             createPdfHistoryEntry(entryId, title, path, 1, 1, "continuous"),
         ],
@@ -894,6 +905,7 @@ export function ensurePdfTabDefaults(tab: PdfTabInput): PdfTab {
             tab.zoom ?? 1,
             tab.viewMode ?? "continuous",
             tab.scrollTop ?? 0,
+            tab.scrollLeft ?? 0,
         );
         return buildTabFromHistory(tab.id, history, historyIndex) as PdfTab;
     }
@@ -909,6 +921,7 @@ export function ensurePdfTabDefaults(tab: PdfTabInput): PdfTab {
                 tab.zoom ?? 1,
                 tab.viewMode ?? "continuous",
                 tab.scrollTop ?? 0,
+                tab.scrollLeft ?? 0,
             ),
         ],
         0,
