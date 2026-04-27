@@ -159,7 +159,7 @@ jobs:
                   elif [[ "${{ runner.os }}" == "Windows" ]]; then
                     DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
                     curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
-                    powershell -NoProfile -Command "Expand-Archive -Path '$env:RUNNER_TEMP/node.zip' -DestinationPath '$env:RUNNER_TEMP/node-dist'"
+                    powershell -NoProfile -Command "Expand-Archive -Path (Join-Path \$env:RUNNER_TEMP 'node.zip') -DestinationPath (Join-Path \$env:RUNNER_TEMP 'node-dist') -Force"
                     echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
                   else
                     DIST="node-v${NODE_VERSION}-${{ matrix.node_dist }}"
@@ -172,13 +172,13 @@ jobs:
               shell: bash
               run: |
                   if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
-                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
-                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                    echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
                   elif [[ "${{ runner.os }}" == "Windows" ]]; then
-                    CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp.exe"
+                    CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp.exe"
                     echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
                   else
-                    CODEX_BIN="vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
+                    CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/${{ matrix.target }}/release/codex-acp"
                     echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
                   fi
 
