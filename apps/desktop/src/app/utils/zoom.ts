@@ -8,7 +8,3 @@ export function formatZoomPercentage(zoom: number) {
 
     return `${percentage.toFixed(1)}%`;
 }
-
-export function persistWheelZoom(zoom: number) {
-    return Number(zoom.toFixed(4));
-}

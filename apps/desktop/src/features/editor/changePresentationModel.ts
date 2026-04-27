@@ -164,9 +164,3 @@ function getVisibleCharCount(
 function splitLinesForDisplay(text: string) {
     return text.length === 0 ? [""] : text.split("\n");
 }
-
-export function buildFileChangePresentation(
-    trackedFile: TrackedFile | null | undefined,
-) {
-    return trackedFile ? deriveFileChangePresentation(trackedFile) : null;
-}

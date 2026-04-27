@@ -2,7 +2,6 @@ import {
     perfCount,
     perfEnabled,
     perfMeasure,
-    perfNow,
 } from "../../app/utils/perfInstrumentation";
 
 type GraphPerfMetaValue = string | number | boolean | null | undefined;
@@ -37,18 +36,6 @@ export function graphPerfMeasure(
     meta?: GraphPerfMeta,
 ) {
     perfMeasure(name, startMs, cleanMeta(meta));
-}
-
-export function graphPerfMeasureCompute<T>(
-    name: string,
-    compute: () => T,
-    meta?: GraphPerfMeta | ((value: T) => GraphPerfMeta),
-) {
-    const startMs = perfNow();
-    const value = compute();
-    const resolvedMeta = typeof meta === "function" ? meta(value) : meta;
-    graphPerfMeasure(name, startMs, resolvedMeta);
-    return value;
 }
 
 export function scheduleGraphFpsSample(

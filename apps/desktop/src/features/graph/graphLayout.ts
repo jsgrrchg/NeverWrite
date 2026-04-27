@@ -1,7 +1,4 @@
-import {
-    loadGraphLayoutSnapshot,
-    type GraphNodePosition,
-} from "./graphLayoutCache";
+import type { GraphNodePosition } from "./graphLayoutCache";
 import type {
     GraphPosition,
     GraphRenderNode,
@@ -78,19 +75,6 @@ function buildClusteredPositions(
     return positions;
 }
 
-export function prepareGraphLayout(
-    snapshot: GraphRenderSnapshot,
-    layoutKey: string,
-    layoutStrategy: GraphLayoutStrategy,
-): PreparedGraphLayout {
-    const cachedLayout = loadGraphLayoutSnapshot(layoutKey);
-    return prepareGraphLayoutWithCachedPositions(
-        snapshot,
-        layoutStrategy,
-        cachedLayout?.positions ?? null,
-    );
-}
-
 export function prepareGraphLayoutWithCachedPositions(
     snapshot: GraphRenderSnapshot,
     layoutStrategy: GraphLayoutStrategy,
@@ -108,18 +92,4 @@ export function prepareGraphLayoutWithCachedPositions(
         snapshot: withGraphPositions(snapshot, positions),
         restoredFromCache: Boolean(cachedPositions),
     };
-}
-
-export function extractGraphPositions(
-    nodes: GraphRenderNode[],
-): Record<string, GraphNodePosition> {
-    const positions: Record<string, GraphNodePosition> = {};
-    for (const node of nodes) {
-        if (!node.position) continue;
-        positions[node.id] = {
-            x: node.position.x,
-            y: node.position.y,
-        };
-    }
-    return positions;
 }

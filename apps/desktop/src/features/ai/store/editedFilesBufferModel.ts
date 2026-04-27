@@ -124,15 +124,6 @@ export function selectVisibleTrackedFiles(
     return nextFiles;
 }
 
-export function selectVisibleTrackedFilesCount(
-    state: {
-        sessionsById: Record<string, AIChatSession>;
-    },
-    sessionId: string | null,
-): number {
-    return selectVisibleTrackedFiles(state, sessionId).length;
-}
-
 export function selectHasUndoReject(
     state: {
         sessionsById: Record<string, AIChatSession>;

@@ -53,10 +53,3 @@ export function getStatChipStyle(
         border: `1px solid color-mix(in srgb, ${color} 15%, var(--border))`,
     };
 }
-
-/** Thin left-side accent bar for file cards based on change tone */
-export function getToneBorderStyle(accent: string): React.CSSProperties {
-    return {
-        borderLeft: `3px solid color-mix(in srgb, ${accent} 55%, transparent)`,
-    };
-}
