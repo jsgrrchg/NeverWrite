@@ -12,6 +12,7 @@ on:
             - apps/desktop/embedded/**
             - apps/desktop/scripts/build-electron.mjs
             - apps/desktop/scripts/build-electron-release.mjs
+            - apps/desktop/scripts/electron-builder-config.test.mjs
             - apps/desktop/scripts/stage-electron-release-assets.mjs
             - apps/desktop/scripts/stage-electron-release-assets.test.mjs
             - apps/desktop/scripts/stage-electron-sidecar.mjs
@@ -65,7 +66,7 @@ jobs:
               run: node --test scripts/appcast.test.mjs
 
             - name: Run Electron release helper tests
-              run: node --test apps/desktop/scripts/stage-electron-release-assets.test.mjs
+              run: node --test apps/desktop/scripts/electron-builder-config.test.mjs apps/desktop/scripts/stage-electron-release-assets.test.mjs
 
             - name: Run platform validation tests
               run: node --test scripts/platform-validation.test.mjs
