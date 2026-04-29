@@ -134,7 +134,7 @@ describe("AppLayout", () => {
             />,
         );
 
-        const leftPanel = screen.getByText("Left").parentElement;
+        const leftPanel = screen.getByTestId("app-layout-left-panel");
         const leftResizer = leftPanel?.nextElementSibling;
 
         expect(leftPanel).toBeInstanceOf(HTMLElement);
@@ -158,6 +158,58 @@ describe("AppLayout", () => {
 
         expect(useLayoutStore.getState().sidebarCollapsed).toBe(false);
         expect(useLayoutStore.getState().sidebarWidth).toBe(280);
+    });
+
+    it("keeps the docked sidebar mounted until the collapse animation finishes", () => {
+        vi.useFakeTimers();
+
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        act(() => {
+            useLayoutStore.getState().toggleSidebar();
+        });
+
+        expect(screen.getByTestId("app-layout-left-panel")).toBeInTheDocument();
+        expect(
+            screen.queryByTestId("sidebar-peek-hotspot"),
+        ).not.toBeInTheDocument();
+
+        act(() => {
+            vi.advanceTimersByTime(190);
+        });
+
+        expect(
+            screen.queryByTestId("app-layout-left-panel"),
+        ).not.toBeInTheDocument();
+        expect(screen.getByTestId("sidebar-peek-hotspot")).toBeInTheDocument();
+    });
+
+    it("mounts the docked sidebar immediately when expanding from collapsed", () => {
+        useLayoutStore.setState({ sidebarCollapsed: true });
+
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        expect(
+            screen.queryByTestId("app-layout-left-panel"),
+        ).not.toBeInTheDocument();
+
+        act(() => {
+            useLayoutStore.getState().toggleSidebar();
+        });
+
+        expect(screen.getByTestId("app-layout-left-panel")).toBeInTheDocument();
     });
 
     it("keeps the collapsed sidebar peek overlay mounted during file-tree drags", () => {

@@ -12,20 +12,14 @@ import {
     getAccentButtonStyle,
     getDangerButtonStyle,
     getNeutralButtonStyle,
-    getStatChipStyle,
 } from "./editedFilesReviewStyles";
 import {
     deriveReviewItems,
     deriveReviewSummary,
 } from "../diff/editedFilesPresentationModel";
 import { useEditedFilesReviewExpansion } from "./useEditedFilesReviewExpansion";
-import {
-    DIFF_ZOOM_MAX,
-    DIFF_ZOOM_MIN,
-    DIFF_ZOOM_STEP,
-    formatDiffStat,
-    stepDiffZoom,
-} from "../diff/reviewDiff";
+import { formatDiffStat } from "../diff/reviewDiff";
+import { DiffZoomControls } from "./DiffZoomControls";
 import { getFileOperation } from "../store/actionLogModel";
 import { useChatStore } from "../store/chatStore";
 import {
@@ -112,6 +106,14 @@ function ReviewEmptyState({
 /*  Stat chips row                                                     */
 /* ------------------------------------------------------------------ */
 
+const REVIEW_ACTION_LABEL_STYLE: React.CSSProperties = {
+    fontSize: "10.5px",
+    fontWeight: 600,
+    lineHeight: "16px",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+};
+
 function StatChips({
     summary,
 }: {
@@ -123,23 +125,29 @@ function StatChips({
         conflictCount: number;
     };
 }) {
+    const statStyle: React.CSSProperties = {
+        fontSize: "0.72em",
+        color: "var(--text-secondary)",
+        opacity: 0.78,
+        whiteSpace: "nowrap",
+    };
     return (
-        <div className="flex flex-wrap items-center gap-1.5">
-            <span style={getStatChipStyle()}>
+        <div className="flex flex-wrap items-baseline gap-2">
+            <span style={statStyle}>
                 {summary.fileCount} {summary.fileCount === 1 ? "file" : "files"}
             </span>
             {summary.additions > 0 && (
-                <span style={getStatChipStyle("var(--diff-add)")}>
+                <span style={{ ...statStyle, color: "var(--diff-add)" }}>
                     +{formatDiffStat(summary.additions, summary.approximate)}
                 </span>
             )}
             {summary.deletions > 0 && (
-                <span style={getStatChipStyle("var(--diff-remove)")}>
+                <span style={{ ...statStyle, color: "var(--diff-remove)" }}>
                     -{formatDiffStat(summary.deletions, summary.approximate)}
                 </span>
             )}
             {summary.conflictCount > 0 && (
-                <span style={getStatChipStyle("var(--diff-warn)")}>
+                <span style={{ ...statStyle, color: "var(--diff-warn)" }}>
                     {summary.conflictCount}{" "}
                     {summary.conflictCount === 1 ? "conflict" : "conflicts"}
                 </span>
@@ -269,9 +277,6 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const scrollPersistTimerRef = useRef<number | null>(null);
     const storageRefreshTimerRef = useRef<number | null>(null);
     const pendingScrollTopRef = useRef<number | null>(null);
-    const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
-    const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
-
     const persistViewState = useCallback(
         (nextScrollTop?: number) => {
             const persisted = persistReviewViewState(
@@ -485,11 +490,12 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         >
             {/* ---- Header ---- */}
             <div
-                className="shrink-0 px-6 py-3"
+                className="shrink-0 px-6 py-1.5"
                 style={{
-                    backgroundColor: "var(--bg-secondary)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
                     borderBottom:
-                        "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
+                        "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                 }}
             >
                 <div
@@ -498,8 +504,14 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                     <div className="flex items-center justify-between gap-4">
                         <div className="flex items-center gap-3 min-w-0">
                             <h1
-                                className="text-sm font-semibold"
-                                style={{ color: "var(--text-primary)" }}
+                                className="uppercase"
+                                style={{
+                                    color: "var(--text-secondary)",
+                                    fontSize: "0.68em",
+                                    letterSpacing: "0.12em",
+                                    fontWeight: 600,
+                                    margin: 0,
+                                }}
                             >
                                 Pending Changes
                             </h1>
@@ -507,71 +519,13 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                         </div>
 
                         {/* Global actions */}
-                        <div className="flex shrink-0 items-center gap-1.5">
-                            <div
-                                className="flex items-center rounded-md"
-                                style={{
-                                    border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                                    backgroundColor:
-                                        "color-mix(in srgb, var(--bg-primary) 48%, transparent)",
-                                }}
-                            >
-                                <button
-                                    type="button"
-                                    aria-label="Decrease diff zoom"
-                                    title="Decrease diff zoom"
-                                    disabled={!canDecreaseZoom}
-                                    onClick={() =>
-                                        setEditDiffZoom(
-                                            stepDiffZoom(
-                                                editDiffZoom,
-                                                -DIFF_ZOOM_STEP,
-                                            ),
-                                        )
-                                    }
-                                    className="rounded-l-md px-2 py-1 text-xs"
-                                    style={{
-                                        color: canDecreaseZoom
-                                            ? "var(--text-primary)"
-                                            : "var(--text-secondary)",
-                                        opacity: canDecreaseZoom ? 1 : 0.45,
-                                        backgroundColor: "transparent",
-                                        border: "none",
-                                        cursor: canDecreaseZoom
-                                            ? "pointer"
-                                            : "not-allowed",
-                                    }}
-                                >
-                                    -
-                                </button>
-                                <button
-                                    type="button"
-                                    aria-label="Increase diff zoom"
-                                    title="Increase diff zoom"
-                                    disabled={!canIncreaseZoom}
-                                    onClick={() =>
-                                        setEditDiffZoom(
-                                            stepDiffZoom(
-                                                editDiffZoom,
-                                                DIFF_ZOOM_STEP,
-                                            ),
-                                        )
-                                    }
-                                    className="rounded-r-md px-2 py-1 text-xs"
-                                    style={{
-                                        color: canIncreaseZoom
-                                            ? "var(--text-primary)"
-                                            : "var(--text-secondary)",
-                                        opacity: canIncreaseZoom ? 1 : 0.45,
-                                        backgroundColor: "transparent",
-                                        border: "none",
-                                        cursor: canIncreaseZoom
-                                            ? "pointer"
-                                            : "not-allowed",
-                                    }}
-                                >
-                                    +
-                                </button>
+                        <div className="flex shrink-0 items-center gap-1">
+                            <div className="flex items-center gap-0.5 pr-1">
+                                <DiffZoomControls
+                                    accent="var(--text-primary)"
+                                    zoom={editDiffZoom}
+                                    onZoomChange={setEditDiffZoom}
+                                />
                             </div>
                             {hasUndoReject && (
                                 <button
@@ -579,10 +533,10 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                     onClick={() =>
                                         void undoLastReject(tab.sessionId)
                                     }
-                                    className="review-action-btn rounded-md px-2 py-1 text-xs"
+                                    className="review-action-btn rounded-sm px-2 py-0.5"
                                     style={{
-                                        fontWeight: 500,
                                         ...getNeutralButtonStyle(),
+                                        ...REVIEW_ACTION_LABEL_STYLE,
                                     }}
                                     title="Undo last reject"
                                 >
@@ -596,10 +550,10 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                         ? expansion.collapseAll
                                         : expansion.expandAll
                                 }
-                                className="review-action-btn rounded-md px-2 py-1 text-xs"
+                                className="review-action-btn rounded-sm px-2 py-0.5"
                                 style={{
-                                    fontWeight: 500,
                                     ...getNeutralButtonStyle(),
+                                    ...REVIEW_ACTION_LABEL_STYLE,
                                 }}
                             >
                                 {expansion.allExpanded ? "Collapse" : "Expand"}
@@ -607,10 +561,10 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                             <button
                                 type="button"
                                 onClick={() => setWideMode((prev) => !prev)}
-                                className="review-action-btn rounded-md px-2 py-1 text-xs"
+                                className="review-action-btn rounded-sm px-2 py-0.5"
                                 style={{
-                                    fontWeight: 500,
                                     ...getNeutralButtonStyle(),
+                                    ...REVIEW_ACTION_LABEL_STYLE,
                                 }}
                                 title={
                                     wideMode
@@ -626,12 +580,12 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                     void rejectAllEditedFiles(tab.sessionId)
                                 }
                                 disabled={rejectableCount === 0}
-                                className="review-action-btn rounded-md px-2 py-1 text-xs"
+                                className="review-action-btn rounded-sm px-2 py-0.5"
                                 style={{
-                                    fontWeight: 600,
                                     ...getDangerButtonStyle(
                                         rejectableCount === 0,
                                     ),
+                                    ...REVIEW_ACTION_LABEL_STYLE,
                                 }}
                             >
                                 Reject All
@@ -641,10 +595,10 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                                 onClick={() =>
                                     keepAllEditedFiles(tab.sessionId)
                                 }
-                                className="review-action-btn rounded-md px-2.5 py-1 text-xs"
+                                className="review-action-btn rounded-sm px-2 py-0.5"
                                 style={{
-                                    fontWeight: 600,
                                     ...getAccentButtonStyle(),
+                                    ...REVIEW_ACTION_LABEL_STYLE,
                                 }}
                             >
                                 Keep All

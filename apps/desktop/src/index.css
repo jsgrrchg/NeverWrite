@@ -455,6 +455,13 @@ html[data-desktop-platform="windows"].dark {
     );
 }
 
+@media (prefers-reduced-motion: reduce) {
+    [data-sidebar-dock-panel],
+    [data-sidebar-dock-inner] {
+        transition-duration: 1ms !important;
+    }
+}
+
 /* Tree indent guide color — matches Comando's theme-agnostic guide. */
 :root {
     --tree-guide-color: rgba(0, 0, 0, 0.2);

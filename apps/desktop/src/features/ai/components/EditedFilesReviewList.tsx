@@ -15,6 +15,48 @@ import {
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 
 /* ------------------------------------------------------------------ */
+/*  Shared inline action button (compact)                              */
+/* ------------------------------------------------------------------ */
+
+const FULL_ROW_ACTION_BUTTON_STYLE: React.CSSProperties = {
+    fontSize: "0.66em",
+    fontWeight: 600,
+    lineHeight: "20px",
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+};
+
+function FullRowActionButton({
+    title,
+    variant,
+    onClick,
+    children,
+}: {
+    title: string;
+    variant: "neutral" | "danger" | "accent";
+    onClick: () => void;
+    children: string;
+}) {
+    const baseStyle =
+        variant === "danger"
+            ? getDangerButtonStyle()
+            : variant === "accent"
+              ? getAccentButtonStyle()
+              : getNeutralButtonStyle();
+    return (
+        <button
+            type="button"
+            title={title}
+            onClick={onClick}
+            className="review-action-btn shrink-0 rounded-sm px-1.5"
+            style={{ ...baseStyle, ...FULL_ROW_ACTION_BUTTON_STYLE }}
+        >
+            {children}
+        </button>
+    );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Full variant (review tab)                                          */
 /* ------------------------------------------------------------------ */
 
@@ -99,7 +141,7 @@ function FullRow({
         >
             {/* Card header */}
             <div
-                className="flex w-full items-center gap-3 px-4 py-2.5"
+                className="flex w-full items-center gap-2 px-3 py-2"
                 style={{
                     borderBottom: expanded
                         ? "1px solid color-mix(in srgb, var(--border) 40%, transparent)"
@@ -114,10 +156,10 @@ function FullRow({
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 20,
-                        height: 20,
-                        borderRadius: 5,
-                        fontSize: "0.68em",
+                        width: 18,
+                        height: 18,
+                        borderRadius: 3,
+                        fontSize: "0.62em",
                         color: "var(--text-secondary)",
                         backgroundColor:
                             "color-mix(in srgb, var(--bg-tertiary) 70%, transparent)",
@@ -149,7 +191,7 @@ function FullRow({
                         cursor: "pointer",
                     }}
                 >
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                         <span
                             className="truncate"
                             style={{
@@ -162,9 +204,9 @@ function FullRow({
                         </span>
                         {tone.badge ? (
                             <span
-                                className="rounded-full px-1.5 py-px"
+                                className="rounded-sm px-1 py-px"
                                 style={{
-                                    fontSize: "0.64em",
+                                    fontSize: "0.62em",
                                     fontWeight: 700,
                                     textTransform: "uppercase",
                                     letterSpacing: "0.04em",
@@ -180,7 +222,7 @@ function FullRow({
                         className="truncate"
                         style={{
                             marginTop: 1,
-                            fontSize: "0.74em",
+                            fontSize: "0.72em",
                             color: "var(--text-secondary)",
                         }}
                     >
@@ -190,8 +232,8 @@ function FullRow({
 
                 {/* Diff stats */}
                 <div
-                    className="flex shrink-0 items-center gap-1.5"
-                    style={{ fontSize: "0.76em" }}
+                    className="flex shrink-0 items-center gap-1"
+                    style={{ fontSize: "0.74em" }}
                 >
                     {stats.additions > 0 ? (
                         <span
@@ -218,53 +260,32 @@ function FullRow({
                 </div>
 
                 {/* Inline action buttons */}
-                <div className="flex shrink-0 items-center gap-1">
-                    <button
-                        type="button"
+                <div className="flex shrink-0 items-center gap-0.5">
+                    <FullRowActionButton
                         title="Open File"
+                        variant="neutral"
                         onClick={() =>
                             void openAiEditedFileByAbsolutePath(file.path)
                         }
-                        className="review-action-btn shrink-0 rounded px-1.5"
-                        style={{
-                            ...getNeutralButtonStyle(),
-                            fontSize: "0.68em",
-                            fontWeight: 600,
-                            lineHeight: "22px",
-                        }}
                     >
                         Open
-                    </button>
+                    </FullRowActionButton>
                     {canReject ? (
-                        <button
-                            type="button"
+                        <FullRowActionButton
                             title="Reject"
+                            variant="danger"
                             onClick={onReject}
-                            className="review-action-btn shrink-0 rounded px-1.5"
-                            style={{
-                                ...getDangerButtonStyle(),
-                                fontSize: "0.68em",
-                                fontWeight: 600,
-                                lineHeight: "22px",
-                            }}
                         >
                             Reject
-                        </button>
+                        </FullRowActionButton>
                     ) : null}
-                    <button
-                        type="button"
+                    <FullRowActionButton
                         title="Accept"
+                        variant="accent"
                         onClick={onKeep}
-                        className="review-action-btn shrink-0 rounded px-1.5"
-                        style={{
-                            ...getAccentButtonStyle(),
-                            fontSize: "0.68em",
-                            fontWeight: 600,
-                            lineHeight: "22px",
-                        }}
                     >
                         Accept
-                    </button>
+                    </FullRowActionButton>
                 </div>
             </div>
 

@@ -12,7 +12,11 @@ import {
     ContextMenu,
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
-import type { AIChatMessage, AIFileDiff } from "../types";
+import type {
+    AIChatMessage,
+    AIFileDiff,
+    AIPermissionOption,
+} from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
@@ -24,16 +28,13 @@ import {
     type ChatRowUiState,
 } from "../store/chatRowUiStore";
 import {
-    DIFF_ZOOM_MAX,
-    DIFF_ZOOM_MIN,
-    DIFF_ZOOM_STEP,
     computeDiffStats,
     computeFileDiffStats,
     formatDiffStat,
     getFileNameFromPath,
-    stepDiffZoom,
 } from "../diff/reviewDiff";
 import { decodeSerializedPillValue } from "../composerParts";
+import { DiffZoomControls } from "./DiffZoomControls";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
 import { openChatNoteByReference } from "../chatNoteNavigation";
 import {
@@ -42,6 +43,7 @@ import {
 } from "../chatFileNavigation";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { buildCodexGeneratedImagePreviewUrl } from "../../../app/utils/filePreviewUrl";
+import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 
 interface UserMentionContextMenuPayload {
     label: string;
@@ -484,6 +486,31 @@ function ThinkingMessage({
     );
 }
 
+/** Catppuccin file-type icon for tool messages with a resolvable file target;
+ *  falls back to the verb-based ToolIcon when no path is available. */
+function ToolFileIcon({
+    target,
+    toolKind,
+    size = 13,
+    opacity = 0.86,
+}: {
+    target: string | null;
+    toolKind?: string;
+    size?: number;
+    opacity?: number;
+}) {
+    if (target) {
+        return (
+            <FileTypeIcon
+                fileName={target}
+                size={size}
+                opacity={opacity}
+            />
+        );
+    }
+    return <ToolIcon kind={toolKind} />;
+}
+
 function ToolIcon({ kind }: { kind?: string }) {
     const k = String(kind ?? "");
     if (k === "read" || k === "search") {
@@ -625,42 +652,13 @@ function FileToolMessage({
                 onClick={detail ? () => setExpanded((v) => !v) : undefined}
             >
                 {/* Icon */}
-                {isRead ? (
-                    <svg
-                        width="13"
-                        height="13"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke={accent}
-                        strokeWidth="1.4"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="shrink-0"
-                    >
-                        <circle cx="6" cy="6" r="3.5" />
-                        <path d="M8.5 8.5L12 12" />
-                    </svg>
-                ) : (
-                    <svg
-                        width="13"
-                        height="13"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke={accent}
-                        strokeWidth="1.3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="shrink-0"
-                    >
-                        <path d="M8 1.5H3.5a1 1 0 00-1 1v9a1 1 0 001 1h7a1 1 0 001-1V5L8 1.5z" />
-                        <path d="M8 1.5V5h3.5" />
-                        {toolKind === "delete" ? (
-                            <path d="M5.5 7.5l3 3M8.5 7.5l-3 3" />
-                        ) : (
-                            <path d="M5 8.5l1.5 1.5L9 7" />
-                        )}
-                    </svg>
-                )}
+                <span className="shrink-0">
+                    <ToolFileIcon
+                        target={target}
+                        toolKind={toolKind}
+                        size={13}
+                    />
+                </span>
 
                 {/* Filename + action */}
                 <span
@@ -881,7 +879,7 @@ function ToolMessage({
                 style={{ cursor: detail ? "pointer" : "default" }}
                 onClick={detail ? () => setExpanded((v) => !v) : undefined}
             >
-                <ToolIcon kind={toolKind} />
+                <ToolFileIcon target={target} toolKind={toolKind} size={12} />
                 <span className="min-w-0 flex-1 truncate">{label}</span>
                 {!isCompleted && status === "in_progress" ? (
                     <span
@@ -2029,42 +2027,89 @@ function HistoricalDiffSummaryMessage({ message }: { message: AIChatMessage }) {
     );
 }
 
-function DiffZoomButton({
+function PermissionDecisionButton({
+    option,
     accent,
-    ariaLabel,
     disabled,
     onClick,
-    children,
+    style,
 }: {
+    option: AIPermissionOption;
     accent: string;
-    ariaLabel: string;
     disabled: boolean;
     onClick: () => void;
-    children: ReactElement;
+    style?: React.CSSProperties;
 }) {
     const [hovered, setHovered] = useState(false);
+    const isReject = option.kind.startsWith("reject");
     const interactive = !disabled;
+    const hovering = hovered && interactive;
+
+    const variantStyle: React.CSSProperties = !interactive
+        ? {
+              color: "var(--text-secondary)",
+              backgroundColor:
+                  "color-mix(in srgb, var(--text-secondary) 8%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--text-secondary) 14%, transparent)",
+              opacity: 0.5,
+              cursor: "default",
+          }
+        : isReject
+          ? {
+                color: hovering
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+                backgroundColor: hovering
+                    ? "color-mix(in srgb, var(--text-primary) 7%, transparent)"
+                    : "transparent",
+                border: `1px solid color-mix(in srgb, var(--text-secondary) ${
+                    hovering ? "32%" : "18%"
+                }, transparent)`,
+                opacity: 1,
+                cursor: "pointer",
+            }
+          : {
+                color: "#fff",
+                backgroundColor: hovering
+                    ? `color-mix(in srgb, ${accent} 88%, white)`
+                    : accent,
+                border: "1px solid transparent",
+                opacity: 1,
+                cursor: "pointer",
+            };
+
     return (
         <button
             type="button"
-            aria-label={ariaLabel}
-            disabled={disabled}
             onClick={onClick}
-            onMouseEnter={() => setHovered(true)}
+            disabled={disabled}
+            onMouseEnter={() => interactive && setHovered(true)}
             onMouseLeave={() => setHovered(false)}
-            className="flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+            className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium transition-colors"
             style={{
-                color: interactive ? accent : "var(--text-secondary)",
-                opacity: interactive ? (hovered ? 1 : 0.7) : 0.35,
-                backgroundColor:
-                    hovered && interactive
-                        ? `color-mix(in srgb, ${accent} 12%, transparent)`
-                        : "transparent",
-                border: "none",
-                cursor: interactive ? "pointer" : "not-allowed",
+                fontSize: "0.79em",
+                ...variantStyle,
+                ...style,
             }}
         >
-            {children}
+            <svg
+                width="11"
+                height="11"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+            >
+                {isReject ? (
+                    <path d="M3.2 3.2l5.6 5.6M8.8 3.2l-5.6 5.6" />
+                ) : (
+                    <path d="M2.5 6.2L4.9 8.6L9.6 3.6" />
+                )}
+            </svg>
+            {option.name}
         </button>
     );
 }
@@ -2171,8 +2216,6 @@ function ChangeReviewPanel({
     const actionLabel = isToolMessage
         ? getDiffPanelToolLabel(toolKind)
         : "Edit";
-    const canDecreaseZoom = editDiffZoom > DIFF_ZOOM_MIN;
-    const canIncreaseZoom = editDiffZoom < DIFF_ZOOM_MAX;
     const isSingleFile = diffs.length === 1;
     const singleDiff = isSingleFile ? diffs[0] : null;
     const singleFilename = singleDiff
@@ -2263,12 +2306,22 @@ function ChangeReviewPanel({
                     </svg>
                 )}
                 {isToolMessage ? (
-                    <span
-                        className="flex shrink-0 items-center"
-                        style={{ color: accent }}
-                    >
-                        <ToolIcon kind={toolKind} />
-                    </span>
+                    isSingleFile && singleDiff?.path ? (
+                        <span className="flex shrink-0 items-center">
+                            <FileTypeIcon
+                                fileName={singleDiff.path}
+                                size={13}
+                                opacity={0.86}
+                            />
+                        </span>
+                    ) : (
+                        <span
+                            className="flex shrink-0 items-center"
+                            style={{ color: accent }}
+                        >
+                            <ToolIcon kind={toolKind} />
+                        </span>
+                    )
                 ) : (
                     <svg
                         width="14"
@@ -2409,52 +2462,11 @@ function ChangeReviewPanel({
                         isSingleFile ? (e) => e.stopPropagation() : undefined
                     }
                 >
-                    <DiffZoomButton
+                    <DiffZoomControls
                         accent={accent}
-                        ariaLabel="Decrease diff zoom"
-                        disabled={!canDecreaseZoom}
-                        onClick={() =>
-                            setEditDiffZoom(
-                                stepDiffZoom(editDiffZoom, -DIFF_ZOOM_STEP),
-                            )
-                        }
-                    >
-                        <svg
-                            width="10"
-                            height="10"
-                            viewBox="0 0 10 10"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            aria-hidden="true"
-                        >
-                            <path d="M2.5 5h5" />
-                        </svg>
-                    </DiffZoomButton>
-                    <DiffZoomButton
-                        accent={accent}
-                        ariaLabel="Increase diff zoom"
-                        disabled={!canIncreaseZoom}
-                        onClick={() =>
-                            setEditDiffZoom(
-                                stepDiffZoom(editDiffZoom, DIFF_ZOOM_STEP),
-                            )
-                        }
-                    >
-                        <svg
-                            width="10"
-                            height="10"
-                            viewBox="0 0 10 10"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            aria-hidden="true"
-                        >
-                            <path d="M2.5 5h5M5 2.5v5" />
-                        </svg>
-                    </DiffZoomButton>
+                        zoom={editDiffZoom}
+                        onZoomChange={setEditDiffZoom}
+                    />
                     {readOnly ? (
                         <span
                             className="ml-1 rounded-full px-2 py-0.5 whitespace-nowrap"
@@ -2557,37 +2569,21 @@ function ChangeReviewPanel({
                     {message.permissionOptions.map((option) => {
                         const isReject = option.kind.startsWith("reject");
                         return (
-                            <button
+                            <PermissionDecisionButton
                                 key={option.option_id}
-                                type="button"
+                                option={option}
+                                accent={accent}
+                                disabled={!isPending}
                                 onClick={() =>
                                     onPermissionResponse?.(
                                         message.permissionRequestId!,
                                         option.option_id,
                                     )
                                 }
-                                disabled={!isPending}
-                                className="rounded-md px-3 py-1 font-medium transition-opacity"
-                                style={{
-                                    fontSize: "0.79em",
-                                    marginLeft: isReject ? 0 : "auto",
-                                    color: !isPending
-                                        ? "var(--text-secondary)"
-                                        : isReject
-                                          ? "var(--text-secondary)"
-                                          : "#fff",
-                                    backgroundColor: !isPending
-                                        ? "color-mix(in srgb, var(--text-secondary) 10%, transparent)"
-                                        : isReject
-                                          ? "color-mix(in srgb, var(--text-secondary) 12%, transparent)"
-                                          : "var(--accent)",
-                                    border: "1px solid color-mix(in srgb, var(--text-secondary) 20%, transparent)",
-                                    opacity: !isPending ? 0.5 : 1,
-                                    cursor: isPending ? "pointer" : "default",
-                                }}
-                            >
-                                {option.name}
-                            </button>
+                                style={
+                                    isReject ? undefined : { marginLeft: "auto" }
+                                }
+                            />
                         );
                     })}
                 </div>
@@ -2884,41 +2880,20 @@ function PermissionMessage({
                             "1px solid color-mix(in srgb, #d97706 15%, var(--border))",
                     }}
                 >
-                    {message.permissionOptions.map((option) => {
-                        const isReject = option.kind.startsWith("reject");
-                        return (
-                            <button
-                                key={option.option_id}
-                                type="button"
-                                onClick={() =>
-                                    onPermissionResponse?.(
-                                        message.permissionRequestId!,
-                                        option.option_id,
-                                    )
-                                }
-                                disabled={!isPending}
-                                className="rounded-md px-3 py-1 font-medium transition-opacity"
-                                style={{
-                                    fontSize: "0.79em",
-                                    color: !isPending
-                                        ? "var(--text-secondary)"
-                                        : isReject
-                                          ? "var(--text-secondary)"
-                                          : "#fff",
-                                    backgroundColor: !isPending
-                                        ? "color-mix(in srgb, var(--text-secondary) 10%, transparent)"
-                                        : isReject
-                                          ? "color-mix(in srgb, var(--text-secondary) 12%, transparent)"
-                                          : "var(--accent)",
-                                    border: "1px solid color-mix(in srgb, var(--text-secondary) 20%, transparent)",
-                                    opacity: !isPending ? 0.5 : 1,
-                                    cursor: isPending ? "pointer" : "default",
-                                }}
-                            >
-                                {option.name}
-                            </button>
-                        );
-                    })}
+                    {message.permissionOptions.map((option) => (
+                        <PermissionDecisionButton
+                            key={option.option_id}
+                            option={option}
+                            accent="#d97706"
+                            disabled={!isPending}
+                            onClick={() =>
+                                onPermissionResponse?.(
+                                    message.permissionRequestId!,
+                                    option.option_id,
+                                )
+                            }
+                        />
+                    ))}
                 </div>
             ) : null}
 

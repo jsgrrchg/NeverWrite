@@ -166,24 +166,27 @@ export function EditedFilesBufferPanel({
 
         return (
             <section
-                className="mx-3 mb-2 overflow-hidden rounded-xl"
+                className="mb-1"
                 style={{
-                    border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
                     backgroundColor:
-                        "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
+                        "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
+                    borderTop:
+                        "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                 }}
             >
-                <div className="flex items-center gap-1.5 px-2 py-1.5">
+                <div className="flex items-center gap-1.5 px-3 py-1">
                     <button
                         type="button"
                         title="Undo last reject"
                         onClick={() => void undoLastReject(activeSessionId)}
-                        className="review-action-btn rounded-md p-1"
+                        className="review-action-btn rounded-sm p-1"
                         style={getNeutralButtonStyle()}
                     >
                         <svg
-                            width="14"
-                            height="14"
+                            width="13"
+                            height="13"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"
@@ -196,8 +199,13 @@ export function EditedFilesBufferPanel({
                         </svg>
                     </button>
                     <span
-                        className="text-xs"
-                        style={{ color: "var(--text-secondary)" }}
+                        className="uppercase"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.68em",
+                            letterSpacing: "0.12em",
+                            fontWeight: 600,
+                        }}
                     >
                         Undo last reject
                     </span>
@@ -208,18 +216,21 @@ export function EditedFilesBufferPanel({
 
     return (
         <section
-            className="mx-3 mb-2 overflow-hidden rounded-xl"
+            className="mb-1"
             style={{
-                border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
                 backgroundColor:
-                    "color-mix(in srgb, var(--bg-tertiary) 84%, transparent)",
+                    "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
+                borderTop:
+                    "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
             }}
         >
             <div
-                className="flex items-center gap-1.5 px-2 py-1.5"
+                className="flex items-center gap-1.5 px-3 py-1"
                 style={{
                     borderBottom: !collapsed
-                        ? "1px solid color-mix(in srgb, var(--border) 80%, transparent)"
+                        ? "1px solid color-mix(in srgb, var(--border) 35%, transparent)"
                         : "none",
                 }}
             >
@@ -228,15 +239,21 @@ export function EditedFilesBufferPanel({
                     onToggle={() => setCollapsed((value) => !value)}
                 />
                 <span
-                    className="text-xs font-medium"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="uppercase"
+                    style={{
+                        color: "var(--text-secondary)",
+                        fontSize: "0.68em",
+                        letterSpacing: "0.12em",
+                        fontWeight: 600,
+                    }}
                 >
                     Edits
                 </span>
                 <span
                     style={{
-                        fontSize: "0.72em",
+                        fontSize: "0.7em",
                         color: "var(--text-secondary)",
+                        opacity: 0.7,
                     }}
                 >
                     ({summary.fileCount})
@@ -244,16 +261,16 @@ export function EditedFilesBufferPanel({
                 {(summary.additions > 0 || summary.deletions > 0) && (
                     <span
                         style={{
-                            fontSize: "0.72em",
+                            fontSize: "0.7em",
                             color: "var(--text-secondary)",
+                            opacity: 0.7,
                         }}
                     >
-                        ·
                         {summary.additions > 0 ? (
                             <span
                                 style={{
                                     color: "var(--diff-add)",
-                                    marginLeft: 3,
+                                    marginLeft: 6,
                                 }}
                             >
                                 +
@@ -267,7 +284,7 @@ export function EditedFilesBufferPanel({
                             <span
                                 style={{
                                     color: "var(--diff-remove)",
-                                    marginLeft: 3,
+                                    marginLeft: 4,
                                 }}
                             >
                                 -
@@ -287,12 +304,12 @@ export function EditedFilesBufferPanel({
                             type="button"
                             title="Undo last reject"
                             onClick={() => void undoLastReject(activeSessionId)}
-                            className="rounded-md p-1"
+                            className="rounded-sm p-1"
                             style={getNeutralButtonStyle()}
                         >
                             <svg
-                                width="14"
-                                height="14"
+                                width="13"
+                                height="13"
                                 viewBox="0 0 24 24"
                                 fill="none"
                                 stroke="currentColor"
@@ -317,12 +334,14 @@ export function EditedFilesBufferPanel({
                                 ),
                             })
                         }
-                        className="review-action-btn rounded-md px-2 py-0.5"
+                        className="review-action-btn rounded-sm px-2 py-0.5"
                         style={{
                             ...getNeutralButtonStyle(),
-                            fontSize: "11px",
-                            fontWeight: 500,
+                            fontSize: "10.5px",
+                            fontWeight: 600,
                             lineHeight: "16px",
+                            letterSpacing: "0.04em",
+                            textTransform: "uppercase",
                         }}
                     >
                         Review
@@ -335,12 +354,12 @@ export function EditedFilesBufferPanel({
                             void rejectAllEditedFiles(activeSessionId)
                         }
                         disabled={rejectableCount === 0}
-                        className="review-action-btn rounded-md p-1"
+                        className="review-action-btn rounded-sm p-1"
                         style={getDangerButtonStyle(rejectableCount === 0)}
                     >
                         <svg
-                            width="14"
-                            height="14"
+                            width="13"
+                            height="13"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"
@@ -357,12 +376,12 @@ export function EditedFilesBufferPanel({
                         type="button"
                         title="Keep All"
                         onClick={() => keepAllEditedFiles(activeSessionId)}
-                        className="review-action-btn rounded-md p-1"
+                        className="review-action-btn rounded-sm p-1"
                         style={getAccentButtonStyle()}
                     >
                         <svg
-                            width="14"
-                            height="14"
+                            width="13"
+                            height="13"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"

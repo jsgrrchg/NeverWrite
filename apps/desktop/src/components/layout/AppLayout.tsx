@@ -37,6 +37,8 @@ const RESIZER_HITBOX_WIDTH = 10;
 const RESIZER_VISIBLE_WIDTH = 1;
 const RESIZER_OVERLAP = RESIZER_HITBOX_WIDTH / 2;
 const MIN_CENTER_PEEK_WIDTH = 36;
+const SIDEBAR_DOCK_TRANSITION_MS = 190;
+const SIDEBAR_DOCK_TRANSITION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 
 interface HorizontalResizeSession {
     pointerId: number;
@@ -75,6 +77,18 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const leftResizerRef = useRef<HTMLDivElement>(null);
     const leftSessionRef = useRef<HorizontalResizeSession | null>(null);
     const leftFrameRef = useRef<number | null>(null);
+    const sidebarDockFrameRef = useRef<number | null>(null);
+    const sidebarDockUnmountTimerRef = useRef<number | null>(null);
+    const previousSidebarCollapsedRef = useRef(sidebarCollapsed);
+    const [renderDockedSidebar, setRenderDockedSidebar] = useState(
+        !sidebarCollapsed,
+    );
+    const [dockedSidebarWidth, setDockedSidebarWidth] = useState(() =>
+        sidebarCollapsed ? 0 : sidebarWidth,
+    );
+    const [sidebarDockVisualState, setSidebarDockVisualState] = useState<
+        "entered" | "hidden"
+    >(() => (sidebarCollapsed ? "hidden" : "entered"));
 
     // Arc-style overlay: when the sidebar is collapsed we show a thin hotspot
     // on the left edge; hovering it reveals the sidebar content as a floating
@@ -83,6 +97,17 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const overlayDismissTimerRef = useRef<number | null>(null);
     const sidebarDragActiveRef = useRef(false);
+
+    const clearSidebarDockTimers = useCallback(() => {
+        if (sidebarDockFrameRef.current !== null) {
+            window.cancelAnimationFrame(sidebarDockFrameRef.current);
+            sidebarDockFrameRef.current = null;
+        }
+        if (sidebarDockUnmountTimerRef.current !== null) {
+            window.clearTimeout(sidebarDockUnmountTimerRef.current);
+            sidebarDockUnmountTimerRef.current = null;
+        }
+    }, []);
 
     const clearOverlayDismissTimer = useCallback(() => {
         if (overlayDismissTimerRef.current !== null) {
@@ -104,6 +129,73 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             setSidebarOverlayVisible(false);
         }, 200);
     }, []);
+
+    useEffect(() => {
+        const collapsedChanged =
+            previousSidebarCollapsedRef.current !== sidebarCollapsed;
+        previousSidebarCollapsedRef.current = sidebarCollapsed;
+
+        if (!collapsedChanged) {
+            if (!sidebarCollapsed && !isResizingLeft) {
+                setRenderDockedSidebar(true);
+                setDockedSidebarWidth(sidebarWidth);
+                setSidebarDockVisualState("entered");
+            }
+            if (sidebarCollapsed) {
+                setDockedSidebarWidth(0);
+                setSidebarDockVisualState("hidden");
+            }
+            return;
+        }
+
+        clearSidebarDockTimers();
+
+        if (sidebarCollapsed) {
+            const currentWidth =
+                leftPanelRef.current?.getBoundingClientRect().width ??
+                sidebarWidth;
+
+            setRenderDockedSidebar(true);
+            setDockedSidebarWidth(currentWidth);
+            setSidebarDockVisualState("entered");
+
+            sidebarDockFrameRef.current = window.requestAnimationFrame(() => {
+                sidebarDockFrameRef.current = null;
+                setDockedSidebarWidth(0);
+                setSidebarDockVisualState("hidden");
+            });
+            sidebarDockUnmountTimerRef.current = window.setTimeout(() => {
+                sidebarDockUnmountTimerRef.current = null;
+                setRenderDockedSidebar(false);
+            }, SIDEBAR_DOCK_TRANSITION_MS);
+            return;
+        }
+
+        const currentWidth =
+            leftPanelRef.current?.getBoundingClientRect().width ?? 0;
+
+        setRenderDockedSidebar(true);
+        setDockedSidebarWidth(currentWidth);
+        setSidebarDockVisualState(currentWidth > 0 ? "entered" : "hidden");
+
+        sidebarDockFrameRef.current = window.requestAnimationFrame(() => {
+            sidebarDockFrameRef.current = null;
+            setDockedSidebarWidth(sidebarWidth);
+            setSidebarDockVisualState("entered");
+        });
+    }, [
+        clearSidebarDockTimers,
+        isResizingLeft,
+        sidebarCollapsed,
+        sidebarWidth,
+    ]);
+
+    useEffect(
+        () => () => {
+            clearSidebarDockTimers();
+        },
+        [clearSidebarDockTimers],
+    );
 
     // Arc-style peek for the right panel — mirror of the sidebar peek, keyed
     // off the right edge. No file-tree drag coupling: the right panel isn't
@@ -231,6 +323,20 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         rightOverlayVisible,
     ]);
 
+    const dockedSidebarShouldRender = renderDockedSidebar || !sidebarCollapsed;
+    const dockedSidebarInteractive =
+        !sidebarCollapsed && sidebarDockVisualState === "entered";
+    const sidebarDockHidden = sidebarDockVisualState === "hidden";
+    const sidebarDockTransition = isResizingLeft
+        ? "none"
+        : [
+              `width ${SIDEBAR_DOCK_TRANSITION_MS}ms ${SIDEBAR_DOCK_TRANSITION_EASING}`,
+              `opacity ${SIDEBAR_DOCK_TRANSITION_MS}ms ${SIDEBAR_DOCK_TRANSITION_EASING}`,
+              `transform ${SIDEBAR_DOCK_TRANSITION_MS}ms ${SIDEBAR_DOCK_TRANSITION_EASING}`,
+          ].join(", ");
+    const sidebarPeekEnabled = sidebarCollapsed && !dockedSidebarShouldRender;
+    const effectiveLeft = dockedSidebarShouldRender ? dockedSidebarWidth : 0;
+
     // macOS only: hide the native traffic-light buttons whenever the sidebar
     // is fully collapsed. They would otherwise float over the empty editor
     // top and break the immersive look. Restore them as soon as the sidebar
@@ -242,9 +348,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         const win = getCurrentWindow();
         // Show while docked or while the peek overlay is up so the user can
         // still reach the buttons from within the revealed sidebar.
-        const visible = !sidebarCollapsed || sidebarOverlayVisible;
+        const visible =
+            !sidebarCollapsed ||
+            sidebarOverlayVisible ||
+            dockedSidebarShouldRender;
         void win.setTrafficLightsVisible?.(visible);
-    }, [sidebarCollapsed, sidebarOverlayVisible]);
+    }, [dockedSidebarShouldRender, sidebarCollapsed, sidebarOverlayVisible]);
 
     // Ensure the traffic lights are restored if the layout unmounts while
     // they were hidden (e.g. window swap during vault change).
@@ -264,7 +373,6 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const rightFrameRef = useRef<number | null>(null);
     const rightCollapsePreviewRef = useRef(false);
 
-    const effectiveLeft = sidebarCollapsed ? 0 : sidebarWidth;
     const effectiveRightForLeftCalc = rightPanelCollapsed ? 0 : rightPanelWidth;
     const maxLeftWidthForLayout = Math.max(
         MIN_SIDEBAR_WIDTH,
@@ -336,6 +444,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 LEFT_SNAP_POINTS.find(
                     (p) => Math.abs(p - clamped) <= SNAP_DISTANCE,
                 ) ?? clamped;
+            setDockedSidebarWidth(snapped);
             showSidebarAtWidth(snapped);
         },
         [applyLeftWidth, maxLeftWidthForLayout, showSidebarAtWidth],
@@ -595,17 +704,24 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     : "var(--bg-primary)",
             }}
         >
-            {/* Left sidebar. When
-                the sidebar is collapsed we remove the docked copy entirely so
-                the peek overlay is the only instance on screen (prevents
-                duplicate DOM + double focus traps). */}
-            {!sidebarCollapsed && (
+            {/* Left sidebar. During collapse/expand, keep the docked pane
+                mounted just long enough for the width/slide transition. Once
+                collapsed, it unmounts so the peek overlay remains the only
+                sidebar instance on screen. */}
+            {dockedSidebarShouldRender && (
                 <div
                     ref={leftPanelRef}
+                    data-testid="app-layout-left-panel"
+                    data-sidebar-dock-panel
+                    aria-hidden={!dockedSidebarInteractive || undefined}
+                    inert={!dockedSidebarInteractive || undefined}
                     style={{
-                        width: effectiveLeft,
+                        width: dockedSidebarWidth,
                         flexShrink: 0,
                         overflow: "hidden",
+                        pointerEvents: dockedSidebarInteractive
+                            ? "auto"
+                            : "none",
                         // Under vibrancy, paint a translucent tint
                         // (Comando-style 82%/85%) so the native material
                         // still reads through but hover/selection highlights
@@ -616,12 +732,26 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         borderRight: SIDEBAR_TRANSLUCENT_ENABLED
                             ? "none"
                             : "1px solid var(--border)",
-                        transition: isResizingLeft
-                            ? "none"
-                            : "width 160ms cubic-bezier(0.22, 1, 0.36, 1)",
+                        transition: sidebarDockTransition,
                     }}
                 >
-                    {left}
+                    <div
+                        data-sidebar-dock-inner
+                        style={{
+                            width: sidebarWidth,
+                            height: "100%",
+                            opacity: sidebarDockHidden ? 0 : 1,
+                            transform: sidebarDockHidden
+                                ? "translateX(-10px)"
+                                : "translateX(0)",
+                            transition: sidebarDockTransition,
+                            willChange: isResizingLeft
+                                ? "auto"
+                                : "opacity, transform",
+                        }}
+                    >
+                        {left}
+                    </div>
                 </div>
             )}
 
@@ -772,7 +902,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 The overlay collapses its own hotspot once visible so the
                 cursor can cross freely into the panel without retriggering
                 the enter handler. */}
-            {sidebarCollapsed && (
+            {sidebarPeekEnabled && (
                 <div
                     data-testid="sidebar-peek-hotspot"
                     style={{
@@ -786,7 +916,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     onMouseEnter={showSidebarOverlay}
                 />
             )}
-            {sidebarCollapsed && sidebarOverlayVisible && (
+            {sidebarPeekEnabled && sidebarOverlayVisible && (
                 <div
                     data-testid="sidebar-peek-overlay"
                     style={{
