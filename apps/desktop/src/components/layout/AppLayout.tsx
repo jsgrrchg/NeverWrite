@@ -3,6 +3,7 @@ import {
     useEffect,
     useRef,
     useState,
+    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import { getCurrentWindow } from "@neverwrite/runtime";
@@ -39,12 +40,38 @@ const RESIZER_OVERLAP = RESIZER_HITBOX_WIDTH / 2;
 const MIN_CENTER_PEEK_WIDTH = 36;
 const SIDEBAR_DOCK_TRANSITION_MS = 190;
 const SIDEBAR_DOCK_TRANSITION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
+const EDGE_PEEK_HOTSPOT_WIDTH = 8;
+const EDGE_PEEK_DISMISS_DELAY_MS = 360;
+const EDGE_PEEK_SAFE_GAP = 28;
+
+interface PointerPosition {
+    x: number;
+    y: number;
+}
 
 interface HorizontalResizeSession {
     pointerId: number;
     startX: number;
     startWidth: number;
     pendingWidth: number;
+}
+
+function isPointInsideInflatedElementRect(
+    point: PointerPosition | null,
+    element: HTMLElement | null,
+    gap: number,
+) {
+    if (!point || !element) return false;
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 && rect.height <= 0) return false;
+
+    return (
+        point.x >= rect.left - gap &&
+        point.x <= rect.right + gap &&
+        point.y >= rect.top - gap &&
+        point.y <= rect.bottom + gap
+    );
 }
 
 interface AppLayoutProps {
@@ -92,10 +119,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
 
     // Arc-style overlay: when the sidebar is collapsed we show a thin hotspot
     // on the left edge; hovering it reveals the sidebar content as a floating
-    // panel without pushing the editor. A short dismiss delay keeps the peek
-    // stable while the cursor crosses gaps.
+    // panel without pushing the editor. The dismiss path is intentionally a
+    // little forgiving so the panel does not vanish while crossing tiny gaps.
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
+    const sidebarOverlayRef = useRef<HTMLDivElement>(null);
     const overlayDismissTimerRef = useRef<number | null>(null);
+    const sidebarPointerRef = useRef<PointerPosition | null>(null);
     const sidebarDragActiveRef = useRef(false);
 
     const clearSidebarDockTimers = useCallback(() => {
@@ -121,14 +150,68 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         setSidebarOverlayVisible(true);
     }, [clearOverlayDismissTimer]);
 
+    const rememberSidebarPointer = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>) => {
+            sidebarPointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
+            };
+        },
+        [],
+    );
+
+    const isSidebarPointerInSafeZone = useCallback(
+        () =>
+            isPointInsideInflatedElementRect(
+                sidebarPointerRef.current,
+                sidebarOverlayRef.current,
+                EDGE_PEEK_SAFE_GAP,
+            ),
+        [],
+    );
+
     const scheduleHideSidebarOverlay = useCallback(() => {
         if (sidebarDragActiveRef.current) return;
         if (overlayDismissTimerRef.current !== null) return;
         overlayDismissTimerRef.current = window.setTimeout(() => {
             overlayDismissTimerRef.current = null;
+            if (
+                sidebarDragActiveRef.current ||
+                isSidebarPointerInSafeZone()
+            ) {
+                return;
+            }
             setSidebarOverlayVisible(false);
-        }, 200);
-    }, []);
+        }, EDGE_PEEK_DISMISS_DELAY_MS);
+    }, [isSidebarPointerInSafeZone]);
+
+    useEffect(() => {
+        if (!sidebarOverlayVisible) return;
+
+        const onPointerMove = (event: PointerEvent) => {
+            sidebarPointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
+            };
+
+            if (isSidebarPointerInSafeZone()) {
+                clearOverlayDismissTimer();
+                return;
+            }
+
+            scheduleHideSidebarOverlay();
+        };
+
+        window.addEventListener("pointermove", onPointerMove);
+        return () => {
+            window.removeEventListener("pointermove", onPointerMove);
+        };
+    }, [
+        clearOverlayDismissTimer,
+        isSidebarPointerInSafeZone,
+        scheduleHideSidebarOverlay,
+        sidebarOverlayVisible,
+    ]);
 
     useEffect(() => {
         const collapsedChanged =
@@ -201,7 +284,9 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     // off the right edge. No file-tree drag coupling: the right panel isn't
     // a drop target for note drags, so the simple hover flow is enough.
     const [rightOverlayVisible, setRightOverlayVisible] = useState(false);
+    const rightOverlayRef = useRef<HTMLDivElement>(null);
     const rightOverlayDismissTimerRef = useRef<number | null>(null);
+    const rightPointerRef = useRef<PointerPosition | null>(null);
 
     const clearRightOverlayDismissTimer = useCallback(() => {
         if (rightOverlayDismissTimerRef.current !== null) {
@@ -215,19 +300,74 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         setRightOverlayVisible(true);
     }, [clearRightOverlayDismissTimer]);
 
+    const rememberRightPointer = useCallback(
+        (event: ReactMouseEvent<HTMLDivElement>) => {
+            rightPointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
+            };
+        },
+        [],
+    );
+
+    const isRightPointerInSafeZone = useCallback(
+        () =>
+            isPointInsideInflatedElementRect(
+                rightPointerRef.current,
+                rightOverlayRef.current,
+                EDGE_PEEK_SAFE_GAP,
+            ),
+        [],
+    );
+
     const scheduleHideRightOverlay = useCallback(() => {
         if (rightOverlayDismissTimerRef.current !== null) return;
         rightOverlayDismissTimerRef.current = window.setTimeout(() => {
             rightOverlayDismissTimerRef.current = null;
+            if (isRightPointerInSafeZone()) return;
             setRightOverlayVisible(false);
-        }, 200);
-    }, []);
+        }, EDGE_PEEK_DISMISS_DELAY_MS);
+    }, [isRightPointerInSafeZone]);
+
+    useEffect(() => {
+        if (!rightOverlayVisible) return;
+
+        const onPointerMove = (event: PointerEvent) => {
+            rightPointerRef.current = {
+                x: event.clientX,
+                y: event.clientY,
+            };
+
+            if (isRightPointerInSafeZone()) {
+                clearRightOverlayDismissTimer();
+                return;
+            }
+
+            scheduleHideRightOverlay();
+        };
+
+        window.addEventListener("pointermove", onPointerMove);
+        return () => {
+            window.removeEventListener("pointermove", onPointerMove);
+        };
+    }, [
+        clearRightOverlayDismissTimer,
+        isRightPointerInSafeZone,
+        rightOverlayVisible,
+        scheduleHideRightOverlay,
+    ]);
 
     useEffect(() => {
         const handleFileTreeDrag = (event: Event) => {
             const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
                 .detail;
             if (!detail) return;
+            if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
+                sidebarPointerRef.current = {
+                    x: detail.x,
+                    y: detail.y,
+                };
+            }
 
             if (detail.phase === "start" || detail.phase === "move") {
                 const rootRect = rootRef.current?.getBoundingClientRect();
@@ -900,15 +1040,22 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         left: 0,
                         top: 0,
                         bottom: 0,
-                        width: sidebarOverlayVisible ? 0 : 8,
+                        width: sidebarOverlayVisible
+                            ? 0
+                            : EDGE_PEEK_HOTSPOT_WIDTH,
                         zIndex: 15,
                     }}
-                    onMouseEnter={showSidebarOverlay}
+                    onMouseEnter={(event) => {
+                        rememberSidebarPointer(event);
+                        showSidebarOverlay();
+                    }}
                 />
             )}
             {sidebarPeekEnabled && sidebarOverlayVisible && (
                 <div
+                    ref={sidebarOverlayRef}
                     data-testid="sidebar-peek-overlay"
+                    data-edge-peek-overlay="left"
                     style={{
                         position: "absolute",
                         left: 0,
@@ -926,8 +1073,15 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         boxShadow:
                             "4px 0 24px rgba(0, 0, 0, 0.22), 1px 0 6px rgba(0, 0, 0, 0.10)",
                     }}
-                    onMouseEnter={showSidebarOverlay}
-                    onMouseLeave={scheduleHideSidebarOverlay}
+                    onMouseEnter={(event) => {
+                        rememberSidebarPointer(event);
+                        showSidebarOverlay();
+                    }}
+                    onMouseMove={rememberSidebarPointer}
+                    onMouseLeave={(event) => {
+                        rememberSidebarPointer(event);
+                        scheduleHideSidebarOverlay();
+                    }}
                 >
                     {left}
                 </div>
@@ -943,15 +1097,22 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         right: 0,
                         top: 0,
                         bottom: 0,
-                        width: rightOverlayVisible ? 0 : 8,
+                        width: rightOverlayVisible
+                            ? 0
+                            : EDGE_PEEK_HOTSPOT_WIDTH,
                         zIndex: 15,
                     }}
-                    onMouseEnter={showRightOverlay}
+                    onMouseEnter={(event) => {
+                        rememberRightPointer(event);
+                        showRightOverlay();
+                    }}
                 />
             )}
             {right && rightPanelCollapsed && rightOverlayVisible && (
                 <div
+                    ref={rightOverlayRef}
                     data-testid="right-peek-overlay"
+                    data-edge-peek-overlay="right"
                     style={{
                         position: "absolute",
                         right: 0,
@@ -965,8 +1126,15 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         boxShadow:
                             "-4px 0 24px rgba(0, 0, 0, 0.22), -1px 0 6px rgba(0, 0, 0, 0.10)",
                     }}
-                    onMouseEnter={showRightOverlay}
-                    onMouseLeave={scheduleHideRightOverlay}
+                    onMouseEnter={(event) => {
+                        rememberRightPointer(event);
+                        showRightOverlay();
+                    }}
+                    onMouseMove={rememberRightPointer}
+                    onMouseLeave={(event) => {
+                        rememberRightPointer(event);
+                        scheduleHideRightOverlay();
+                    }}
                 >
                     {right}
                 </div>

@@ -365,7 +365,63 @@ describe("AppLayout", () => {
                     },
                 ),
             );
-            vi.advanceTimersByTime(200);
+            vi.advanceTimersByTime(360);
+        });
+
+        expect(
+            screen.queryByTestId("sidebar-peek-overlay"),
+        ).not.toBeInTheDocument();
+    });
+
+    it("keeps the collapsed sidebar peek open inside the edge safe zone", () => {
+        vi.useFakeTimers();
+        useLayoutStore.setState({ sidebarCollapsed: true });
+
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        fireEvent.mouseEnter(screen.getByTestId("sidebar-peek-hotspot"), {
+            clientX: 4,
+            clientY: 40,
+        });
+        const overlay = screen.getByTestId("sidebar-peek-overlay");
+        vi.spyOn(overlay, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 0,
+            top: 0,
+            right: 280,
+            bottom: 800,
+            left: 0,
+            width: 280,
+            height: 800,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        fireEvent.mouseLeave(overlay, {
+            clientX: 300,
+            clientY: 40,
+        });
+
+        act(() => {
+            vi.advanceTimersByTime(360);
+        });
+
+        expect(screen.getByTestId("sidebar-peek-overlay")).toBeInTheDocument();
+
+        act(() => {
+            window.dispatchEvent(
+                new MouseEvent("pointermove", {
+                    bubbles: true,
+                    clientX: 340,
+                    clientY: 40,
+                }),
+            );
+            vi.advanceTimersByTime(360);
         });
 
         expect(
