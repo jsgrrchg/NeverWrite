@@ -1166,32 +1166,104 @@ function messageMetaString(message: AIChatMessage, key: string): string | null {
     return typeof value === "string" && value.trim() ? value : null;
 }
 
-function fileBaseName(filePath: string) {
-    return filePath.split(/[\\/]/).pop() || filePath;
+type ImageActionIcon = "open" | "reveal" | "copy" | "check";
+
+function ImageActionGlyph({ icon }: { icon: ImageActionIcon }) {
+    const common = {
+        width: 12,
+        height: 12,
+        viewBox: "0 0 12 12",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.4,
+        strokeLinecap: "round" as const,
+        strokeLinejoin: "round" as const,
+    };
+    if (icon === "open") {
+        return (
+            <svg {...common} aria-hidden="true">
+                <path d="M7 2h3v3" />
+                <path d="M10 2L5.5 6.5" />
+                <path d="M9 7v2.5a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6a.5.5 0 0 1 .5-.5H5" />
+            </svg>
+        );
+    }
+    if (icon === "reveal") {
+        return (
+            <svg {...common} aria-hidden="true">
+                <path d="M1.5 4.2a.7.7 0 0 1 .7-.7h2.3l1 1.2h4.8a.7.7 0 0 1 .7.7v3.9a.7.7 0 0 1-.7.7H2.2a.7.7 0 0 1-.7-.7Z" />
+            </svg>
+        );
+    }
+    if (icon === "check") {
+        return (
+            <svg {...common} aria-hidden="true">
+                <path d="M2.5 6.4L4.7 8.6L9.5 3.8" />
+            </svg>
+        );
+    }
+    return (
+        <svg {...common} aria-hidden="true">
+            <rect x="3.5" y="3.5" width="6" height="7" rx="1" />
+            <path d="M5 3.5V2.4a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5V3.5" />
+        </svg>
+    );
 }
 
 function ImageActionButton({
     children,
     onClick,
+    icon,
 }: {
     children: string;
     onClick: () => void;
+    icon: ImageActionIcon;
 }) {
+    const [hovered, setHovered] = useState(false);
     return (
         <button
             type="button"
-            className="rounded-md px-2 py-1 transition"
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors"
             onClick={onClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
             style={{
-                color: "var(--text-secondary)",
-                border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
-                backgroundColor:
-                    "color-mix(in srgb, var(--surface) 72%, transparent)",
+                color: hovered
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+                border: `1px solid color-mix(in srgb, var(--border) ${
+                    hovered ? "100%" : "70%"
+                }, transparent)`,
+                backgroundColor: hovered
+                    ? "color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary))"
+                    : "transparent",
                 fontSize: "0.74em",
             }}
         >
+            <ImageActionGlyph icon={icon} />
             {children}
         </button>
+    );
+}
+
+function GeneratedImageIcon({ stroke = "currentColor" }: { stroke?: string }) {
+    return (
+        <svg
+            width="13"
+            height="13"
+            viewBox="0 0 14 14"
+            fill="none"
+            stroke={stroke}
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="shrink-0"
+            aria-hidden="true"
+        >
+            <rect x="1.5" y="2.5" width="11" height="9" rx="1.5" />
+            <circle cx="5" cy="5.75" r="0.9" />
+            <path d="M2 10l3-3 2.2 2.2L9.5 7l2.5 2.5" />
+        </svg>
     );
 }
 
@@ -1228,20 +1300,19 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
             <div
                 className="min-w-0 max-w-full rounded-xl px-3 py-2"
                 style={{
-                    border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))",
-                    background:
-                        "linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--surface) 84%, transparent))",
-                    color: "var(--text-secondary)",
+                    border: "1px solid color-mix(in srgb, var(--accent) 25%, var(--border))",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--accent) 5%, var(--bg-secondary))",
                 }}
             >
-                <div className="flex items-center gap-2">
-                    <span
-                        className="inline-block h-2 w-2 animate-pulse rounded-full"
-                        style={{ backgroundColor: "var(--accent)" }}
-                    />
+                <div
+                    className="flex items-center gap-2"
+                    style={{ color: "var(--text-primary)" }}
+                >
+                    <GeneratedImageIcon stroke="var(--accent)" />
                     <span
                         className="font-medium"
-                        style={{ fontSize: "0.86em" }}
+                        style={{ fontSize: "0.84em" }}
                     >
                         Generating image...
                     </span>
@@ -1251,56 +1322,59 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
     }
 
     const unavailable = !previewUrl || loadFailed;
+    const accent = isFailed ? "#ef4444" : "var(--accent)";
+    const subtitle = revisedPrompt;
 
     return (
         <div
-            className="min-w-0 max-w-full overflow-hidden rounded-2xl"
+            className="min-w-0 max-w-full overflow-hidden rounded-xl"
             style={{
                 maxWidth: "min(520px, 100%)",
-                border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
-                backgroundColor:
-                    "color-mix(in srgb, var(--surface) 88%, transparent)",
-                boxShadow:
-                    "0 12px 34px color-mix(in srgb, #000 14%, transparent)",
+                border: `1px solid color-mix(in srgb, ${accent} 22%, var(--border))`,
+                backgroundColor: `color-mix(in srgb, ${accent} 3%, var(--bg-secondary))`,
             }}
         >
             <div
-                className="flex items-center justify-between gap-3 px-3 py-2"
-                style={{ borderBottom: "1px solid var(--border)" }}
+                className="flex items-center gap-2 px-3 py-2"
+                style={{
+                    borderBottom: `1px solid color-mix(in srgb, ${accent} 14%, var(--border))`,
+                }}
             >
-                <div className="min-w-0">
+                <GeneratedImageIcon stroke={accent} />
+                <div className="min-w-0 flex-1">
                     <div
                         className="font-medium"
                         style={{
                             color: isFailed ? "#f87171" : "var(--text-primary)",
-                            fontSize: "0.86em",
+                            fontSize: "0.84em",
                         }}
                     >
                         {title}
                     </div>
-                    {imagePath ? (
+                    {subtitle ? (
                         <div
                             className="truncate"
-                            title={imagePath}
+                            title={imagePath ?? subtitle}
                             style={{
                                 color: "var(--text-secondary)",
                                 fontSize: "0.74em",
+                                opacity: 0.85,
                             }}
                         >
-                            {fileBaseName(imagePath)}
+                            {subtitle}
                         </div>
                     ) : null}
                 </div>
             </div>
 
             {unavailable || isFailed ? (
-                <div className="px-3 py-4">
+                <div className="px-3 py-3">
                     <div
                         style={{
                             color: isFailed
                                 ? "#f87171"
                                 : "var(--text-secondary)",
-                            fontSize: "0.86em",
+                            fontSize: "0.84em",
                         }}
                     >
                         {isFailed
@@ -1314,7 +1388,8 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
                             className="mt-1"
                             style={{
                                 color: "var(--text-secondary)",
-                                fontSize: "0.78em",
+                                fontSize: "0.76em",
+                                opacity: 0.7,
                             }}
                         >
                             This generated image may have been moved or deleted.
@@ -1323,14 +1398,8 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
                 </div>
             ) : (
                 <div
-                    className="p-2"
                     style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--text-primary) 3%, transparent)",
-                        backgroundImage:
-                            "linear-gradient(45deg, color-mix(in srgb, var(--text-secondary) 8%, transparent) 25%, transparent 25%), linear-gradient(-45deg, color-mix(in srgb, var(--text-secondary) 8%, transparent) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--text-secondary) 8%, transparent) 75%), linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--text-secondary) 8%, transparent) 75%)",
-                        backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
-                        backgroundSize: "16px 16px",
+                        backgroundColor: "var(--bg-primary)",
                     }}
                 >
                     <img
@@ -1338,27 +1407,39 @@ function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
                         alt={revisedPrompt ?? "Generated image"}
                         title={imagePath ?? undefined}
                         onError={() => setLoadFailed(true)}
-                        className="block w-full rounded-xl"
+                        className="block w-full"
                         style={{
                             maxHeight: 420,
                             objectFit: "contain",
-                            backgroundColor: "var(--surface)",
+                            backgroundColor: "var(--bg-primary)",
                         }}
                     />
                 </div>
             )}
 
             {imagePath ? (
-                <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-                    <ImageActionButton onClick={() => void openPath(imagePath)}>
+                <div
+                    className="flex flex-wrap items-center gap-1.5 px-2.5 py-1.5"
+                    style={{
+                        borderTop: `1px solid color-mix(in srgb, ${accent} 12%, var(--border))`,
+                    }}
+                >
+                    <ImageActionButton
+                        icon="open"
+                        onClick={() => void openPath(imagePath)}
+                    >
                         Open Externally
                     </ImageActionButton>
                     <ImageActionButton
+                        icon="reveal"
                         onClick={() => void revealItemInDir(imagePath)}
                     >
                         Reveal in Finder
                     </ImageActionButton>
-                    <ImageActionButton onClick={copyPath}>
+                    <ImageActionButton
+                        icon={copied ? "check" : "copy"}
+                        onClick={copyPath}
+                    >
                         {copied ? "Copied" : "Copy Path"}
                     </ImageActionButton>
                 </div>
@@ -1948,6 +2029,99 @@ function HistoricalDiffSummaryMessage({ message }: { message: AIChatMessage }) {
     );
 }
 
+function DiffZoomButton({
+    accent,
+    ariaLabel,
+    disabled,
+    onClick,
+    children,
+}: {
+    accent: string;
+    ariaLabel: string;
+    disabled: boolean;
+    onClick: () => void;
+    children: ReactElement;
+}) {
+    const [hovered, setHovered] = useState(false);
+    const interactive = !disabled;
+    return (
+        <button
+            type="button"
+            aria-label={ariaLabel}
+            disabled={disabled}
+            onClick={onClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            className="flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+            style={{
+                color: interactive ? accent : "var(--text-secondary)",
+                opacity: interactive ? (hovered ? 1 : 0.7) : 0.35,
+                backgroundColor:
+                    hovered && interactive
+                        ? `color-mix(in srgb, ${accent} 12%, transparent)`
+                        : "transparent",
+                border: "none",
+                cursor: interactive ? "pointer" : "not-allowed",
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
+function DiffOpenButton({
+    accent,
+    onClick,
+    onContextMenu,
+}: {
+    accent: string;
+    onClick: () => void;
+    onContextMenu: (event: MouseEvent<HTMLButtonElement>) => void;
+}) {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            onContextMenu={onContextMenu}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            className="ml-0.5 inline-flex items-center gap-1 rounded-md px-2 py-1 transition-colors"
+            style={{
+                fontSize: "0.76em",
+                fontWeight: 500,
+                color: accent,
+                backgroundColor: hovered
+                    ? `color-mix(in srgb, ${accent} 12%, transparent)`
+                    : "transparent",
+                border: `1px solid ${
+                    hovered
+                        ? `color-mix(in srgb, ${accent} 28%, var(--border))`
+                        : "transparent"
+                }`,
+                cursor: "pointer",
+            }}
+        >
+            <svg
+                width="10"
+                height="10"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+            >
+                <path d="M7 2h3v3" />
+                <path d="M10 2L5.5 6.5" />
+                <path d="M9 7v2.5a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6a.5.5 0 0 1 .5-.5H5" />
+            </svg>
+            Open
+        </button>
+    );
+}
+
 function ChangeReviewPanel({
     message,
     sessionId,
@@ -2230,89 +2404,75 @@ function ChangeReviewPanel({
                     )}
                 </span>
                 <div
-                    className="ml-auto flex items-center gap-1.5"
+                    className="ml-auto flex items-center gap-0.5 pl-2"
                     onClick={
                         isSingleFile ? (e) => e.stopPropagation() : undefined
                     }
                 >
-                    <div
-                        className="flex items-center rounded-md"
-                        style={{
-                            border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border))`,
-                            backgroundColor:
-                                "color-mix(in srgb, var(--bg-primary) 48%, transparent)",
-                        }}
+                    <DiffZoomButton
+                        accent={accent}
+                        ariaLabel="Decrease diff zoom"
+                        disabled={!canDecreaseZoom}
+                        onClick={() =>
+                            setEditDiffZoom(
+                                stepDiffZoom(editDiffZoom, -DIFF_ZOOM_STEP),
+                            )
+                        }
                     >
-                        <button
-                            type="button"
-                            aria-label="Decrease diff zoom"
-                            disabled={!canDecreaseZoom}
-                            onClick={() =>
-                                setEditDiffZoom(
-                                    stepDiffZoom(editDiffZoom, -DIFF_ZOOM_STEP),
-                                )
-                            }
-                            className="rounded-l-md px-2 py-1"
-                            style={{
-                                fontSize: "0.76em",
-                                color: canDecreaseZoom
-                                    ? accent
-                                    : "var(--text-secondary)",
-                                opacity: canDecreaseZoom ? 1 : 0.45,
-                                backgroundColor: "transparent",
-                                border: "none",
-                                cursor: canDecreaseZoom
-                                    ? "pointer"
-                                    : "not-allowed",
-                            }}
+                        <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 10 10"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            aria-hidden="true"
                         >
-                            -
-                        </button>
-                        <button
-                            type="button"
-                            aria-label="Increase diff zoom"
-                            disabled={!canIncreaseZoom}
-                            onClick={() =>
-                                setEditDiffZoom(
-                                    stepDiffZoom(editDiffZoom, DIFF_ZOOM_STEP),
-                                )
-                            }
-                            className="rounded-r-md px-2 py-1"
-                            style={{
-                                fontSize: "0.76em",
-                                color: canIncreaseZoom
-                                    ? accent
-                                    : "var(--text-secondary)",
-                                opacity: canIncreaseZoom ? 1 : 0.45,
-                                backgroundColor: "transparent",
-                                border: "none",
-                                cursor: canIncreaseZoom
-                                    ? "pointer"
-                                    : "not-allowed",
-                            }}
+                            <path d="M2.5 5h5" />
+                        </svg>
+                    </DiffZoomButton>
+                    <DiffZoomButton
+                        accent={accent}
+                        ariaLabel="Increase diff zoom"
+                        disabled={!canIncreaseZoom}
+                        onClick={() =>
+                            setEditDiffZoom(
+                                stepDiffZoom(editDiffZoom, DIFF_ZOOM_STEP),
+                            )
+                        }
+                    >
+                        <svg
+                            width="10"
+                            height="10"
+                            viewBox="0 0 10 10"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            aria-hidden="true"
                         >
-                            +
-                        </button>
-                    </div>
+                            <path d="M2.5 5h5M5 2.5v5" />
+                        </svg>
+                    </DiffZoomButton>
                     {readOnly ? (
                         <span
-                            className="rounded-md px-2 py-1"
+                            className="ml-1 rounded-full px-2 py-0.5 whitespace-nowrap"
                             data-testid="recent-diff-badge"
                             style={{
-                                fontSize: "0.72em",
+                                fontSize: "0.68em",
+                                fontWeight: 500,
+                                letterSpacing: "0.02em",
                                 color: accent,
-                                backgroundColor:
-                                    "color-mix(in srgb, var(--bg-primary) 55%, transparent)",
-                                border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border))`,
-                                whiteSpace: "nowrap",
+                                backgroundColor: `color-mix(in srgb, ${accent} 10%, transparent)`,
                             }}
                         >
                             Recent change
                         </span>
                     ) : null}
                     {canOpenFile && openFilePath ? (
-                        <button
-                            type="button"
+                        <DiffOpenButton
+                            accent={accent}
                             onClick={() =>
                                 void openAiEditedFileByAbsolutePath(
                                     openFilePath,
@@ -2327,18 +2487,7 @@ function ChangeReviewPanel({
                                     payload: { target: openFilePath },
                                 });
                             }}
-                            className="rounded-md px-2 py-1"
-                            style={{
-                                fontSize: "0.76em",
-                                color: accent,
-                                backgroundColor:
-                                    "color-mix(in srgb, var(--bg-primary) 55%, transparent)",
-                                border: `1px solid color-mix(in srgb, ${accent} 22%, var(--border))`,
-                                cursor: "pointer",
-                            }}
-                        >
-                            Open
-                        </button>
+                        />
                     ) : null}
                 </div>
             </div>
