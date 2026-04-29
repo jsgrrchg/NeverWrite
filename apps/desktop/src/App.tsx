@@ -88,6 +88,7 @@ import {
     canUseExcalidrawRuntime,
     readSearchParam,
 } from "./app/utils/safeBrowser";
+import { logError } from "./app/utils/runtimeLog";
 import {
     flushChatTabsPersistence,
     markChatTabsReady,
@@ -1695,8 +1696,9 @@ export default function App() {
                 if (!restoredWorkspace) {
                     hydrateChatWorkspace(workspace);
                 }
-                console.error(
-                    "[chat] Failed to restore chat workspace on startup:",
+                logError(
+                    "chat",
+                    "Failed to restore chat workspace on startup",
                     error,
                 );
             } finally {

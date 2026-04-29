@@ -60,6 +60,10 @@ const UPDATER_ALLOWED_DOWNLOAD_HOSTS_ENV_VARS = [
 const UPDATER_ALLOW_PROD_ENDPOINTS_IN_NON_PROD_ENV_VARS = [
     "NEVERWRITE_UPDATER_ALLOW_PRODUCTION_ENDPOINTS_IN_NON_PROD",
 ];
+const UPDATER_VERBOSE_LOG_ENV_VARS = [
+    "NEVERWRITE_UPDATER_VERBOSE_LOGS",
+    "NEVERWRITE_UPDATER_DEBUG",
+];
 const DEFAULT_UPDATER_BASE_URL = "https://jsgrrchg.github.io/NeverWrite";
 
 function readFirstNonEmptyEnv(keys: readonly string[]) {
@@ -434,9 +438,15 @@ function buildUpdateStatus(
     };
 }
 
+function shouldLogVerboseUpdaterMessages() {
+    return !app.isPackaged || readEnvFlag(UPDATER_VERBOSE_LOG_ENV_VARS);
+}
+
 function createUpdaterLogger(): LoggerLike {
+    const verbose = shouldLogVerboseUpdaterMessages();
     return {
         info(message) {
+            if (!verbose) return;
             console.info("[electron-updater]", message);
         },
         warn(message) {
@@ -446,6 +456,7 @@ function createUpdaterLogger(): LoggerLike {
             console.error("[electron-updater]", message);
         },
         debug(message) {
+            if (!verbose) return;
             console.debug("[electron-updater]", message);
         },
     };

@@ -11,7 +11,6 @@ import { app } from "electron";
 
 const SUPPORTED_COMMANDS = new Set([
     "ping",
-    "debug_set_timing",
     "open_vault",
     "start_open_vault",
     "cancel_open_vault",

@@ -14,6 +14,7 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { revealNoteInTree } from "../../app/utils/navigation";
 import { useVirtualList } from "../../app/hooks/useVirtualList";
+import { logError } from "../../app/utils/runtimeLog";
 
 const TAG_ROW_HEIGHT = 28;
 const TAG_NOTE_ROW_HEIGHT = 24;
@@ -104,7 +105,9 @@ export function TagsPanel() {
                 if (cancelled) return;
                 setTags(nextTags);
             })
-            .catch(console.error);
+            .catch((error) => {
+                logError("tags-panel", "Failed to load tags", error);
+            });
 
         return () => {
             cancelled = true;
@@ -136,7 +139,7 @@ export function TagsPanel() {
             });
             openNote(note.id, note.title, detail.content);
         } catch (e) {
-            console.error(e);
+            logError("tags-panel", "Failed to open tagged note", e);
         }
     };
 
@@ -165,7 +168,11 @@ export function TagsPanel() {
                 content,
             });
         } catch (error) {
-            console.error("Error opening tagged note in new tab:", error);
+            logError(
+                "tags-panel",
+                "Failed to open tagged note in new tab",
+                error,
+            );
         }
     };
 

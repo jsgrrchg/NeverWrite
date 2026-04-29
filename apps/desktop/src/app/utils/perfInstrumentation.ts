@@ -49,12 +49,6 @@ type PerfApi = {
 
 const STORAGE_KEY = "neverwrite:perf-probe";
 const MAX_EVENTS = 250;
-const DEFAULT_SNAPSHOT: PerfSnapshot = {
-    enabled: false,
-    activeScenario: null,
-    metrics: [],
-    recentEvents: [],
-};
 
 const metrics = new Map<string, PerfMetric>();
 const recentEvents: PerfEvent[] = [];
@@ -221,14 +215,5 @@ export function perfCount(name: string, meta?: PerfMeta) {
 declare global {
     interface Window {
         __neverWritePerf?: PerfApi;
-    }
-}
-
-export function perfSnapshot() {
-    try {
-        ensureInitialized();
-        return buildSnapshot();
-    } catch {
-        return DEFAULT_SNAPSHOT;
     }
 }

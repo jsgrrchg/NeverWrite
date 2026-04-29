@@ -7,6 +7,7 @@ import {
     isMapTab,
     selectEditorPaneActiveTab,
 } from "../../app/store/editorStore";
+import { logError } from "../../app/utils/runtimeLog";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { useThemeStore } from "../../app/store/themeStore";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
@@ -97,7 +98,9 @@ function flushSaveQueue(
                 nextSave.signature,
             );
         })
-        .catch(console.error)
+        .catch((error) => {
+            logError("excalidraw", "Failed to save map scene", error);
+        })
         .finally(() => {
             activeSaveRef.current = null;
             flushSaveQueue(
@@ -352,7 +355,13 @@ export function ExcalidrawTabView({ paneId }: ExcalidrawTabViewProps) {
                             );
                         }
                     })
-                    .catch(console.error);
+                    .catch((error) => {
+                        logError(
+                            "excalidraw",
+                            "Failed to reload changed map scene",
+                            error,
+                        );
+                    });
             },
         );
 

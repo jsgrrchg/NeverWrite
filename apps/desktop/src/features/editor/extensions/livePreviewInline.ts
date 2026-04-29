@@ -44,7 +44,6 @@ import {
 } from "../noteTitleHelpers";
 import { InlineMathWidget } from "./livePreviewBlocks";
 import {
-    perfCount,
     perfMeasure,
     perfNow,
 } from "../../../app/utils/perfInstrumentation";
@@ -1761,7 +1760,6 @@ export function createInlineLivePreviewPlugin() {
                     // rebuilding the entire viewport.
                     if (isSimpleEdit(update)) {
                         this.decorations = this.decorations.map(update.changes);
-                        perfCount("editor.livePreviewInline.docChanged.mapped");
                         return;
                     }
                     this.decorations = this.build(update.view, "docChanged");
@@ -1782,10 +1780,6 @@ export function createInlineLivePreviewPlugin() {
                     this.revealSensitiveRanges,
                 );
                 if (nextRevealSignature === this.activeRevealSignature) {
-                    perfCount("editor.livePreviewInline.selectionSet.skipped", {
-                        revealSensitiveRanges:
-                            this.revealSensitiveRanges.length,
-                    });
                     return;
                 }
                 this.decorations = this.build(update.view, "selectionSet");
@@ -1812,10 +1806,6 @@ export function createInlineLivePreviewPlugin() {
                     view.state.doc.lineAt(to).number -
                     view.state.doc.lineAt(from).number +
                     1;
-
-                if (reason === "docChanged") {
-                    perfCount("editor.livePreviewInline.docChanged");
-                }
 
                 perfMeasure(
                     `editor.livePreviewInline.build.${reason}`,

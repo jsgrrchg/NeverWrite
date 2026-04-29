@@ -7,11 +7,7 @@ import {
     toAdvancedSearchParams,
 } from "../search/queryToParams";
 import { useGraphSettingsStore, type GraphMode } from "./graphSettingsStore";
-import {
-    graphPayloadBytes,
-    graphPerfCount,
-    graphPerfMeasure,
-} from "./graphPerf";
+import { graphPerfCount, graphPerfMeasure } from "./graphPerf";
 
 export type GraphNodeType = "note" | "tag" | "attachment" | "cluster";
 
@@ -230,7 +226,6 @@ export function useGraphData(
                         visibleNodeCount: snapshot.nodes.length,
                         visibleLinkCount: snapshot.links.length,
                         truncated: snapshot.stats.truncated,
-                        payloadBytes: graphPayloadBytes(snapshot),
                         showTagNodes,
                         showAttachmentNodes,
                         groupCount: groupQueries.length,
@@ -238,17 +233,6 @@ export function useGraphData(
                         showOrphans,
                     },
                 );
-                graphPerfCount("graph.data.fetch.snapshot", {
-                    mode: snapshot.mode,
-                    totalNodeCount: snapshot.stats.total_nodes,
-                    totalLinkCount: snapshot.stats.total_links,
-                    visibleNodeCount: snapshot.nodes.length,
-                    visibleLinkCount: snapshot.links.length,
-                    truncated: snapshot.stats.truncated,
-                    payloadBytes: graphPayloadBytes(snapshot),
-                    groupCount: groupQueries.length,
-                    filtered: Boolean(searchParams),
-                });
 
                 if (cancelled) return;
 
@@ -266,18 +250,8 @@ export function useGraphData(
                         groupCount: groupQueries.length,
                         filtered: Boolean(searchParams),
                         showOrphans,
-                        payloadBytes: graphPayloadBytes(snapshot),
                     },
                 );
-                graphPerfCount("graph.data.fetch.completed", {
-                    mode: snapshot.mode,
-                    nodeCount: snapshot.nodes.length,
-                    linkCount: snapshot.links.length,
-                    showTagNodes,
-                    showAttachmentNodes,
-                    groupCount: groupQueries.length,
-                    filtered: Boolean(searchParams),
-                });
                 setData(snapshot);
             } catch (error) {
                 if (cancelled) return;

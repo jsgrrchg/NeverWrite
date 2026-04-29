@@ -1,10 +1,6 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { loadGraphLayoutSnapshot } from "./graphLayoutCache";
-import {
-    graphPayloadBytes,
-    graphPerfCount,
-    graphPerfMeasure,
-} from "./graphPerf";
+import { graphPerfCount, graphPerfMeasure } from "./graphPerf";
 import type { GraphLayoutStrategy } from "./graphSettingsStore";
 import type {
     GraphPreparedPipeline,
@@ -103,15 +99,8 @@ export function usePreparedGraphSnapshot({
                     nodeCount: response.result.snapshot.nodes.length,
                     linkCount: response.result.snapshot.links.length,
                     restoredLayout: response.result.restoredFromCache ? 1 : 0,
-                    payloadBytes: graphPayloadBytes(response.result.snapshot),
                 },
             );
-            graphPerfCount("graph.data.pipeline.worker.completed", {
-                mode: meta.snapshot.mode,
-                nodeCount: response.result.snapshot.nodes.length,
-                linkCount: response.result.snapshot.links.length,
-                restoredLayout: response.result.restoredFromCache ? 1 : 0,
-            });
 
             setError(null);
             startTransition(() => {

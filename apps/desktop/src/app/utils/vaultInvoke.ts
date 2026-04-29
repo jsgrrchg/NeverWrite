@@ -54,13 +54,10 @@ if (IPC_DEBUG_ENABLED && typeof window !== "undefined") {
     (window as unknown as Record<string, unknown>).__ipcDebug = {
         enable() {
             _ipcTracing = true;
-            // Also enable native-side timing when the active runtime supports it.
-            void invoke("debug_set_timing", { enabled: true });
-            console.log("[ipc] Tracing enabled (frontend + Rust)");
+            console.log("[ipc] Tracing enabled");
         },
         disable() {
             _ipcTracing = false;
-            void invoke("debug_set_timing", { enabled: false });
             console.log("[ipc] Tracing disabled");
         },
         summary() {

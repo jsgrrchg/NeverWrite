@@ -3,6 +3,7 @@ import {
     safeStorageGetItem,
     safeStorageSetItem,
 } from "../../app/utils/safeStorage";
+import { logWarn } from "../../app/utils/runtimeLog";
 
 const FILE_TREE_CLIPBOARD_KEY = "neverwrite.fileTree.clipboard";
 
@@ -40,8 +41,13 @@ function folderPathExists(folderPath: string, takenPaths: Set<string>) {
 export function writeFileTreeClipboard(payload: FileTreeClipboardPayload) {
     try {
         safeStorageSetItem(FILE_TREE_CLIPBOARD_KEY, JSON.stringify(payload));
-    } catch {
-        console.warn("Failed to write file tree clipboard to localStorage");
+    } catch (error) {
+        logWarn(
+            "file-tree",
+            "Failed to write file tree clipboard to localStorage",
+            error,
+            { onceKey: "file-tree-clipboard-write" },
+        );
     }
 }
 

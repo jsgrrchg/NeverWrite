@@ -291,9 +291,6 @@ export function wikilinkExtension(
                         this.visibleLinks,
                     );
                     if (nextActiveSignature === this.activeWikilinkSignature) {
-                        perfCount("editor.wikilinks.selectionSet.skipped", {
-                            visibleLinks: this.visibleLinks.length,
-                        });
                         return;
                     }
                 }
@@ -416,7 +413,6 @@ export function wikilinkExtension(
                 );
 
                 if (denseMode) {
-                    perfCount("editor.wikilinks.dense.mode");
                     this.scheduleDeferredDenseResolution(
                         view,
                         noteId,
@@ -473,9 +469,6 @@ export function wikilinkExtension(
                         ? this.activeWikilinkSignature.split("|").length
                         : 0,
                 });
-                if (reason === "docChanged") {
-                    perfCount("editor.wikilinks.docChanged");
-                }
                 return builder.finish();
             }
         },

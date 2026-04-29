@@ -70,6 +70,7 @@ import {
 } from "./workspaceChromeControls";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
+import { logError } from "../../app/utils/runtimeLog";
 
 const DRAGGING_TAB_PLACEHOLDER_OPACITY = 0.18;
 const TAB_STRIP_FADE_WIDTH = 18;
@@ -240,7 +241,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 closeOpenTabsForVaultPath(path);
                 await refreshEntries();
             } catch (error) {
-                console.error("Failed to move file to trash:", error);
+                logError("unified-bar", "Failed to move file to trash", error);
             }
         },
         [refreshEntries, vaultPath],
@@ -456,7 +457,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
                 await appWindow.close().catch((error) => {
-                    console.error("No se pudo cerrar la ventana:", error);
+                    logError("unified-bar", "Failed to close window", error);
                 });
                 return;
             }
@@ -608,7 +609,11 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     );
                     nextIndex += 1;
                 } catch (error) {
-                    console.error("Failed to open dropped note tab:", error);
+                    logError(
+                        "unified-bar",
+                        "Failed to open dropped note tab",
+                        error,
+                    );
                 }
             }
 

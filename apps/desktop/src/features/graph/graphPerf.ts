@@ -7,7 +7,6 @@ import {
 type GraphPerfMetaValue = string | number | boolean | null | undefined;
 type GraphPerfMeta = Record<string, GraphPerfMetaValue>;
 
-const encoder = new TextEncoder();
 const activeFpsSamples = new Map<string, number>();
 
 function cleanMeta(meta: GraphPerfMeta | undefined) {
@@ -15,15 +14,6 @@ function cleanMeta(meta: GraphPerfMeta | undefined) {
     return Object.fromEntries(
         Object.entries(meta).filter(([, value]) => value !== undefined),
     );
-}
-
-export function graphPayloadBytes(value: unknown): number | undefined {
-    if (!perfEnabled()) return undefined;
-    try {
-        return encoder.encode(JSON.stringify(value)).length;
-    } catch {
-        return undefined;
-    }
 }
 
 export function graphPerfCount(name: string, meta?: GraphPerfMeta) {

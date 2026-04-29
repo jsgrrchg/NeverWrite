@@ -13,7 +13,6 @@ import {
     useState,
 } from "react";
 import {
-    graphPerfCount,
     graphPerfMeasure,
     scheduleGraphFpsSample,
 } from "./graphPerf";
@@ -671,12 +670,6 @@ export const GraphRenderer3D = forwardRef<
     useEffect(() => {
         if (!isVisible) return;
         dataReadyAtRef.current = performance.now();
-        graphPerfCount("graph.view3d.data.ready", {
-            nodeCount: renderData.nodes.length,
-            linkCount: renderData.links.length,
-            qualityMode: qualityProfile.mode,
-            restoredLayout: restoredFromCache ? 1 : 0,
-        });
         const rafId = window.requestAnimationFrame(() => {
             graphPerfMeasure(
                 "graph.view3d.firstFrameAfterData.duration",

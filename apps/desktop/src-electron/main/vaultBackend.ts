@@ -128,7 +128,6 @@ const revisions = new Map<string, number>();
 
 const VAULT_EDITOR_COMMANDS = new Set([
     "ping",
-    "debug_set_timing",
     "open_vault",
     "start_open_vault",
     "cancel_open_vault",
@@ -884,8 +883,6 @@ export class ElectronVaultBackend {
         );
 
         switch (command) {
-            case "debug_set_timing":
-                return args.enabled ? "enabled" : "disabled";
             case "start_open_vault":
                 return this.startOpenVault(String(args.path ?? ""));
             case "cancel_open_vault":

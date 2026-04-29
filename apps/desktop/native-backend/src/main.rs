@@ -700,7 +700,6 @@ impl NativeBackend {
     ) -> Result<Value, String> {
         match command {
             "ping" => Ok(json!({ "ok": true })),
-            "debug_set_timing" => Ok(json!(null)),
             "open_vault" => {
                 let path = required_string(&args, &["path"])?;
                 self.open_vault(path.clone(), backend_ref)?;
