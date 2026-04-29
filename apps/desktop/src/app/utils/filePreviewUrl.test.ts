@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+    buildCodexGeneratedImagePreviewUrl,
     buildVaultPreviewUrl,
     buildVaultPreviewUrlFromAbsolutePath,
+    isGeneratedImagePath,
     isAuthorizedVaultPreviewPath,
 } from "./filePreviewUrl";
 
@@ -40,5 +42,24 @@ describe("filePreviewUrl", () => {
         expect(
             isAuthorizedVaultPreviewPath("/outside/assets/image.png", "/vault"),
         ).toBeNull();
+    });
+
+    it("builds a generated image preview URL outside the vault scope", () => {
+        expect(
+            buildCodexGeneratedImagePreviewUrl(
+                "/Users/test/.codex/generated_images/session/ig_1.png",
+            ),
+        ).toContain("neverwrite-file://localhost/codex-image/");
+    });
+
+    it("detects Codex generated image paths", () => {
+        expect(
+            isGeneratedImagePath(
+                "/Users/test/.codex/generated_images/session/ig_1.png",
+            ),
+        ).toBe(true);
+        expect(isGeneratedImagePath("/Users/test/Pictures/ig_1.png")).toBe(
+            false,
+        );
     });
 });

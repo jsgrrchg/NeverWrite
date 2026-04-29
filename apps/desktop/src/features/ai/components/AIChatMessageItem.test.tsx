@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { invoke } from "@neverwrite/runtime";
+import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
@@ -67,6 +67,61 @@ beforeEach(() => {
     localStorage.clear();
     resetChatStore();
     useSettingsStore.setState({ lineWrapping: true });
+});
+
+describe("AIChatMessageItem generated images", () => {
+    it("renders an in-progress generated image placeholder", () => {
+        renderMessage({
+            id: "image:1",
+            role: "assistant",
+            kind: "image",
+            title: "Generating image",
+            content: "Generating image...",
+            timestamp: Date.now(),
+            inProgress: true,
+            meta: {
+                image_status: "in_progress",
+            },
+        });
+
+        expect(screen.getByText("Generating image...")).toBeInTheDocument();
+    });
+
+    it("renders a generated image preview with file actions", () => {
+        const imagePath =
+            "/Users/test/.codex/generated_images/session/ig_1.png";
+
+        renderMessage({
+            id: "image:1",
+            role: "assistant",
+            kind: "image",
+            title: "Generated image",
+            content: "Generated image",
+            timestamp: Date.now(),
+            meta: {
+                image_status: "completed",
+                image_path: imagePath,
+                revised_prompt: "A tiny blue square",
+            },
+        });
+
+        const image = screen.getByRole("img", {
+            name: "A tiny blue square",
+        });
+        expect(image.getAttribute("src")).toContain(
+            "neverwrite-file://localhost/codex-image/",
+        );
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Open Externally" }),
+        );
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+
+        expect(openPath).toHaveBeenCalledWith(imagePath);
+        expect(revealItemInDir).toHaveBeenCalledWith(imagePath);
+    });
 });
 
 describe("AIChatMessageItem plan message", () => {

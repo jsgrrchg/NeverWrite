@@ -22,13 +22,14 @@ use agent_client_protocol::schema::{
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
-    AiMessageCompletedPayload, AiMessageDeltaPayload, AiMessageStartedPayload, AiModeOption,
-    AiModelOption, AiPermissionOptionPayload, AiPermissionRequestPayload, AiRuntimeBinarySource,
-    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
-    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
-    AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityPayload, ToolDiffState,
-    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
+    AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
+    AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
+    AiPermissionRequestPayload, AiRuntimeBinarySource, AiRuntimeConnectionPayload,
+    AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload,
+    AiSessionStatus, AiStatusEventPayload, AiTokenUsageCostPayload, AiTokenUsagePayload,
+    AiToolActivityPayload, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
+    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
     AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_RUNTIME_CONNECTION_EVENT,
     AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
     AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
@@ -55,6 +56,7 @@ const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
+const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
 const AUTH_TERMINAL_DEFAULT_COLS: u16 = 100;
 const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
@@ -1264,6 +1266,16 @@ impl NativeAcpClient {
     }
 
     fn emit_tool_activity(&self, session_id: &str, tool_call: &ToolCall) {
+        if let Some(payload) = map_image_generation_event(session_id, tool_call) {
+            self.emit(AI_IMAGE_GENERATION_EVENT, payload);
+            return;
+        }
+
+        if let Some(payload) = map_legacy_image_generation_status_event(session_id, tool_call) {
+            self.emit(AI_IMAGE_GENERATION_EVENT, payload);
+            return;
+        }
+
         if let Some(payload) = map_status_event(session_id, tool_call) {
             self.emit(AI_STATUS_EVENT, payload);
             return;
@@ -2286,6 +2298,81 @@ fn map_tool_call(
     }
 }
 
+fn map_image_generation_event(
+    session_id: &str,
+    tool_call: &ToolCall,
+) -> Option<AiImageGenerationPayload> {
+    let meta = tool_call.meta.as_ref()?;
+    let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    if event_type != ACP_IMAGE_GENERATION_EVENT_TYPE {
+        return None;
+    }
+
+    let raw = tool_call.raw_input.as_ref();
+    let status =
+        raw_string_field(raw, &["status"]).unwrap_or_else(|| tool_status_label(&tool_call.status));
+    let path = raw_string_field(raw, &["path", "saved_path"]);
+    let result = raw_string_field(raw, &["result"]);
+    let revised_prompt = raw_string_field(raw, &["revised_prompt"]);
+    let explicit_error = raw_string_field(raw, &["error"]);
+    let error = explicit_error.or_else(|| {
+        if status == "failed" || tool_call.status == ToolCallStatus::Failed {
+            result.clone()
+        } else {
+            None
+        }
+    });
+
+    Some(AiImageGenerationPayload {
+        session_id: session_id.to_string(),
+        image_id: tool_call.tool_call_id.0.to_string(),
+        status,
+        title: tool_call.title.clone(),
+        mime_type: path.as_deref().and_then(image_mime_type_from_path),
+        path,
+        revised_prompt,
+        result,
+        error,
+    })
+}
+
+fn map_legacy_image_generation_status_event(
+    session_id: &str,
+    tool_call: &ToolCall,
+) -> Option<AiImageGenerationPayload> {
+    let meta = tool_call.meta.as_ref()?;
+    let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    if event_type != "status" || tool_call.title != "Generating image" {
+        return None;
+    }
+
+    let detail = summarize_tool_content(tool_call);
+    let path = detail
+        .as_deref()
+        .filter(|value| is_generated_image_artifact_path(value))
+        .map(ToString::to_string);
+    let status = tool_status_label(&tool_call.status);
+    let failed = status == "failed" || tool_call.status == ToolCallStatus::Failed;
+
+    Some(AiImageGenerationPayload {
+        session_id: session_id.to_string(),
+        image_id: tool_call.tool_call_id.0.to_string(),
+        status: status.clone(),
+        title: if failed {
+            "Image generation failed".to_string()
+        } else if status == "completed" {
+            "Generated image".to_string()
+        } else {
+            tool_call.title.clone()
+        },
+        mime_type: path.as_deref().and_then(image_mime_type_from_path),
+        path,
+        revised_prompt: None,
+        result: detail.filter(|_| failed),
+        error: failed.then(|| "Image generation failed".to_string()),
+    })
+}
+
 fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEventPayload> {
     let meta = tool_call.meta.as_ref()?;
     let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
@@ -2310,6 +2397,56 @@ fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEv
             .unwrap_or("info")
             .to_string(),
     })
+}
+
+fn raw_string_field(raw: Option<&Value>, keys: &[&str]) -> Option<String> {
+    let raw = raw?;
+    keys.iter()
+        .find_map(|key| raw.get(*key).and_then(Value::as_str))
+        .map(ToString::to_string)
+}
+
+fn image_mime_type_from_path(path: &str) -> Option<String> {
+    match Path::new(path)
+        .extension()?
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png".to_string()),
+        "jpg" | "jpeg" | "jpe" | "jfif" => Some("image/jpeg".to_string()),
+        "gif" => Some("image/gif".to_string()),
+        "webp" => Some("image/webp".to_string()),
+        "avif" => Some("image/avif".to_string()),
+        "bmp" => Some("image/bmp".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_path_for_generated_image_check(path: &str) -> String {
+    path.strip_prefix("file://")
+        .unwrap_or(path)
+        .replace('\\', "/")
+}
+
+fn is_generated_image_artifact_path(path: &str) -> bool {
+    if image_mime_type_from_path(path).is_none() {
+        return false;
+    }
+
+    let normalized = normalize_path_for_generated_image_check(path);
+    if normalized.contains("/.codex/generated_images/") {
+        return true;
+    }
+
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        let codex_generated_images = Path::new(&codex_home).join("generated_images");
+        let normalized_root =
+            normalize_path_for_generated_image_check(&codex_generated_images.display().to_string());
+        return normalized.starts_with(&format!("{normalized_root}/"));
+    }
+
+    false
 }
 
 fn summarize_tool_content(tool_call: &ToolCall) -> Option<String> {
@@ -4241,6 +4378,111 @@ mod tests {
         assert_eq!(
             payload.get("kind").and_then(Value::as_str),
             Some("review_mode")
+        );
+    }
+
+    #[test]
+    fn session_tool_call_image_generation_meta_emits_image_event() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(ToolCallId::from("neverwrite:image:ig-1"), "Generated image")
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::Completed)
+            .raw_input(json!({
+                "status": "completed",
+                "path": "/Users/test/.codex/generated_images/session/ig-1.png",
+                "revised_prompt": "A tiny blue square",
+                "result": "Zm9v",
+            }))
+            .meta(Meta::from_iter([(
+                ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+                json!(ACP_IMAGE_GENERATION_EVENT_TYPE),
+            )]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("image generation event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_IMAGE_GENERATION_EVENT);
+        assert_eq!(
+            payload.get("image_id").and_then(Value::as_str),
+            Some("neverwrite:image:ig-1")
+        );
+        assert_eq!(
+            payload.get("mime_type").and_then(Value::as_str),
+            Some("image/png")
+        );
+        assert_eq!(
+            payload.get("revised_prompt").and_then(Value::as_str),
+            Some("A tiny blue square")
+        );
+    }
+
+    #[test]
+    fn legacy_image_generation_status_meta_emits_image_event() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:ig-legacy"),
+            "Generating image",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed)
+        .content(vec![ToolCallContent::Content(
+            agent_client_protocol::schema::Content::new(
+                "/Users/test/.codex/generated_images/session/ig-legacy.png",
+            ),
+        )])
+        .meta(Meta::from_iter([
+            (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
+            (ACP_STATUS_KIND_KEY.to_string(), json!("item_activity")),
+            (ACP_STATUS_EMPHASIS_KEY.to_string(), json!("neutral")),
+        ]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("image generation event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_IMAGE_GENERATION_EVENT);
+        assert_eq!(
+            payload.get("image_id").and_then(Value::as_str),
+            Some("neverwrite:status:item:ig-legacy")
+        );
+        assert_eq!(
+            payload.get("path").and_then(Value::as_str),
+            Some("/Users/test/.codex/generated_images/session/ig-legacy.png")
+        );
+        assert_eq!(
+            payload.get("title").and_then(Value::as_str),
+            Some("Generated image")
         );
     }
 

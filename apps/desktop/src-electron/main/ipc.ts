@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
     ELECTRON_IPC,
@@ -187,31 +190,145 @@ function registerInvokeHandler() {
     });
 }
 
+function decodeBase64UrlSegment(value: string) {
+    return Buffer.from(
+        value.replace(/-/g, "+").replace(/_/g, "/"),
+        "base64",
+    ).toString("utf8");
+}
+
+function generatedImageMimeType(filePath: string) {
+    switch (path.extname(filePath).toLowerCase()) {
+        case ".png":
+            return "image/png";
+        case ".jpg":
+        case ".jpeg":
+        case ".jpe":
+        case ".jfif":
+            return "image/jpeg";
+        case ".gif":
+            return "image/gif";
+        case ".webp":
+            return "image/webp";
+        case ".avif":
+            return "image/avif";
+        case ".bmp":
+            return "image/bmp";
+        default:
+            return null;
+    }
+}
+
+function normalizeGeneratedImageInputPath(value: string) {
+    if (value.startsWith("file://")) {
+        return fileURLToPath(value);
+    }
+
+    return value;
+}
+
+function generatedImageRootCandidates() {
+    const roots = [path.join(os.homedir(), ".codex", "generated_images")];
+    const codexHome = process.env.CODEX_HOME?.trim();
+    if (codexHome) {
+        roots.unshift(path.join(codexHome, "generated_images"));
+    }
+
+    return [...new Set(roots)];
+}
+
+function isPathInside(parent: string, child: string) {
+    const relative = path.relative(parent, child);
+    return (
+        relative === "" ||
+        (!relative.startsWith("..") && !path.isAbsolute(relative))
+    );
+}
+
+export async function resolveCodexGeneratedImagePreviewPath(
+    encodedPath: string,
+) {
+    const requestedPath = normalizeGeneratedImageInputPath(
+        decodeBase64UrlSegment(encodedPath),
+    );
+    if (!path.isAbsolute(requestedPath)) {
+        return null;
+    }
+
+    const mimeType = generatedImageMimeType(requestedPath);
+    if (!mimeType) {
+        return { status: 415 as const, filePath: null, mimeType: null };
+    }
+
+    const realFilePath = await fs.realpath(requestedPath).catch(() => null);
+    if (!realFilePath) {
+        return null;
+    }
+
+    for (const root of generatedImageRootCandidates()) {
+        const realRoot = await fs.realpath(root).catch(() => null);
+        if (realRoot && isPathInside(realRoot, realFilePath)) {
+            return {
+                status: 200 as const,
+                filePath: realFilePath,
+                mimeType,
+            };
+        }
+    }
+
+    return null;
+}
+
 export function registerPreviewProtocolHandler() {
     return async (request: Request) => {
-        const url = new URL(request.url);
-        const [, scope, encodedVaultPath, encodedRelativePath] =
-            url.pathname.split("/");
-        if (scope !== "vault" || !encodedVaultPath || !encodedRelativePath) {
+        try {
+            const url = new URL(request.url);
+            const [, scope, encodedVaultPath, encodedRelativePath] =
+                url.pathname.split("/");
+            if (scope === "vault" && encodedVaultPath && encodedRelativePath) {
+                const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
+                const relativePath =
+                    decodeBase64UrlSegment(encodedRelativePath);
+                const filePath = resolvePreviewFilePath(
+                    vaultPath,
+                    relativePath,
+                );
+                const data = await fs.readFile(filePath);
+                return new Response(new Uint8Array(data), {
+                    headers: {
+                        "content-type": previewMimeType(filePath),
+                        "cache-control": "no-store",
+                    },
+                });
+            }
+
+            if (scope === "codex-image" && encodedVaultPath) {
+                const resolved =
+                    await resolveCodexGeneratedImagePreviewPath(
+                        encodedVaultPath,
+                    );
+                if (!resolved) {
+                    return new Response("Not found", { status: 404 });
+                }
+                if (resolved.status === 415 || !resolved.filePath) {
+                    return new Response("Unsupported media type", {
+                        status: 415,
+                    });
+                }
+
+                const data = await fs.readFile(resolved.filePath);
+                return new Response(new Uint8Array(data), {
+                    headers: {
+                        "content-type": resolved.mimeType,
+                        "cache-control": "no-store",
+                    },
+                });
+            }
+
+            return new Response("Not found", { status: 404 });
+        } catch {
             return new Response("Not found", { status: 404 });
         }
-
-        const vaultPath = Buffer.from(
-            encodedVaultPath.replace(/-/g, "+").replace(/_/g, "/"),
-            "base64",
-        ).toString("utf8");
-        const relativePath = Buffer.from(
-            encodedRelativePath.replace(/-/g, "+").replace(/_/g, "/"),
-            "base64",
-        ).toString("utf8");
-        const filePath = resolvePreviewFilePath(vaultPath, relativePath);
-        const data = await fs.readFile(filePath);
-        return new Response(new Uint8Array(data), {
-            headers: {
-                "content-type": previewMimeType(filePath),
-                "cache-control": "no-store",
-            },
-        });
     };
 }
 

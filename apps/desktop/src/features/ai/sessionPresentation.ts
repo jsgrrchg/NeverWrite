@@ -91,6 +91,17 @@ export function getSessionPreview(session: AIChatSession) {
         return truncateText(`Input: ${lastMessage.content}`, 72);
     }
 
+    if (lastMessage.kind === "image") {
+        const status = String(lastMessage.meta?.image_status ?? "");
+        if (status === "pending" || status === "in_progress") {
+            return "Generating image...";
+        }
+        if (status === "failed" || status === "error") {
+            return "Image generation failed";
+        }
+        return "Generated image";
+    }
+
     if (lastMessage.kind === "error") {
         return truncateText(`Error: ${lastMessage.content}`, 72);
     }

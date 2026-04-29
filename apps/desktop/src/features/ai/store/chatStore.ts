@@ -111,6 +111,7 @@ import {
     type AIChatRole,
     type AIChatSession,
     type AIComposerPart,
+    type AIImageGenerationPayload,
     type AIPermissionRequestPayload,
     type AIPlanUpdatePayload,
     type AIStatusEventPayload,
@@ -1196,6 +1197,7 @@ interface ChatStore {
     }) => void;
     applyToolActivity: (payload: AIToolActivityPayload) => void;
     applyStatusEvent: (payload: AIStatusEventPayload) => void;
+    applyImageGeneration: (payload: AIImageGenerationPayload) => void;
     applyPlanUpdate: (payload: AIPlanUpdatePayload) => void;
     applyAvailableCommandsUpdate: (payload: AIAvailableCommandsPayload) => void;
     applyPermissionRequest: (payload: AIPermissionRequestPayload) => void;
@@ -1734,6 +1736,42 @@ function createStatusMessage(payload: AIStatusEventPayload): AIChatMessage {
             status_event: payload.kind,
             status: payload.status,
             emphasis: payload.emphasis,
+        },
+    };
+}
+
+function isFailedImageGenerationStatus(status: string) {
+    return status === "failed" || status === "error" || status === "cancelled";
+}
+
+function createImageGenerationMessage(
+    payload: AIImageGenerationPayload,
+): AIChatMessage {
+    const status = payload.status || "completed";
+    const failed = isFailedImageGenerationStatus(status);
+    const inProgress = status === "pending" || status === "in_progress";
+
+    return {
+        id: `image:${payload.image_id}`,
+        role: "assistant",
+        kind: "image",
+        title:
+            payload.title ||
+            (failed ? "Image generation failed" : "Generated image"),
+        content: inProgress
+            ? "Generating image..."
+            : failed
+              ? (payload.error ?? "Image generation failed")
+              : "Generated image",
+        timestamp: Date.now(),
+        inProgress,
+        meta: {
+            image_status: status,
+            image_path: payload.path ?? null,
+            image_mime_type: payload.mime_type ?? null,
+            revised_prompt: payload.revised_prompt ?? null,
+            result: payload.result ?? null,
+            error: payload.error ?? null,
         },
     };
 }
@@ -4914,6 +4952,10 @@ function statusEventKeepsSessionStreaming(status: string) {
     return status === "pending" || status === "in_progress";
 }
 
+function imageGenerationKeepsSessionStreaming(status: string) {
+    return status === "pending" || status === "in_progress";
+}
+
 function planUpdateKeepsSessionStreaming(payload: AIPlanUpdatePayload) {
     return payload.entries.some((entry) => entry.status === "in_progress");
 }
@@ -7208,6 +7250,45 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 id: messageId,
                             },
                             {
+                                preserveWorkCycleId: true,
+                            },
+                        ),
+                    },
+                    sessionOrder: touchSessionOrder(
+                        state.sessionOrder,
+                        payload.session_id,
+                    ),
+                };
+            });
+        },
+
+        applyImageGeneration: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
+            scheduleStaleStreamingCheck(payload.session_id);
+            set((state) => {
+                const session = state.sessionsById[payload.session_id];
+                if (!session) return state;
+                const baseSession = ensureSessionWorkCycle(session);
+                const nextSession = imageGenerationKeepsSessionStreaming(
+                    payload.status,
+                )
+                    ? markSessionStreamingIfLive(baseSession)
+                    : baseSession;
+                const nextMessage = {
+                    ...createImageGenerationMessage(payload),
+                    workCycleId: nextSession.activeWorkCycleId,
+                };
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [payload.session_id]: upsertSessionMessage(
+                            nextSession,
+                            nextMessage,
+                            {
+                                preserveTimestamp: true,
                                 preserveWorkCycleId: true,
                             },
                         ),

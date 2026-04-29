@@ -4,6 +4,7 @@ import {
     listenToAiMessageCompleted,
     listenToAiMessageDelta,
     listenToAiMessageStarted,
+    listenToAiImageGeneration,
     listenToAiPermissionRequest,
     listenToAiPlanUpdated,
     listenToAiRuntimeConnection,
@@ -72,6 +73,9 @@ export function useAiChatEventBridge(enabled = true) {
                 }),
                 listenToAiStatusEvent((payload) => {
                     if (!disposed) chatActions.applyStatusEvent(payload);
+                }),
+                listenToAiImageGeneration((payload) => {
+                    if (!disposed) chatActions.applyImageGeneration(payload);
                 }),
                 listenToAiPlanUpdated((payload) => {
                     if (!disposed) chatActions.applyPlanUpdate(payload);

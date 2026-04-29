@@ -50,6 +50,19 @@ export function buildVaultPreviewUrlFromAbsolutePath(
     return previewUrl ? `${previewUrl}${suffix}` : null;
 }
 
+export function buildCodexGeneratedImagePreviewUrl(absolutePath: string) {
+    const { pathname, suffix } = splitPathSuffix(absolutePath);
+    if (!pathname.trim()) {
+        return null;
+    }
+
+    return `${FILE_PREVIEW_SCHEME}/codex-image/${encodeBase64Url(pathname)}${suffix}`;
+}
+
+export function isGeneratedImagePath(path: string) {
+    return path.includes("/.codex/generated_images/");
+}
+
 export function isAuthorizedVaultPreviewPath(
     absolutePath: string,
     vaultPath: string | null,

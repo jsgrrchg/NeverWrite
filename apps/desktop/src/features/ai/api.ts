@@ -17,6 +17,7 @@ import type {
     AIMessageDeltaPayload,
     AIMessageStartedPayload,
     AIEnvironmentDiagnostics,
+    AIImageGenerationPayload,
     AIPermissionRequestPayload,
     AIPlanUpdatePayload,
     AIStatusEventPayload,
@@ -47,6 +48,7 @@ export const AI_THINKING_DELTA_EVENT = "ai://thinking-delta";
 export const AI_THINKING_COMPLETED_EVENT = "ai://thinking-completed";
 export const AI_TOOL_ACTIVITY_EVENT = "ai://tool-activity";
 export const AI_STATUS_EVENT = "ai://status-event";
+export const AI_IMAGE_GENERATION_EVENT = "ai://image-generation";
 export const AI_PERMISSION_REQUEST_EVENT = "ai://permission-request";
 export const AI_USER_INPUT_REQUEST_EVENT = "ai://user-input-request";
 export const AI_PLAN_UPDATED_EVENT = "ai://plan-updated";
@@ -684,6 +686,17 @@ export async function listenToAiStatusEvent(
     return listen<AIStatusEventPayload>(AI_STATUS_EVENT, (event) => {
         callback(event.payload);
     });
+}
+
+export async function listenToAiImageGeneration(
+    callback: (payload: AIImageGenerationPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIImageGenerationPayload>(
+        AI_IMAGE_GENERATION_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
 }
 
 export async function aiSaveSessionHistory(

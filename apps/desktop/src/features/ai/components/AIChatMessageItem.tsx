@@ -7,6 +7,7 @@ import {
     type MouseEvent,
     type ReactElement,
 } from "react";
+import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import {
     ContextMenu,
     type ContextMenuState,
@@ -40,6 +41,7 @@ import {
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { buildCodexGeneratedImagePreviewUrl } from "../../../app/utils/filePreviewUrl";
 
 interface UserMentionContextMenuPayload {
     label: string;
@@ -1157,6 +1159,212 @@ function formatElapsedMs(ms: number) {
     if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
     if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
     return `${seconds}s`;
+}
+
+function messageMetaString(message: AIChatMessage, key: string): string | null {
+    const value = message.meta?.[key];
+    return typeof value === "string" && value.trim() ? value : null;
+}
+
+function fileBaseName(filePath: string) {
+    return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function ImageActionButton({
+    children,
+    onClick,
+}: {
+    children: string;
+    onClick: () => void;
+}) {
+    return (
+        <button
+            type="button"
+            className="rounded-md px-2 py-1 transition"
+            onClick={onClick}
+            style={{
+                color: "var(--text-secondary)",
+                border: "1px solid color-mix(in srgb, var(--border) 78%, transparent)",
+                backgroundColor:
+                    "color-mix(in srgb, var(--surface) 72%, transparent)",
+                fontSize: "0.74em",
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
+function GeneratedImageMessage({ message }: { message: AIChatMessage }) {
+    const [loadFailed, setLoadFailed] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const imagePath = messageMetaString(message, "image_path");
+    const revisedPrompt = messageMetaString(message, "revised_prompt");
+    const status = String(message.meta?.image_status ?? "");
+    const isInProgress =
+        message.inProgress || status === "pending" || status === "in_progress";
+    const isFailed =
+        status === "failed" || status === "error" || status === "cancelled";
+    const previewUrl =
+        imagePath && !isInProgress && !isFailed
+            ? buildCodexGeneratedImagePreviewUrl(imagePath)
+            : null;
+    const title = isFailed
+        ? "Image generation failed"
+        : isInProgress
+          ? "Generating image..."
+          : "Generated image";
+
+    const copyPath = useCallback(() => {
+        if (!imagePath) return;
+        void navigator.clipboard?.writeText(imagePath).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+        });
+    }, [imagePath]);
+
+    if (isInProgress) {
+        return (
+            <div
+                className="min-w-0 max-w-full rounded-xl px-3 py-2"
+                style={{
+                    border: "1px solid color-mix(in srgb, var(--accent) 18%, var(--border))",
+                    background:
+                        "linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--surface) 84%, transparent))",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <div className="flex items-center gap-2">
+                    <span
+                        className="inline-block h-2 w-2 animate-pulse rounded-full"
+                        style={{ backgroundColor: "var(--accent)" }}
+                    />
+                    <span
+                        className="font-medium"
+                        style={{ fontSize: "0.86em" }}
+                    >
+                        Generating image...
+                    </span>
+                </div>
+            </div>
+        );
+    }
+
+    const unavailable = !previewUrl || loadFailed;
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-2xl"
+            style={{
+                maxWidth: "min(520px, 100%)",
+                border: "1px solid color-mix(in srgb, var(--border) 88%, transparent)",
+                backgroundColor:
+                    "color-mix(in srgb, var(--surface) 88%, transparent)",
+                boxShadow:
+                    "0 12px 34px color-mix(in srgb, #000 14%, transparent)",
+            }}
+        >
+            <div
+                className="flex items-center justify-between gap-3 px-3 py-2"
+                style={{ borderBottom: "1px solid var(--border)" }}
+            >
+                <div className="min-w-0">
+                    <div
+                        className="font-medium"
+                        style={{
+                            color: isFailed ? "#f87171" : "var(--text-primary)",
+                            fontSize: "0.86em",
+                        }}
+                    >
+                        {title}
+                    </div>
+                    {imagePath ? (
+                        <div
+                            className="truncate"
+                            title={imagePath}
+                            style={{
+                                color: "var(--text-secondary)",
+                                fontSize: "0.74em",
+                            }}
+                        >
+                            {fileBaseName(imagePath)}
+                        </div>
+                    ) : null}
+                </div>
+            </div>
+
+            {unavailable || isFailed ? (
+                <div className="px-3 py-4">
+                    <div
+                        style={{
+                            color: isFailed
+                                ? "#f87171"
+                                : "var(--text-secondary)",
+                            fontSize: "0.86em",
+                        }}
+                    >
+                        {isFailed
+                            ? message.content || "Image generation failed"
+                            : previewUrl
+                              ? "Image file could not be loaded"
+                              : "Image path is unavailable"}
+                    </div>
+                    {!isFailed ? (
+                        <div
+                            className="mt-1"
+                            style={{
+                                color: "var(--text-secondary)",
+                                fontSize: "0.78em",
+                            }}
+                        >
+                            This generated image may have been moved or deleted.
+                        </div>
+                    ) : null}
+                </div>
+            ) : (
+                <div
+                    className="p-2"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--text-primary) 3%, transparent)",
+                        backgroundImage:
+                            "linear-gradient(45deg, color-mix(in srgb, var(--text-secondary) 8%, transparent) 25%, transparent 25%), linear-gradient(-45deg, color-mix(in srgb, var(--text-secondary) 8%, transparent) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--text-secondary) 8%, transparent) 75%), linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--text-secondary) 8%, transparent) 75%)",
+                        backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
+                        backgroundSize: "16px 16px",
+                    }}
+                >
+                    <img
+                        src={previewUrl ?? undefined}
+                        alt={revisedPrompt ?? "Generated image"}
+                        title={imagePath ?? undefined}
+                        onError={() => setLoadFailed(true)}
+                        className="block w-full rounded-xl"
+                        style={{
+                            maxHeight: 420,
+                            objectFit: "contain",
+                            backgroundColor: "var(--surface)",
+                        }}
+                    />
+                </div>
+            )}
+
+            {imagePath ? (
+                <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+                    <ImageActionButton onClick={() => void openPath(imagePath)}>
+                        Open Externally
+                    </ImageActionButton>
+                    <ImageActionButton
+                        onClick={() => void revealItemInDir(imagePath)}
+                    >
+                        Reveal in Finder
+                    </ImageActionButton>
+                    <ImageActionButton onClick={copyPath}>
+                        {copied ? "Copied" : "Copy Path"}
+                    </ImageActionButton>
+                </div>
+            ) : null}
+        </div>
+    );
 }
 
 function StatusMessage({ message }: { message: AIChatMessage }) {
@@ -2935,6 +3143,10 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     if (message.kind === "status") {
         return <StatusMessage message={message} />;
+    }
+
+    if (message.kind === "image") {
+        return <GeneratedImageMessage message={message} />;
     }
 
     // Error — inline with icon

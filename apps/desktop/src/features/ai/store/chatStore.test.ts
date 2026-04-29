@@ -8192,6 +8192,53 @@ describe("chatStore", () => {
         });
     });
 
+    it("upserts generated images as assistant image messages", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyImageGeneration({
+            session_id: activeSessionId,
+            image_id: "neverwrite:image:ig-1",
+            status: "in_progress",
+            title: "Generating image",
+        });
+
+        useChatStore.getState().applyImageGeneration({
+            session_id: activeSessionId,
+            image_id: "neverwrite:image:ig-1",
+            status: "completed",
+            title: "Generated image",
+            path: "/Users/test/.codex/generated_images/session/ig_1.png",
+            mime_type: "image/png",
+            revised_prompt: "A tiny blue square",
+            result: "Zm9v",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const imageMessages = session.messages.filter(
+            (message) => message.kind === "image",
+        );
+
+        expect(imageMessages).toHaveLength(1);
+        expect(imageMessages[0]).toMatchObject({
+            id: "image:neverwrite:image:ig-1",
+            role: "assistant",
+            kind: "image",
+            title: "Generated image",
+            content: "Generated image",
+            inProgress: false,
+            meta: {
+                image_status: "completed",
+                image_path:
+                    "/Users/test/.codex/generated_images/session/ig_1.png",
+                image_mime_type: "image/png",
+                revised_prompt: "A tiny blue square",
+                result: "Zm9v",
+            },
+        });
+    });
+
     it("tracks token usage outside the transcript and clears it when the model changes", async () => {
         await useChatStore.getState().initialize();
 

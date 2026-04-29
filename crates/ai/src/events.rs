@@ -11,6 +11,7 @@ pub const AI_THINKING_DELTA_EVENT: &str = "ai://thinking-delta";
 pub const AI_THINKING_COMPLETED_EVENT: &str = "ai://thinking-completed";
 pub const AI_TOOL_ACTIVITY_EVENT: &str = "ai://tool-activity";
 pub const AI_STATUS_EVENT: &str = "ai://status-event";
+pub const AI_IMAGE_GENERATION_EVENT: &str = "ai://image-generation";
 pub const AI_PERMISSION_REQUEST_EVENT: &str = "ai://permission-request";
 pub const AI_USER_INPUT_REQUEST_EVENT: &str = "ai://user-input-request";
 pub const AI_PLAN_UPDATED_EVENT: &str = "ai://plan-updated";
@@ -92,6 +93,19 @@ pub struct AiStatusEventPayload {
     pub title: String,
     pub detail: Option<String>,
     pub emphasis: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiImageGenerationPayload {
+    pub session_id: String,
+    pub image_id: String,
+    pub status: String,
+    pub title: String,
+    pub path: Option<String>,
+    pub mime_type: Option<String>,
+    pub revised_prompt: Option<String>,
+    pub result: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

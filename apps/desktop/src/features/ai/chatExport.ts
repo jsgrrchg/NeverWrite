@@ -61,6 +61,8 @@ function getMessageKindLabel(message: AIChatMessage) {
             return "Permission";
         case "user_input_request":
             return "Input request";
+        case "image":
+            return "Image";
         case "error":
             return "Error";
         default:
@@ -77,6 +79,27 @@ function formatMessageHeading(message: AIChatMessage) {
 }
 
 function formatMessageContent(message: AIChatMessage) {
+    if (message.kind === "image") {
+        const lines = [message.content.trim() || "Generated image"];
+        const path =
+            typeof message.meta?.image_path === "string"
+                ? message.meta.image_path
+                : null;
+        const revisedPrompt =
+            typeof message.meta?.revised_prompt === "string"
+                ? message.meta.revised_prompt
+                : null;
+
+        if (path) {
+            lines.push("", `Path: \`${path}\``);
+        }
+        if (revisedPrompt) {
+            lines.push("", `Revised prompt: ${revisedPrompt}`);
+        }
+
+        return lines.join("\n");
+    }
+
     const content = message.content.trim();
     if (!content) {
         return "_No content_";

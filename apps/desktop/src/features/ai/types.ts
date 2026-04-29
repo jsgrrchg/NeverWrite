@@ -220,6 +220,7 @@ export type AIChatMessageKind =
     | "status"
     | "permission"
     | "user_input_request"
+    | "image"
     | "error";
 
 export interface AIUserInputQuestionOption {
@@ -471,6 +472,18 @@ export interface AIStatusEventPayload {
     title: string;
     detail?: string | null;
     emphasis: string;
+}
+
+export interface AIImageGenerationPayload {
+    session_id: string;
+    image_id: string;
+    status: "in_progress" | "completed" | "failed" | string;
+    title: string;
+    path?: string | null;
+    mime_type?: string | null;
+    revised_prompt?: string | null;
+    result?: string | null;
+    error?: string | null;
 }
 
 export interface AIPermissionOption {

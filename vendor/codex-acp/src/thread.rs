@@ -39,13 +39,14 @@ use codex_protocol::protocol::{
     AskForApproval, ElicitationAction, ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent,
     ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent, ExecCommandStatus,
     ExitedReviewModeEvent, FileChange, GuardianAssessmentEvent, GuardianAssessmentStatus,
-    ItemCompletedEvent, ItemStartedEvent, McpInvocation, McpStartupCompleteEvent,
-    McpStartupUpdateEvent, McpToolCallBeginEvent, McpToolCallEndEvent, ModelRerouteEvent, Op,
-    PatchApplyBeginEvent, PatchApplyEndEvent, PatchApplyStatus, PlanDeltaEvent,
-    ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent, ReviewDecision, ReviewOutputEvent,
-    ReviewRequest, ReviewTarget, SandboxPolicy, StreamErrorEvent, TerminalInteractionEvent,
-    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
-    ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
+    ImageGenerationBeginEvent, ImageGenerationEndEvent, ItemCompletedEvent, ItemStartedEvent,
+    McpInvocation, McpStartupCompleteEvent, McpStartupUpdateEvent, McpToolCallBeginEvent,
+    McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent, PatchApplyEndEvent,
+    PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent,
+    ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget, SandboxPolicy,
+    StreamErrorEvent, TerminalInteractionEvent, TokenCountEvent, TurnAbortedEvent,
+    TurnCompleteEvent, TurnStartedEvent, UserMessageEvent, ViewImageToolCallEvent, WarningEvent,
+    WebSearchBeginEvent, WebSearchEndEvent,
 };
 use codex_protocol::{
     approvals::{ElicitationRequest, ElicitationRequestEvent},
@@ -110,11 +111,13 @@ const NEVERWRITE_USER_INPUT_RESPONSE_PREFIX: &str = "__neverwrite_user_input_res
 const NEVERWRITE_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const NEVERWRITE_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const NEVERWRITE_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
+const NEVERWRITE_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
 const NEVERWRITE_PLAN_TITLE_KEY: &str = "neverwritePlanTitle";
 const NEVERWRITE_PLAN_DETAIL_KEY: &str = "neverwritePlanDetail";
 const NEVERWRITE_DIFF_PREVIOUS_PATH_KEY: &str = "neverwritePreviousPath";
 const NEVERWRITE_DIFF_HUNKS_KEY: &str = "neverwriteHunks";
 const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
+const NEVERWRITE_IMAGE_EVENT_ID_PREFIX: &str = "neverwrite:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 
 fn approval_preset_matches_config(
@@ -821,6 +824,29 @@ fn neverwrite_status_meta(kind: &str, emphasis: &str) -> Meta {
     meta.insert(NEVERWRITE_STATUS_EMPHASIS_KEY.to_string(), json!(emphasis));
     meta
 }
+
+fn neverwrite_image_generation_meta() -> Meta {
+    let mut meta = Meta::new();
+    meta.insert(
+        NEVERWRITE_STATUS_EVENT_TYPE_KEY.to_string(),
+        json!(NEVERWRITE_IMAGE_GENERATION_EVENT_TYPE),
+    );
+    meta
+}
+
+fn image_generation_tool_call_id(call_id: &str) -> String {
+    format!("{NEVERWRITE_IMAGE_EVENT_ID_PREFIX}{call_id}")
+}
+
+fn image_generation_tool_status(status: &str) -> ToolCallStatus {
+    match status.to_ascii_lowercase().as_str() {
+        "failed" | "error" | "cancelled" => ToolCallStatus::Failed,
+        "pending" => ToolCallStatus::Pending,
+        "in_progress" | "running" => ToolCallStatus::InProgress,
+        _ => ToolCallStatus::Completed,
+    }
+}
+
 fn neverwrite_user_input_meta() -> Meta {
     let mut meta = Meta::new();
     meta.insert(
@@ -1408,6 +1434,84 @@ impl PromptState {
             .send_tool_call_update(ToolCallUpdate::new(call_id, fields))
             .await;
     }
+
+    async fn send_image_generation_started(
+        &self,
+        client: &SessionClient,
+        event: ImageGenerationBeginEvent,
+    ) {
+        client
+            .send_tool_call(
+                ToolCall::new(
+                    image_generation_tool_call_id(&event.call_id),
+                    "Generating image",
+                )
+                .kind(ToolKind::Other)
+                .status(ToolCallStatus::InProgress)
+                .content(vec![ToolCallContent::Content(Content::new(
+                    "Generating image...",
+                ))])
+                .raw_input(json!({
+                    "status": "in_progress",
+                }))
+                .meta(neverwrite_image_generation_meta()),
+            )
+            .await;
+    }
+
+    async fn send_image_generation_completed(
+        &self,
+        client: &SessionClient,
+        event: ImageGenerationEndEvent,
+    ) {
+        let ImageGenerationEndEvent {
+            call_id,
+            status,
+            revised_prompt,
+            result,
+            saved_path,
+        } = event;
+        let saved_path = saved_path.map(|path| path.display().to_string());
+        let tool_status = image_generation_tool_status(&status);
+        let is_failure = tool_status == ToolCallStatus::Failed;
+        let title = if is_failure {
+            "Image generation failed"
+        } else {
+            "Generated image"
+        };
+        let detail = saved_path.clone().or_else(|| Some(result.clone()));
+        let mut raw_input = json!({
+            "status": status,
+            "result": result.clone(),
+        });
+        if let Some(object) = raw_input.as_object_mut() {
+            if let Some(saved_path) = saved_path {
+                object.insert("path".to_string(), json!(saved_path));
+            }
+            if let Some(revised_prompt) = revised_prompt {
+                object.insert("revised_prompt".to_string(), json!(revised_prompt));
+            }
+            if is_failure {
+                object.insert("error".to_string(), json!(result));
+            }
+        }
+
+        let mut fields = ToolCallUpdateFields::new()
+            .title(title.to_string())
+            .status(tool_status)
+            .raw_input(raw_input);
+        if let Some(detail) = detail {
+            fields = fields.content(vec![ToolCallContent::Content(Content::new(detail))]);
+        }
+
+        client
+            .send_tool_call_update(
+                ToolCallUpdate::new(image_generation_tool_call_id(&call_id), fields)
+                    .meta(neverwrite_image_generation_meta()),
+            )
+            .await;
+    }
+
     async fn emit_plan_text_update(&self, client: &SessionClient, text: &str, streaming: bool) {
         let parsed = parse_plan_text(text, streaming);
         if parsed.entries.is_empty() && parsed.title.is_none() && parsed.detail.is_none() {
@@ -1488,17 +1592,33 @@ impl PromptState {
             }
             EventMsg::ItemStarted(ItemStartedEvent { thread_id, turn_id, item }) => {
                 info!("Item started with thread_id: {thread_id}, turn_id: {turn_id}, item: {item:?}");
-                let (title, detail) = describe_turn_item(&item);
-                self.send_status_tool_call(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}", turn_item_id(&item)),
-                    "item_activity",
-                    title,
-                    detail,
-                    "neutral",
-                    ToolCallStatus::InProgress,
-                )
-                .await;
+                match item {
+                    TurnItem::ImageGeneration(image_item) => {
+                        self.send_image_generation_started(
+                            client,
+                            ImageGenerationBeginEvent {
+                                call_id: image_item.id,
+                            },
+                        )
+                        .await;
+                    }
+                    other_item => {
+                        let (title, detail) = describe_turn_item(&other_item);
+                        self.send_status_tool_call(
+                            client,
+                            format!(
+                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
+                                turn_item_id(&other_item)
+                            ),
+                            "item_activity",
+                            title,
+                            detail,
+                            "neutral",
+                            ToolCallStatus::InProgress,
+                        )
+                        .await;
+                    }
+                }
             }
             EventMsg::UserMessage(UserMessageEvent {
                 message,
@@ -1616,6 +1736,17 @@ impl PromptState {
                     .await;
                 // The actual search results will come through AgentMessage events
                 // We mark as completed when a new tool call begins
+            }
+            EventMsg::ImageGenerationBegin(event) => {
+                info!("Image generation started: call_id={}", event.call_id);
+                self.send_image_generation_started(client, event).await;
+            }
+            EventMsg::ImageGenerationEnd(event) => {
+                info!(
+                    "Image generation ended: call_id={}, status={}",
+                    event.call_id, event.status
+                );
+                self.send_image_generation_completed(client, event).await;
             }
             EventMsg::ExecApprovalRequest(event) => {
                 info!(
@@ -1744,19 +1875,39 @@ impl PromptState {
                     };
                     self.emit_plan_text_update(client, &final_text, false).await;
                 }
-                let (title, detail) = describe_turn_item(&item);
-                self.send_status_tool_call_update(
-                    client,
-                    format!("{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}", turn_item_id(&item)),
-                    title,
-                    detail,
-                    ToolCallStatus::Completed,
-                )
-                .await;
-                // Notify the client when context compaction completes so users see
-                // a status message rather than silence during /compact.
-                if matches!(item, TurnItem::ContextCompaction(..)) {
-                    client.send_agent_text("Context compacted".to_string()).await;
+                match item {
+                    TurnItem::ImageGeneration(image_item) => {
+                        self.send_image_generation_completed(
+                            client,
+                            ImageGenerationEndEvent {
+                                call_id: image_item.id,
+                                status: image_item.status,
+                                revised_prompt: image_item.revised_prompt,
+                                result: image_item.result,
+                                saved_path: image_item.saved_path,
+                            },
+                        )
+                        .await;
+                    }
+                    other_item => {
+                        let (title, detail) = describe_turn_item(&other_item);
+                        self.send_status_tool_call_update(
+                            client,
+                            format!(
+                                "{NEVERWRITE_STATUS_EVENT_ID_PREFIX}item:{}",
+                                turn_item_id(&other_item)
+                            ),
+                            title,
+                            detail,
+                            ToolCallStatus::Completed,
+                        )
+                        .await;
+                        // Notify the client when context compaction completes so users see
+                        // a status message rather than silence during /compact.
+                        if matches!(other_item, TurnItem::ContextCompaction(..)) {
+                            client.send_agent_text("Context compacted".to_string()).await;
+                        }
+                    }
                 }
             }
             EventMsg::TurnComplete(TurnCompleteEvent {
@@ -2008,8 +2159,6 @@ impl PromptState {
             | EventMsg::CollabResumeEnd(..)
             | EventMsg::CollabCloseBegin(..)
             | EventMsg::CollabCloseEnd(..)
-            | EventMsg::ImageGenerationBegin(..)
-            | EventMsg::ImageGenerationEnd(..)
             | EventMsg::ModelVerification(..)
             | EventMsg::GuardianWarning(..)
             | EventMsg::HookStarted(..)
