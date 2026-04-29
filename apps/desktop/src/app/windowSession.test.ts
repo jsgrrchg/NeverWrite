@@ -53,6 +53,32 @@ describe("windowSession", () => {
         });
     });
 
+    it("persists pinned tab ids for note-window entries", () => {
+        expect(
+            buildWindowSessionEntry({
+                label: "note-1",
+                windowMode: "note",
+                vaultPath: "/vaults/main",
+                tabs: [
+                    {
+                        id: "tab-1",
+                        noteId: "note-1",
+                        title: "Agents",
+                        content: "body",
+                        history: [],
+                        historyIndex: 0,
+                    },
+                ],
+                activeTabId: "tab-1",
+                pinnedTabIds: ["missing-tab", "tab-1"],
+            }),
+        ).toMatchObject({
+            payload: {
+                pinnedTabIds: ["tab-1"],
+            },
+        });
+    });
+
     it("refreshes the snapshot using only currently open windows", async () => {
         writeWindowSessionEntry("main", {
             label: "main",

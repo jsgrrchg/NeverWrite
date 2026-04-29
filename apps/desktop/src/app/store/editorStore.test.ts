@@ -3769,6 +3769,62 @@ describe("editorStore tab management", () => {
         expect(pane?.pinnedTabIds).toEqual(["tab-c", "tab-b"]);
     });
 
+    it("hydrates persisted pinned tab ids", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    pinnedTabIds: ["tab-b"],
+                    activeTabId: "tab-a",
+                },
+            ],
+            "primary",
+        );
+
+        const pane = useEditorStore.getState().panes[0];
+        expect(pane?.pinnedTabIds).toEqual(["tab-b"]);
+        expect(pane?.tabs.map((tab) => tab.id)).toEqual(["tab-b", "tab-a"]);
+    });
+
+    it("hydrates pinned tab ids through the detached-window tabs API", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                makeTab({
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                }),
+                makeTab({
+                    id: "tab-b",
+                    noteId: "notes/b",
+                    title: "B",
+                    content: "Beta",
+                }),
+            ],
+            "tab-a",
+            ["tab-b"],
+        );
+
+        const pane = useEditorStore.getState().panes[0];
+        expect(pane?.pinnedTabIds).toEqual(["tab-b"]);
+        expect(pane?.tabs.map((tab) => tab.id)).toEqual(["tab-b", "tab-a"]);
+    });
+
     it("does not carry a tab pin when moving the tab to another pane", () => {
         useEditorStore.getState().hydrateWorkspace(
             [

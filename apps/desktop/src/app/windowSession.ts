@@ -43,7 +43,10 @@ function isDetachedWindowPayload(
         Array.isArray(payload.tabs) &&
         (typeof payload.activeTabId === "string" ||
             payload.activeTabId === null) &&
-        (typeof payload.vaultPath === "string" || payload.vaultPath === null)
+        (typeof payload.vaultPath === "string" || payload.vaultPath === null) &&
+        (payload.pinnedTabIds === undefined ||
+            (Array.isArray(payload.pinnedTabIds) &&
+                payload.pinnedTabIds.every((id) => typeof id === "string")))
     );
 }
 
@@ -53,6 +56,7 @@ export function buildWindowSessionEntry(args: {
     vaultPath: string | null;
     tabs: TabInput[];
     activeTabId: string | null;
+    pinnedTabIds?: string[];
 }): PersistedWindowSessionEntry | null {
     const { label, windowMode, vaultPath, tabs, activeTabId } = args;
 
@@ -63,6 +67,10 @@ export function buildWindowSessionEntry(args: {
     if (windowMode === "note") {
         if (tabs.length === 0) return null;
         const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+        const tabIds = new Set(tabs.map((tab) => tab.id));
+        const pinnedTabIds = (args.pinnedTabIds ?? []).filter((tabId) =>
+            tabIds.has(tabId),
+        );
         return {
             label,
             kind: "note",
@@ -70,6 +78,7 @@ export function buildWindowSessionEntry(args: {
                 tabs,
                 activeTabId,
                 vaultPath,
+                ...(pinnedTabIds.length > 0 ? { pinnedTabIds } : {}),
             },
             title: activeTab?.title ?? "Note",
         };

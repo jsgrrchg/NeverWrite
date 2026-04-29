@@ -252,7 +252,11 @@ export interface EditorWorkspaceActions {
         focusedPaneId?: string | null,
         layoutTree?: WorkspaceLayoutNode,
     ) => void;
-    hydrateTabs: (tabs: TabInput[], activeTabId: string | null) => void;
+    hydrateTabs: (
+        tabs: TabInput[],
+        activeTabId: string | null,
+        pinnedTabIds?: string[],
+    ) => void;
     insertExternalTab: (tab: TabInput, index?: number) => void;
     reloadNoteContent: (noteId: string, detail: ReloadedDetail) => void;
     reloadFileContent: (relativePath: string, detail: ReloadedDetail) => void;
@@ -3764,6 +3768,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                         pane.id?.trim() || `pane-${index + 1}`,
                         {
                             tabs: hydratedTabs,
+                            pinnedTabIds: pane.pinnedTabIds,
                             activeTabId: pane.activeTabId,
                             activationHistory: pane.activationHistory,
                             tabNavigationHistory: pane.tabNavigationHistory,
@@ -3799,7 +3804,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             } as Partial<EditorWorkspaceStore>);
         },
 
-        hydrateTabs: (tabs, activeTabId) => {
+        hydrateTabs: (tabs, activeTabId, pinnedTabIds = []) => {
             // Detached windows and a few test helpers still hydrate a
             // single-pane workspace directly through this API.
             const seenSingletonKinds = new Set<string>();
@@ -3826,6 +3831,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                 panes: [
                     createEditorPaneState(INITIAL_EDITOR_PANE_ID, {
                         tabs: hydratedTabs,
+                        pinnedTabIds,
                         activeTabId: nextActiveTabId,
                         activationHistory: nextActiveTabId
                             ? [nextActiveTabId]

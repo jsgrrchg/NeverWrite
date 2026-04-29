@@ -56,9 +56,39 @@ describe("bootstrapDetachedWindow", () => {
             hydrateTabs,
         });
 
-        expect(hydrateTabs).toHaveBeenCalledWith(payload.tabs, "tab-1");
+        expect(hydrateTabs).toHaveBeenCalledWith(payload.tabs, "tab-1", []);
         expect(errorSpy).toHaveBeenCalled();
 
         errorSpy.mockRestore();
+    });
+
+    it("passes detached pinned tab ids into hydration", async () => {
+        const payload = {
+            tabs: [
+                {
+                    id: "tab-1",
+                    noteId: "note-1",
+                    title: "Note",
+                    content: "Body",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            vaultPath: null,
+            pinnedTabIds: ["tab-1"],
+        };
+        const hydrateTabs = vi.fn();
+
+        await bootstrapDetachedWindow(payload, {
+            openVault: vi.fn(),
+            hydrateTabs,
+        });
+
+        expect(hydrateTabs).toHaveBeenCalledWith(
+            payload.tabs,
+            "tab-1",
+            ["tab-1"],
+        );
     });
 });

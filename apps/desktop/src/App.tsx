@@ -52,6 +52,7 @@ import {
     isFileTab,
     isNoteTab,
     isTerminalTab,
+    getEffectivePaneWorkspace,
     selectEditorWorkspaceTabs,
     selectFocusedPaneId,
     selectFocusedEditorTab,
@@ -1210,6 +1211,13 @@ export default function App() {
     const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const workspaceTabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
+    const workspacePinnedTabIds = useEditorStore(
+        useShallow((state) =>
+            getEffectivePaneWorkspace(state).panes.flatMap(
+                (pane) => pane.pinnedTabIds,
+            ),
+        ),
+    );
     const focusedWorkspaceTabId = useEditorStore(
         (state) => selectFocusedEditorTab(state)?.id ?? null,
     );
@@ -1414,6 +1422,7 @@ export default function App() {
             vaultPath,
             tabs: workspaceTabs,
             activeTabId: focusedWorkspaceTabId,
+            pinnedTabIds: workspacePinnedTabIds,
         });
 
         writeWindowSessionEntry(label, entry);
@@ -1435,6 +1444,7 @@ export default function App() {
         vaultPath,
         windowMode,
         windowSessionReady,
+        workspacePinnedTabIds,
         workspaceTabs,
     ]);
 

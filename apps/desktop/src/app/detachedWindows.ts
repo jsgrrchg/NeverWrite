@@ -91,6 +91,7 @@ export interface DetachedWindowPayload {
     tabs: TabInput[];
     activeTabId: string | null;
     vaultPath: string | null;
+    pinnedTabIds?: string[];
 }
 
 export interface AttachExternalTabPayload {
@@ -195,11 +196,13 @@ export function readDetachedWindowPayload(label: string) {
 export function createDetachedWindowPayload(
     tab: TabInput,
     vaultPath: string | null,
+    pinnedTabIds: string[] = [],
 ): DetachedWindowPayload {
     return {
         tabs: [tab],
         activeTabId: tab.id,
         vaultPath,
+        ...(pinnedTabIds.length > 0 ? { pinnedTabIds } : {}),
     };
 }
 

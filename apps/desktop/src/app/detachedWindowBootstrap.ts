@@ -3,7 +3,11 @@ import type { DetachedWindowPayload } from "./detachedWindows";
 
 interface BootstrapDetachedWindowDeps {
     openVault: (path: string) => Promise<void>;
-    hydrateTabs: (tabs: TabInput[], activeTabId: string | null) => void;
+    hydrateTabs: (
+        tabs: TabInput[],
+        activeTabId: string | null,
+        pinnedTabIds?: string[],
+    ) => void;
 }
 
 export async function bootstrapDetachedWindow(
@@ -23,5 +27,5 @@ export async function bootstrapDetachedWindow(
         }
     }
 
-    hydrateTabs(payload.tabs, payload.activeTabId);
+    hydrateTabs(payload.tabs, payload.activeTabId, payload.pinnedTabIds ?? []);
 }
