@@ -1,9 +1,11 @@
 import { act, screen } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import type { TerminalSessionSnapshot } from "../devtools/terminal/terminalTypes";
 import {
     getXtermMockInstances,
+    flushPromises,
     renderComponent,
     setEditorTabs,
 } from "../../test/test-utils";
@@ -48,6 +50,23 @@ function seedTerminalRuntime(terminalId: string, rawOutput = "ready\n") {
     });
 }
 
+function getEditorView() {
+    const editorElement = document.querySelector(".cm-editor");
+    expect(editorElement).not.toBeNull();
+
+    const view = EditorView.findFromDOM(editorElement as HTMLElement);
+    expect(view).not.toBeNull();
+    return view!;
+}
+
+async function flushEditorViewUpdates() {
+    await flushPromises();
+    await act(async () => {
+        vi.runOnlyPendingTimers();
+    });
+    await flushPromises();
+}
+
 describe("EditorPaneContent", () => {
     beforeEach(() => {
         resetTerminalRuntimeStoreForTests();
@@ -55,6 +74,7 @@ describe("EditorPaneContent", () => {
 
     afterEach(() => {
         resetTerminalRuntimeStoreForTests();
+        vi.restoreAllMocks();
         vi.useRealTimers();
     });
 
@@ -128,6 +148,53 @@ describe("EditorPaneContent", () => {
         expect(terminal).toHaveStyle({ visibility: "hidden" });
         expect(screen.getByText(/kept runtime/i)).toBeInTheDocument();
         expect(getXtermMockInstances()).toHaveLength(1);
+    });
+
+    it("keeps note scroll position when switching to an agent tab and back", async () => {
+        vi.useFakeTimers();
+        vi.spyOn(EditorView.prototype, "posAtCoords").mockReturnValue(12);
+        vi.spyOn(EditorView.prototype, "coordsAtPos").mockReturnValue(null);
+
+        setEditorTabs(
+            [
+                {
+                    id: "note-tab-1",
+                    kind: "note",
+                    noteId: "note-1",
+                    title: "Note",
+                    content: "Line 1\nLine 2\nLine 3",
+                },
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "session-1",
+                    title: "Agent",
+                },
+            ],
+            "note-tab-1",
+        );
+
+        renderComponent(<EditorPaneContent />);
+        await flushEditorViewUpdates();
+
+        let view = getEditorView();
+        view.scrollDOM.scrollTop = 360;
+        view.scrollDOM.scrollLeft = 18;
+
+        act(() => {
+            useEditorStore.getState().switchTab("chat-tab-1");
+        });
+        await flushEditorViewUpdates();
+        expect(document.querySelector(".cm-editor")).not.toBeNull();
+
+        act(() => {
+            useEditorStore.getState().switchTab("note-tab-1");
+        });
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        expect(view.scrollDOM.scrollTop).toBe(360);
+        expect(view.scrollDOM.scrollLeft).toBe(18);
     });
 
     it("requests terminal focus only when the tab and pane are both active", async () => {

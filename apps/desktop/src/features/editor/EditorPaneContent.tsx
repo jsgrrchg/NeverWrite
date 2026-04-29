@@ -168,6 +168,13 @@ export function EditorPaneContent({
     const hasGraphTab = paneTabs.some((tab) => isGraphTab(tab));
     const isGraphActive = view === "graph";
     const keepGraphMounted = hasGraphTab;
+    const isEditorActive = view === "editor";
+    const hasEditableNoteTab = paneTabs.some(
+        (tab) => isNoteTab(tab) && !isSearchTab(tab),
+    );
+    // Keep CodeMirror alive behind agent/review tabs so note-local scroll,
+    // selection, and undo state survive the round trip back to the editor.
+    const keepEditorMounted = isEditorActive || hasEditableNoteTab;
 
     // Workspace panes own their own empty states so the last empty pane can
     // offer quick actions without leaking workspace chrome into note windows.
@@ -177,6 +184,22 @@ export function EditorPaneContent({
 
     return (
         <div className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden">
+            {keepEditorMounted && (
+                <div
+                    style={{
+                        position: "absolute",
+                        inset: 0,
+                        visibility: isEditorActive ? "visible" : "hidden",
+                        pointerEvents: isEditorActive ? "auto" : "none",
+                    }}
+                >
+                    <Editor
+                        paneId={paneId}
+                        emptyStateMessage={emptyStateMessage}
+                        isVisible={isEditorActive}
+                    />
+                </div>
+            )}
             {keepGraphMounted && (
                 <div
                     style={{
@@ -199,7 +222,8 @@ export function EditorPaneContent({
                     activePane={activePane}
                 />
             ))}
-            {!isGraphActive &&
+            {!isEditorActive &&
+                !isGraphActive &&
                 !isTerminalActive &&
                 renderEditorPanelView(
                     view,

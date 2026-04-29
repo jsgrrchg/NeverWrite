@@ -153,6 +153,7 @@ import {
     WikilinkSuggester,
     type WikilinkSuggesterState,
 } from "./WikilinkSuggester";
+import { isSearchTab } from "../search/searchTab";
 import { useChatStore } from "../ai/store/chatStore";
 import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import { aiRegisterFileBaseline } from "../ai/api";
@@ -209,6 +210,7 @@ type EditorMode = "source" | "preview";
 interface EditorProps {
     paneId?: string;
     emptyStateMessage?: string;
+    isVisible?: boolean;
 }
 
 const MERGE_SYNC_FOCUS_DEBOUNCE_MS = 120;
@@ -233,6 +235,10 @@ function normalizeEditorStateContent(text: string) {
 function getEventTargetElement(target: EventTarget | null) {
     if (target instanceof HTMLElement) return target;
     return target instanceof Node ? target.parentElement : null;
+}
+
+function isEditableNoteTab(tab: Tab): tab is NoteTab {
+    return isNoteTab(tab) && !isSearchTab(tab);
 }
 
 function setScrollbarDragState(view: EditorView, dragging: boolean) {
@@ -285,6 +291,7 @@ function isNativeScrollbarMouseDown(view: EditorView, event: MouseEvent) {
 export function Editor({
     paneId,
     emptyStateMessage = "Open a note from the left panel",
+    isVisible = true,
 }: EditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -292,6 +299,9 @@ export function Editor({
     const scheduleSaveRef = useRef<(tabId: string, doc: Text | string) => void>(
         () => {},
     );
+    const flushActiveNoteStateRef = useRef<
+        (options?: { detach?: boolean }) => void
+    >(() => {});
     const contentUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
         null,
     );
@@ -427,6 +437,7 @@ export function Editor({
     const isPaneFocused = useEditorStore((state) =>
         paneId ? selectFocusedPaneId(state) === paneId : true,
     );
+    const isInteractionActive = isPaneFocused && isVisible;
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const pendingSelectionReveal = useEditorStore(
@@ -484,7 +495,7 @@ export function Editor({
                 pane.tabs.find(
                     (candidate) => candidate.id === pane.activeTabId,
                 ) ?? null;
-            if (!tab || !isNoteTab(tab)) return null;
+            if (!tab || !isEditableNoteTab(tab)) return null;
             return {
                 id: tab.id,
                 title: tab.title,
@@ -495,7 +506,7 @@ export function Editor({
     const activeTab = ((): NoteTab | null => {
         if (activeTabId === null) return null;
         const t = paneTabs.find((candidate) => candidate.id === activeTabId);
-        return t && isNoteTab(t) ? t : null;
+        return t && isEditableNoteTab(t) ? t : null;
     })();
     activeTabRef.current = activeTab;
     const titleSpellcheckEnabled =
@@ -1419,6 +1430,56 @@ export function Editor({
         },
         [restoreScrollAnchor],
     );
+
+    const flushActiveNoteState = useCallback(
+        ({ detach = false }: { detach?: boolean } = {}) => {
+            const view = viewRef.current;
+            const tab = activeTabRef.current;
+            if (!view || !tab) return;
+
+            const content = view.state.doc.toString();
+            // Teardown can happen before the debounced tab-content sync or
+            // autosave fires, so flush both while the live EditorState exists.
+            if (contentUpdateTimerRef.current) {
+                clearTimeout(contentUpdateTimerRef.current);
+                contentUpdateTimerRef.current = null;
+            }
+
+            const latestTab = useEditorStore
+                .getState()
+                .tabs.find((candidate) => candidate.id === tab.id);
+            if (
+                latestTab &&
+                isNoteTab(latestTab) &&
+                latestTab.content !== content
+            ) {
+                updateTabContent(tab.id, content);
+            }
+
+            if (saveTimerRef.current) {
+                clearTimeout(saveTimerRef.current);
+                saveTimerRef.current = null;
+            }
+
+            tabStatesRef.current.set(tab.noteId, view.state);
+            saveTabScrollPosition(tab.noteId, view);
+
+            if (isTabDirty(tab.noteId, content)) {
+                const tabToSave = { ...tab, content };
+                if (detach) {
+                    activeTabRef.current = null;
+                }
+                void saveNow(tabToSave, content);
+            } else if (detach) {
+                activeTabRef.current = null;
+            }
+        },
+        [isTabDirty, saveNow, saveTabScrollPosition, updateTabContent],
+    );
+
+    useEffect(() => {
+        flushActiveNoteStateRef.current = flushActiveNoteState;
+    }, [flushActiveNoteState]);
 
     const clearScrollbarDragSession = useCallback((view: EditorView | null) => {
         scrollbarDragCleanupRef.current?.();
@@ -2828,6 +2889,7 @@ export function Editor({
         prevNoteIdRef.current = initialTab?.noteId ?? null;
 
         return () => {
+            flushActiveNoteStateRef.current({ detach: true });
             if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
             if (contentUpdateTimerRef.current)
                 clearTimeout(contentUpdateTimerRef.current);
@@ -3093,7 +3155,7 @@ export function Editor({
     }, [activeTabInfo]);
 
     useEffect(() => {
-        if (activeTabInfo) return;
+        if (activeTabInfo || !isVisible) return;
         let mounted = true;
         let unlisten: (() => void) | null = null;
         void getCurrentWebview()
@@ -3117,7 +3179,7 @@ export function Editor({
             mounted = false;
             unlisten?.();
         };
-    }, [activeTabInfo, openVault]);
+    }, [activeTabInfo, isVisible, openVault]);
 
     // Reconfigure syntax theme when isDark changes
     useEffect(() => {
@@ -3554,7 +3616,7 @@ export function Editor({
 
     // Keyboard shortcuts
     useEffect(() => {
-        if (!isPaneFocused) return;
+        if (!isInteractionActive) return;
         const handler = (e: KeyboardEvent) => {
             if (e.defaultPrevented) return;
             const platform = getDesktopPlatform();
@@ -3593,10 +3655,10 @@ export function Editor({
 
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [closeActiveTabWithSave, getPaneSnapshot, isPaneFocused, saveNow]);
+    }, [closeActiveTabWithSave, getPaneSnapshot, isInteractionActive, saveNow]);
 
     useEffect(() => {
-        if (!isPaneFocused) return;
+        if (!isInteractionActive) return;
         const handleCloseRequest = () => {
             closeActiveTabWithSave();
         };
@@ -3610,7 +3672,7 @@ export function Editor({
                 REQUEST_CLOSE_ACTIVE_TAB_EVENT,
                 handleCloseRequest,
             );
-    }, [closeActiveTabWithSave, isPaneFocused]);
+    }, [closeActiveTabWithSave, isInteractionActive]);
 
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,
@@ -3820,7 +3882,7 @@ export function Editor({
                         />
                     </div>
                 </div>
-                {!activeTabInfo && (
+                {!activeTabInfo && isVisible && (
                     <div
                         className="absolute inset-0 z-2 flex items-center justify-center select-none pointer-events-none"
                         style={{

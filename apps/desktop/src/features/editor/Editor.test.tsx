@@ -1865,6 +1865,71 @@ describe("Editor", () => {
         vi.useRealTimers();
     });
 
+    it("flushes pending content and autosave when the editor unmounts", async () => {
+        vi.useFakeTimers();
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 5_000);
+
+        mockInvoke().mockImplementation(async (command, args) => {
+            if (command === "save_note") {
+                return {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    content: (args as { content: string }).content,
+                };
+            }
+
+            return undefined;
+        });
+
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Original",
+            },
+        ]);
+
+        const { unmount } = renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: " local",
+                },
+            });
+        });
+
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "tab-1"),
+        ).toMatchObject({ content: "Original" });
+
+        await act(async () => {
+            unmount();
+            await flushPromises();
+        });
+
+        expect(
+            useEditorStore.getState().tabs.find((tab) => tab.id === "tab-1"),
+        ).toMatchObject({ content: "Original local" });
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "save_note",
+            expect.objectContaining({
+                noteId: "notes/current",
+                content: "Original local",
+                opId: expect.any(String),
+            }),
+        );
+
+        useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 300);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
     it("does not treat local tab-content sync as an external conflict while typing", async () => {
         vi.useFakeTimers();
 
