@@ -1365,10 +1365,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                                 tab.id,
                                                             );
                                                         }}
-                                                        className={`no-drag shrink-0 rounded flex items-center justify-center transition-all ${
+                                                        className={`no-drag shrink-0 rounded-md flex items-center justify-center transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/30 active:bg-gray-500/55 active:scale-90 ${
                                                             isActive
-                                                                ? "opacity-60 hover:opacity-100 hover:bg-gray-500/18 active:bg-gray-500/28"
-                                                                : "opacity-0 group-hover:opacity-55 hover:opacity-100! hover:bg-gray-500/18 active:bg-gray-500/28"
+                                                                ? "opacity-70 hover:opacity-100"
+                                                                : "opacity-0 group-hover:opacity-65 hover:opacity-100!"
                                                         }`}
                                                         style={{
                                                             width: tabLayout.closeButtonSize,
@@ -1385,7 +1385,7 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                             viewBox="0 0 16 16"
                                                             fill="none"
                                                             stroke="currentColor"
-                                                            strokeWidth="1.8"
+                                                            strokeWidth="2.1"
                                                             strokeLinecap="round"
                                                             strokeLinejoin="round"
                                                         >
