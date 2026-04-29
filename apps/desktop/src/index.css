@@ -753,21 +753,31 @@ body.dragging-tab * {
 .ub-chrome-btn:hover:not(:disabled) {
     background-color: color-mix(
         in srgb,
-        var(--bg-tertiary) 80%,
+        var(--text-primary) 14%,
         transparent
     ) !important;
     color: var(--text-primary) !important;
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 18%,
+        transparent
+    ) !important;
     opacity: 1 !important;
 }
 
 .ub-chrome-btn:active:not(:disabled) {
-    background-color: var(--bg-tertiary) !important;
+    background-color: color-mix(
+        in srgb,
+        var(--text-primary) 26%,
+        transparent
+    ) !important;
+    box-shadow: inset 0 1px 2px color-mix(in srgb, black 18%, transparent) !important;
 }
 
 .ub-chrome-btn[data-active="true"]:hover:not(:disabled) {
     background-color: color-mix(
         in srgb,
-        var(--accent) 16%,
+        var(--accent) 22%,
         var(--bg-primary)
     ) !important;
 }

@@ -784,7 +784,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                     payload: undefined,
                                 });
                             }}
-                            className="inline-flex shrink-0 items-center justify-center"
+                            className="ub-chrome-btn inline-flex shrink-0 items-center justify-center"
                             aria-label="New tab"
                             title="New tab"
                             style={getPaneHeaderActionButtonStyle()}
@@ -813,7 +813,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 payload: { paneId },
                             })
                         }
-                        className="inline-flex shrink-0 items-center justify-center"
+                        className="ub-chrome-btn inline-flex shrink-0 items-center justify-center"
                         aria-label={`${paneLabel} actions`}
                         title={`${paneLabel} actions`}
                         style={getPaneHeaderActionButtonStyle()}
