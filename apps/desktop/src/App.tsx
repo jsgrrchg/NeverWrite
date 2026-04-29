@@ -340,10 +340,17 @@ function RightPanel() {
     );
 }
 
+const VAULT_OVERLAY_STRIP_LABEL: React.CSSProperties = {
+    fontSize: "0.68em",
+    letterSpacing: "0.12em",
+    fontWeight: 600,
+};
+
 function VaultOpeningOverlay() {
     const isLoading = useVaultStore((s) => s.isLoading);
     const openState = useVaultStore((s) => s.vaultOpenState);
     const cancelOpenVault = useVaultStore((s) => s.cancelOpenVault);
+    const [cancelHovered, setCancelHovered] = useState(false);
 
     if (!isLoading) return null;
 
@@ -360,23 +367,24 @@ function VaultOpeningOverlay() {
             className="absolute inset-0 flex items-center justify-center p-6"
             style={{
                 zIndex: 50,
-                background:
-                    "linear-gradient(180deg, rgb(6 10 15 / 0.72), rgb(6 10 15 / 0.82))",
+                background: "rgb(6 10 15 / 0.78)",
                 backdropFilter: "blur(10px)",
             }}
         >
             <div
-                className="w-full max-w-md rounded-xl p-5"
+                className="w-full max-w-md rounded-sm p-4"
                 style={{
-                    backgroundColor:
-                        "color-mix(in srgb, var(--bg-secondary) 92%, black)",
-                    border: "1px solid color-mix(in srgb, var(--border) 82%, white 6%)",
-                    boxShadow: "0 24px 80px rgb(0 0 0 / 0.35)",
+                    backgroundColor: "var(--bg-secondary)",
+                    border: "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                    boxShadow: "0 8px 24px rgb(0 0 0 / 0.28)",
                 }}
             >
                 <div
-                    className="text-[11px] uppercase tracking-[0.18em]"
-                    style={{ color: "var(--accent)" }}
+                    className="uppercase"
+                    style={{
+                        ...VAULT_OVERLAY_STRIP_LABEL,
+                        color: "var(--accent)",
+                    }}
                 >
                     Opening vault
                 </div>
@@ -394,8 +402,11 @@ function VaultOpeningOverlay() {
                 </div>
 
                 <div
-                    className="mt-4 h-2 overflow-hidden rounded-full"
-                    style={{ backgroundColor: "var(--bg-primary)" }}
+                    className="mt-4 h-1.5 overflow-hidden rounded-sm"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--border) 35%, transparent)",
+                    }}
                 >
                     <div
                         style={{
@@ -418,12 +429,23 @@ function VaultOpeningOverlay() {
                     />
                 </div>
 
-                <div
-                    className="mt-3 flex items-center justify-between text-xs"
-                    style={{ color: "var(--text-secondary)" }}
-                >
-                    <span>{openState.stage.replaceAll("_", " ")}</span>
-                    <span>
+                <div className="mt-3 flex items-center justify-between">
+                    <span
+                        className="uppercase"
+                        style={{
+                            ...VAULT_OVERLAY_STRIP_LABEL,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        {openState.stage.replaceAll("_", " ")}
+                    </span>
+                    <span
+                        className="text-xs"
+                        style={{
+                            color: "var(--text-secondary)",
+                            opacity: 0.85,
+                        }}
+                    >
                         {hasProgress
                             ? `${openState.processed.toLocaleString()} / ${openState.total.toLocaleString()} ${progressUnit}`
                             : "Preparing index"}
@@ -432,22 +454,40 @@ function VaultOpeningOverlay() {
 
                 {openState.snapshot_used && (
                     <div
-                        className="mt-3 text-xs"
-                        style={{ color: "var(--text-secondary)" }}
+                        className="mt-2 text-[11px]"
+                        style={{
+                            color: "var(--text-secondary)",
+                            opacity: 0.85,
+                        }}
                     >
                         Reusing persisted snapshot before syncing changes.
                     </div>
                 )}
 
-                <div className="mt-5 flex justify-end">
+                <div className="mt-4 flex justify-end">
                     <button
                         type="button"
                         onClick={() => void cancelOpenVault()}
-                        className="rounded-md px-3 py-1.5 text-sm"
+                        onMouseEnter={() => setCancelHovered(true)}
+                        onMouseLeave={() => setCancelHovered(false)}
+                        onFocus={() => setCancelHovered(true)}
+                        onBlur={() => setCancelHovered(false)}
+                        className="rounded-sm px-2.5 py-1 text-xs uppercase"
                         style={{
-                            color: "var(--text-primary)",
-                            border: "1px solid var(--border)",
-                            backgroundColor: "var(--bg-primary)",
+                            color: cancelHovered
+                                ? "var(--text-primary)"
+                                : "var(--text-secondary)",
+                            backgroundColor: cancelHovered
+                                ? "color-mix(in srgb, var(--text-primary) 14%, transparent)"
+                                : "transparent",
+                            border: cancelHovered
+                                ? "1px solid color-mix(in srgb, var(--text-primary) 18%, transparent)"
+                                : "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                            letterSpacing: "0.1em",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            transition:
+                                "background-color 120ms ease, color 120ms ease, border-color 120ms ease",
                         }}
                     >
                         Cancel

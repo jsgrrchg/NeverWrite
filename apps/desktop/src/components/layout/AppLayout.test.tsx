@@ -18,25 +18,35 @@ import {
 } from "../../features/ai/dragEvents";
 
 class MockResizeObserver {
+    static instances: MockResizeObserver[] = [];
+
     private callback: ResizeObserverCallback;
+    private target: Element | null = null;
 
     constructor(callback: ResizeObserverCallback) {
         this.callback = callback;
+        MockResizeObserver.instances.push(this);
     }
 
     observe(target: Element) {
+        this.target = target;
+        this.resizeTo(1200, 800);
+    }
+
+    resizeTo(width: number, height: number) {
+        if (!this.target) return;
         this.callback(
             [
                 {
-                    target,
+                    target: this.target,
                     contentRect: {
-                        width: 1200,
-                        height: 800,
+                        width,
+                        height,
                         x: 0,
                         y: 0,
                         top: 0,
-                        right: 1200,
-                        bottom: 800,
+                        right: width,
+                        bottom: height,
                         left: 0,
                         toJSON: () => ({}),
                     } as DOMRectReadOnly,
@@ -48,7 +58,30 @@ class MockResizeObserver {
 
     unobserve() {}
 
-    disconnect() {}
+    disconnect() {
+        this.target = null;
+    }
+}
+
+function firePointer(
+    target: Element,
+    type: string,
+    init: {
+        button?: number;
+        buttons?: number;
+        clientX: number;
+        pointerId: number;
+    },
+) {
+    const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: init.button ?? 0,
+        buttons: init.buttons ?? 0,
+        clientX: init.clientX,
+    });
+    Object.defineProperty(event, "pointerId", { value: init.pointerId });
+    fireEvent(target, event);
 }
 
 describe("AppLayout", () => {
@@ -84,6 +117,7 @@ describe("AppLayout", () => {
     });
 
     beforeEach(() => {
+        MockResizeObserver.instances = [];
         useLayoutStore.setState({
             sidebarCollapsed: false,
             sidebarWidth: 280,
@@ -142,6 +176,7 @@ describe("AppLayout", () => {
 
         fireEvent.pointerDown(leftResizer as Element, {
             button: 0,
+            buttons: 1,
             clientX: 280,
             pointerId: 1,
         });
@@ -158,6 +193,59 @@ describe("AppLayout", () => {
 
         expect(useLayoutStore.getState().sidebarCollapsed).toBe(false);
         expect(useLayoutStore.getState().sidebarWidth).toBe(280);
+    });
+
+    it("updates the left sidebar width while the drag is still active", async () => {
+        vi.useFakeTimers();
+
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        await act(async () => {
+            MockResizeObserver.instances.forEach((observer) => {
+                observer.resizeTo(1200, 800);
+            });
+        });
+
+        const leftPanel = screen.getByTestId("app-layout-left-panel");
+        const leftInner = leftPanel.querySelector("[data-sidebar-dock-inner]");
+        const leftResizer = screen.getByTestId("app-layout-left-resizer");
+
+        expect(leftInner).toBeInstanceOf(HTMLElement);
+        expect(leftResizer).toBeInstanceOf(HTMLElement);
+
+        firePointer(leftResizer as Element, "pointerdown", {
+            button: 0,
+            buttons: 1,
+            clientX: 280,
+            pointerId: 1,
+        });
+        expect(document.body).toHaveClass("resizing-sidebar");
+        firePointer(leftResizer as Element, "pointermove", {
+            buttons: 1,
+            clientX: 420,
+            pointerId: 1,
+        });
+
+        act(() => {
+            vi.runOnlyPendingTimers();
+        });
+
+        expect((leftPanel as HTMLElement).style.width).toBe("420px");
+        expect((leftInner as HTMLElement).style.width).toBe("420px");
+        expect(useLayoutStore.getState().sidebarWidth).toBe(280);
+
+        firePointer(leftResizer as Element, "pointerup", {
+            clientX: 420,
+            pointerId: 1,
+        });
+
+        expect(useLayoutStore.getState().sidebarWidth).toBe(420);
     });
 
     it("keeps the docked sidebar mounted until the collapse animation finishes", () => {

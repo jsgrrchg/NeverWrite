@@ -389,24 +389,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
           : Math.min(rightPanelWidth, maxRightWidthForLayout);
     // ---- Left resize logic ----
 
-    const applyLeftWidth = useCallback((width: number) => {
-        const panel = leftPanelRef.current;
-        if (!panel) return;
-        panel.style.width = `${width}px`;
-        // Only draw a hairline separator when vibrancy is off. With vibrancy,
-        // the border fights the native material and reads as a hard seam.
-        panel.style.borderRight =
-            !SIDEBAR_TRANSLUCENT_ENABLED && width > 0
-                ? "1px solid var(--border)"
-                : "none";
-    }, []);
-
     const flushLeftWidth = useCallback(() => {
         leftFrameRef.current = null;
         const s = leftSessionRef.current;
         if (!s) return;
-        applyLeftWidth(s.pendingWidth);
-    }, [applyLeftWidth]);
+        setDockedSidebarWidth(s.pendingWidth);
+    }, []);
 
     const scheduleLeftWidth = useCallback(() => {
         if (leftFrameRef.current !== null) return;
@@ -431,10 +419,8 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             ) {
                 resizer.releasePointerCapture(pointerId);
             }
-            applyLeftWidth(s.pendingWidth);
             document.body.classList.remove("resizing-sidebar");
             leftSessionRef.current = null;
-            setIsResizingLeft(false);
 
             const clamped = Math.max(
                 MIN_SIDEBAR_WIDTH,
@@ -446,8 +432,9 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 ) ?? clamped;
             setDockedSidebarWidth(snapped);
             showSidebarAtWidth(snapped);
+            setIsResizingLeft(false);
         },
-        [applyLeftWidth, maxLeftWidthForLayout, showSidebarAtWidth],
+        [maxLeftWidthForLayout, showSidebarAtWidth],
     );
 
     useEffect(() => {
@@ -492,10 +479,10 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
             document.body.classList.add("resizing-sidebar");
+            setDockedSidebarWidth(startWidth);
             setIsResizingLeft(true);
-            applyLeftWidth(startWidth);
         },
-        [applyLeftWidth, sidebarCollapsed, sidebarWidth],
+        [sidebarCollapsed, sidebarWidth],
     );
 
     const onLeftMove = useCallback(
@@ -738,7 +725,9 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     <div
                         data-sidebar-dock-inner
                         style={{
-                            width: sidebarWidth,
+                            width: isResizingLeft
+                                ? dockedSidebarWidth
+                                : sidebarWidth,
                             height: "100%",
                             opacity: sidebarDockHidden ? 0 : 1,
                             transform: sidebarDockHidden
@@ -759,6 +748,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 over to reveal the overlay instead. */}
             {!sidebarCollapsed && (
                 <div
+                    data-testid="app-layout-left-resizer"
                     className="relative shrink-0 cursor-col-resize touch-none"
                     style={{
                         width: RESIZER_HITBOX_WIDTH,

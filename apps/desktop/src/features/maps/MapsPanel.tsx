@@ -397,24 +397,43 @@ export function MapsPanel() {
     return (
         <div className="flex flex-col h-full">
             <div
-                className="shrink-0 border-b border-(--border)"
+                className="shrink-0"
+                style={{ borderBottom: "1px solid var(--border)" }}
             >
                 <div className="flex items-center justify-between px-3 py-2">
-                    <span className="text-xs font-medium text-(--text-secondary) uppercase tracking-wide">
+                    <span
+                        className="text-xs font-semibold uppercase tracking-wider"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
                         Concept Maps
                     </span>
                     <button
                         onClick={handleNewMap}
-                        className="p-1 rounded hover:bg-(--bg-tertiary) text-(--text-secondary) hover:text-(--text-primary)"
                         title="New Concept Map"
+                        className="flex items-center justify-center rounded transition-opacity"
+                        style={{
+                            width: 18,
+                            height: 18,
+                            color: "var(--text-secondary)",
+                            opacity: 0.5,
+                        }}
+                        onMouseEnter={(e) =>
+                            (e.currentTarget.style.opacity = "1")
+                        }
+                        onMouseLeave={(e) =>
+                            (e.currentTarget.style.opacity = "0.5")
+                        }
                     >
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                            <path
-                                d="M8 3v10M3 8h10"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                            />
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                        >
+                            <path d="M8 3v10M3 8h10" />
                         </svg>
                     </button>
                 </div>
