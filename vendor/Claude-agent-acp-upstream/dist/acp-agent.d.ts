@@ -144,7 +144,7 @@ export declare function claudeCliPath(): Promise<string>;
  */
 export declare function stripLocalCommandMetadata(content: unknown): unknown | null;
 export declare function isLocalCommandMetadata(content: unknown): boolean;
-export declare function resolvePermissionMode(defaultMode?: unknown): PermissionMode;
+export declare function resolvePermissionMode(defaultMode?: unknown, logger?: Logger): PermissionMode;
 /**
  * Builds the label for the "Always Allow" permission option so the user can see
  * the exact scope they are committing to. Uses the SDK-provided suggestions

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.31.4](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.31.3...v0.31.4) (2026-04-28)
+
+
+### Bug Fixes
+
+* gate auto mode on model support ([#604](https://github.com/agentclientprotocol/claude-agent-acp/issues/604)) ([ec47d34](https://github.com/agentclientprotocol/claude-agent-acp/commit/ec47d3446fa22e5895621f57c0a4497dbe044505))
+
+## [0.31.3](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.31.2...v0.31.3) (2026-04-28)
+
+
+### Bug Fixes
+
+* Rename effort config category to thought_level ([#609](https://github.com/agentclientprotocol/claude-agent-acp/issues/609)) ([76b4e96](https://github.com/agentclientprotocol/claude-agent-acp/commit/76b4e9650832e59a6b4915ad898fc66a065022fa))
+
+## [0.31.2](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.31.1...v0.31.2) (2026-04-28)
+
+
+### Bug Fixes
+
+* tolerate invalid values in settings.json ([#601](https://github.com/agentclientprotocol/claude-agent-acp/issues/601)) ([67af018](https://github.com/agentclientprotocol/claude-agent-acp/commit/67af018d0216238d8f3cd5bad04a55200518239b))
+
+## [0.31.1](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.31.0...v0.31.1) (2026-04-27)
+
+
+### Bug Fixes
+
+* detect glibc and use correct binary ([#599](https://github.com/agentclientprotocol/claude-agent-acp/issues/599)) ([f0801d5](https://github.com/agentclientprotocol/claude-agent-acp/commit/f0801d50b2390a3c48150b9b8507d30a70c18b84))
+
 ## [0.31.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.30.0...v0.31.0) (2026-04-24)
 
 
