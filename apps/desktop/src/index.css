@@ -241,6 +241,8 @@
     --bg-elevated: #fcfcfc;
     --text-primary: #1c1c1c;
     --text-secondary: #737373;
+    --text-heading: #1c1c1c;
+    --text-heading-muted: #737373;
     --border: #e5e5e5;
     --accent: #6366f1;
     --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
@@ -296,6 +298,8 @@
     --bg-elevated: #232323;
     --text-primary: #e8e8e8;
     --text-secondary: #8a8a8a;
+    --text-heading: #e8e8e8;
+    --text-heading-muted: #8a8a8a;
     --border: #383838;
     --accent: #818cf8;
     --shadow-soft: 0 24px 56px rgba(0, 0, 0, 0.28);
@@ -1195,4 +1199,14 @@ body.dragging-tab * {
         "IBM Plex Mono",
         monospace;
     outline: none;
+}
+
+/* Inline code inside markdown headings — keep proportions, inherit color
+   so the snippet reads as part of the heading instead of fighting it. */
+.nw-md-heading code {
+    font-size: 0.9em;
+    padding: 0.05em 0.35em;
+    background: color-mix(in srgb, var(--bg-tertiary) 55%, transparent);
+    color: inherit;
+    font-weight: 500;
 }

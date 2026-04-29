@@ -27,6 +27,8 @@ export interface ThemeColors {
     bgElevated: string;
     textPrimary: string;
     textSecondary: string;
+    textHeading: string;
+    textHeadingMuted: string;
     border: string;
     accent: string;
     iconMuted: string;
@@ -93,6 +95,8 @@ const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
     bgElevated: "--bg-elevated",
     textPrimary: "--text-primary",
     textSecondary: "--text-secondary",
+    textHeading: "--text-heading",
+    textHeadingMuted: "--text-heading-muted",
     border: "--border",
     accent: "--accent",
     iconMuted: "--icon-muted",

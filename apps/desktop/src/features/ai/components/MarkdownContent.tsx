@@ -923,20 +923,74 @@ function TextBlock({
         if (headerMatch) {
             flushList();
             const level = headerMatch[1].length;
-            const sizes = [
-                "text-[1.4em] font-semibold",
-                "text-[1.2em] font-semibold",
-                "text-[1.05em] font-semibold",
-                "text-[1.05em] font-medium",
-                "text-[0.9em] font-medium",
-                "text-[0.9em] font-medium",
+            // Per-level type scale: size, weight, color token, letter-spacing,
+            // line-height, vertical rhythm, and structural treatment.
+            const headingStyles: Array<{
+                className: string;
+                color: string;
+                letterSpacing: string;
+                lineHeight: number;
+                balance: boolean;
+            }> = [
+                {
+                    className:
+                        "text-[1.5em] font-semibold mt-6 mb-3 first:mt-0",
+                    color: "var(--text-heading)",
+                    letterSpacing: "-0.015em",
+                    lineHeight: 1.2,
+                    balance: true,
+                },
+                {
+                    className:
+                        "text-[1.25em] font-semibold mt-5 mb-2.5 first:mt-0",
+                    color: "var(--text-heading)",
+                    letterSpacing: "-0.01em",
+                    lineHeight: 1.25,
+                    balance: true,
+                },
+                {
+                    className:
+                        "text-[1.1em] font-semibold mt-4 mb-2 first:mt-0",
+                    color: "var(--text-heading)",
+                    letterSpacing: "-0.005em",
+                    lineHeight: 1.3,
+                    balance: false,
+                },
+                {
+                    className:
+                        "text-[1em] font-semibold mt-3 mb-1.5 first:mt-0",
+                    color: "var(--text-heading)",
+                    letterSpacing: "0",
+                    lineHeight: 1.35,
+                    balance: false,
+                },
+                {
+                    className:
+                        "text-[0.9em] font-semibold mt-3 mb-1 first:mt-0",
+                    color: "var(--text-heading-muted)",
+                    letterSpacing: "0.01em",
+                    lineHeight: 1.4,
+                    balance: false,
+                },
+                {
+                    className:
+                        "text-[0.8em] font-semibold uppercase mt-2 mb-1 first:mt-0",
+                    color: "var(--text-heading-muted)",
+                    letterSpacing: "0.05em",
+                    lineHeight: 1.4,
+                    balance: false,
+                },
             ];
+            const h = headingStyles[level - 1];
             elements.push(
                 <div
                     key={elements.length}
-                    className={`${sizes[level - 1]} mt-2 first:mt-0`}
+                    className={`nw-md-heading ${h.className}`}
                     style={{
-                        color: "var(--text-primary)",
+                        color: h.color,
+                        letterSpacing: h.letterSpacing,
+                        lineHeight: h.lineHeight,
+                        textWrap: h.balance ? "balance" : undefined,
                         overflowWrap: "anywhere",
                         wordBreak: "break-word",
                     }}
