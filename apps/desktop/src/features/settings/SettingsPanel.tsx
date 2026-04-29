@@ -50,6 +50,7 @@ import {
 } from "../../app/utils/appZoom";
 import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
+import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
 import { useAppUpdateStore } from "../updates/store";
 import {
@@ -58,6 +59,14 @@ import {
     readSettledSensitiveUpdateState,
     type SensitiveUpdateState,
 } from "../updates/sensitiveState";
+import {
+    EMPTY_SEARCH_QUERY,
+    createSettingsSearchQuery,
+    matchesSettingsSearch,
+    sectionHasSettingsSearchMatches,
+    type SearchValue,
+    type SettingsSearchQuery,
+} from "./settingsSearch";
 
 // --- Primitives ---
 
@@ -720,6 +729,69 @@ function SectionLabel({ children }: { children: string }) {
     );
 }
 
+function EmptySettingsSearch({ search }: { search: string }) {
+    return (
+        <div
+            style={{
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                lineHeight: 1.5,
+                padding: "24px 0",
+            }}
+        >
+            No settings match "{search.trim()}".
+        </div>
+    );
+}
+
+function EmptyPanelSearchResult() {
+    return (
+        <div
+            style={{
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                lineHeight: 1.5,
+                padding: "24px 0",
+            }}
+        >
+            No matching settings in this panel.
+        </div>
+    );
+}
+
+function SearchableRow({
+    control,
+    description,
+    disabled,
+    keywords = [],
+    label,
+    searchQuery,
+    section,
+}: {
+    control: React.ReactNode;
+    description?: string;
+    disabled?: boolean;
+    keywords?: readonly SearchValue[];
+    label: string;
+    searchQuery: SettingsSearchQuery;
+    section: string;
+}) {
+    if (
+        !matchesSettingsSearch(searchQuery, section, label, description, ...keywords)
+    ) {
+        return null;
+    }
+
+    return (
+        <Row
+            control={control}
+            description={description}
+            disabled={disabled}
+            label={label}
+        />
+    );
+}
+
 function formatSpellcheckCatalogSize(sizeBytes: number, sizeKnown: boolean) {
     if (!sizeKnown || sizeBytes <= 0) {
         return "Size unknown";
@@ -750,14 +822,38 @@ function formatUpdateDate(date: string | undefined) {
 
 // --- Category content ---
 
-function GeneralSettings() {
+function GeneralSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
     const { openLastVaultOnLaunch, tabOpenBehavior, setSetting } =
         useSettingsStore();
+    const showStartup = sectionHasSettingsSearchMatches(searchQuery, "Startup", [
+        [
+            "Open last vault on launch",
+            `Automatically reopen the last vault when ${APP_BRAND_NAME} starts.`,
+        ],
+    ]);
+    const showTabs = sectionHasSettingsSearchMatches(searchQuery, "Tabs", [
+        [
+            "Open behavior",
+            "Choose whether opening notes and files reuses the current tab history or creates a new tab.",
+            "History",
+            "New tab",
+        ],
+    ]);
+
+    if (!showStartup && !showTabs) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Startup</SectionLabel>
-            <Row
+            {showStartup ? <SectionLabel>Startup</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Startup"
                 label="Open last vault on launch"
                 description={`Automatically reopen the last vault when ${APP_BRAND_NAME} starts.`}
                 control={
@@ -768,10 +864,13 @@ function GeneralSettings() {
                 }
             />
 
-            <SectionLabel>Tabs</SectionLabel>
-            <Row
+            {showTabs ? <SectionLabel>Tabs</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Tabs"
                 label="Open behavior"
                 description="Choose whether opening notes and files reuses the current tab history or creates a new tab."
+                keywords={["History", "New tab"]}
                 control={
                     <SegmentedControl
                         value={tabOpenBehavior}
@@ -816,7 +915,11 @@ function useAppZoomPercent() {
     return [appZoomPercent, writeAppZoomPercent] as const;
 }
 
-function AppearanceSettings() {
+function AppearanceSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
     const { mode, setMode, themeName, setThemeName } = useThemeStore();
     const {
         fileTreeScale,
@@ -831,13 +934,61 @@ function AppearanceSettings() {
         formatShortcutAction("zoom_out", platform),
         formatShortcutAction("reset_zoom", platform),
     ].join(" / ");
+    const showMode = sectionHasSettingsSearchMatches(searchQuery, "Mode", [
+        [
+            "System theme",
+            `Choose how ${APP_BRAND_NAME} looks. 'System' follows your OS preference.`,
+            "System",
+            "Light",
+            "Dark",
+        ],
+    ]);
+    const showTheme = matchesSettingsSearch(
+        searchQuery,
+        "Theme",
+        "Themes",
+        "Visual preferences",
+        ...THEME_ORDER.flatMap((name) => [name, themes[name].label]),
+    );
+    const showNavigation = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Navigation",
+        [
+            [
+                "File tree size",
+                "Scale text and rows in the file tree, in percent.",
+            ],
+            [
+                "Agents size",
+                "Scale text and rows in the Agents sidebar, in percent.",
+            ],
+            [
+                "Sticky folders",
+                "Keep parent folders pinned at the top while scrolling the file tree.",
+            ],
+        ],
+    );
+    const showZoom = sectionHasSettingsSearchMatches(searchQuery, "Zoom", [
+        [
+            "App zoom",
+            `Scale the entire app UI, in percent. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`,
+            appZoomShortcut,
+        ],
+    ]);
+
+    if (!showMode && !showTheme && !showNavigation && !showZoom) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Mode</SectionLabel>
-            <Row
+            {showMode ? <SectionLabel>Mode</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Mode"
                 label="System theme"
                 description={`Choose how ${APP_BRAND_NAME} looks. 'System' follows your OS preference.`}
+                keywords={["System", "Light", "Dark"]}
                 control={
                     <SegmentedControl
                         value={mode}
@@ -851,11 +1002,17 @@ function AppearanceSettings() {
                 }
             />
 
-            <SectionLabel>Theme</SectionLabel>
-            <ThemePicker value={themeName} onChange={setThemeName} />
+            {showTheme ? (
+                <>
+                    <SectionLabel>Theme</SectionLabel>
+                    <ThemePicker value={themeName} onChange={setThemeName} />
+                </>
+            ) : null}
 
-            <SectionLabel>Navigation</SectionLabel>
-            <Row
+            {showNavigation ? <SectionLabel>Navigation</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Navigation"
                 label="File tree size"
                 description="Scale text and rows in the file tree, in percent."
                 control={
@@ -867,7 +1024,9 @@ function AppearanceSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Navigation"
                 label="Agents size"
                 description="Scale text and rows in the Agents sidebar, in percent."
                 control={
@@ -879,7 +1038,9 @@ function AppearanceSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Navigation"
                 label="Sticky folders"
                 description="Keep parent folders pinned at the top while scrolling the file tree."
                 control={
@@ -892,10 +1053,13 @@ function AppearanceSettings() {
                 }
             />
 
-            <SectionLabel>Zoom</SectionLabel>
-            <Row
+            {showZoom ? <SectionLabel>Zoom</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Zoom"
                 label="App zoom"
                 description={`Scale the entire app UI, in percent. Use ${appZoomShortcut} from the keyboard or the View menu. Editor, chat, and composer font sizes stay independent.`}
+                keywords={[appZoomShortcut]}
                 control={
                     <NumberStepper
                         value={appZoomPercent}
@@ -910,7 +1074,7 @@ function AppearanceSettings() {
     );
 }
 
-function EditorSettings() {
+function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const {
         editorFontSize,
         editorFontFamily,
@@ -922,11 +1086,53 @@ function EditorSettings() {
         tabSize,
         setSetting,
     } = useSettingsStore();
+    const showTypography = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Typography",
+        [
+            ["Font size", "Text size in the editor, in pixels."],
+            [
+                "Font family",
+                "Font used in the editor.",
+                ...EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                    option.value,
+                    option.label,
+                    option.group,
+                ]),
+            ],
+            ["Line spacing", "Line height in the editor. 150 means 1.5x."],
+            [
+                "Autosave delay",
+                "Delay before saving note and text-file edits automatically, in milliseconds.",
+            ],
+        ],
+    );
+    const showFormatting = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Formatting",
+        [
+            ["Line wrapping", "Wrap long lines to fit the editor width."],
+            [
+                "Justify text",
+                "Distribute wrapped lines evenly across the editor width.",
+            ],
+            ["Tab size", "Number of spaces inserted when pressing Tab.", 2, 4],
+        ],
+    );
+    const showLayout = sectionHasSettingsSearchMatches(searchQuery, "Layout", [
+        ["Text width", "Maximum width of the editor content, in pixels."],
+    ]);
+
+    if (!showTypography && !showFormatting && !showLayout) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Typography</SectionLabel>
-            <Row
+            {showTypography ? <SectionLabel>Typography</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Font size"
                 description="Text size in the editor, in pixels."
                 control={
@@ -938,9 +1144,16 @@ function EditorSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Font family"
                 description="Font used in the editor."
+                keywords={EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                    option.value,
+                    option.label,
+                    option.group,
+                ])}
                 control={
                     <SelectField
                         value={editorFontFamily}
@@ -954,7 +1167,9 @@ function EditorSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Line spacing"
                 description="Line height in the editor. 150 means 1.5×."
                 control={
@@ -968,7 +1183,9 @@ function EditorSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Autosave delay"
                 description="Delay before saving note and text-file edits automatically, in milliseconds."
                 control={
@@ -983,8 +1200,10 @@ function EditorSettings() {
                 }
             />
 
-            <SectionLabel>Formatting</SectionLabel>
-            <Row
+            {showFormatting ? <SectionLabel>Formatting</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Formatting"
                 label="Line wrapping"
                 description="Wrap long lines to fit the editor width."
                 control={
@@ -994,7 +1213,9 @@ function EditorSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Formatting"
                 label="Justify text"
                 description="Distribute wrapped lines evenly across the editor width."
                 control={
@@ -1004,9 +1225,12 @@ function EditorSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Formatting"
                 label="Tab size"
                 description="Number of spaces inserted when pressing Tab."
+                keywords={[2, 4]}
                 control={
                     <SegmentedControl
                         value={tabSize}
@@ -1019,8 +1243,10 @@ function EditorSettings() {
                 }
             />
 
-            <SectionLabel>Layout</SectionLabel>
-            <Row
+            {showLayout ? <SectionLabel>Layout</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Layout"
                 label="Text width"
                 description="Maximum width of the editor content, in pixels."
                 control={
@@ -1038,7 +1264,11 @@ function EditorSettings() {
     );
 }
 
-function SpellcheckSettings() {
+function SpellcheckSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
     const {
         editorSpellcheck,
         spellcheckPrimaryLanguage,
@@ -1112,18 +1342,111 @@ function SpellcheckSettings() {
     const downloadableCatalogEntries = spellcheckCatalog.filter(
         (entry) => !entry.bundled,
     );
-    const filteredCatalogEntries = catalogSearch
-        ? downloadableCatalogEntries.filter(
-              (entry) =>
-                  entry.label
-                      .toLowerCase()
-                      .includes(catalogSearch.toLowerCase()) ||
-                  entry.id.toLowerCase().includes(catalogSearch.toLowerCase()),
-          )
-        : downloadableCatalogEntries;
+    const catalogSearchQuery = createSettingsSearchQuery(catalogSearch);
+    const filteredCatalogEntries = downloadableCatalogEntries.filter((entry) => {
+        const values = [
+            "Dictionary Catalog",
+            "Search languages",
+            entry.id,
+            entry.label,
+            entry.source,
+            entry.version,
+            entry.installed_version,
+            entry.license,
+            entry.update_available ? "Update available" : undefined,
+            entry.installed ? "Installed" : undefined,
+        ];
+
+        return (
+            matchesSettingsSearch(catalogSearchQuery, ...values) &&
+            matchesSettingsSearch(searchQuery, ...values)
+        );
+    });
     const spellcheckPacksDirectory = spellcheckRuntimeDirectory
         ? `${spellcheckRuntimeDirectory}/packs`
         : null;
+    const showLanguages = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Languages",
+        [
+            [
+                "Spellcheck",
+                "Use the app spellcheck engine in Markdown notes and note titles.",
+            ],
+            [
+                "Primary language",
+                spellcheckPrimaryLanguageDescription,
+                spellcheckPrimaryLanguage,
+                ...spellcheckPrimaryLanguageOptions.flatMap((option) => [
+                    option.value,
+                    option.label,
+                ]),
+            ],
+            [
+                "Secondary language",
+                spellcheckSecondaryLanguageDescription,
+                spellcheckSecondaryLanguage,
+                ...spellcheckSecondaryLanguageOptions.flatMap((option) => [
+                    option.value,
+                    option.label,
+                ]),
+            ],
+        ],
+    );
+    const showGrammar = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Grammar Check",
+        [
+            [
+                "Grammar check",
+                "Check grammar and style using LanguageTool. Uses the spellcheck primary language.",
+                "LanguageTool",
+            ],
+            [
+                "Server URL",
+                "Leave empty to use the public LanguageTool API. For privacy, run a local server (e.g. localhost:8081).",
+                grammarCheckServerUrl,
+                "languagetool.org",
+                "local server",
+            ],
+        ],
+    );
+    const showDictionaries = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Dictionaries",
+        [
+            [
+                "Spellcheck dictionaries",
+                "Bundled dictionaries are ready immediately. Downloadable Hunspell packs live in the app spellcheck folder and can be managed even while spellcheck is off.",
+                spellcheckLanguagesSummary,
+                spellcheckRuntimeDirectory,
+                spellcheckPacksDirectory,
+                spellcheckLastError,
+                spellcheckCatalogNotice?.message,
+                "Open Folder",
+                "Reload",
+                "Hunspell",
+            ],
+        ],
+    );
+    const showCatalog =
+        downloadableCatalogEntries.length > 0 &&
+        (matchesSettingsSearch(
+            searchQuery,
+            "Dictionary Catalog",
+            "Search languages",
+            "Download",
+            "Update",
+            "Remove",
+            "Reinstall",
+            "Checksum",
+            "License",
+        ) ||
+            filteredCatalogEntries.length > 0);
+
+    if (!showLanguages && !showGrammar && !showDictionaries && !showCatalog) {
+        return <EmptyPanelSearchResult />;
+    }
 
     const showSpellcheckNotice = (
         tone: "success" | "error",
@@ -1193,18 +1516,24 @@ function SpellcheckSettings() {
 
     return (
         <div>
-            <SectionLabel>Languages</SectionLabel>
-            <p
-                style={{
-                    fontSize: 11,
-                    color: "var(--text-secondary)",
-                    margin: "0 0 6px 0",
-                    fontStyle: "italic",
-                }}
-            >
-                These settings apply to the current vault only.
-            </p>
-            <Row
+            {showLanguages ? (
+                <>
+                    <SectionLabel>Languages</SectionLabel>
+                    <p
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                            margin: "0 0 6px 0",
+                            fontStyle: "italic",
+                        }}
+                    >
+                        These settings apply to the current vault only.
+                    </p>
+                </>
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Languages"
                 label="Spellcheck"
                 description="Use the app spellcheck engine in Markdown notes and note titles."
                 control={
@@ -1214,10 +1543,19 @@ function SpellcheckSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Languages"
                 label="Primary language"
                 description={spellcheckPrimaryLanguageDescription}
                 disabled={!editorSpellcheck}
+                keywords={[
+                    spellcheckPrimaryLanguage,
+                    ...spellcheckPrimaryLanguageOptions.flatMap((option) => [
+                        option.value,
+                        option.label,
+                    ]),
+                ]}
                 control={
                     <SelectField
                         value={spellcheckPrimaryLanguage}
@@ -1232,10 +1570,19 @@ function SpellcheckSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Languages"
                 label="Secondary language"
                 description={spellcheckSecondaryLanguageDescription}
                 disabled={!editorSpellcheck}
+                keywords={[
+                    spellcheckSecondaryLanguage,
+                    ...spellcheckSecondaryLanguageOptions.flatMap((option) => [
+                        option.value,
+                        option.label,
+                    ]),
+                ]}
                 control={
                     <SelectField
                         value={spellcheckSecondaryLanguage}
@@ -1250,10 +1597,13 @@ function SpellcheckSettings() {
                     />
                 }
             />
-            <SectionLabel>Grammar Check</SectionLabel>
-            <Row
+            {showGrammar ? <SectionLabel>Grammar Check</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Grammar Check"
                 label="Grammar check"
                 description="Check grammar and style using LanguageTool. Uses the spellcheck primary language."
+                keywords={["LanguageTool"]}
                 control={
                     <Toggle
                         value={grammarCheckEnabled}
@@ -1261,10 +1611,17 @@ function SpellcheckSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Grammar Check"
                 label="Server URL"
                 description="Leave empty to use the public LanguageTool API. For privacy, run a local server (e.g. localhost:8081)."
                 disabled={!grammarCheckEnabled}
+                keywords={[
+                    grammarCheckServerUrl,
+                    "languagetool.org",
+                    "local server",
+                ]}
                 control={
                     <input
                         type="text"
@@ -1294,7 +1651,7 @@ function SpellcheckSettings() {
                     />
                 }
             />
-            {grammarCheckEnabled && !grammarCheckServerUrl && (
+            {showGrammar && grammarCheckEnabled && !grammarCheckServerUrl && (
                 <p
                     style={{
                         fontSize: 11,
@@ -1320,10 +1677,22 @@ function SpellcheckSettings() {
                     .
                 </p>
             )}
-            <SectionLabel>Dictionaries</SectionLabel>
-            <Row
+            {showDictionaries ? <SectionLabel>Dictionaries</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Dictionaries"
                 label="Spellcheck dictionaries"
                 description="Bundled dictionaries are ready immediately. Downloadable Hunspell packs live in the app spellcheck folder and can be managed even while spellcheck is off."
+                keywords={[
+                    spellcheckLanguagesSummary,
+                    spellcheckRuntimeDirectory,
+                    spellcheckPacksDirectory,
+                    spellcheckLastError,
+                    spellcheckCatalogNotice?.message,
+                    "Open Folder",
+                    "Reload",
+                    "Hunspell",
+                ]}
                 control={
                     <div
                         style={{
@@ -1407,7 +1776,7 @@ function SpellcheckSettings() {
                     </div>
                 }
             />
-            {downloadableCatalogEntries.length > 0 && (
+            {showCatalog && (
                 <>
                     <SectionLabel>Dictionary Catalog</SectionLabel>
                     <div style={{ marginBottom: 8 }}>
@@ -1648,7 +2017,7 @@ function SpellcheckSettings() {
     );
 }
 
-function VaultSettings() {
+function VaultSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [recents, setRecents] = useState<RecentVault[]>(() =>
         getRecentVaults(),
@@ -1658,12 +2027,50 @@ function VaultSettings() {
 
     const normalizedRecentSearch = recentSearch.trim().toLowerCase();
     const filteredRecents = recents.filter((vault) => {
-        if (!normalizedRecentSearch) return true;
-        return (
+        const matchesLocalSearch =
+            !normalizedRecentSearch ||
             vault.name.toLowerCase().includes(normalizedRecentSearch) ||
-            vault.path.toLowerCase().includes(normalizedRecentSearch)
+            vault.path.toLowerCase().includes(normalizedRecentSearch);
+
+        return (
+            matchesLocalSearch &&
+            matchesSettingsSearch(
+                searchQuery,
+                "Recent Vaults",
+                vault.name,
+                vault.path,
+            )
         );
     });
+    const showCurrentVault = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Current Vault",
+        [
+            [
+                "Vault path",
+                "The folder currently open as your vault.",
+                vaultPath,
+                "No vault open",
+            ],
+        ],
+    );
+    const showRecentVaults =
+        recents.length === 0
+            ? matchesSettingsSearch(
+                  searchQuery,
+                  "Recent Vaults",
+                  "No recent vaults.",
+              )
+            : matchesSettingsSearch(
+                  searchQuery,
+                  "Recent Vaults",
+                  "Search recent vaults",
+                  "Clear recent vaults",
+              ) || filteredRecents.length > 0;
+
+    if (!showCurrentVault && !showRecentVaults) {
+        return <EmptyPanelSearchResult />;
+    }
 
     const handleRemoveVault = async (path: string) => {
         await removeVaultFromList(path);
@@ -1680,10 +2087,13 @@ function VaultSettings() {
 
     return (
         <div>
-            <SectionLabel>Current Vault</SectionLabel>
-            <Row
+            {showCurrentVault ? <SectionLabel>Current Vault</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Current Vault"
                 label="Vault path"
                 description="The folder currently open as your vault."
+                keywords={[vaultPath, "No vault open"]}
                 control={
                     <span
                         style={{
@@ -1703,8 +2113,8 @@ function VaultSettings() {
                 }
             />
 
-            <SectionLabel>Recent Vaults</SectionLabel>
-            {recents.length === 0 ? (
+            {showRecentVaults ? <SectionLabel>Recent Vaults</SectionLabel> : null}
+            {showRecentVaults && recents.length === 0 ? (
                 <p
                     style={{
                         fontSize: 12,
@@ -1714,7 +2124,8 @@ function VaultSettings() {
                 >
                     No recent vaults.
                 </p>
-            ) : (
+            ) : null}
+            {showRecentVaults && recents.length > 0 ? (
                 <>
                     <div
                         style={{
@@ -1950,7 +2361,7 @@ function VaultSettings() {
                         </button>
                     </div>
                 </>
-            )}
+            ) : null}
         </div>
     );
 }
@@ -1967,7 +2378,11 @@ type UpdateStateKind =
 const MONO_FONT_STACK =
     'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
-function UpdatesSettings() {
+function UpdatesSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
     const status = useAppUpdateStore((state) => state.status);
     const loading = useAppUpdateStore((state) => state.loading);
     const checking = useAppUpdateStore((state) => state.checking);
@@ -2079,13 +2494,75 @@ function UpdatesSettings() {
         hasChecked,
         stateKind,
     });
+    const updateVersionLabel = status?.update
+        ? formatVersionPillLabel(status.update.version)
+        : null;
+    const updateDateLabel = formatUpdateDate(status?.update?.date ?? undefined);
+    const showVersion = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Version",
+        [
+            [
+                "Current version",
+                `You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`,
+                currentVersionLabel,
+                primaryAction.label,
+            ],
+            [
+                "Channel",
+                "Release track used when querying the update feed.",
+                status?.channel,
+                "stable",
+            ],
+            [
+                "Automatic updates",
+                updaterConfigured
+                    ? "Enabled. Updates are fetched from the release feed and applied after restart."
+                    : "Not available in this build.",
+            ],
+            [
+                "Update status",
+                statusDescription,
+                stateKind,
+                status?.message,
+                effectiveError,
+                updateVersionLabel,
+            ],
+        ],
+    );
+    const showAvailableUpdate =
+        status?.update != null &&
+        sectionHasSettingsSearchMatches(searchQuery, "Available update", [
+            ["Version", updateVersionLabel],
+            ["Published", updateDateLabel, status.update.date],
+            [status.update.body],
+        ]);
+    const showInterruptWarning =
+        showVersion &&
+        showConfirmInstall &&
+        matchesSettingsSearch(
+            searchQuery,
+            "Version",
+            "This update may interrupt active work.",
+            ...sensitiveState.items.flatMap((item) => [
+                item.title,
+                ...item.details,
+            ]),
+        );
+
+    if (!showVersion && !showAvailableUpdate) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Version</SectionLabel>
-            <Row
+            {showVersion ? <SectionLabel>Version</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Current version"
                 description={`You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`}
+                keywords={[currentVersionLabel, primaryAction.label]}
                 control={
                     <div
                         style={{
@@ -2105,12 +2582,17 @@ function UpdatesSettings() {
                     </div>
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Channel"
                 description="Release track used when querying the update feed."
+                keywords={[status?.channel, "stable"]}
                 control={<VersionPill label={status?.channel ?? "stable"} />}
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Automatic updates"
                 description={
                     updaterConfigured
@@ -2125,9 +2607,17 @@ function UpdatesSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Version"
                 label="Update status"
                 description={statusDescription}
+                keywords={[
+                    stateKind,
+                    status?.message,
+                    effectiveError,
+                    updateVersionLabel,
+                ]}
                 control={
                     <div
                         style={{
@@ -2154,7 +2644,7 @@ function UpdatesSettings() {
                 }
             />
 
-            {showConfirmInstall ? (
+            {showInterruptWarning ? (
                 <div
                     style={{
                         marginTop: 12,
@@ -2224,11 +2714,14 @@ function UpdatesSettings() {
                 </div>
             ) : null}
 
-            {status?.update ? (
+            {showAvailableUpdate && status?.update ? (
                 <>
                     <SectionLabel>Available update</SectionLabel>
-                    <Row
+                    <SearchableRow
+                        searchQuery={searchQuery}
+                        section="Available update"
                         label="Version"
+                        keywords={[updateVersionLabel]}
                         control={
                             <VersionPill
                                 label={formatVersionPillLabel(
@@ -2237,8 +2730,11 @@ function UpdatesSettings() {
                             />
                         }
                     />
-                    <Row
+                    <SearchableRow
+                        searchQuery={searchQuery}
+                        section="Available update"
                         label="Published"
+                        keywords={[updateDateLabel, status.update.date]}
                         control={
                             <span
                                 style={{
@@ -2519,7 +3015,11 @@ function resolveStatusDescription({
     }
 }
 
-function DevelopersSettings() {
+function DevelopersSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
     const {
         developerModeEnabled,
         developerTerminalEnabled,
@@ -2528,11 +3028,55 @@ function DevelopersSettings() {
         fileTreeShowExtensions,
         setSetting,
     } = useSettingsStore();
+    const showDeveloperMode = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Developer Mode",
+        [
+            [
+                "Enable Developer Mode",
+                "Show experimental developer-facing surfaces such as the integrated terminal panel.",
+            ],
+            [
+                "Enable Integrated Terminal",
+                "Show the bottom developer terminal panel and its related commands.",
+                "terminal",
+            ],
+        ],
+    );
+    const showEditor = sectionHasSettingsSearchMatches(searchQuery, "Editor", [
+        ["Line wrapping", "Wrap long lines to fit the editor width."],
+    ]);
+    const showFileTree = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "File Tree",
+        [
+            [
+                "Show all vault files",
+                "Display every file in the vault tree, not only Markdown notes and PDFs.",
+                "File-oriented search is active",
+                "Search Files & Notes",
+                "wikilink suggestions",
+                "@ mentions",
+            ],
+            [
+                "Show file extensions",
+                "Display full file names with their extensions in the vault tree.",
+            ],
+        ],
+    );
+
+    if (!showDeveloperMode && !showEditor && !showFileTree) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Developer Mode</SectionLabel>
-            <Row
+            {showDeveloperMode ? (
+                <SectionLabel>Developer Mode</SectionLabel>
+            ) : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Developer Mode"
                 label="Enable Developer Mode"
                 description="Show experimental developer-facing surfaces such as the integrated terminal panel."
                 control={
@@ -2544,10 +3088,13 @@ function DevelopersSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Developer Mode"
                 label="Enable Integrated Terminal"
                 description="Show the bottom developer terminal panel and its related commands."
                 disabled={!developerModeEnabled}
+                keywords={["terminal"]}
                 control={
                     <Toggle
                         value={developerTerminalEnabled}
@@ -2559,8 +3106,10 @@ function DevelopersSettings() {
                 }
             />
 
-            <SectionLabel>Editor</SectionLabel>
-            <Row
+            {showEditor ? <SectionLabel>Editor</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Editor"
                 label="Line wrapping"
                 description="Wrap long lines to fit the editor width."
                 control={
@@ -2571,10 +3120,18 @@ function DevelopersSettings() {
                 }
             />
 
-            <SectionLabel>File Tree</SectionLabel>
-            <Row
+            {showFileTree ? <SectionLabel>File Tree</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="File Tree"
                 label="Show all vault files"
                 description="Display every file in the vault tree, not only Markdown notes and PDFs."
+                keywords={[
+                    "File-oriented search is active",
+                    "Search Files & Notes",
+                    "wikilink suggestions",
+                    "@ mentions",
+                ]}
                 control={
                     <Toggle
                         value={fileTreeContentMode === "all_files"}
@@ -2587,7 +3144,9 @@ function DevelopersSettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="File Tree"
                 label="Show file extensions"
                 description="Display full file names with their extensions in the vault tree."
                 control={
@@ -2599,7 +3158,7 @@ function DevelopersSettings() {
                     />
                 }
             />
-            {fileTreeContentMode === "all_files" && (
+            {showFileTree && fileTreeContentMode === "all_files" && (
                 <div
                     className="mx-4 mt-3 rounded-lg px-3 py-2 text-[12px]"
                     style={{
@@ -2618,17 +3177,51 @@ function DevelopersSettings() {
     );
 }
 
-function ShortcutsSettings() {
+function ShortcutsSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
     const platform = getDesktopPlatform();
     const shortcuts = getShortcutSettingsEntries(platform);
+    const filteredShortcuts = shortcuts.filter((shortcut) =>
+        matchesSettingsSearch(
+            searchQuery,
+            "Keyboard shortcuts",
+            shortcut.category,
+            shortcut.label,
+            shortcut.shortcut,
+        ),
+    );
 
-    const grouped = shortcuts.reduce<Record<string, typeof shortcuts>>(
+    const grouped = filteredShortcuts.reduce<Record<string, typeof shortcuts>>(
         (acc, s) => {
             (acc[s.category] ??= []).push(s);
             return acc;
         },
         {},
     );
+
+    if (shortcuts.length === 0) {
+        return (
+            <div>
+                <SectionLabel>Shortcuts</SectionLabel>
+                <p
+                    style={{
+                        fontSize: 12,
+                        color: "var(--text-secondary)",
+                        padding: "12px 0",
+                    }}
+                >
+                    No shortcuts registered yet.
+                </p>
+            </div>
+        );
+    }
+
+    if (filteredShortcuts.length === 0) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
@@ -2675,7 +3268,7 @@ function ShortcutsSettings() {
     );
 }
 
-function AISettings() {
+function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const setSetting = useSettingsStore((s) => s.setSetting);
     const requireCmdEnterToSend = useChatStore((s) => s.requireCmdEnterToSend);
@@ -2707,13 +3300,89 @@ function AISettings() {
         (s) => s.setHistoryRetentionDays,
     );
     const sendShortcut = formatPrimaryShortcut("Enter", getDesktopPlatform());
+    const fontKeywords = EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
+        option.value,
+        option.label,
+        option.group,
+    ]);
+    const showContext = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Context",
+        [
+            [
+                "Inline review in editor",
+                "Show AI file changes inline in editors with accept and reject controls. Available only in source mode. This preference is saved per vault.",
+                "review",
+                "accept",
+                "reject",
+            ],
+        ],
+    );
+    const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
+        ["Chat font family", "Font used for messages in the chat.", ...fontKeywords],
+        ["Chat font size", "Font size of messages in the chat, in pixels."],
+        [
+            "Chat history retention",
+            "How long saved chat histories stay on disk before they are automatically deleted.",
+            "Forever",
+            "1 day",
+            "7 days",
+            "30 days",
+            "90 days",
+            "1 year",
+        ],
+    ]);
+    const showComposer = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Composer",
+        [
+            [
+                `Require ${sendShortcut} to send`,
+                `Press ${sendShortcut} to send messages. Enter alone adds a new line, making it easier to write longer messages.`,
+                sendShortcut,
+                "Enter",
+                "new line",
+            ],
+            [
+                "Show context usage bar",
+                "Display a thin usage strip at the bottom of the composer to track context window consumption.",
+                "context window",
+            ],
+            [
+                "Screenshot retention",
+                "How long pasted screenshots stay in the AI composer before they are removed automatically.",
+                "Forever",
+                "30 seconds",
+                "1 minute",
+                "5 minutes",
+                "15 minutes",
+                "30 minutes",
+            ],
+            [
+                "Composer font family",
+                "Font used in the message input box.",
+                ...fontKeywords,
+            ],
+            [
+                "Composer font size",
+                "Font size of the message input box, in pixels.",
+            ],
+        ],
+    );
+
+    if (!showContext && !showChat && !showComposer) {
+        return <EmptyPanelSearchResult />;
+    }
 
     return (
         <div>
-            <SectionLabel>Context</SectionLabel>
-            <Row
+            {showContext ? <SectionLabel>Context</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Context"
                 label="Inline review in editor"
                 description="Show AI file changes inline in editors with accept and reject controls. Available only in source mode. This preference is saved per vault."
+                keywords={["review", "accept", "reject"]}
                 control={
                     <Toggle
                         value={inlineReviewEnabled}
@@ -2723,10 +3392,13 @@ function AISettings() {
                     />
                 }
             />
-            <SectionLabel>Chat</SectionLabel>
-            <Row
+            {showChat ? <SectionLabel>Chat</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
                 label="Chat font family"
                 description="Font used for messages in the chat."
+                keywords={fontKeywords}
                 control={
                     <SelectField
                         value={chatFontFamily}
@@ -2737,7 +3409,9 @@ function AISettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
                 label="Chat font size"
                 description="Font size of messages in the chat, in pixels."
                 control={
@@ -2749,9 +3423,12 @@ function AISettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
                 label="Chat history retention"
                 description="How long saved chat histories stay on disk before they are automatically deleted."
+                keywords={["Forever", "1 day", "7 days", "30 days", "90 days", "1 year"]}
                 control={
                     <SelectField
                         value={historyRetentionDays}
@@ -2769,10 +3446,13 @@ function AISettings() {
                     />
                 }
             />
-            <SectionLabel>Composer</SectionLabel>
-            <Row
+            {showComposer ? <SectionLabel>Composer</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label={`Require ${sendShortcut} to send`}
                 description={`Press ${sendShortcut} to send messages. Enter alone adds a new line, making it easier to write longer messages.`}
+                keywords={[sendShortcut, "Enter", "new line"]}
                 control={
                     <Toggle
                         value={requireCmdEnterToSend}
@@ -2780,9 +3460,12 @@ function AISettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Show context usage bar"
                 description="Display a thin usage strip at the bottom of the composer to track context window consumption."
+                keywords={["context window"]}
                 control={
                     <Toggle
                         value={contextUsageBarEnabled}
@@ -2790,9 +3473,19 @@ function AISettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Screenshot retention"
                 description="How long pasted screenshots stay in the AI composer before they are removed automatically."
+                keywords={[
+                    "Forever",
+                    "30 seconds",
+                    "1 minute",
+                    "5 minutes",
+                    "15 minutes",
+                    "30 minutes",
+                ]}
                 control={
                     <SelectField
                         value={screenshotRetentionSeconds}
@@ -2810,9 +3503,12 @@ function AISettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Composer font family"
                 description="Font used in the message input box."
+                keywords={fontKeywords}
                 control={
                     <SelectField
                         value={composerFontFamily}
@@ -2823,7 +3519,9 @@ function AISettings() {
                     />
                 }
             />
-            <Row
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Composer"
                 label="Composer font size"
                 description="Font size of the message input box, in pixels."
                 control={
@@ -2839,8 +3537,12 @@ function AISettings() {
     );
 }
 
-function AIProvidersCategorySettings() {
-    return <AIProvidersSettings />;
+function AIProvidersCategorySettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
+    return <AIProvidersSettings searchQuery={searchQuery} />;
 }
 
 // --- Categories ---
@@ -3066,6 +3768,237 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     ai: "AI assistant chat preferences",
 };
 
+const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = {
+    general: [
+        "Startup",
+        "Open last vault on launch",
+        "Automatically reopen the last vault when the app starts",
+        "Tabs",
+        "Open behavior",
+        "History",
+        "New tab",
+    ],
+    appearance: [
+        "Mode",
+        "System theme",
+        "System",
+        "Light",
+        "Dark",
+        "Theme",
+        "Themes",
+        "visual preferences",
+        "Navigation",
+        "File tree size",
+        "Agents size",
+        "Sticky folders",
+        "Zoom",
+        "App zoom",
+        "View menu",
+    ],
+    editor: [
+        "Typography",
+        "Font size",
+        "Font family",
+        "Line spacing",
+        "Autosave delay",
+        "Formatting",
+        "Line wrapping",
+        "Justify text",
+        "Tab size",
+        "Layout",
+        "Text width",
+    ],
+    spellcheck: [
+        "Languages",
+        "Spellcheck",
+        "Primary language",
+        "Secondary language",
+        "Grammar Check",
+        "LanguageTool",
+        "Server URL",
+        "Dictionaries",
+        "Spellcheck dictionaries",
+        "Hunspell",
+        "Dictionary Catalog",
+        "Search languages",
+        "Download",
+        "Reload",
+        "Open Folder",
+    ],
+    updates: [
+        "Version",
+        "Current version",
+        "Channel",
+        "Automatic updates",
+        "Update status",
+        "Available update",
+        "Published",
+        "download and install",
+        "check for updates",
+        "appcast",
+        "release feed",
+    ],
+    developers: [
+        "Developer Mode",
+        "Enable Developer Mode",
+        "Enable Integrated Terminal",
+        "terminal",
+        "Editor",
+        "Line wrapping",
+        "File Tree",
+        "Show all vault files",
+        "Show file extensions",
+        "Search Files & Notes",
+        "wikilink suggestions",
+        "@ mentions",
+    ],
+    vault: [
+        "Current Vault",
+        "Vault path",
+        "Recent Vaults",
+        "Search recent vaults",
+        "Clear recent vaults",
+        "No recent vaults",
+    ],
+    shortcuts: [
+        "Keyboard shortcuts",
+        "Shortcuts",
+        "hotkeys",
+        "commands",
+        "keys",
+    ],
+    ai_providers: [
+        "AI runtimes",
+        "AI providers",
+        "Authentication",
+        "API keys",
+        "Codex",
+        "Claude",
+        "Gemini",
+        "Kilo",
+        "OpenAI",
+        "Anthropic",
+        "Google",
+        "Gateway",
+        "Diagnostics",
+        "PATH",
+        "terminal sign-in",
+        "browser sign-in",
+    ],
+    ai: [
+        "Context",
+        "Inline review in editor",
+        "accept",
+        "reject",
+        "Chat",
+        "Chat font family",
+        "Chat font size",
+        "Chat history retention",
+        "Composer",
+        "Require command enter control enter to send",
+        "Show context usage bar",
+        "Screenshot retention",
+        "Composer font family",
+        "Composer font size",
+    ],
+};
+
+interface SettingsSearchContext {
+    readonly currentVaultPath: string | null;
+    readonly recentVaults: readonly RecentVault[];
+    readonly shortcuts: ReturnType<typeof getShortcutSettingsEntries>;
+    readonly updateStatus: Pick<
+        ReturnType<typeof useAppUpdateStore.getState>,
+        "error" | "status"
+    >;
+}
+
+function categoryHeaderMatchesSearch(
+    category: Category,
+    query: SettingsSearchQuery,
+): boolean {
+    const info = CATEGORIES.find((candidate) => candidate.id === category);
+
+    return matchesSettingsSearch(
+        query,
+        info?.label,
+        CATEGORY_DESCRIPTIONS[category],
+    );
+}
+
+function categoryMatchesSearch(
+    category: Category,
+    query: SettingsSearchQuery,
+    context: SettingsSearchContext,
+): boolean {
+    return (
+        categoryHeaderMatchesSearch(category, query) ||
+        matchesSettingsSearch(
+            query,
+            ...STATIC_CATEGORY_SEARCH_VALUES[category],
+            ...getDynamicCategorySearchValues(category, context),
+        )
+    );
+}
+
+function getDynamicCategorySearchValues(
+    category: Category,
+    context: SettingsSearchContext,
+): readonly SearchValue[] {
+    switch (category) {
+        case "appearance":
+            return THEME_ORDER.flatMap((name) => [name, themes[name].label]);
+        case "editor":
+            return EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                option.value,
+                option.label,
+                option.group,
+            ]);
+        case "spellcheck":
+            return [];
+        case "updates":
+            return [
+                context.updateStatus.status?.currentVersion,
+                context.updateStatus.status?.channel,
+                context.updateStatus.status?.message,
+                context.updateStatus.status?.update?.version,
+                context.updateStatus.status?.update?.date,
+                context.updateStatus.status?.update?.body,
+                context.updateStatus.error,
+            ];
+        case "developers":
+            return [];
+        case "vault":
+            return [
+                context.currentVaultPath,
+                ...context.recentVaults.flatMap((vault) => [
+                    vault.name,
+                    vault.path,
+                ]),
+            ];
+        case "shortcuts":
+            return context.shortcuts.flatMap((shortcut) => [
+                shortcut.category,
+                shortcut.label,
+                shortcut.shortcut,
+            ]);
+        case "ai_providers":
+            return PROVIDER_CATALOG.flatMap((provider) => [
+                provider.id,
+                provider.name,
+                provider.company,
+            ]);
+        case "ai":
+            return EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
+                option.value,
+                option.label,
+                option.group,
+            ]);
+        case "general":
+            return [];
+    }
+}
+
 // --- Main panel ---
 
 export function SettingsPanel({
@@ -3081,6 +4014,9 @@ export function SettingsPanel({
     const updateAvailable = useAppUpdateStore(
         (state) => !!state.status?.update,
     );
+    const updateSearchStatus = useAppUpdateStore((state) => state.status);
+    const updateSearchError = useAppUpdateStore((state) => state.error);
+    const currentVaultPath = useVaultStore((state) => state.vaultPath);
     const sectionFromUrl = standalone ? readSearchParam("section") : null;
     const resolvedInitialCategory =
         initialCategory && isCategory(initialCategory)
@@ -3106,7 +4042,34 @@ export function SettingsPanel({
         : "var(--bg-secondary)";
     const [active, setActive] = useState<Category>(resolvedInitialCategory);
     const [search, setSearch] = useState("");
-    const activeInfo = CATEGORIES.find((c) => c.id === active)!;
+    const searchQuery = createSettingsSearchQuery(search);
+    const shortcutEntries = getShortcutSettingsEntries(desktopPlatform);
+    const searchContext: SettingsSearchContext = {
+        currentVaultPath,
+        recentVaults: getRecentVaults(),
+        shortcuts: shortcutEntries,
+        updateStatus: {
+            error: updateSearchError,
+            status: updateSearchStatus,
+        },
+    };
+    const filteredCategories = CATEGORIES.filter((category) =>
+        categoryMatchesSearch(category.id, searchQuery, searchContext),
+    );
+    const activeCategory =
+        filteredCategories.find((category) => category.id === active)?.id ??
+        filteredCategories[0]?.id ??
+        active;
+    const activeInfo =
+        CATEGORIES.find((category) => category.id === activeCategory) ??
+        CATEGORIES[0];
+    const activeSearchQuery = categoryHeaderMatchesSearch(
+        activeCategory,
+        searchQuery,
+    )
+        ? EMPTY_SEARCH_QUERY
+        : searchQuery;
+    const hasSearch = searchQuery.terms.length > 0;
 
     const handleClose = standalone
         ? () => void standaloneWindow?.close()
@@ -3117,10 +4080,16 @@ export function SettingsPanel({
     }, [initializeUpdates]);
 
     useEffect(() => {
-        if (initialCategory && initialCategory !== active) {
+        if (initialCategory) {
             setActive(initialCategory);
         }
-    }, [active, initialCategory]);
+    }, [initialCategory]);
+
+    useEffect(() => {
+        if (activeCategory !== active) {
+            setActive(activeCategory);
+        }
+    }, [active, activeCategory]);
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -3329,6 +4298,14 @@ export function SettingsPanel({
                             <input
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Escape" && search) {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setSearch("");
+                                    }
+                                }}
+                                aria-label="Search settings"
                                 placeholder="Search settings…"
                                 style={{
                                     flex: 1,
@@ -3340,6 +4317,24 @@ export function SettingsPanel({
                                     fontFamily: "inherit",
                                 }}
                             />
+                            {search ? (
+                                <button
+                                    type="button"
+                                    aria-label="Clear search"
+                                    onClick={() => setSearch("")}
+                                    style={{
+                                        border: "none",
+                                        background: "transparent",
+                                        color: "var(--text-secondary)",
+                                        cursor: "pointer",
+                                        fontSize: 12,
+                                        lineHeight: 1,
+                                        padding: 0,
+                                    }}
+                                >
+                                    ×
+                                </button>
+                            ) : null}
                         </div>
                     </div>
 
@@ -3351,14 +4346,8 @@ export function SettingsPanel({
                             padding: "4px 8px",
                         }}
                     >
-                        {CATEGORIES.filter(
-                            (c) =>
-                                !search ||
-                                c.label
-                                    .toLowerCase()
-                                    .includes(search.toLowerCase()),
-                        ).map((cat) => {
-                            const isActive = cat.id === active;
+                        {filteredCategories.map((cat) => {
+                            const isActive = cat.id === activeCategory;
                             const showUpdateBadge =
                                 cat.id === "updates" && updateAvailable;
                             return (
@@ -3424,6 +4413,18 @@ export function SettingsPanel({
                                 </button>
                             );
                         })}
+                        {filteredCategories.length === 0 ? (
+                            <div
+                                style={{
+                                    fontSize: 12,
+                                    color: "var(--text-secondary)",
+                                    lineHeight: 1.45,
+                                    padding: "8px 10px",
+                                }}
+                            >
+                                No settings found.
+                            </div>
+                        ) : null}
                     </div>
                 </div>
 
@@ -3463,22 +4464,69 @@ export function SettingsPanel({
                                     fontFamily: "monospace",
                                 }}
                             >
-                                {CATEGORY_DESCRIPTIONS[active]}
+                                {CATEGORY_DESCRIPTIONS[activeCategory]}
                             </p>
                         </div>
 
-                        {active === "general" && <GeneralSettings />}
-                        {active === "appearance" && <AppearanceSettings />}
-                        {active === "editor" && <EditorSettings />}
-                        {active === "spellcheck" && <SpellcheckSettings />}
-                        {active === "updates" && <UpdatesSettings />}
-                        {active === "developers" && <DevelopersSettings />}
-                        {active === "vault" && <VaultSettings />}
-                        {active === "shortcuts" && <ShortcutsSettings />}
-                        {active === "ai_providers" && (
-                            <AIProvidersCategorySettings />
-                        )}
-                        {active === "ai" && <AISettings />}
+                        {filteredCategories.length === 0 && hasSearch ? (
+                            <EmptySettingsSearch search={search} />
+                        ) : null}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "general" && (
+                                <GeneralSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "appearance" && (
+                                <AppearanceSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "editor" && (
+                                <EditorSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "spellcheck" && (
+                                <SpellcheckSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "updates" && (
+                                <UpdatesSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "developers" && (
+                                <DevelopersSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "vault" && (
+                                <VaultSettings searchQuery={activeSearchQuery} />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "shortcuts" && (
+                                <ShortcutsSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "ai_providers" && (
+                                <AIProvidersCategorySettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "ai" && (
+                                <AISettings searchQuery={activeSearchQuery} />
+                            )}
                     </div>
                 </div>
             </div>

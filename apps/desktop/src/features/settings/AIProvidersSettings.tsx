@@ -18,6 +18,12 @@ import {
     PROVIDER_CATALOG,
 } from "../ai/utils/runtimeMetadata";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
+import {
+    EMPTY_SEARCH_QUERY,
+    matchesSettingsSearch,
+    type SearchValue,
+    type SettingsSearchQuery,
+} from "./settingsSearch";
 import type {
     AIEnvironmentDiagnostics,
     AIRuntimeDescriptor,
@@ -161,6 +167,52 @@ function setSecretPatch(value: string): AISecretPatch {
         action: "set",
         value,
     };
+}
+
+function EmptyProviderSearchResult() {
+    return (
+        <div
+            style={{
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                lineHeight: 1.5,
+                padding: "24px 0",
+            }}
+        >
+            No matching AI provider settings.
+        </div>
+    );
+}
+
+function getProviderSearchValues(
+    provider: (typeof PROVIDER_CATALOG)[number],
+    setupStatus: AIRuntimeSetupStatus | null,
+    error: string | null,
+): readonly SearchValue[] {
+    return [
+        provider.id,
+        provider.name,
+        provider.company,
+        setupStatus?.runtimeId,
+        setupStatus?.binaryPath,
+        setupStatus?.binarySource,
+        setupStatus?.authMethod,
+        setupStatus?.authReady ? "Connected" : "Not configured",
+        setupStatus?.binaryReady ? "Binary ready" : "Binary missing",
+        setupStatus?.hasGatewayConfig ? "Custom gateway" : undefined,
+        setupStatus?.hasGatewayUrl ? "Gateway URL" : undefined,
+        getMethodDisplayName(setupStatus),
+        error,
+        ...(setupStatus?.authMethods.flatMap((method) => [
+            method.id,
+            method.name,
+            method.description,
+            getShortMethodDesc(method.id),
+            getAuthHelpText(method.id),
+            getApiKeyPlaceholder(method.id),
+            getActionLabel(method.id, setupStatus),
+        ]) ?? []),
+    ];
 }
 
 const diagnosticCodeStyle: React.CSSProperties = {
@@ -724,7 +776,11 @@ function ProviderSetupUnavailablePanel({
 
 /* ── Main component ─────────────────────────────────────────────── */
 
-export function AIProvidersSettings() {
+export function AIProvidersSettings({
+    searchQuery = EMPTY_SEARCH_QUERY,
+}: {
+    searchQuery?: SettingsSearchQuery;
+}) {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const [runtimes, setRuntimes] = useState<AIRuntimeDescriptor[]>([]);
     const [setupStatusMap, setSetupStatusMap] = useState<
@@ -1004,6 +1060,67 @@ export function AIProvidersSettings() {
             },
         ];
     });
+    const filteredInstalledProviders = installedProviders.filter((provider) =>
+        matchesSettingsSearch(
+            searchQuery,
+            "Installed",
+            ...getProviderSearchValues(
+                provider,
+                provider.setupStatus,
+                provider.error,
+            ),
+        ),
+    );
+    const filteredProviderCatalog = PROVIDER_CATALOG.filter((provider) =>
+        matchesSettingsSearch(
+            searchQuery,
+            "All",
+            "Install",
+            "Installed",
+            ...getProviderSearchValues(
+                provider,
+                setupStatusMap[provider.id] ?? null,
+                errorMap[provider.id] ?? null,
+            ),
+        ),
+    );
+    const diagnosticsSearchValues = [
+        "Diagnostics",
+        "AI runtime environment",
+        "Inspect the PATH inherited by the app",
+        "PATH injected into runtimes",
+        "binaries",
+        "Process PATH",
+        "Injected Runtime PATH",
+        "Tool resolution",
+        "Runtime launch resolution",
+        diagnosticsError,
+        ...(diagnostics?.inheritedEntries ?? []),
+        ...(diagnostics?.preferredEntries ?? []),
+        ...(diagnostics?.executables.flatMap((item) => [
+            item.name,
+            item.path,
+        ]) ?? []),
+        ...(diagnostics?.runtimes.flatMap((runtime) => [
+            runtime.runtimeId,
+            runtime.runtimeName,
+            runtime.launchProgram,
+            ...(runtime.launchArgs ?? []),
+            runtime.resolutionDisplay,
+            runtime.setupError,
+        ]) ?? []),
+    ];
+    const showInstalledSection =
+        isLoading ||
+        matchesSettingsSearch(searchQuery, "Installed", "Loading providers") ||
+        filteredInstalledProviders.length > 0;
+    const showDiagnosticsSection = matchesSettingsSearch(
+        searchQuery,
+        ...diagnosticsSearchValues,
+    );
+    const showAllSection =
+        matchesSettingsSearch(searchQuery, "All", "Install", "Installed") ||
+        filteredProviderCatalog.length > 0;
 
     const handleToggleDiagnostics = useCallback(() => {
         setShowDiagnostics((prev) => {
@@ -1015,44 +1132,50 @@ export function AIProvidersSettings() {
         });
     }, [diagnostics, diagnosticsLoading, loadDiagnostics]);
 
+    if (!showInstalledSection && !showDiagnosticsSection && !showAllSection) {
+        return <EmptyProviderSearchResult />;
+    }
+
     /* ── Render ── */
 
     return (
         <>
             {/* ── Installed ── */}
-            <div
-                style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                    paddingBottom: 6,
-                }}
-            >
-                Installed
-            </div>
-
-            <div
-                style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 10,
-                    overflow: "hidden",
-                }}
-            >
-                {isLoading && runtimes.length === 0 ? (
+            {showInstalledSection ? (
+                <>
                     <div
                         style={{
-                            padding: "14px",
-                            fontSize: 12,
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
                             color: "var(--text-secondary)",
-                            backgroundColor: "var(--bg-secondary)",
+                            paddingBottom: 6,
                         }}
                     >
-                        Loading providers…
+                        Installed
                     </div>
-                ) : (
-                    installedProviders.map((provider, i) => {
+
+                    <div
+                        style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            overflow: "hidden",
+                        }}
+                    >
+                        {isLoading && runtimes.length === 0 ? (
+                            <div
+                                style={{
+                                    padding: "14px",
+                                    fontSize: 12,
+                                    color: "var(--text-secondary)",
+                                    backgroundColor: "var(--bg-secondary)",
+                                }}
+                            >
+                                Loading providers…
+                            </div>
+                        ) : (
+                            filteredInstalledProviders.map((provider, i) => {
                         const isExpanded = expandedId === provider.id;
                         const isSaving = savingId === provider.id;
                         const connected =
@@ -1215,32 +1338,36 @@ export function AIProvidersSettings() {
                                 </div>
                             </Fragment>
                         );
-                    })
-                )}
-            </div>
+                            })
+                        )}
+                    </div>
+                </>
+            ) : null}
 
-            <div
-                style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                    paddingTop: 20,
-                    paddingBottom: 6,
-                }}
-            >
-                Diagnostics
-            </div>
+            {showDiagnosticsSection ? (
+                <>
+                    <div
+                        style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "var(--text-secondary)",
+                            paddingTop: 20,
+                            paddingBottom: 6,
+                        }}
+                    >
+                        Diagnostics
+                    </div>
 
-            <div
-                style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 10,
-                    overflow: "hidden",
-                    backgroundColor: "var(--bg-secondary)",
-                }}
-            >
+                    <div
+                        style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            overflow: "hidden",
+                            backgroundColor: "var(--bg-secondary)",
+                        }}
+                    >
                 <div
                     style={{
                         display: "flex",
@@ -1461,31 +1588,35 @@ export function AIProvidersSettings() {
                             )}
                     </div>
                 )}
-            </div>
+                    </div>
+                </>
+            ) : null}
 
             {/* ── All ── */}
-            <div
-                style={{
-                    fontSize: 10,
-                    fontWeight: 600,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "var(--text-secondary)",
-                    paddingTop: 20,
-                    paddingBottom: 6,
-                }}
-            >
-                All
-            </div>
+            {showAllSection ? (
+                <>
+                    <div
+                        style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "var(--text-secondary)",
+                            paddingTop: 20,
+                            paddingBottom: 6,
+                        }}
+                    >
+                        All
+                    </div>
 
-            <div
-                style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 10,
-                    overflow: "hidden",
-                }}
-            >
-                {PROVIDER_CATALOG.map((provider, i) => {
+                    <div
+                        style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            overflow: "hidden",
+                        }}
+                    >
+                        {filteredProviderCatalog.map((provider, i) => {
                     const installed = runtimes.some(
                         (r) => r.runtime.id === provider.id,
                     );
@@ -1564,8 +1695,10 @@ export function AIProvidersSettings() {
                             </div>
                         </Fragment>
                     );
-                })}
-            </div>
+                        })}
+                    </div>
+                </>
+            ) : null}
 
             {/* ── Auth terminal modal ── */}
             {authTerminalRequest && (

@@ -270,6 +270,57 @@ describe("SettingsPanel", () => {
         ).toBeInTheDocument();
     });
 
+    it("searches settings by row content and switches to the matching panel", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "autosave" } },
+        );
+
+        expect(screen.getByText("Autosave delay")).toBeInTheDocument();
+        expect(screen.queryByText("Font family")).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "General" })).not.toBeInTheDocument();
+    });
+
+    it("matches settings search across multiple terms", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "inline accept" } },
+        );
+
+        expect(screen.getByText("Inline review in editor")).toBeInTheDocument();
+        expect(screen.queryByText("Chat font family")).not.toBeInTheDocument();
+    });
+
+    it("shows the whole panel when the category header matches search", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "appearance" } },
+        );
+
+        expect(screen.getByText("System theme")).toBeInTheDocument();
+        expect(screen.getByText("App zoom")).toBeInTheDocument();
+    });
+
+    it("shows an empty state when no settings match search", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.change(
+            screen.getByRole("textbox", { name: "Search settings" }),
+            { target: { value: "definitely-not-a-setting" } },
+        );
+
+        expect(screen.getByText("No settings found.")).toBeInTheDocument();
+        expect(
+            screen.getByText('No settings match "definitely-not-a-setting".'),
+        ).toBeInTheDocument();
+    });
+
     it("renders the shared shortcut registry labels for Windows", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
