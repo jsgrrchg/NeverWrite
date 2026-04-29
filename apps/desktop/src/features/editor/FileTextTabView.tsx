@@ -54,6 +54,42 @@ import {
     userEditNotifier,
 } from "./extensions/changeAuthor";
 
+function FileTabStripButton({
+    onClick,
+    children,
+}: {
+    onClick: () => void;
+    children: string;
+}) {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            className="rounded-sm px-2 py-0.5 transition-colors uppercase"
+            style={{
+                fontSize: "10px",
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                color: hovered
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+                backgroundColor: hovered
+                    ? "color-mix(in srgb, var(--text-primary) 7%, transparent)"
+                    : "transparent",
+                border: `1px solid color-mix(in srgb, var(--border) ${
+                    hovered ? "70%" : "0%"
+                }, transparent)`,
+                cursor: "pointer",
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
 interface FileTextTabViewProps {
     paneId?: string;
 }
@@ -621,9 +657,11 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
             <div
                 className="flex items-center justify-between gap-2 px-3 shrink-0"
                 style={{
-                    height: 39,
-                    borderBottom: "1px solid var(--border)",
-                    backgroundColor: "var(--bg-secondary)",
+                    height: 32,
+                    borderBottom:
+                        "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                    backgroundColor:
+                        "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
                 }}
             >
                 <div
@@ -638,36 +676,23 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
                     </span>
                     <span
                         className="ml-1.5"
-                        style={{ color: "var(--text-secondary)" }}
+                        style={{
+                            color: "var(--text-secondary)",
+                            opacity: 0.7,
+                        }}
                     >
                         {tab.relativePath}
                     </span>
                 </div>
-                <div className="flex items-center gap-1 shrink-0">
-                    <button
-                        type="button"
-                        onClick={() => void openPath(tab.path)}
-                        className="rounded px-1.5 py-0.5 text-[10px]"
-                        style={{
-                            border: "1px solid var(--border)",
-                            backgroundColor: "var(--bg-primary)",
-                            color: "var(--text-primary)",
-                        }}
-                    >
+                <div className="flex items-center gap-0.5 shrink-0">
+                    <FileTabStripButton onClick={() => void openPath(tab.path)}>
                         Open Externally
-                    </button>
-                    <button
-                        type="button"
+                    </FileTabStripButton>
+                    <FileTabStripButton
                         onClick={() => void revealItemInDir(tab.path)}
-                        className="rounded px-1.5 py-0.5 text-[10px]"
-                        style={{
-                            border: "1px solid var(--border)",
-                            backgroundColor: "var(--bg-primary)",
-                            color: "var(--text-primary)",
-                        }}
                     >
                         Reveal in Finder
-                    </button>
+                    </FileTabStripButton>
                 </div>
             </div>
 

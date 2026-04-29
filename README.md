@@ -1,15 +1,15 @@
 # NeverWrite
 
-NeverWrite is a local-first knowledge workspace for people who want AI on top of real files, not a hosted black box.
+NeverWrite is a local-first knowledge workspace for people who find themself spawning lots of agents at the same time. Built like a code editor, but for markdown. It has inline review changes, like cursor and others. Please help me test it!
 
 Today the repository combines:
 
 - An Electron desktop app with a Rust sidecar that opens a real local vault and keeps working state on disk
-- A serious Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking
-- Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view
+- A  Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking
+- Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view. 
 - An ACP-based AI layer with Codex, Claude, Gemini, and Kilo runtimes
-- An explicit AI change-review system with inline review inside the editor and a dedicated review surface
-- A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback
+- An explicit AI change-review system with inline review inside the editor and a dedicated review surface in chat and as a tab. 
+- A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback. Compatible with both firefox and chromium. 
 
 This README reflects the code currently present in the repository, not a future roadmap.
 

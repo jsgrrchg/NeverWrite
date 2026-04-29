@@ -852,6 +852,7 @@ function PropertyRow({
     labelFontSize,
     valueFontSize,
     pillFontSize,
+    isFirst = false,
     onChange,
     onContextMenu,
 }: {
@@ -860,6 +861,7 @@ function PropertyRow({
     labelFontSize: number;
     valueFontSize: number;
     pillFontSize: number;
+    isFirst?: boolean;
     onChange?: (nextValue: FrontmatterValue) => void;
     onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
 }) {
@@ -867,7 +869,11 @@ function PropertyRow({
     return (
         <div
             className="flex items-start gap-2 pl-3 pr-4 py-1"
-            style={{ borderTop: "1px solid var(--border)" }}
+            style={{
+                borderTop: isFirst
+                    ? "none"
+                    : "1px solid color-mix(in srgb, var(--border) 35%, transparent)",
+            }}
             onContextMenu={onContextMenu}
         >
             <div
@@ -898,6 +904,37 @@ function PropertyRow({
                 />
             </div>
         </div>
+    );
+}
+
+function AddPropertyTriggerButton({ onClick }: { onClick: () => void }) {
+    const [hovered, setHovered] = useState(false);
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            className="inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 uppercase transition-colors"
+            style={{
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                color: hovered
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+                backgroundColor: hovered
+                    ? "color-mix(in srgb, var(--text-primary) 7%, transparent)"
+                    : "transparent",
+                border: `1px solid color-mix(in srgb, var(--border) ${
+                    hovered ? "70%" : "0%"
+                }, transparent)`,
+                cursor: "pointer",
+            }}
+        >
+            <span style={{ fontSize: 12, lineHeight: 1 }}>+</span>
+            Add property
+        </button>
     );
 }
 
@@ -935,26 +972,12 @@ function AddPropertyComposer({
         return (
             <div
                 style={{
-                    borderTop: "1px solid var(--border)",
-                    padding: "8px 16px 10px 12px",
+                    borderTop:
+                        "1px solid color-mix(in srgb, var(--border) 35%, transparent)",
+                    padding: "6px 12px",
                 }}
             >
-                <button
-                    type="button"
-                    onClick={() => setOpen(true)}
-                    className="inline-flex items-center gap-1.5 rounded-full px-2.5 h-6"
-                    style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: "var(--text-secondary)",
-                        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                        background:
-                            "color-mix(in srgb, var(--bg-primary) 72%, var(--bg-secondary))",
-                    }}
-                >
-                    <span style={{ fontSize: 12, lineHeight: 1 }}>+</span>
-                    Add property
-                </button>
+                <AddPropertyTriggerButton onClick={() => setOpen(true)} />
             </div>
         );
     }
@@ -962,7 +985,8 @@ function AddPropertyComposer({
     return (
         <div
             style={{
-                borderTop: "1px solid var(--border)",
+                borderTop:
+                    "1px solid color-mix(in srgb, var(--border) 35%, transparent)",
                 padding: "8px 12px 10px",
             }}
         >
@@ -1113,14 +1137,16 @@ export function FrontmatterBody({
     return (
         <div
             style={{
-                borderRadius: 10,
-                border: "1px solid var(--border)",
+                borderTop:
+                    "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+                borderBottom:
+                    "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
                 background:
-                    "color-mix(in srgb, var(--bg-secondary) 88%, transparent)",
+                    "color-mix(in srgb, var(--bg-secondary) 60%, transparent)",
                 overflow: "visible",
             }}
         >
-            {entries.map(({ key, value }) => (
+            {entries.map(({ key, value }, index) => (
                 <PropertyRow
                     key={key}
                     name={key}
@@ -1128,6 +1154,7 @@ export function FrontmatterBody({
                     labelFontSize={labelFontSize}
                     valueFontSize={valueFontSize}
                     pillFontSize={pillFontSize}
+                    isFirst={index === 0}
                     onChange={(nextValue) => handleEntryChange(key, nextValue)}
                     onContextMenu={(event) => {
                         event.preventDefault();

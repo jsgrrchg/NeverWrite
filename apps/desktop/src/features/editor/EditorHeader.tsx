@@ -42,15 +42,15 @@ export function MetaBadge({
                 alignItems: "center",
                 gap: 6,
                 maxWidth: "100%",
-                height: 28,
-                padding: "0 11px",
-                borderRadius: 999,
+                height: 24,
+                padding: "0 8px",
+                borderRadius: 2,
                 border: `1px solid ${palette.border}`,
                 background: palette.background,
                 color: palette.color,
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: 600,
-                letterSpacing: "0.01em",
+                letterSpacing: "0.04em",
             }}
         >
             {label}
