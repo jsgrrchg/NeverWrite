@@ -1064,11 +1064,20 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                         width: sidebarWidth,
                         zIndex: 20,
                         overflow: "hidden",
-                        // The peek overlay paints a fully opaque surface so it
-                        // reads as a solid floating panel above the editor —
-                        // vibrancy is only appropriate for the docked pane,
-                        // where it blends with the macOS window material.
-                        backgroundColor: "var(--bg-secondary)",
+                        // Match the docked sidebar's translucent treatment so
+                        // descendants relying on `backdrop-filter` (notably the
+                        // sticky folder chrome inside FileTree) have actual
+                        // material to blur. Falls back to a solid surface on
+                        // platforms without vibrancy.
+                        backgroundColor: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "var(--sidebar-vibrancy-tint)"
+                            : "var(--bg-secondary)",
+                        backdropFilter: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "blur(24px) saturate(140%)"
+                            : undefined,
+                        WebkitBackdropFilter: SIDEBAR_TRANSLUCENT_ENABLED
+                            ? "blur(24px) saturate(140%)"
+                            : undefined,
                         borderRight: "1px solid var(--border)",
                         boxShadow:
                             "4px 0 24px rgba(0, 0, 0, 0.22), 1px 0 6px rgba(0, 0, 0, 0.10)",

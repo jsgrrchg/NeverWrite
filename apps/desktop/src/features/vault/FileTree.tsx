@@ -7,6 +7,7 @@ import {
     useMemo,
     memo,
 } from "react";
+import { createPortal } from "react-dom";
 import { confirm, open } from "@neverwrite/runtime";
 import { openPath, revealItemInDir } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
@@ -122,9 +123,14 @@ const TREE_ROW_BOX_STYLE = {
     minWidth: "100%",
     boxSizing: "border-box" as const,
 };
+// Sticky chrome must read as a distinct "frosted plate" floating above the
+// panel. Without enough opacity contrast it shares the sidebar's translucent
+// tint (82% bg-primary) and blends in, making the backdrop-filter invisible
+// at rest. Sit at 96% bg-primary so the plate is clearly above the panel
+// while still letting a hint of frosted material reach through.
 const TREE_STICKY_CHROME_BACKGROUND =
-    "var(--sidebar-vibrancy-tint, var(--bg-secondary))";
-const TREE_STICKY_CHROME_BACKDROP_FILTER = "blur(10px)";
+    "color-mix(in srgb, var(--bg-primary) 96%, transparent)";
+const TREE_STICKY_CHROME_BACKDROP_FILTER = "blur(18px) saturate(150%)";
 // Drop shadow applied only to the deepest sticky folder wrapper,
 // not to individual rows — avoids stacking noise.
 const TREE_STICKY_EDGE_SHADOW = "0 2px 6px rgba(0,0,0,0.18)";
@@ -4715,31 +4721,37 @@ export function FileTree() {
                 )}
             </div>
 
-            {/* Drag ghost */}
-            {dragPos && dragLabel && (
-                <div
-                    style={{
-                        position: "fixed",
-                        left: dragPos.x + 14,
-                        top: dragPos.y + 14,
-                        pointerEvents: "none",
-                        zIndex: 9999,
-                        backgroundColor: "var(--bg-secondary)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 6,
-                        padding: "3px 10px",
-                        fontSize: metrics.fontSize,
-                        color: "var(--text-primary)",
-                        boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
-                        maxWidth: 200,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                    }}
-                >
-                    {dragLabel}
-                </div>
-            )}
+            {/* Drag ghost — portaled to <body> so it escapes the docked
+                sidebar's transformed wrapper, which would otherwise act as the
+                containing block for `position: fixed` and clip the ghost
+                against the sidebar's `overflow: hidden`. */}
+            {dragPos &&
+                dragLabel &&
+                createPortal(
+                    <div
+                        style={{
+                            position: "fixed",
+                            left: dragPos.x + 14,
+                            top: dragPos.y + 14,
+                            pointerEvents: "none",
+                            zIndex: 9999,
+                            backgroundColor: "var(--bg-secondary)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 6,
+                            padding: "3px 10px",
+                            fontSize: metrics.fontSize,
+                            color: "var(--text-primary)",
+                            boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+                            maxWidth: 200,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {dragLabel}
+                    </div>,
+                    document.body,
+                )}
 
             {/* Context menu */}
             {contextMenu && (
