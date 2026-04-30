@@ -1,3 +1,4 @@
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use neverwrite_types::{NoteDocument, VaultEntryDto};
@@ -30,6 +31,18 @@ pub struct DiscoveredNoteFile {
 
 pub struct Vault {
     pub root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryPathMode {
+    Canonical,
+    LexicalFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoundaryPath {
+    path: PathBuf,
+    mode: BoundaryPathMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,6 +532,13 @@ impl Vault {
     }
 }
 
+/// Normalizes an existing vault path for stable storage. On Windows, some
+/// virtual filesystems (notably rclone/WinFsp drive-letter mounts) support
+/// normal file operations but fail canonicalization with OS error 1005.
+pub fn normalize_existing_vault_path(path: &Path) -> io::Result<PathBuf> {
+    canonicalize_existing_path_for_boundary(path).map(|resolved| resolved.path)
+}
+
 impl Vault {
     fn resolve_validated_scoped_path(
         &self,
@@ -527,17 +547,14 @@ impl Vault {
         intent: ScopedPathIntent,
     ) -> Result<PathBuf, VaultError> {
         let candidate = self.root.join(relative_path);
-        let canonical_root = self
-            .root
-            .canonicalize()
+        let resolved_root = canonicalize_existing_path_for_boundary(&self.root)
             .map_err(|_| VaultError::InvalidVaultPath(raw_input.to_string()))?;
 
         let nearest_existing_ancestor =
             nearest_existing_ancestor(&candidate).map_err(VaultError::from)?;
-        let canonical_ancestor = nearest_existing_ancestor
-            .canonicalize()
+        let resolved_ancestor = canonicalize_existing_path_for_boundary(&nearest_existing_ancestor)
             .map_err(|_| VaultError::InvalidVaultPath(raw_input.to_string()))?;
-        if !canonical_ancestor.starts_with(&canonical_root) {
+        if !boundary_path_starts_with(&resolved_ancestor, &resolved_root) {
             return Err(VaultError::InvalidVaultPath(raw_input.to_string()));
         }
 
@@ -792,6 +809,77 @@ fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, std::io::Error> {
     ))
 }
 
+fn canonicalize_existing_path_for_boundary(path: &Path) -> io::Result<BoundaryPath> {
+    canonicalize_existing_path_with(
+        path,
+        |path| std::fs::canonicalize(path),
+        is_virtual_fs_canonicalize_error,
+    )
+}
+
+fn canonicalize_existing_path_with(
+    path: &Path,
+    canonicalize: impl FnOnce(&Path) -> io::Result<PathBuf>,
+    is_virtual_fs_error: impl FnOnce(&io::Error) -> bool,
+) -> io::Result<BoundaryPath> {
+    match canonicalize(path) {
+        Ok(path) => Ok(BoundaryPath {
+            path,
+            mode: BoundaryPathMode::Canonical,
+        }),
+        Err(error) => {
+            if !is_virtual_fs_error(&error) {
+                return Err(error);
+            }
+            std::fs::metadata(path)?;
+            Ok(BoundaryPath {
+                path: normalize_lexically(path),
+                mode: BoundaryPathMode::LexicalFallback,
+            })
+        }
+    }
+}
+
+#[cfg(windows)]
+fn is_virtual_fs_canonicalize_error(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(1005)
+}
+
+#[cfg(not(windows))]
+fn is_virtual_fs_canonicalize_error(_error: &io::Error) -> bool {
+    false
+}
+
+fn boundary_path_starts_with(child: &BoundaryPath, parent: &BoundaryPath) -> bool {
+    if child.mode == BoundaryPathMode::Canonical && parent.mode == BoundaryPathMode::Canonical {
+        return child.path.starts_with(&parent.path);
+    }
+
+    normalize_lexically(&child.path).starts_with(normalize_lexically(&parent.path))
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::new())
+    };
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+
+    normalized
+}
+
 fn metadata_has_forbidden_link_behavior(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink() || metadata_is_windows_reparse_point(metadata)
 }
@@ -911,8 +999,12 @@ fn guess_mime_type(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{guess_mime_type, is_supported_text_path, Vault};
-    use std::path::Path;
+    use super::{
+        boundary_path_starts_with, canonicalize_existing_path_with, guess_mime_type,
+        is_supported_text_path, normalize_lexically, BoundaryPath, BoundaryPathMode, Vault,
+    };
+    use std::io;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn guess_mime_type_recognizes_extended_text_file_set() {
@@ -972,5 +1064,57 @@ mod tests {
         let notes = vault.discover_markdown_files().unwrap();
         assert_eq!(notes[0].id, "Folder/Nested/Note");
         assert!(!notes[0].id.contains('\\'));
+    }
+
+    #[test]
+    fn canonicalize_fallback_accepts_existing_virtual_filesystem_paths() {
+        let vault_dir = tempfile::tempdir().unwrap();
+        let error = io::Error::from_raw_os_error(1005);
+
+        let resolved = canonicalize_existing_path_with(
+            vault_dir.path(),
+            |_| Err(error),
+            |error| error.raw_os_error() == Some(1005),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.mode, BoundaryPathMode::LexicalFallback);
+        assert_eq!(resolved.path, normalize_lexically(vault_dir.path()));
+    }
+
+    #[test]
+    fn canonicalize_fallback_still_requires_existing_paths() {
+        let missing = PathBuf::from("__neverwrite_missing_virtual_vault__");
+        let error = io::Error::from_raw_os_error(1005);
+
+        let result = canonicalize_existing_path_with(
+            &missing,
+            |_| Err(error),
+            |error| error.raw_os_error() == Some(1005),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn lexical_boundary_checks_are_path_component_aware() {
+        let parent = BoundaryPath {
+            path: PathBuf::from("/vault"),
+            mode: BoundaryPathMode::LexicalFallback,
+        };
+        let child = BoundaryPath {
+            path: PathBuf::from("/vault/Notes/Alpha.md"),
+            mode: BoundaryPathMode::LexicalFallback,
+        };
+        let sibling_with_same_prefix = BoundaryPath {
+            path: PathBuf::from("/vault-other/Alpha.md"),
+            mode: BoundaryPathMode::LexicalFallback,
+        };
+
+        assert!(boundary_path_starts_with(&child, &parent));
+        assert!(!boundary_path_starts_with(
+            &sibling_with_same_prefix,
+            &parent
+        ));
     }
 }

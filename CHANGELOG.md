@@ -34,6 +34,13 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.1.2]
+
+### Fixed
+
+- Fixed macOS DMG release validation so GitHub-built desktop release artifacts are staged and checked correctly.
+- Fixed opening and using vaults on Windows rclone/WinFsp mounted drives that do not support path canonicalization, without compromising security layer.
+
 ## [0.1.1]
 
 ### Fixed

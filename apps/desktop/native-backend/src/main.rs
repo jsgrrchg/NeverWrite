@@ -24,7 +24,9 @@ use neverwrite_types::{
     ResolvedWikilinkDto, SearchResultDto, VaultEntryDto, VaultNoteChangeDto, VaultOpenMetricsDto,
     VaultOpenStateDto, WikilinkSuggestionDto,
 };
-use neverwrite_vault::{start_watcher, ScopedPathIntent, Vault, VaultEvent, WriteTracker};
+use neverwrite_vault::{
+    normalize_existing_vault_path, start_watcher, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
+};
 use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -2496,8 +2498,7 @@ fn normalize_vault_path(raw: &str) -> Result<String, String> {
     if raw.trim().is_empty() {
         return Err("Vault path is required".to_string());
     }
-    Ok(PathBuf::from(raw)
-        .canonicalize()
+    Ok(normalize_existing_vault_path(&PathBuf::from(raw))
         .map_err(|error| error.to_string())?
         .to_string_lossy()
         .to_string())
