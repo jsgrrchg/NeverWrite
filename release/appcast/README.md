@@ -97,6 +97,36 @@ High-level flow:
 6. publish feeds to `gh-pages`
 7. generate a platform validation pack
 
+## Version readiness
+
+The release tag is the source of truth for GitHub Actions, but the tag must
+match the desktop metadata committed at that tag. Before pushing `vX.Y.Z`, make
+sure these files all refer to `X.Y.Z`:
+
+- `apps/desktop/package.json`
+- `apps/desktop/package-lock.json`
+- `apps/desktop/native-backend/Cargo.toml`
+- `CHANGELOG.md`
+
+Use the helper from the repository root to update the package and native
+backend version files:
+
+```bash
+scripts/bump-version.sh X.Y.Z
+```
+
+Then add the matching `CHANGELOG.md` release entry and run the same validation
+that the release workflow runs:
+
+```bash
+node scripts/validate-release-metadata.mjs --tag vX.Y.Z
+```
+
+Do not push the tag until this check passes. The app's user-visible Electron
+version comes from `apps/desktop/package.json`; the lockfile and native backend
+version are kept aligned so packaging and release validation remain
+deterministic.
+
 ## Local build commands
 
 From `apps/desktop`:

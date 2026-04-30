@@ -229,10 +229,17 @@ We follow [Semantic Versioning](https://semver.org/). During the `0.x` phase, mi
 
 Versions are kept in sync across:
 - `apps/desktop/package.json`
+- `apps/desktop/package-lock.json`
 - `apps/desktop/native-backend/Cargo.toml`
 - `CHANGELOG.md`
 
-Use `scripts/bump-version.sh` to update all locations at once.
+Use `scripts/bump-version.sh` to update the package and native backend
+version files at once, then add the matching `CHANGELOG.md` release entry.
+Before creating a release tag, run:
+
+```bash
+node scripts/validate-release-metadata.mjs --tag vX.Y.Z
+```
 
 ## Release automation
 
@@ -240,7 +247,10 @@ Desktop releases are maintainer-driven and run through the Electron release work
 
 Before triggering [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml):
 
-- Create and push the release tag first, for example `v0.2.0`
+- Bump the desktop version sources with `scripts/bump-version.sh X.Y.Z`
+- Add or update the matching `CHANGELOG.md` entry
+- Run `node scripts/validate-release-metadata.mjs --tag vX.Y.Z`
+- Create and push the release tag, for example `v0.2.0`
 - Ensure the required signing secrets are configured in the GitHub repository settings
 - Review the Electron release topology and signing requirements documented in [`release/appcast/README.md`](release/appcast/README.md)
 

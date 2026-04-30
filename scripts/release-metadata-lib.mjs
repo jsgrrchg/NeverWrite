@@ -11,6 +11,10 @@ export const DESKTOP_PACKAGE_JSON_PATH = path.join(
     REPO_ROOT,
     "apps/desktop/package.json",
 );
+export const DESKTOP_PACKAGE_LOCK_PATH = path.join(
+    REPO_ROOT,
+    "apps/desktop/package-lock.json",
+);
 export const DESKTOP_ELECTRON_BUILDER_CONFIG_PATH = path.join(
     REPO_ROOT,
     "apps/desktop/electron-builder.config.mjs",
@@ -51,12 +55,15 @@ export function readFile(filePath) {
 
 export function readDesktopVersions() {
     const packageJson = readJsonFile(DESKTOP_PACKAGE_JSON_PATH);
+    const packageLock = readJsonFile(DESKTOP_PACKAGE_LOCK_PATH);
     const nativeBackendCargoToml = readFile(
         DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH,
     );
 
     return {
         packageJson: packageJson.version,
+        packageLock: packageLock.version,
+        packageLockRoot: packageLock.packages?.[""]?.version,
         nativeBackendCargo: readCargoPackageVersion(nativeBackendCargoToml),
     };
 }
@@ -107,14 +114,21 @@ export function readCargoPackageVersion(cargoTomlText) {
 }
 
 export function collectVersionIssues(
-    { packageJson, nativeBackendCargo },
+    { packageJson, packageLock, packageLockRoot, nativeBackendCargo },
     tagVersion,
 ) {
     const issues = [];
-    const versions = [packageJson, nativeBackendCargo];
+    const versions = [
+        packageJson,
+        packageLock,
+        packageLockRoot,
+        nativeBackendCargo,
+    ];
 
     for (const [sourceName, value] of Object.entries({
         packageJson,
+        packageLock,
+        packageLockRoot,
         nativeBackendCargo,
     })) {
         if (!isStrictSemver(value)) {
@@ -126,7 +140,7 @@ export function collectVersionIssues(
 
     if (new Set(versions).size !== 1) {
         issues.push(
-            `Desktop versions do not match: package.json=${packageJson}, native-backend/Cargo.toml=${nativeBackendCargo}.`,
+            `Desktop versions do not match: package.json=${packageJson}, package-lock.json=${packageLock}, package-lock root=${packageLockRoot}, native-backend/Cargo.toml=${nativeBackendCargo}.`,
         );
     }
 

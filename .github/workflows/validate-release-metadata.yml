@@ -59,6 +59,10 @@ jobs:
               with:
                   node-version: 22
 
+            - name: Install desktop dependencies
+              working-directory: apps/desktop
+              run: npm ci
+
             - name: Run release metadata tests
               run: node --test scripts/release-metadata.test.mjs
 
