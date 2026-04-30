@@ -256,6 +256,7 @@ export interface EditorWorkspaceActions {
         tabs: TabInput[],
         activeTabId: string | null,
         pinnedTabIds?: string[],
+        options?: { allowEphemeralTabs?: boolean },
     ) => void;
     insertExternalTab: (tab: TabInput, index?: number) => void;
     reloadNoteContent: (noteId: string, detail: ReloadedDetail) => void;
@@ -3804,12 +3805,19 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             } as Partial<EditorWorkspaceStore>);
         },
 
-        hydrateTabs: (tabs, activeTabId, pinnedTabIds = []) => {
+        hydrateTabs: (
+            tabs,
+            activeTabId,
+            pinnedTabIds = [],
+            options = {},
+        ) => {
             // Detached windows and a few test helpers still hydrate a
             // single-pane workspace directly through this API.
             const seenSingletonKinds = new Set<string>();
             const hydratedTabs: Tab[] = tabs.flatMap((tab): Tab[] => {
-                const normalized = normalizeHydratedTab(tab);
+                const normalized = options.allowEphemeralTabs
+                    ? normalizeExternalTab(tab)
+                    : normalizeHydratedTab(tab);
                 if (!normalized) {
                     return [];
                 }

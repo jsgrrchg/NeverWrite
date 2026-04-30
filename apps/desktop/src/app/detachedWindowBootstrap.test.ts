@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { bootstrapDetachedWindow } from "./detachedWindowBootstrap";
+import type { AIChatSession } from "../features/ai/types";
 
 describe("bootstrapDetachedWindow", () => {
     it("restores the vault before hydrating detached tabs", async () => {
@@ -56,7 +57,9 @@ describe("bootstrapDetachedWindow", () => {
             hydrateTabs,
         });
 
-        expect(hydrateTabs).toHaveBeenCalledWith(payload.tabs, "tab-1", []);
+        expect(hydrateTabs).toHaveBeenCalledWith(payload.tabs, "tab-1", [], {
+            allowEphemeralTabs: true,
+        });
         expect(errorSpy).toHaveBeenCalled();
 
         errorSpy.mockRestore();
@@ -89,6 +92,51 @@ describe("bootstrapDetachedWindow", () => {
             payload.tabs,
             "tab-1",
             ["tab-1"],
+            { allowEphemeralTabs: true },
         );
+    });
+
+    it("hydrates detached AI session snapshots before hydrating tabs", async () => {
+        const calls: string[] = [];
+        const session = {
+            sessionId: "session-1",
+            historySessionId: "history-1",
+            status: "streaming",
+            runtimeId: "codex-acp",
+            modelId: "gpt-test",
+            modeId: "default",
+            models: [],
+            modes: [],
+            configOptions: [],
+            messages: [],
+            attachments: [],
+            runtimeState: "live",
+        } satisfies AIChatSession;
+        const payload = {
+            tabs: [
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat" as const,
+                    sessionId: "session-1",
+                    historySessionId: "history-1",
+                    title: "Agent",
+                },
+            ],
+            activeTabId: "chat-tab-1",
+            vaultPath: null,
+            aiSessions: [session],
+        };
+
+        await bootstrapDetachedWindow(payload, {
+            openVault: vi.fn(),
+            hydrateAiSessions: (sessions) => {
+                calls.push(`sessions:${sessions[0]?.sessionId ?? ""}`);
+            },
+            hydrateTabs: () => {
+                calls.push("tabs");
+            },
+        });
+
+        expect(calls).toEqual(["sessions:session-1", "tabs"]);
     });
 });

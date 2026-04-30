@@ -34,6 +34,7 @@ import {
 } from "../api";
 import {
     isFileTab,
+    isChatTab,
     isNoteTab,
     selectEditorWorkspaceTabs,
     useEditorStore,
@@ -456,6 +457,13 @@ function getPersistedHistorySessionId(sessionId: string) {
     }
 
     return sessionId.slice("persisted:".length) || null;
+}
+
+function getWorkspaceHistorySessionIdForSession(sessionId: string) {
+    const tab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
+        (candidate) => isChatTab(candidate) && candidate.sessionId === sessionId,
+    );
+    return tab && isChatTab(tab) ? (tab.historySessionId ?? null) : null;
 }
 
 function summarizePersistedHistory(
@@ -7858,6 +7866,44 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const session = await aiLoadSession(sessionId);
                 get().upsertSession(session, true);
             } catch (error) {
+                const fallbackHistorySessionId =
+                    getWorkspaceHistorySessionIdForSession(sessionId);
+                const vaultPath = useVaultStore.getState().vaultPath;
+                const persisted = fallbackHistorySessionId
+                    ? getPersistedHistoryFromCache(
+                          vaultPath,
+                          fallbackHistorySessionId,
+                      )
+                    : null;
+                const restored = persisted
+                    ? createPersistedSession(
+                          { ...persisted, messages: [] },
+                          get().runtimes,
+                          vaultPath,
+                      )
+                    : null;
+
+                if (restored) {
+                    get().upsertSession(restored, true);
+                    useChatTabsStore
+                        .getState()
+                        .replaceSessionId(
+                            sessionId,
+                            restored.sessionId,
+                            restored.historySessionId,
+                            restored.runtimeId,
+                        );
+                    useEditorStore
+                        .getState()
+                        .replaceAiSessionId(
+                            sessionId,
+                            restored.sessionId,
+                            restored.historySessionId,
+                        );
+                    await get().resumeSession(restored.sessionId);
+                    return;
+                }
+
                 get().applySessionError({
                     session_id: sessionId,
                     message: getAiErrorMessage(

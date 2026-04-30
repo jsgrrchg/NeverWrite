@@ -21,6 +21,11 @@ import {
 } from "./utils/safeStorage";
 import { SETTINGS_WINDOW_TITLE } from "./utils/branding";
 import { logWarn } from "./utils/runtimeLog";
+import {
+    collectAiSessionsForDetachedTransfer,
+    prepareTabForDetachedTransfer,
+} from "./detachedTabTransfer";
+import type { AIChatSession } from "../features/ai/types";
 
 const DETACHED_WINDOW_PREFIX = "note";
 const DETACHED_WINDOW_STORAGE_PREFIX = "neverwrite:detached-window:";
@@ -92,10 +97,12 @@ export interface DetachedWindowPayload {
     activeTabId: string | null;
     vaultPath: string | null;
     pinnedTabIds?: string[];
+    aiSessions?: AIChatSession[];
 }
 
 export interface AttachExternalTabPayload {
     tab: Tab;
+    aiSessions?: AIChatSession[];
 }
 
 export interface WindowTabDropZoneBounds {
@@ -198,11 +205,14 @@ export function createDetachedWindowPayload(
     vaultPath: string | null,
     pinnedTabIds: string[] = [],
 ): DetachedWindowPayload {
+    const preparedTab = prepareTabForDetachedTransfer(tab);
+    const aiSessions = collectAiSessionsForDetachedTransfer([tab]);
     return {
-        tabs: [tab],
-        activeTabId: tab.id,
+        tabs: [preparedTab],
+        activeTabId: preparedTab.id,
         vaultPath,
         ...(pinnedTabIds.length > 0 ? { pinnedTabIds } : {}),
+        ...(aiSessions.length > 0 ? { aiSessions } : {}),
     };
 }
 
@@ -391,6 +401,7 @@ export async function commitDetachedTabDrop({
     currentWorkspaceTabCount,
     closeTab,
 }: CommitDetachedTabDropOptions) {
+    const transferTab = prepareTabForDetachedTransfer(tab);
     const targetWindowLabel = await findWindowTabDropTarget(
         screenX,
         screenY,
@@ -399,8 +410,10 @@ export async function commitDetachedTabDrop({
     );
 
     if (targetWindowLabel) {
+        const aiSessions = collectAiSessionsForDetachedTransfer([tab]);
         await emitTo(targetWindowLabel, ATTACH_EXTERNAL_TAB_EVENT, {
-            tab,
+            tab: transferTab,
+            ...(aiSessions.length > 0 ? { aiSessions } : {}),
         } satisfies AttachExternalTabPayload);
 
         if (windowMode === "note" && currentWorkspaceTabCount <= 1) {
@@ -412,10 +425,13 @@ export async function commitDetachedTabDrop({
         return;
     }
 
-    await openDetachedNoteWindow(createDetachedWindowPayload(tab, vaultPath), {
-        title: tab.title,
-        position: getDetachedWindowPosition(screenX, screenY),
-    });
+    await openDetachedNoteWindow(
+        createDetachedWindowPayload(transferTab, vaultPath),
+        {
+            title: transferTab.title,
+            position: getDetachedWindowPosition(screenX, screenY),
+        },
+    );
 
     if (windowMode === "note" && currentWorkspaceTabCount <= 1) {
         await getCurrentWebviewWindow().close();

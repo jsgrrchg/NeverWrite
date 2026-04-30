@@ -8,6 +8,37 @@ import {
     publishWindowTabDropZone,
     resolveDetachWindowDropTarget,
 } from "./detachedWindows";
+import { resetChatStore, useChatStore } from "../features/ai/store/chatStore";
+import type { AIChatSession } from "../features/ai/types";
+
+function createChatSession(overrides: Partial<AIChatSession> = {}): AIChatSession {
+    return {
+        sessionId: "live-session-1",
+        historySessionId: "history-1",
+        status: "streaming",
+        activeWorkCycleId: null,
+        visibleWorkCycleId: null,
+        isResumingSession: false,
+        runtimeId: "codex-acp",
+        modelId: "gpt-test",
+        modeId: "default",
+        models: [],
+        modes: [],
+        configOptions: [],
+        messages: [
+            {
+                id: "msg-1",
+                role: "user",
+                kind: "message",
+                content: "keep this",
+                timestamp: 1,
+            },
+        ],
+        attachments: [],
+        runtimeState: "live",
+        ...overrides,
+    };
+}
 
 function createMockWindow(
     label: string,
@@ -25,6 +56,7 @@ function createMockWindow(
 
 describe("detachedWindows", () => {
     beforeEach(() => {
+        resetChatStore();
         vi.mocked(getAllWebviewWindows).mockResolvedValue([]);
         vi.mocked(emitTo).mockReset();
         localStorage.clear();
@@ -56,6 +88,86 @@ describe("detachedWindows", () => {
             ],
             activeTabId: "tab-1",
             vaultPath: "/vaults/main",
+        });
+    });
+
+    it("adds durable chat history identity to detached chat payloads", () => {
+        expect(
+            createDetachedWindowPayload(
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "live-session-1",
+                    title: "Agent",
+                },
+                "/vaults/main",
+            ),
+        ).toEqual({
+            tabs: [
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "live-session-1",
+                    historySessionId: "live-session-1",
+                    title: "Agent",
+                },
+            ],
+            activeTabId: "chat-tab-1",
+            vaultPath: "/vaults/main",
+        });
+    });
+
+    it("includes live chat session snapshots in detached chat payloads", () => {
+        const session = createChatSession();
+        useChatStore.setState({
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        expect(
+            createDetachedWindowPayload(
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "live-session-1",
+                    title: "Agent",
+                },
+                "/vaults/main",
+            ),
+        ).toMatchObject({
+            aiSessions: [
+                {
+                    sessionId: "live-session-1",
+                    messages: [
+                        {
+                            content: "keep this",
+                        },
+                    ],
+                    runtimeState: "live",
+                },
+            ],
+        });
+    });
+
+    it("normalizes terminal tabs for detached payloads", () => {
+        expect(
+            createDetachedWindowPayload(
+                {
+                    id: "terminal-tab-1",
+                    kind: "terminal",
+                    terminalId: "terminal-1",
+                    title: null,
+                    cwd: null,
+                },
+                "/vaults/main",
+            ).tabs[0],
+        ).toEqual({
+            id: "terminal-tab-1",
+            kind: "terminal",
+            terminalId: "terminal-1",
+            title: "Terminal",
+            cwd: null,
         });
     });
 

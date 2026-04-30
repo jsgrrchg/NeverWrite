@@ -7,6 +7,7 @@ import {
     flushPromises,
     getMockCurrentWebviewWindow,
     getMockCurrentWindow,
+    mockInvoke,
 } from "./test/test-utils";
 import { useCommandStore } from "./features/command-palette/store/commandStore";
 import { isTerminalTab, useEditorStore } from "./app/store/editorStore";
@@ -206,6 +207,52 @@ describe("App note window", () => {
                 (tab) => tab.id === useEditorStore.getState().activeTabId,
             );
         expect(activeTab && isTerminalTab(activeTab)).toBe(true);
+    });
+
+    it("starts workspace terminal runtimes inside detached note windows", async () => {
+        mockInvoke().mockResolvedValue({
+            sessionId: "devterm-note-1",
+            program: "/bin/zsh",
+            status: "running",
+            displayName: "zsh",
+            cwd: "/vault",
+            cols: 120,
+            rows: 24,
+            exitCode: null,
+            errorMessage: null,
+        });
+        setEditorTabs(
+            [
+                {
+                    id: "terminal-tab-1",
+                    kind: "terminal",
+                    terminalId: "terminal-1",
+                    title: "Terminal 1",
+                    cwd: "/vault",
+                },
+            ],
+            "terminal-tab-1",
+        );
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        expect(mockInvoke()).toHaveBeenCalledWith(
+            "devtools_create_terminal_session",
+            {
+                input: {
+                    cwd: "/vault",
+                    cols: 120,
+                    rows: 24,
+                },
+            },
+        );
+        expect(
+            useTerminalRuntimeStore.getState().runtimesById["terminal-1"],
+        ).toMatchObject({
+            tabId: "terminal-tab-1",
+            sessionId: "devterm-note-1",
+        });
     });
 
     it("only restarts the active workspace terminal command for terminal tabs", async () => {

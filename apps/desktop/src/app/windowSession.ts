@@ -9,6 +9,7 @@ import {
 } from "./utils/safeStorage";
 import type { TabInput } from "./store/editorStore";
 import { logWarn } from "./utils/runtimeLog";
+import { prepareTabsForDetachedTransfer } from "./detachedTabTransfer";
 
 const WINDOW_SESSION_DESCRIPTOR_PREFIX = "neverwrite:window-session:";
 const WINDOW_SESSION_SNAPSHOT_KEY = "neverwrite:window-session-snapshot";
@@ -66,8 +67,11 @@ export function buildWindowSessionEntry(args: {
 
     if (windowMode === "note") {
         if (tabs.length === 0) return null;
-        const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
-        const tabIds = new Set(tabs.map((tab) => tab.id));
+        const preparedTabs = prepareTabsForDetachedTransfer(tabs);
+        const activeTab =
+            preparedTabs.find((tab) => tab.id === activeTabId) ??
+            preparedTabs[0];
+        const tabIds = new Set(preparedTabs.map((tab) => tab.id));
         const pinnedTabIds = (args.pinnedTabIds ?? []).filter((tabId) =>
             tabIds.has(tabId),
         );
@@ -75,7 +79,7 @@ export function buildWindowSessionEntry(args: {
             label,
             kind: "note",
             payload: {
-                tabs,
+                tabs: preparedTabs,
                 activeTabId,
                 vaultPath,
                 ...(pinnedTabIds.length > 0 ? { pinnedTabIds } : {}),

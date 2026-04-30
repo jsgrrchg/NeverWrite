@@ -10,9 +10,10 @@ import {
     isPdfTab,
     isReviewTab,
     isTerminalTab,
-    selectEditorPaneActiveTab,
     selectEditorPaneState,
     selectFocusedPaneId,
+    type EditorPaneState,
+    type EditorWorkspaceState,
     type TerminalTab,
 } from "../../app/store/editorStore";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
@@ -34,6 +35,7 @@ type EditorPanelView =
     | "ai-chat"
     | "ai-chat-history"
     | "editor"
+    | "terminal"
     | "map"
     | "graph";
 
@@ -56,6 +58,24 @@ const LazyAIChatSessionView = React.lazy(() =>
 );
 
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
+
+function selectRenderablePane(
+    state: EditorWorkspaceState,
+    paneId?: string,
+): EditorPaneState {
+    if (paneId) {
+        return selectEditorPaneState(state, paneId);
+    }
+
+    const activePane =
+        state.activeTabId && state.panes.length > 1
+            ? (state.panes.find((pane) =>
+                  pane.tabs.some((tab) => tab.id === state.activeTabId),
+              ) ?? null)
+            : null;
+
+    return activePane ?? selectEditorPaneState(state);
+}
 
 function UnsupportedMapView() {
     return (
@@ -123,6 +143,8 @@ function renderEditorPanelView(
             ) : null;
         case "graph":
             return null;
+        case "terminal":
+            return null;
         default:
             return (
                 <Editor paneId={paneId} emptyStateMessage={emptyStateMessage} />
@@ -139,9 +161,9 @@ export function EditorPaneContent({
     paneId,
     emptyStateMessage,
 }: EditorPaneContentProps) {
-    const activeTab = useEditorStore((state) =>
-        selectEditorPaneActiveTab(state, paneId),
-    );
+    const pane = useEditorStore((state) => selectRenderablePane(state, paneId));
+    const activeTab =
+        pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
     const view: EditorPanelView = (() => {
         const tab = activeTab;
         if (!tab) return "editor";
@@ -152,13 +174,12 @@ export function EditorPaneContent({
         if (isChatHistoryTab(tab)) return "ai-chat-history";
         if (isMapTab(tab)) return "map";
         if (isGraphTab(tab)) return "graph";
+        if (isTerminalTab(tab)) return "terminal";
         if (!isNoteTab(tab)) return "editor";
         if (isSearchTab(tab)) return "search";
         return "editor";
     })();
-    const paneTabs = useEditorStore(
-        (state) => selectEditorPaneState(state, paneId).tabs,
-    );
+    const paneTabs = pane.tabs;
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
     const activePane = paneId ? focusedPaneId === paneId : true;
     const terminalTabs = paneTabs.filter(

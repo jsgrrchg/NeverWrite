@@ -1550,9 +1550,28 @@ export default function App() {
                     if (cancelled) return;
                     await useVaultStore.getState().openVault(path);
                 },
-                hydrateTabs: (tabs, activeTabId) => {
+                hydrateTabs: (tabs, activeTabId, pinnedTabIds, options) => {
                     if (cancelled) return;
-                    hydrateTabs(tabs, activeTabId);
+                    hydrateTabs(tabs, activeTabId, pinnedTabIds, options);
+                },
+                hydrateAiSessions: (sessions, activeTabId, tabs) => {
+                    if (cancelled) return;
+                    const activeTab = tabs.find(
+                        (tab) => tab.id === activeTabId,
+                    );
+                    const activeChatSessionId =
+                        activeTab && isChatTab(activeTab)
+                            ? activeTab.sessionId
+                            : null;
+
+                    for (const session of sessions) {
+                        useChatStore
+                            .getState()
+                            .upsertSession(
+                                session,
+                                session.sessionId === activeChatSessionId,
+                            );
+                    }
                 },
             });
 
@@ -1968,6 +1987,16 @@ export default function App() {
                 ATTACH_EXTERNAL_TAB_EVENT,
                 (event) => {
                     if (disposed) return;
+                    for (const session of event.payload.aiSessions ?? []) {
+                        useChatStore
+                            .getState()
+                            .upsertSession(
+                                session,
+                                isChatTab(event.payload.tab) &&
+                                    session.sessionId ===
+                                        event.payload.tab.sessionId,
+                            );
+                    }
                     const editor = useEditorStore.getState();
                     const targetPaneId =
                         selectFocusedPaneId(editor) ??
@@ -2089,6 +2118,7 @@ export default function App() {
         return (
             <div className="h-full min-h-0 min-w-0 flex flex-col overflow-hidden">
                 <AIChatDetachedWindowHost />
+                <WorkspaceTerminalHost />
                 <UnifiedBar windowMode="note" />
                 <div className="flex-1 min-h-0 min-w-0 overflow-hidden flex flex-col">
                     <EditorPaneContent emptyStateMessage="Esta ventana no tiene ninguna nota abierta" />

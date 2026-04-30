@@ -108,8 +108,19 @@ class ElectronWindowHandle {
         return getElectronApi().onWindowEvent("scaleChanged", handler);
     }
 
-    innerPosition(): Promise<{ x: number; y: number }> {
-        return Promise.resolve({ x: window.screenX, y: window.screenY });
+    innerPosition(): Promise<{
+        x: number;
+        y: number;
+        toLogical: () => { x: number; y: number };
+    }> {
+        const position = { x: window.screenX, y: window.screenY };
+        return Promise.resolve({
+            ...position,
+            // Browser screen coordinates are already CSS pixels in Electron.
+            // Expose toLogical so shared drop-zone code does not divide them
+            // by devicePixelRatio a second time on Retina/scaled displays.
+            toLogical: () => position,
+        });
     }
 
     scaleFactor(): Promise<number> {

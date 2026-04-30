@@ -112,6 +112,41 @@ describe("EditorPaneContent", () => {
         const terminal = screen.getByTestId("workspace-terminal-view");
         expect(terminal).toHaveAttribute("data-terminal-active", "true");
         expect(screen.getByText(/terminal ready/i)).toBeInTheDocument();
+        expect(screen.queryByText(/open a note/i)).not.toBeInTheDocument();
+    });
+
+    it("renders the top-level active terminal even when the focused pane is empty", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "terminal-tab-1",
+                            kind: "terminal",
+                            terminalId: "terminal-1",
+                            title: "Terminal 1",
+                            cwd: "/vault",
+                        },
+                    ],
+                    activeTabId: "terminal-tab-1",
+                },
+            ],
+            "primary",
+        );
+        useEditorStore.setState({ activeTabId: "terminal-tab-1" });
+        seedTerminalRuntime("terminal-1", "terminal ready\n");
+
+        renderComponent(<EditorPaneContent />);
+
+        const terminal = screen.getByTestId("workspace-terminal-view");
+        expect(terminal).toHaveAttribute("data-terminal-active", "true");
+        expect(screen.queryByText(/this pane is empty/i)).not.toBeInTheDocument();
     });
 
     it("keeps terminal tabs mounted but hidden when a non-terminal tab is active", () => {
@@ -232,8 +267,16 @@ describe("EditorPaneContent", () => {
         );
         seedTerminalRuntime("terminal-1", "focused later\n");
 
-        renderComponent(<EditorPaneContent paneId="secondary" />);
+        renderComponent(
+            <EditorPaneContent
+                paneId="secondary"
+                emptyStateMessage="This pane is empty. Open a note here or close the pane from its menu."
+            />,
+        );
         expect(getXtermMockInstances()).toHaveLength(1);
+        expect(
+            screen.queryByText(/this pane is empty/i),
+        ).not.toBeInTheDocument();
 
         await act(async () => {
             vi.runOnlyPendingTimers();

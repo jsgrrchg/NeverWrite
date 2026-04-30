@@ -34,7 +34,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [0.1.2]
+## [0.1.2] - 2026-04-30
 
 ### Fixed
 
@@ -42,6 +42,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Fixed opening and using vaults on Windows rclone/WinFsp mounted drives that do not support path canonicalization, without compromising security layer.
 - Fixed the drag preview disappearing when dragging items from an expanded sidebar onto editor panes or the chat composer.
 - Fixed sticky folder headers in the file tree so they read as a distinct frosted plate, with the same visible blur treatment in both the docked sidebar and the Arc-style peek overlay.
+- Fixed detached windows so agent conversations, review tabs, and terminal tabs keep their state when opened, moved, or reattached across windows.
 
 ## [0.1.1]
 

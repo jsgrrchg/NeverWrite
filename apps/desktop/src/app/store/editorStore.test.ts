@@ -867,6 +867,31 @@ describe("editorStore hydration and external insertion", () => {
         });
     });
 
+    it("keeps review tabs when hydrating a detached-window transfer", () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "review-1",
+                    kind: "ai-review",
+                    sessionId: "session-1",
+                    title: "Review",
+                },
+            ],
+            "review-1",
+            [],
+            { allowEphemeralTabs: true },
+        );
+
+        const state = useEditorStore.getState();
+        expect(state.tabs).toHaveLength(1);
+        expect(state.tabs[0]).toMatchObject({
+            id: "review-1",
+            kind: "ai-review",
+            sessionId: "session-1",
+        });
+        expect(state.activeTabId).toBe("review-1");
+    });
+
     it("normalizes external tabs by kind and activates the inserted tab", () => {
         useEditorStore.setState({
             tabs: [
