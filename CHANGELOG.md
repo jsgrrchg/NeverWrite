@@ -40,6 +40,8 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 - Fixed macOS DMG release validation so GitHub-built desktop release artifacts are staged and checked correctly.
 - Fixed opening and using vaults on Windows rclone/WinFsp mounted drives that do not support path canonicalization, without compromising security layer.
+- Fixed the drag preview disappearing when dragging items from an expanded sidebar onto editor panes or the chat composer.
+- Fixed sticky folder headers in the file tree so they read as a distinct frosted plate, with the same visible blur treatment in both the docked sidebar and the Arc-style peek overlay.
 
 ## [0.1.1]
 
