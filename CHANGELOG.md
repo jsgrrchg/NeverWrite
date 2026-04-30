@@ -36,12 +36,5 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [0.1.0]
 
-### Added
+- First release. For full changelog, the commit history is available, from the first line of code to the last. 
 
-- Signed and notarized macOS release pipeline with public update feeds.
-- Manual update checks and install flow from the desktop settings panel.
-- Safety confirmation before installing updates when unsaved tabs, pending AI reviews, active agent sessions, or separate work windows are open.
-
-### Changed
-
-- Desktop releases now publish target-specific updater metadata for macOS and Windows.
