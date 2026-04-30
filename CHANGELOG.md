@@ -34,7 +34,14 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.1.1]
+
+### Fixed
+
+- Fixed the GitHub-built desktop app packaging so the bundled Claude ACP runtime includes its production dependencies.
+- Prevented a failed AI runtime startup from blocking provider settings, note loading, and other backend requests indefinitely.
+- Improved AI provider settings so providers show as checking while runtime inventory is loading instead of incorrectly offering installs.
+
 ## [0.1.0]
 
 - First release. For full changelog, the commit history is available, from the first line of code to the last. 
-

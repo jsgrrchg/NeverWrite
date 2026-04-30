@@ -21,6 +21,11 @@ const MAC_UNIVERSAL_COMPONENT_TARGETS = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
 ];
+const CLAUDE_RUNTIME_DEPENDENCIES = [
+    "@agentclientprotocol/sdk",
+    "@anthropic-ai/claude-agent-sdk",
+    "zod",
+];
 
 function parseArgs(argv) {
     const args = {
@@ -74,12 +79,133 @@ function run(command, args, cwd) {
     });
 }
 
+function packageDirectory(root, packageName) {
+    return path.join(root, "node_modules", ...packageName.split("/"));
+}
+
 async function pathExists(filePath) {
     try {
         await fs.access(filePath);
         return true;
     } catch {
         return false;
+    }
+}
+
+function requiredClaudePlatformPackages(targetTriple) {
+    if (targetTriple === MAC_UNIVERSAL_TARGET) {
+        return [
+            "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+            "@anthropic-ai/claude-agent-sdk-darwin-x64",
+        ];
+    }
+    if (targetTriple === "aarch64-apple-darwin") {
+        return ["@anthropic-ai/claude-agent-sdk-darwin-arm64"];
+    }
+    if (targetTriple === "x86_64-apple-darwin") {
+        return ["@anthropic-ai/claude-agent-sdk-darwin-x64"];
+    }
+    if (targetTriple === "aarch64-pc-windows-msvc") {
+        return ["@anthropic-ai/claude-agent-sdk-win32-arm64"];
+    }
+    if (targetTriple === "x86_64-pc-windows-msvc") {
+        return ["@anthropic-ai/claude-agent-sdk-win32-x64"];
+    }
+
+    return [];
+}
+
+async function readJson(filePath) {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+}
+
+async function missingClaudeRuntimePackages(sourceDir, targetTriple) {
+    const requiredPackages = [
+        ...CLAUDE_RUNTIME_DEPENDENCIES,
+        ...requiredClaudePlatformPackages(targetTriple),
+    ];
+    const missing = [];
+
+    for (const packageName of requiredPackages) {
+        if (
+            !(await pathExists(
+                path.join(
+                    packageDirectory(sourceDir, packageName),
+                    "package.json",
+                ),
+            ))
+        ) {
+            missing.push(packageName);
+        }
+    }
+
+    return missing;
+}
+
+async function installClaudeRuntimeDependencies(sourceDir, targetTriple) {
+    const packageJsonPath = path.join(sourceDir, "package.json");
+    const packageLockPath = path.join(sourceDir, "package-lock.json");
+    const entrypointPath = path.join(sourceDir, "dist", "index.js");
+
+    for (const requiredPath of [
+        packageJsonPath,
+        packageLockPath,
+        entrypointPath,
+    ]) {
+        if (!(await pathExists(requiredPath))) {
+            throw new Error(
+                `Claude embedded runtime is missing required file: ${requiredPath}`,
+            );
+        }
+    }
+
+    let missing = await missingClaudeRuntimePackages(sourceDir, targetTriple);
+    if (missing.length > 0) {
+        console.log(
+            `Installing Claude embedded runtime production dependencies (${missing.join(", ")} missing).`,
+        );
+        await run("npm", ["ci", "--omit=dev", "--include=optional"], sourceDir);
+    }
+
+    missing = await missingClaudeRuntimePackages(sourceDir, targetTriple);
+    const platformPackages = requiredClaudePlatformPackages(targetTriple);
+    const missingPlatformPackages = missing.filter((packageName) =>
+        platformPackages.includes(packageName),
+    );
+    if (missingPlatformPackages.length > 0) {
+        const packageLock = await readJson(packageLockPath);
+        const packagesToInstall = missingPlatformPackages.map((packageName) => {
+            const version =
+                packageLock.packages?.[`node_modules/${packageName}`]?.version;
+            if (!version) {
+                throw new Error(
+                    `Could not resolve locked version for ${packageName} in ${packageLockPath}`,
+                );
+            }
+            return `${packageName}@${version}`;
+        });
+        console.log(
+            `Installing target-specific Claude runtime packages: ${packagesToInstall.join(", ")}`,
+        );
+        await run(
+            "npm",
+            [
+                "install",
+                "--omit=dev",
+                "--include=optional",
+                "--no-save",
+                "--force",
+                ...packagesToInstall,
+            ],
+            sourceDir,
+        );
+    }
+
+    missing = await missingClaudeRuntimePackages(sourceDir, targetTriple);
+    if (missing.length > 0) {
+        throw new Error(
+            `Claude embedded runtime is missing production dependencies after install: ${missing.join(", ")}`,
+        );
     }
 }
 
@@ -115,7 +241,9 @@ function envSuffixForTarget(targetTriple) {
     if (targetTriple === "x86_64-apple-darwin") return "X64";
     if (targetTriple === "aarch64-pc-windows-msvc") return "ARM64";
     if (targetTriple === "x86_64-pc-windows-msvc") return "X64";
-    throw new Error(`Unsupported target for environment suffix: ${targetTriple}`);
+    throw new Error(
+        `Unsupported target for environment suffix: ${targetTriple}`,
+    );
 }
 
 function embeddedNodeVersion() {
@@ -137,11 +265,7 @@ function nodeArchiveExtension(targetTriple) {
     return targetTriple.includes("windows") ? "zip" : "tar.gz";
 }
 
-async function resolveBuiltBinary({
-    envKeys,
-    fallbackPath,
-    description,
-}) {
+async function resolveBuiltBinary({ envKeys, fallbackPath, description }) {
     for (const envKey of envKeys) {
         const configuredPath = process.env[envKey]?.trim();
         if (!configuredPath) {
@@ -181,7 +305,10 @@ async function downloadFile(url, destinationPath) {
             `Failed to download ${url}: ${response.status} ${response.statusText}`,
         );
     }
-    await fs.writeFile(destinationPath, Buffer.from(await response.arrayBuffer()));
+    await fs.writeFile(
+        destinationPath,
+        Buffer.from(await response.arrayBuffer()),
+    );
 }
 
 async function extractZip(archivePath, destinationDir) {
@@ -208,7 +335,11 @@ async function downloadOfficialNodeSource(targetTriple) {
     const isWindows = targetTriple.includes("windows");
     const nodeBinary = isWindows
         ? path.join(destination, executableNameForTarget("node", targetTriple))
-        : path.join(destination, "bin", executableNameForTarget("node", targetTriple));
+        : path.join(
+              destination,
+              "bin",
+              executableNameForTarget("node", targetTriple),
+          );
     if (await pathExists(nodeBinary)) {
         return {
             kind: isWindows ? "portable-bin-directory" : "directory",
@@ -227,7 +358,11 @@ async function downloadOfficialNodeSource(targetTriple) {
     if (extension === "zip") {
         await extractZip(archivePath, embeddedNodeCacheDir);
     } else {
-        await run("tar", ["-xzf", archivePath, "-C", embeddedNodeCacheDir], appRoot);
+        await run(
+            "tar",
+            ["-xzf", archivePath, "-C", embeddedNodeCacheDir],
+            appRoot,
+        );
     }
 
     if (!(await pathExists(nodeBinary))) {
@@ -244,11 +379,16 @@ async function downloadOfficialNodeSource(targetTriple) {
 
 async function resolveEmbeddedNodeSource(targetTriple) {
     if (isMacUniversalTarget(targetTriple)) {
-        const arm64Source = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64?.trim()
-            ? nodeSourceFromBinary(process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64.trim())
-            : await downloadOfficialNodeSource("aarch64-apple-darwin");
+        const arm64Source =
+            process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64?.trim()
+                ? nodeSourceFromBinary(
+                      process.env.NEVERWRITE_EMBEDDED_NODE_BIN_ARM64.trim(),
+                  )
+                : await downloadOfficialNodeSource("aarch64-apple-darwin");
         const x64Source = process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64?.trim()
-            ? nodeSourceFromBinary(process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64.trim())
+            ? nodeSourceFromBinary(
+                  process.env.NEVERWRITE_EMBEDDED_NODE_BIN_X64.trim(),
+              )
             : await downloadOfficialNodeSource("x86_64-apple-darwin");
 
         const arm64Binary = path.join(arm64Source.sourcePath, "bin", "node");
@@ -274,7 +414,8 @@ async function resolveEmbeddedNodeSource(targetTriple) {
         };
     }
 
-    const configuredNodeBinary = process.env.NEVERWRITE_EMBEDDED_NODE_BIN?.trim();
+    const configuredNodeBinary =
+        process.env.NEVERWRITE_EMBEDDED_NODE_BIN?.trim();
     if (!configuredNodeBinary) {
         return downloadOfficialNodeSource(targetTriple);
     }
@@ -340,7 +481,11 @@ async function stageEmbeddedNodeRuntime(nodeSource) {
 
 async function lipoCreate(inputPaths, outputPath) {
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
-    await run("lipo", ["-create", ...inputPaths, "-output", outputPath], appRoot);
+    await run(
+        "lipo",
+        ["-create", ...inputPaths, "-output", outputPath],
+        appRoot,
+    );
 }
 
 async function stageUniversalEmbeddedNodeRuntime(nodeSource) {
@@ -360,8 +505,14 @@ async function stageUniversalEmbeddedNodeRuntime(nodeSource) {
         return;
     }
 
-    for (const entry of await fs.readdir(arm64LibDir, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.startsWith("libnode") || !entry.name.endsWith(".dylib")) {
+    for (const entry of await fs.readdir(arm64LibDir, {
+        withFileTypes: true,
+    })) {
+        if (
+            !entry.isFile() ||
+            !entry.name.startsWith("libnode") ||
+            !entry.name.endsWith(".dylib")
+        ) {
             continue;
         }
         const arm64Lib = path.join(arm64LibDir, entry.name);
@@ -541,7 +692,10 @@ if (isUniversalMac) {
         !args.skipBuild &&
         !process.env.NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN?.trim() &&
         !process.env[
-            targetSpecificEnvKey("NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN", targetTriple)
+            targetSpecificEnvKey(
+                "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN",
+                targetTriple,
+            )
         ]?.trim()
     ) {
         await buildNativeBackendForTarget(targetTriple);
@@ -551,7 +705,10 @@ if (isUniversalMac) {
         !args.skipBuild &&
         !process.env.NEVERWRITE_CODEX_ACP_BUNDLE_BIN?.trim() &&
         !process.env[
-            targetSpecificEnvKey("NEVERWRITE_CODEX_ACP_BUNDLE_BIN", targetTriple)
+            targetSpecificEnvKey(
+                "NEVERWRITE_CODEX_ACP_BUNDLE_BIN",
+                targetTriple,
+            )
         ]?.trim()
     ) {
         await buildCodexForTarget(targetTriple);
@@ -577,6 +734,7 @@ if (isUniversalMac) {
 
 const nodeSource = await resolveEmbeddedNodeSource(targetTriple);
 const claudeEmbeddedSource = await resolveClaudeEmbeddedSource();
+await installClaudeRuntimeDependencies(claudeEmbeddedSource, targetTriple);
 
 // Electron release jobs must stage binaries for the requested target explicitly.
 // Reusing host binaries here would silently create a mismatched bundle.
@@ -591,7 +749,10 @@ await fs.mkdir(binariesDir, { recursive: true });
 if (Array.isArray(stagingCodexPath)) {
     await lipoCreate(stagingCodexPath, path.join(binariesDir, codexBinaryName));
 } else {
-    await fs.copyFile(stagingCodexPath, path.join(binariesDir, codexBinaryName));
+    await fs.copyFile(
+        stagingCodexPath,
+        path.join(binariesDir, codexBinaryName),
+    );
 }
 await fs.mkdir(embeddedDir, { recursive: true });
 if (nodeSource.kind === "universal-directory") {

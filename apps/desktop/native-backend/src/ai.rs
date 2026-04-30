@@ -61,6 +61,7 @@ const AUTH_TERMINAL_DEFAULT_COLS: u16 = 100;
 const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
 const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
+const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 struct TerminalExitMeta {
@@ -1623,7 +1624,17 @@ fn start_acp_session(
             .await;
         });
     });
-    let session = created_rx.recv().map_err(|error| error.to_string())??;
+    let session = created_rx
+        .recv_timeout(ACP_SESSION_START_TIMEOUT)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => format!(
+                "Timed out waiting for the AI runtime to create a session after {} seconds.",
+                ACP_SESSION_START_TIMEOUT.as_secs()
+            ),
+            mpsc::RecvTimeoutError::Disconnected => {
+                "AI runtime session startup disconnected before responding.".to_string()
+            }
+        })??;
     Ok(CreatedAcpSession { session, handle })
 }
 
@@ -1730,32 +1741,44 @@ async fn run_acp_actor_inner(
             agent_client_protocol::on_receive_notification!(),
         )
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
-            connection
-                .send_request(
-                    InitializeRequest::new(ProtocolVersion::LATEST)
-                        .client_capabilities(
-                            ClientCapabilities::new().fs(FileSystemCapabilities::new()),
+            let response = tokio::select! {
+                response = async {
+                    connection
+                        .send_request(
+                            InitializeRequest::new(ProtocolVersion::LATEST)
+                                .client_capabilities(
+                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
+                                )
+                                .client_info(
+                                    Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
+                                        .title("NeverWrite"),
+                                ),
                         )
-                        .client_info(
-                            Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
-                                .title("NeverWrite"),
-                        ),
-                )
-                .block_task()
-                .await?;
-            emit_event(
-                &event_tx_for_connection,
-                AI_RUNTIME_CONNECTION_EVENT,
-                json!(AiRuntimeConnectionPayload {
-                    runtime_id: spec.runtime_id.clone(),
-                    status: "ready".to_string(),
-                    message: None,
-                }),
-            );
-            let response = connection
-                .send_request(NewSessionRequest::new(spec.cwd.clone()))
-                .block_task()
-                .await?;
+                        .block_task()
+                        .await?;
+                    emit_event(
+                        &event_tx_for_connection,
+                        AI_RUNTIME_CONNECTION_EVENT,
+                        json!(AiRuntimeConnectionPayload {
+                            runtime_id: spec.runtime_id.clone(),
+                            status: "ready".to_string(),
+                            message: None,
+                        }),
+                    );
+                    connection
+                        .send_request(NewSessionRequest::new(spec.cwd.clone()))
+                        .block_task()
+                        .await
+                } => response?,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(agent_client_protocol::Error::internal_error().data(message));
+                }
+            };
             let session = session_from_acp_response(
                 &spec.runtime_id,
                 response.session_id.0.to_string(),

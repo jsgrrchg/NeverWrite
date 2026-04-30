@@ -44,7 +44,8 @@ function createRuntimeDescriptor(
 }
 
 function createSetupStatus(
-    input: Partial<AIRuntimeSetupStatus> & Pick<AIRuntimeSetupStatus, "runtimeId">,
+    input: Partial<AIRuntimeSetupStatus> &
+        Pick<AIRuntimeSetupStatus, "runtimeId">,
 ): AIRuntimeSetupStatus {
     return {
         binaryReady: true,
@@ -183,13 +184,21 @@ function getButtonFromText(text: string) {
     const button = screen
         .getAllByText(text)
         .map((label) => label.closest("button"))
-        .find(
-            (candidate): candidate is HTMLButtonElement => candidate != null,
-        );
+        .find((candidate): candidate is HTMLButtonElement => candidate != null);
     if (!button) {
         throw new Error(`No button found for ${text}`);
     }
     return button;
+}
+
+function createDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((promiseResolve, promiseReject) => {
+        resolve = promiseResolve;
+        reject = promiseReject;
+    });
+    return { promise, resolve, reject };
 }
 
 async function openProvider(providerName: string) {
@@ -207,6 +216,23 @@ describe("AIProvidersSettings", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mockProviders(createDefaultProviders());
+    });
+
+    it("does not offer provider installs while runtime inventory is still loading", async () => {
+        const deferredRuntimes = createDeferred<AIRuntimeDescriptor[]>();
+        apiMocks.aiListRuntimes.mockReturnValue(deferredRuntimes.promise);
+
+        renderComponent(<AIProvidersSettings />);
+
+        expect(
+            await screen.findByText("Loading providers…"),
+        ).toBeInTheDocument();
+        expect(screen.getAllByText("Checking…").length).toBeGreaterThan(0);
+        expect(
+            screen.queryByRole("button", { name: "Install" }),
+        ).not.toBeInTheDocument();
+
+        deferredRuntimes.resolve(createDefaultProviders().descriptors);
     });
 
     it("validates Claude gateway URLs before saving provider authentication", async () => {
@@ -308,7 +334,9 @@ describe("AIProvidersSettings", () => {
         fireEvent.change(screen.getByPlaceholderText("Gemini API key"), {
             target: { value: "gemini-secret" },
         });
-        fireEvent.click(screen.getByRole("button", { name: "Save and connect" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and connect" }),
+        );
 
         await waitFor(() => {
             expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
@@ -333,10 +361,13 @@ describe("AIProvidersSettings", () => {
     it("expands a provider row even when setup status failed to load", async () => {
         const providers = createDefaultProviders();
         apiMocks.aiListRuntimes.mockResolvedValue(providers.descriptors);
-        apiMocks.aiGetSetupStatus.mockImplementation(async (runtimeId: string) => {
-            if (runtimeId === "codex-acp") return providers.statuses[runtimeId];
-            throw new Error("Native backend is unavailable.");
-        });
+        apiMocks.aiGetSetupStatus.mockImplementation(
+            async (runtimeId: string) => {
+                if (runtimeId === "codex-acp")
+                    return providers.statuses[runtimeId];
+                throw new Error("Native backend is unavailable.");
+            },
+        );
 
         renderComponent(<AIProvidersSettings />);
 

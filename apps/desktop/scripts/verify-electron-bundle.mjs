@@ -10,6 +10,9 @@ const REQUIRED_RESOURCE_PATHS = {
         "native-backend/binaries/codex-acp",
         "native-backend/embedded/node/bin/node",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
+        "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
+        "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+        "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
     ],
     win32: [
         "icons/icon.ico",
@@ -17,6 +20,9 @@ const REQUIRED_RESOURCE_PATHS = {
         "native-backend/binaries/codex-acp.exe",
         "native-backend/embedded/node/bin/node.exe",
         "native-backend/embedded/claude-agent-acp/dist/index.js",
+        "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
+        "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+        "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
     ],
 };
 const DEFAULT_PRODUCT_NAME = "NeverWrite";
@@ -43,8 +49,9 @@ function resolveResourcesDir(packContext) {
     if (packContext.electronPlatformName === "darwin") {
         const appBundleName = fs
             .readdirSync(packContext.appOutDir, { withFileTypes: true })
-            .find((entry) => entry.isDirectory() && entry.name.endsWith(".app"))
-            ?.name;
+            .find(
+                (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
+            )?.name;
         if (!appBundleName) {
             throw new Error(
                 `Could not locate the packaged .app bundle in ${packContext.appOutDir}.`,
@@ -159,7 +166,8 @@ export default async function verifyElectronBundle(packContext) {
     await stampWindowsExecutable(packContext);
 
     const resourcesDir = resolveResourcesDir(packContext);
-    const requiredPaths = REQUIRED_RESOURCE_PATHS[packContext.electronPlatformName];
+    const requiredPaths =
+        REQUIRED_RESOURCE_PATHS[packContext.electronPlatformName];
 
     if (!requiredPaths) {
         throw new Error(

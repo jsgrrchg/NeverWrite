@@ -1060,6 +1060,7 @@ export function AIProvidersSettings({
             },
         ];
     });
+    const runtimeInventoryPending = isLoading && runtimes.length === 0;
     const filteredInstalledProviders = installedProviders.filter((provider) =>
         matchesSettingsSearch(
             searchQuery,
@@ -1176,168 +1177,175 @@ export function AIProvidersSettings({
                             </div>
                         ) : (
                             filteredInstalledProviders.map((provider, i) => {
-                        const isExpanded = expandedId === provider.id;
-                        const isSaving = savingId === provider.id;
-                        const connected =
-                            provider.setupStatus?.authReady === true;
-                        const methodName = getMethodDisplayName(
-                            provider.setupStatus,
-                        );
+                                const isExpanded = expandedId === provider.id;
+                                const isSaving = savingId === provider.id;
+                                const connected =
+                                    provider.setupStatus?.authReady === true;
+                                const methodName = getMethodDisplayName(
+                                    provider.setupStatus,
+                                );
 
-                        return (
-                            <Fragment key={provider.id}>
-                                {i > 0 && (
-                                    <div
-                                        style={{
-                                            height: 1,
-                                            backgroundColor: "var(--border)",
-                                        }}
-                                    />
-                                )}
-                                <div
-                                    style={{
-                                        backgroundColor: "var(--bg-secondary)",
-                                    }}
-                                >
-                                    {/* Header row */}
-                                    <div
-                                        role="button"
-                                        aria-expanded={isExpanded}
-                                        tabIndex={0}
-                                        onClick={() =>
-                                            setExpandedId((prev) =>
-                                                prev === provider.id
-                                                    ? null
-                                                    : provider.id,
-                                            )
-                                        }
-                                        onKeyDown={(e) => {
-                                            if (
-                                                e.key === "Enter" ||
-                                                e.key === " "
-                                            ) {
-                                                e.preventDefault();
-                                                setExpandedId((prev) =>
-                                                    prev === provider.id
-                                                        ? null
-                                                        : provider.id,
-                                                );
-                                            }
-                                        }}
-                                        style={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            justifyContent: "space-between",
-                                            height: 48,
-                                            padding: "0 14px",
-                                            cursor: "pointer",
-                                        }}
-                                    >
-                                        <div
-                                            style={{
-                                                display: "flex",
-                                                alignItems: "center",
-                                                gap: 10,
-                                            }}
-                                        >
-                                            <span
-                                                style={{
-                                                    fontSize: 10,
-                                                    color: "var(--text-secondary)",
-                                                    width: 10,
-                                                    textAlign: "center",
-                                                }}
-                                            >
-                                                {isExpanded ? "▾" : "▸"}
-                                            </span>
+                                return (
+                                    <Fragment key={provider.id}>
+                                        {i > 0 && (
                                             <div
                                                 style={{
-                                                    width: 8,
-                                                    height: 8,
-                                                    borderRadius: "50%",
-                                                    backgroundColor: connected
-                                                        ? "#34d399"
-                                                        : "#ef4444",
-                                                    flexShrink: 0,
+                                                    height: 1,
+                                                    backgroundColor:
+                                                        "var(--border)",
                                                 }}
                                             />
-                                            <span
-                                                style={{
-                                                    fontSize: 13,
-                                                    fontWeight: 600,
-                                                    color: "var(--text-primary)",
-                                                }}
-                                            >
-                                                {provider.name}
-                                            </span>
-                                            {methodName && (
-                                                <span
-                                                    style={{
-                                                        fontSize: 12,
-                                                        color: "var(--text-secondary)",
-                                                    }}
-                                                >
-                                                    {methodName}
-                                                </span>
-                                            )}
-                                        </div>
+                                        )}
                                         <div
                                             style={{
-                                                padding: "3px 8px",
-                                                borderRadius: 999,
-                                                fontSize: 10,
-                                                fontWeight: 600,
-                                                backgroundColor: connected
-                                                    ? "color-mix(in srgb, #34d399 15%, var(--bg-primary))"
-                                                    : "color-mix(in srgb, #ef4444 15%, var(--bg-primary))",
-                                                color: connected
-                                                    ? "#34d399"
-                                                    : "#ef4444",
+                                                backgroundColor:
+                                                    "var(--bg-secondary)",
                                             }}
                                         >
-                                            {connected
-                                                ? "Connected"
-                                                : "Not configured"}
-                                        </div>
-                                    </div>
-
-                                    {/* Expanded content */}
-                                    {isExpanded &&
-                                        (provider.setupStatus ? (
-                                            <ProviderExpandedPanel
-                                                setupStatus={
-                                                    provider.setupStatus
+                                            {/* Header row */}
+                                            <div
+                                                role="button"
+                                                aria-expanded={isExpanded}
+                                                tabIndex={0}
+                                                onClick={() =>
+                                                    setExpandedId((prev) =>
+                                                        prev === provider.id
+                                                            ? null
+                                                            : provider.id,
+                                                    )
                                                 }
-                                                error={provider.error}
-                                                saving={isSaving}
-                                                onAuth={(input) => {
-                                                    void handleAuth(input);
+                                                onKeyDown={(e) => {
+                                                    if (
+                                                        e.key === "Enter" ||
+                                                        e.key === " "
+                                                    ) {
+                                                        e.preventDefault();
+                                                        setExpandedId((prev) =>
+                                                            prev === provider.id
+                                                                ? null
+                                                                : provider.id,
+                                                        );
+                                                    }
                                                 }}
-                                                onClearGateway={() => {
-                                                    void handleClearGateway(
-                                                        provider.id,
-                                                    );
+                                                style={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    justifyContent:
+                                                        "space-between",
+                                                    height: 48,
+                                                    padding: "0 14px",
+                                                    cursor: "pointer",
                                                 }}
-                                                onLogout={() => {
-                                                    void handleLogout(
-                                                        provider.id,
-                                                    );
-                                                }}
-                                            />
-                                        ) : (
-                                            <ProviderSetupUnavailablePanel
-                                                error={provider.error}
-                                                loading={isLoading}
-                                                onRetry={() => {
-                                                    void refreshRuntime(
-                                                        provider.id,
-                                                    );
-                                                }}
-                                            />
-                                        ))}
-                                </div>
-                            </Fragment>
-                        );
+                                            >
+                                                <div
+                                                    style={{
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        gap: 10,
+                                                    }}
+                                                >
+                                                    <span
+                                                        style={{
+                                                            fontSize: 10,
+                                                            color: "var(--text-secondary)",
+                                                            width: 10,
+                                                            textAlign: "center",
+                                                        }}
+                                                    >
+                                                        {isExpanded ? "▾" : "▸"}
+                                                    </span>
+                                                    <div
+                                                        style={{
+                                                            width: 8,
+                                                            height: 8,
+                                                            borderRadius: "50%",
+                                                            backgroundColor:
+                                                                connected
+                                                                    ? "#34d399"
+                                                                    : "#ef4444",
+                                                            flexShrink: 0,
+                                                        }}
+                                                    />
+                                                    <span
+                                                        style={{
+                                                            fontSize: 13,
+                                                            fontWeight: 600,
+                                                            color: "var(--text-primary)",
+                                                        }}
+                                                    >
+                                                        {provider.name}
+                                                    </span>
+                                                    {methodName && (
+                                                        <span
+                                                            style={{
+                                                                fontSize: 12,
+                                                                color: "var(--text-secondary)",
+                                                            }}
+                                                        >
+                                                            {methodName}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div
+                                                    style={{
+                                                        padding: "3px 8px",
+                                                        borderRadius: 999,
+                                                        fontSize: 10,
+                                                        fontWeight: 600,
+                                                        backgroundColor:
+                                                            connected
+                                                                ? "color-mix(in srgb, #34d399 15%, var(--bg-primary))"
+                                                                : "color-mix(in srgb, #ef4444 15%, var(--bg-primary))",
+                                                        color: connected
+                                                            ? "#34d399"
+                                                            : "#ef4444",
+                                                    }}
+                                                >
+                                                    {connected
+                                                        ? "Connected"
+                                                        : "Not configured"}
+                                                </div>
+                                            </div>
+
+                                            {/* Expanded content */}
+                                            {isExpanded &&
+                                                (provider.setupStatus ? (
+                                                    <ProviderExpandedPanel
+                                                        setupStatus={
+                                                            provider.setupStatus
+                                                        }
+                                                        error={provider.error}
+                                                        saving={isSaving}
+                                                        onAuth={(input) => {
+                                                            void handleAuth(
+                                                                input,
+                                                            );
+                                                        }}
+                                                        onClearGateway={() => {
+                                                            void handleClearGateway(
+                                                                provider.id,
+                                                            );
+                                                        }}
+                                                        onLogout={() => {
+                                                            void handleLogout(
+                                                                provider.id,
+                                                            );
+                                                        }}
+                                                    />
+                                                ) : (
+                                                    <ProviderSetupUnavailablePanel
+                                                        error={provider.error}
+                                                        loading={isLoading}
+                                                        onRetry={() => {
+                                                            void refreshRuntime(
+                                                                provider.id,
+                                                            );
+                                                        }}
+                                                    />
+                                                ))}
+                                        </div>
+                                    </Fragment>
+                                );
                             })
                         )}
                     </div>
@@ -1368,226 +1376,255 @@ export function AIProvidersSettings({
                             backgroundColor: "var(--bg-secondary)",
                         }}
                     >
-                <div
-                    style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 12,
-                        padding: "12px 14px",
-                    }}
-                >
-                    <div style={{ display: "flex", flexDirection: "column" }}>
                         <div
                             style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: "var(--text-primary)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 12,
+                                padding: "12px 14px",
                             }}
                         >
-                            AI runtime environment
-                        </div>
-                        <div
-                            style={{
-                                fontSize: 12,
-                                color: "var(--text-secondary)",
-                                marginTop: 2,
-                            }}
-                        >
-                            Inspect the PATH inherited by {APP_BRAND_NAME}, the
-                            PATH injected into runtimes, and which binaries are
-                            actually resolvable.
-                        </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                void loadDiagnostics();
-                            }}
-                            disabled={diagnosticsLoading}
-                            style={{
-                                padding: "6px 10px",
-                                borderRadius: 6,
-                                fontSize: 11,
-                                color: "var(--text-secondary)",
-                                border: "1px solid var(--border)",
-                                backgroundColor: "transparent",
-                                cursor: diagnosticsLoading
-                                    ? "not-allowed"
-                                    : "pointer",
-                                opacity: diagnosticsLoading ? 0.5 : 1,
-                            }}
-                        >
-                            {diagnosticsLoading ? "Refreshing…" : "Refresh"}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={handleToggleDiagnostics}
-                            style={{
-                                padding: "6px 10px",
-                                borderRadius: 6,
-                                fontSize: 11,
-                                fontWeight: 600,
-                                color: "var(--text-primary)",
-                                border: "1px solid var(--border)",
-                                backgroundColor: "var(--bg-primary)",
-                                cursor: "pointer",
-                            }}
-                        >
-                            {showDiagnostics ? "Hide" : "Show"}
-                        </button>
-                    </div>
-                </div>
-
-                {showDiagnostics && (
-                    <div
-                        style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: 14,
-                            padding: "0 14px 14px",
-                        }}
-                    >
-                        {diagnosticsError && (
                             <div
                                 style={{
-                                    padding: "10px 12px",
-                                    borderRadius: 8,
-                                    fontSize: 12,
-                                    border: "1px solid #7f1d1d",
-                                    backgroundColor:
-                                        "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
-                                    color: "#fecaca",
+                                    display: "flex",
+                                    flexDirection: "column",
                                 }}
                             >
-                                {diagnosticsError}
-                            </div>
-                        )}
-
-                        {diagnostics && (
-                            <>
-                                <DiagnosticsPathBlock
-                                    label="Process PATH"
-                                    helper={`This is the PATH inherited by the ${APP_BRAND_NAME} desktop process itself.`}
-                                    entries={diagnostics.inheritedEntries}
-                                />
-                                <DiagnosticsPathBlock
-                                    label="Injected Runtime PATH"
-                                    helper={`This is the normalized PATH that ${APP_BRAND_NAME} now injects into Codex, Claude, Gemini, and Kilo child processes.`}
-                                    entries={diagnostics.preferredEntries}
-                                />
-
                                 <div
                                     style={{
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        gap: 8,
+                                        fontSize: 13,
+                                        fontWeight: 600,
+                                        color: "var(--text-primary)",
                                     }}
                                 >
-                                    <div
-                                        style={{
-                                            fontSize: 11,
-                                            fontWeight: 600,
-                                            color: "var(--text-primary)",
-                                        }}
-                                    >
-                                        Tool resolution
-                                    </div>
-                                    <div
-                                        style={{
-                                            display: "grid",
-                                            gap: 8,
-                                            gridTemplateColumns:
-                                                "repeat(auto-fit, minmax(180px, 1fr))",
-                                        }}
-                                    >
-                                        {diagnostics.executables.map((item) => (
-                                            <div
-                                                key={item.name}
-                                                style={{
-                                                    display: "flex",
-                                                    flexDirection: "column",
-                                                    gap: 6,
-                                                    padding: 12,
-                                                    borderRadius: 8,
-                                                    border: "1px solid var(--border)",
-                                                    backgroundColor:
-                                                        "var(--bg-primary)",
-                                                }}
-                                            >
-                                                <div
-                                                    style={{
-                                                        fontSize: 11,
-                                                        fontWeight: 600,
-                                                        color: "var(--text-primary)",
-                                                    }}
-                                                >
-                                                    {item.name}
-                                                </div>
-                                                <pre
-                                                    style={diagnosticCodeStyle}
-                                                >
-                                                    {item.path ?? "Not found"}
-                                                </pre>
-                                            </div>
-                                        ))}
-                                    </div>
+                                    AI runtime environment
                                 </div>
-
                                 <div
                                     style={{
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        gap: 8,
-                                    }}
-                                >
-                                    <div
-                                        style={{
-                                            fontSize: 11,
-                                            fontWeight: 600,
-                                            color: "var(--text-primary)",
-                                        }}
-                                    >
-                                        Runtime launch resolution
-                                    </div>
-                                    <div
-                                        style={{
-                                            display: "grid",
-                                            gap: 8,
-                                            gridTemplateColumns:
-                                                "repeat(auto-fit, minmax(260px, 1fr))",
-                                        }}
-                                    >
-                                        {diagnostics.runtimes.map((runtime) => (
-                                            <DiagnosticsRuntimeCard
-                                                key={runtime.runtimeId}
-                                                runtime={runtime}
-                                            />
-                                        ))}
-                                    </div>
-                                </div>
-                            </>
-                        )}
-
-                        {diagnosticsLoading &&
-                            !diagnostics &&
-                            !diagnosticsError && (
-                                <div
-                                    style={{
-                                        padding: "10px 12px",
-                                        borderRadius: 8,
                                         fontSize: 12,
                                         color: "var(--text-secondary)",
-                                        backgroundColor: "var(--bg-primary)",
-                                        border: "1px solid var(--border)",
+                                        marginTop: 2,
                                     }}
                                 >
-                                    Loading diagnostics…
+                                    Inspect the PATH inherited by{" "}
+                                    {APP_BRAND_NAME}, the PATH injected into
+                                    runtimes, and which binaries are actually
+                                    resolvable.
                                 </div>
-                            )}
-                    </div>
-                )}
+                            </div>
+                            <div
+                                style={{
+                                    display: "flex",
+                                    gap: 8,
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        void loadDiagnostics();
+                                    }}
+                                    disabled={diagnosticsLoading}
+                                    style={{
+                                        padding: "6px 10px",
+                                        borderRadius: 6,
+                                        fontSize: 11,
+                                        color: "var(--text-secondary)",
+                                        border: "1px solid var(--border)",
+                                        backgroundColor: "transparent",
+                                        cursor: diagnosticsLoading
+                                            ? "not-allowed"
+                                            : "pointer",
+                                        opacity: diagnosticsLoading ? 0.5 : 1,
+                                    }}
+                                >
+                                    {diagnosticsLoading
+                                        ? "Refreshing…"
+                                        : "Refresh"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleToggleDiagnostics}
+                                    style={{
+                                        padding: "6px 10px",
+                                        borderRadius: 6,
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        color: "var(--text-primary)",
+                                        border: "1px solid var(--border)",
+                                        backgroundColor: "var(--bg-primary)",
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    {showDiagnostics ? "Hide" : "Show"}
+                                </button>
+                            </div>
+                        </div>
+
+                        {showDiagnostics && (
+                            <div
+                                style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 14,
+                                    padding: "0 14px 14px",
+                                }}
+                            >
+                                {diagnosticsError && (
+                                    <div
+                                        style={{
+                                            padding: "10px 12px",
+                                            borderRadius: 8,
+                                            fontSize: 12,
+                                            border: "1px solid #7f1d1d",
+                                            backgroundColor:
+                                                "color-mix(in srgb, #991b1b 12%, var(--bg-primary))",
+                                            color: "#fecaca",
+                                        }}
+                                    >
+                                        {diagnosticsError}
+                                    </div>
+                                )}
+
+                                {diagnostics && (
+                                    <>
+                                        <DiagnosticsPathBlock
+                                            label="Process PATH"
+                                            helper={`This is the PATH inherited by the ${APP_BRAND_NAME} desktop process itself.`}
+                                            entries={
+                                                diagnostics.inheritedEntries
+                                            }
+                                        />
+                                        <DiagnosticsPathBlock
+                                            label="Injected Runtime PATH"
+                                            helper={`This is the normalized PATH that ${APP_BRAND_NAME} now injects into Codex, Claude, Gemini, and Kilo child processes.`}
+                                            entries={
+                                                diagnostics.preferredEntries
+                                            }
+                                        />
+
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                gap: 8,
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    fontSize: 11,
+                                                    fontWeight: 600,
+                                                    color: "var(--text-primary)",
+                                                }}
+                                            >
+                                                Tool resolution
+                                            </div>
+                                            <div
+                                                style={{
+                                                    display: "grid",
+                                                    gap: 8,
+                                                    gridTemplateColumns:
+                                                        "repeat(auto-fit, minmax(180px, 1fr))",
+                                                }}
+                                            >
+                                                {diagnostics.executables.map(
+                                                    (item) => (
+                                                        <div
+                                                            key={item.name}
+                                                            style={{
+                                                                display: "flex",
+                                                                flexDirection:
+                                                                    "column",
+                                                                gap: 6,
+                                                                padding: 12,
+                                                                borderRadius: 8,
+                                                                border: "1px solid var(--border)",
+                                                                backgroundColor:
+                                                                    "var(--bg-primary)",
+                                                            }}
+                                                        >
+                                                            <div
+                                                                style={{
+                                                                    fontSize: 11,
+                                                                    fontWeight: 600,
+                                                                    color: "var(--text-primary)",
+                                                                }}
+                                                            >
+                                                                {item.name}
+                                                            </div>
+                                                            <pre
+                                                                style={
+                                                                    diagnosticCodeStyle
+                                                                }
+                                                            >
+                                                                {item.path ??
+                                                                    "Not found"}
+                                                            </pre>
+                                                        </div>
+                                                    ),
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                gap: 8,
+                                            }}
+                                        >
+                                            <div
+                                                style={{
+                                                    fontSize: 11,
+                                                    fontWeight: 600,
+                                                    color: "var(--text-primary)",
+                                                }}
+                                            >
+                                                Runtime launch resolution
+                                            </div>
+                                            <div
+                                                style={{
+                                                    display: "grid",
+                                                    gap: 8,
+                                                    gridTemplateColumns:
+                                                        "repeat(auto-fit, minmax(260px, 1fr))",
+                                                }}
+                                            >
+                                                {diagnostics.runtimes.map(
+                                                    (runtime) => (
+                                                        <DiagnosticsRuntimeCard
+                                                            key={
+                                                                runtime.runtimeId
+                                                            }
+                                                            runtime={runtime}
+                                                        />
+                                                    ),
+                                                )}
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+
+                                {diagnosticsLoading &&
+                                    !diagnostics &&
+                                    !diagnosticsError && (
+                                        <div
+                                            style={{
+                                                padding: "10px 12px",
+                                                borderRadius: 8,
+                                                fontSize: 12,
+                                                color: "var(--text-secondary)",
+                                                backgroundColor:
+                                                    "var(--bg-primary)",
+                                                border: "1px solid var(--border)",
+                                            }}
+                                        >
+                                            Loading diagnostics…
+                                        </div>
+                                    )}
+                            </div>
+                        )}
                     </div>
                 </>
             ) : null}
@@ -1617,84 +1654,97 @@ export function AIProvidersSettings({
                         }}
                     >
                         {filteredProviderCatalog.map((provider, i) => {
-                    const installed = runtimes.some(
-                        (r) => r.runtime.id === provider.id,
-                    );
-                    return (
-                        <Fragment key={provider.id}>
-                            {i > 0 && (
-                                <div
-                                    style={{
-                                        height: 1,
-                                        backgroundColor: "var(--border)",
-                                    }}
-                                />
-                            )}
-                            <div
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                    height: 44,
-                                    padding: "0 14px",
-                                    backgroundColor: "var(--bg-secondary)",
-                                }}
-                            >
-                                <div
-                                    style={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: 10,
-                                    }}
-                                >
-                                    <span
+                            const installed = runtimes.some(
+                                (r) => r.runtime.id === provider.id,
+                            );
+                            return (
+                                <Fragment key={provider.id}>
+                                    {i > 0 && (
+                                        <div
+                                            style={{
+                                                height: 1,
+                                                backgroundColor:
+                                                    "var(--border)",
+                                            }}
+                                        />
+                                    )}
+                                    <div
                                         style={{
-                                            fontSize: 13,
-                                            fontWeight: 500,
-                                            color: "var(--text-primary)",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            height: 44,
+                                            padding: "0 14px",
+                                            backgroundColor:
+                                                "var(--bg-secondary)",
                                         }}
                                     >
-                                        {provider.name}
-                                    </span>
-                                    <span
-                                        style={{
-                                            fontSize: 12,
-                                            color: "var(--text-secondary)",
-                                        }}
-                                    >
-                                        {provider.company}
-                                    </span>
-                                </div>
-                                {installed ? (
-                                    <span
-                                        style={{
-                                            fontSize: 11,
-                                            fontWeight: 600,
-                                            color: "#34d399",
-                                        }}
-                                    >
-                                        Installed
-                                    </span>
-                                ) : (
-                                    <button
-                                        type="button"
-                                        style={{
-                                            padding: "4px 10px",
-                                            borderRadius: 6,
-                                            fontSize: 11,
-                                            fontWeight: 600,
-                                            border: "1px solid color-mix(in srgb, #34d399 40%, transparent)",
-                                            backgroundColor: "transparent",
-                                            color: "#34d399",
-                                            cursor: "pointer",
-                                        }}
-                                    >
-                                        Install
-                                    </button>
-                                )}
-                            </div>
-                        </Fragment>
-                    );
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                alignItems: "center",
+                                                gap: 10,
+                                            }}
+                                        >
+                                            <span
+                                                style={{
+                                                    fontSize: 13,
+                                                    fontWeight: 500,
+                                                    color: "var(--text-primary)",
+                                                }}
+                                            >
+                                                {provider.name}
+                                            </span>
+                                            <span
+                                                style={{
+                                                    fontSize: 12,
+                                                    color: "var(--text-secondary)",
+                                                }}
+                                            >
+                                                {provider.company}
+                                            </span>
+                                        </div>
+                                        {runtimeInventoryPending ? (
+                                            <span
+                                                style={{
+                                                    fontSize: 11,
+                                                    fontWeight: 600,
+                                                    color: "var(--text-secondary)",
+                                                }}
+                                            >
+                                                Checking…
+                                            </span>
+                                        ) : installed ? (
+                                            <span
+                                                style={{
+                                                    fontSize: 11,
+                                                    fontWeight: 600,
+                                                    color: "#34d399",
+                                                }}
+                                            >
+                                                Installed
+                                            </span>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                style={{
+                                                    padding: "4px 10px",
+                                                    borderRadius: 6,
+                                                    fontSize: 11,
+                                                    fontWeight: 600,
+                                                    border: "1px solid color-mix(in srgb, #34d399 40%, transparent)",
+                                                    backgroundColor:
+                                                        "transparent",
+                                                    color: "#34d399",
+                                                    cursor: "pointer",
+                                                }}
+                                            >
+                                                Install
+                                            </button>
+                                        )}
+                                    </div>
+                                </Fragment>
+                            );
                         })}
                     </div>
                 </>
