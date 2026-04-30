@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { parseDocument } from "yaml";
 
@@ -188,8 +189,16 @@ function fileSizeInBytes(filePath) {
     return fs.statSync(filePath).size;
 }
 
+function sha512Base64(filePath) {
+    return crypto
+        .createHash("sha512")
+        .update(fs.readFileSync(filePath))
+        .digest("base64");
+}
+
 function rewriteFeed({
     sourceFeedPath,
+    artifacts,
     buildTarget,
     version,
     tag,
@@ -224,22 +233,50 @@ function rewriteFeed({
         updaterUrl,
         blockmapUrl,
     };
+    const publishedAssetMetadata = {
+        manualAssetUrl: {
+            size: fileSizeInBytes(artifacts.manualAssetPath),
+            sha512: sha512Base64(artifacts.manualAssetPath),
+        },
+        updaterUrl: {
+            size: fileSizeInBytes(artifacts.updaterAssetPath),
+            sha512: sha512Base64(artifacts.updaterAssetPath),
+        },
+        blockmapUrl: {
+            size: fileSizeInBytes(artifacts.blockmapPath),
+            sha512: sha512Base64(artifacts.blockmapPath),
+        },
+    };
 
     document.set("path", updaterUrl);
+    document.set("sha512", publishedAssetMetadata.updaterUrl.sha512);
     const files = document.get("files");
     if (files?.items) {
         for (const item of files.items) {
+            const resolvedUrl = item?.has?.("url")
+                ? resolvePublishedAssetUrl(item.get("url"), publishedAssetUrls)
+                : item?.has?.("path")
+                  ? resolvePublishedAssetUrl(item.get("path"), publishedAssetUrls)
+                  : updaterUrl;
+            const metadata =
+                publishedAssetMetadata[
+                    metadataKeyForPublishedAssetUrl(
+                        resolvedUrl,
+                        publishedAssetUrls,
+                    )
+                ];
+
             if (item?.has?.("url")) {
-                item.set(
-                    "url",
-                    resolvePublishedAssetUrl(item.get("url"), publishedAssetUrls),
-                );
+                item.set("url", resolvedUrl);
             }
             if (item?.has?.("path")) {
-                item.set(
-                    "path",
-                    resolvePublishedAssetUrl(item.get("path"), publishedAssetUrls),
-                );
+                item.set("path", resolvedUrl);
+            }
+            if (item?.has?.("sha512")) {
+                item.set("sha512", metadata.sha512);
+            }
+            if (item?.has?.("size")) {
+                item.set("size", metadata.size);
             }
         }
     }
@@ -267,6 +304,16 @@ function rewriteFeed({
         destinationFeedPath,
         updaterUrl,
     };
+}
+
+function metadataKeyForPublishedAssetUrl(resolvedUrl, publishedAssetUrls) {
+    for (const [key, value] of Object.entries(publishedAssetUrls)) {
+        if (value === resolvedUrl) {
+            return key;
+        }
+    }
+
+    return "updaterUrl";
 }
 
 function resolvePublishedAssetUrl(sourceValue, publishedAssetUrls) {
@@ -299,6 +346,7 @@ function main() {
     );
     const feed = rewriteFeed({
         sourceFeedPath: artifacts.feedPath,
+        artifacts,
         buildTarget: args.target,
         version: args.version,
         tag: args.tag,

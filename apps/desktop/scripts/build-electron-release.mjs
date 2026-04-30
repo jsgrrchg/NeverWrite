@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+const DEFAULT_ELECTRON_OUTPUT_DIR = "dist-electron";
+
 function parseArgs(argv) {
     const args = {
         platform: null,
@@ -151,6 +153,13 @@ function buildElectronBuilderArgs(args) {
     return result;
 }
 
+function resolveElectronOutputDir() {
+    return (
+        process.env.NEVERWRITE_ELECTRON_OUTPUT_DIR?.trim() ||
+        DEFAULT_ELECTRON_OUTPUT_DIR
+    );
+}
+
 const args = parseArgs(process.argv.slice(2));
 const normalizedPlatform = normalizePlatform(args.platform);
 const normalizedArch = normalizeArch(normalizedPlatform, args.arch);
@@ -178,3 +187,15 @@ await run(
     }),
     builderEnv,
 );
+
+if (normalizedPlatform === "mac" && !args.dir) {
+    const postprocessArgs = [
+        "scripts/postprocess-macos-dmg.mjs",
+        "--dist-dir",
+        resolveElectronOutputDir(),
+    ];
+    if (!args.unsigned) {
+        postprocessArgs.push("--require-notarization");
+    }
+    await run("node", postprocessArgs);
+}

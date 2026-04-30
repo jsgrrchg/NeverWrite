@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +26,10 @@ function withTempDir(run) {
 function writeFile(filePath, contents) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, contents);
+}
+
+function sha512Base64(contents) {
+    return crypto.createHash("sha512").update(contents).digest("base64");
 }
 
 test("stage-electron-release-assets rewrites macOS feed metadata", () => {
@@ -109,6 +114,8 @@ test("stage-electron-release-assets rewrites macOS feed metadata", () => {
             rewrittenFeed,
             /\n\s+- url: https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite_0\.2\.0_macOS_Universal\.dmg/,
         );
+        assert.equal(rewrittenFeed.includes(sha512Base64("updater")), true);
+        assert.equal(rewrittenFeed.includes(sha512Base64("manual")), true);
         assert.doesNotMatch(
             rewrittenFeed,
             /\n\s+- url: NeverWrite\.zip/,
@@ -117,6 +124,8 @@ test("stage-electron-release-assets rewrites macOS feed metadata", () => {
             rewrittenFeed,
             /\n\s+- url: NeverWrite\.dmg/,
         );
+        assert.doesNotMatch(rewrittenFeed, /sha512: original/);
+        assert.doesNotMatch(rewrittenFeed, /sha512: manual/);
     });
 });
 
