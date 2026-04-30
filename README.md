@@ -1,5 +1,7 @@
 # NeverWrite
 
+<img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
+
 NeverWrite is a local-first knowledge workspace for people who need to handle workflows with multiple parallel agents and subagents. Built like a code editor, but for markdown. It has inline review changes, like Cursor and others. Please help me test it!
 
 Today the repository combines:
