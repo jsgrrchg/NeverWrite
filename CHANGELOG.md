@@ -36,6 +36,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [0.1.3] - 2026-05-01
 
+### Added
+
+- Added **Codex subagents as first-class** sidebar sessions, so running agents stay available even after their chat tabs are closed.
+- Added dedicated threads for each Codex subagent, **including independent review tabs and inline review for file changes made by each agent**.
+- Added **parent chat breadcrumbs with inline actions for opening subagent threads**, plus persistent parent-child grouping across restarts.
+
 ### Changed
 
 - Removed the redundant collapse-all control from the note outline so the panel starts directly with the document structure while preserving per-section collapsing.

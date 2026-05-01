@@ -103,6 +103,8 @@ pub struct AiStatusEventPayload {
     pub title: String,
     pub detail: Option<String>,
     pub emphasis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_action: Option<AiToolActivityActionPayload>,
 }
 
 #[derive(Debug, Clone, Serialize)]

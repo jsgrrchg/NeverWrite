@@ -8872,6 +8872,110 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("preserves a saved child parent when native resume returns a new live session", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        ...runtimePayload[0].runtime,
+                        capabilities: [
+                            ...runtimePayload[0].runtime.capabilities,
+                            "resume_session",
+                        ],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:parent-history": {
+                    ...createSessionWithTrackedFiles(
+                        "persisted:parent-history",
+                        [],
+                    ),
+                    historySessionId: "parent-history",
+                    runtimeId: "codex-acp",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: 0,
+                },
+                "persisted:child-history": {
+                    ...createSessionWithTrackedFiles(
+                        "persisted:child-history",
+                        [],
+                    ),
+                    historySessionId: "child-history",
+                    parentSessionId: "parent-history",
+                    runtimeId: "codex-acp",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: null,
+                },
+            },
+            sessionOrder: ["persisted:parent-history", "persisted:child-history"],
+            activeSessionId: "persisted:child-history",
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                "persisted:child-history": [],
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "child-history",
+                    total_messages: 1,
+                    start_index: 0,
+                    end_index: 1,
+                    messages: [
+                        {
+                            id: "m-child",
+                            role: "user",
+                            kind: "text",
+                            content: "Saved child prompt",
+                            timestamp: 10,
+                        },
+                    ],
+                };
+            }
+
+            if (command === "ai_resume_runtime_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: "live-child-session",
+                    runtime_session_id: "runtime-child-session",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:child-history");
+
+        expect(resumedSessionId).toBe("live-child-session");
+        expect(
+            useChatStore.getState().sessionsById["live-child-session"],
+        ).toMatchObject({
+            historySessionId: "child-history",
+            parentSessionId: "parent-history",
+            runtimeState: "live",
+        });
+        expect(
+            useChatStore.getState().sessionsById["persisted:child-history"],
+        ).toBeUndefined();
+    });
+
     it("recreates an empty Claude session with additionalRoots on the first external file send", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -9829,6 +9933,87 @@ describe("chatStore", () => {
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-1");
+    });
+
+    it("accepts a newly created child session for a known parent without activating it", () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+            vaultPath: "/vault",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+            vaultPath: "/vault",
+        };
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: { [parent.sessionId]: parent },
+            sessionOrder: [parent.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+
+        useChatStore.getState().upsertSession(child);
+
+        expect(useChatStore.getState().sessionsById[child.sessionId]).toEqual(
+            expect.objectContaining({
+                parentSessionId: parent.sessionId,
+                runtimeSessionId: "runtime-child",
+            }),
+        );
+        expect(useChatStore.getState().sessionOrder).toEqual([
+            parent.sessionId,
+            child.sessionId,
+        ]);
+        expect(useChatStore.getState().activeSessionId).toBe(parent.sessionId);
+    });
+
+    it("preserves a known child parent when a runtime update omits it", () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+
+        useChatStore.getState().upsertSession({
+            ...child,
+            parentSessionId: null,
+            status: "streaming",
+        });
+
+        expect(
+            useChatStore.getState().sessionsById[child.sessionId],
+        ).toMatchObject({
+            parentSessionId: parent.sessionId,
+            status: "idle",
+        });
     });
 
     it("deletes a child session without stopping or deleting its parent", async () => {

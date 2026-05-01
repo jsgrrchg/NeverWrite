@@ -188,6 +188,15 @@ function resolveWorkspaceRoot() {
         : path.resolve(app.getAppPath(), "..", "..");
 }
 
+function resolveAcpResourceDir(executablePath: string) {
+    if (app.isPackaged) {
+        return path.dirname(executablePath);
+    }
+
+    const stagedResourceDir = path.resolve(app.getAppPath(), "out", "native-backend");
+    return fs.existsSync(stagedResourceDir) ? stagedResourceDir : null;
+}
+
 function uniquePathEntries(entries: string[]) {
     const seen = new Set<string>();
     return entries.filter((entry) => {
@@ -282,13 +291,16 @@ class NativeBackendSidecar implements NativeBackendBridge {
         this.emitEvent = emitEvent;
         const workspaceRoot = resolveWorkspaceRoot();
         const sidecarPath = buildSidecarPath();
+        const acpResourceDir = resolveAcpResourceDir(executablePath);
         this.child = spawn(executablePath, [], {
             stdio: ["pipe", "pipe", "pipe"],
             env: {
                 ...process.env,
                 ...(sidecarPath ? { PATH: sidecarPath } : {}),
                 NEVERWRITE_APP_DATA_DIR: app.getPath("userData"),
-                NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR: path.dirname(executablePath),
+                ...(acpResourceDir
+                    ? { NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR: acpResourceDir }
+                    : {}),
                 ...(workspaceRoot ? { NEVERWRITE_WORKSPACE_ROOT: workspaceRoot } : {}),
             },
         });

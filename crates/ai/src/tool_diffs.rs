@@ -6,7 +6,7 @@ use std::{
 };
 
 use agent_client_protocol::schema::{
-    Diff, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    Diff, Meta, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use serde::Deserialize;
 
@@ -60,9 +60,13 @@ impl ToolDiffState {
         );
 
         let key = call_key(session_id, &update.tool_call_id.0);
+        let update_meta = update.meta.clone();
         let mut guard = self.calls.lock().ok()?;
         let tool_call = if let Some(existing) = guard.get_mut(&key) {
             existing.update(update.fields);
+            if let Some(update_meta) = update_meta {
+                merge_tool_call_meta(existing, update_meta);
+            }
             existing.clone()
         } else {
             let tool_call = ToolCall::try_from(update).ok()?;
@@ -375,6 +379,13 @@ pub fn collect_tool_call_diffs(tool_call: &ToolCall, cwd: Option<&Path>) -> Vec<
             _ => None,
         })
         .collect()
+}
+
+fn merge_tool_call_meta(tool_call: &mut ToolCall, update_meta: Meta) {
+    let meta = tool_call.meta.get_or_insert_with(Meta::new);
+    for (key, value) in update_meta {
+        meta.insert(key, value);
+    }
 }
 
 fn call_key(session_id: &str, tool_call_id: &str) -> String {

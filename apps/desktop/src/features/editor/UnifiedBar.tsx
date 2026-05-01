@@ -49,7 +49,6 @@ import {
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
 import { useChatStore } from "../ai/store/chatStore";
-import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
@@ -442,18 +441,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
-            const approved = await confirmActiveAgentTabClose({
-                actionLabel:
-                    windowMode === "note" && currentTabs.length === 1
-                        ? "close this tab and window"
-                        : "close this tab",
-                tabs: [targetTab],
-                sessionsById: useChatStore.getState().sessionsById,
-            });
-            if (!approved) {
-                return;
-            }
-
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
                 await appWindow.close().catch((error) => {
@@ -485,7 +472,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         async (
             tabIds: string[],
             options: {
-                actionLabel: string;
                 reason: "bulk-user" | "user";
             },
         ) => {
@@ -500,15 +486,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 .filter((tab): tab is (typeof currentTabs)[number] => tab !== null);
 
             if (tabsToClose.length === 0) {
-                return false;
-            }
-
-            const approved = await confirmActiveAgentTabClose({
-                actionLabel: options.actionLabel,
-                tabs: tabsToClose,
-                sessionsById: useChatStore.getState().sessionsById,
-            });
-            if (!approved) {
                 return false;
             }
 
@@ -640,7 +617,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             .map((tab) => tab.id);
 
         await closeTabIdsWithProtection(tabIds, {
-            actionLabel: "close the other tabs",
             reason: "bulk-user",
         });
     }, [closeTabIdsWithProtection]);
@@ -656,7 +632,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
             .reverse();
 
         await closeTabIdsWithProtection(tabIds, {
-            actionLabel: "close the tabs to the right",
             reason: "bulk-user",
         });
     }, [closeTabIdsWithProtection]);
@@ -669,7 +644,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         const tabIds = pane.tabs.slice(0, index).map((tab) => tab.id);
 
         await closeTabIdsWithProtection(tabIds, {
-            actionLabel: "close the tabs to the left",
             reason: "bulk-user",
         });
     }, [closeTabIdsWithProtection]);

@@ -21,11 +21,17 @@ export interface AiSessionHierarchyResult {
     rootSessionIds: string[];
 }
 
+export type AiSessionHierarchySiblingComparator = (
+    left: AIChatSession,
+    right: AIChatSession,
+) => number;
+
 interface BuildAiSessionHierarchyGroupsOptions {
     sessions: AIChatSession[];
     normalizedFilter?: string;
     openSessionIds?: ReadonlySet<string>;
     pinnedSessionIds?: ReadonlySet<string>;
+    compareSiblings?: AiSessionHierarchySiblingComparator | null;
 }
 
 function normalizeSessionRef(value: string | null | undefined) {
@@ -93,7 +99,15 @@ export function buildAiSessionHierarchyGroups({
     normalizedFilter = "",
     openSessionIds = new Set<string>(),
     pinnedSessionIds = new Set<string>(),
+    compareSiblings: customCompareSiblings = null,
 }: BuildAiSessionHierarchyGroupsOptions): AiSessionHierarchyResult {
+    const indexBySessionId = new Map(
+        sessions.map((session, index) => [session.sessionId, index] as const),
+    );
+    const compareSiblings = createSiblingComparator(
+        customCompareSiblings,
+        indexBySessionId,
+    );
     const lookup = new Map<string, AIChatSession>();
     for (const session of sessions) {
         for (const key of getAiSessionLookupKeys(session)) {
@@ -130,7 +144,7 @@ export function buildAiSessionHierarchyGroups({
         rootSessionIds.push(root.sessionId);
         const children = [
             ...(childrenByParentId.get(root.sessionId) ?? []),
-        ].sort(compareSessionsByUpdatedAtDesc);
+        ].sort(compareSiblings);
         const rootMatches = sessionMatchesFilter(root, normalizedFilter);
         const matchingChildren = normalizedFilter
             ? children.filter((child) =>
@@ -169,4 +183,25 @@ export function buildAiSessionHierarchyGroups({
     }
 
     return { groups, rootSessionIds };
+}
+
+function createSiblingComparator(
+    compareSiblings: AiSessionHierarchySiblingComparator | null | undefined,
+    indexBySessionId: ReadonlyMap<string, number>,
+): AiSessionHierarchySiblingComparator {
+    return (left, right) => {
+        const customComparison = compareSiblings?.(left, right) ?? 0;
+        if (customComparison !== 0) {
+            return customComparison;
+        }
+
+        if (!compareSiblings) {
+            return compareSessionsByUpdatedAtDesc(left, right);
+        }
+
+        return (
+            (indexBySessionId.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER) -
+            (indexBySessionId.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER)
+        );
+    };
 }

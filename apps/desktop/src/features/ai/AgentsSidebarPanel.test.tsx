@@ -197,7 +197,7 @@ describe("AgentsSidebarPanel", () => {
             .map((item) => item.textContent ?? "");
         expect(labels[0]).toContain("Parent task");
         expect(labels[1]).toContain("Worker investigation");
-        expect(labels[1]).toContain("Agent");
+        expect(labels[1]).not.toContain("Agent");
         expect(labels[1]).toContain("Working");
 
         fireEvent.click(screen.getAllByRole("option")[1]);
@@ -206,6 +206,45 @@ describe("AgentsSidebarPanel", () => {
             expect(
                 chatPaneMovementMock.openChatSessionInWorkspace,
             ).toHaveBeenCalledWith("session-child");
+        });
+    });
+
+    it("keeps working subagents in activation order under their parent", async () => {
+        const parent = createSession("session-parent", "Parent task", "streaming");
+        const heisenberg = createSession(
+            "session-heisenberg",
+            "Heisenberg",
+            "streaming",
+            100,
+            { parentSessionId: parent.sessionId },
+        );
+        const mill = createSession("session-mill", "Mill", "streaming", 300, {
+            parentSessionId: parent.sessionId,
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [heisenberg.sessionId]: heisenberg,
+                [mill.sessionId]: mill,
+            },
+            sessionOrder: [
+                parent.sessionId,
+                heisenberg.sessionId,
+                mill.sessionId,
+            ],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        await waitFor(() => {
+            const labels = screen
+                .getAllByRole("option")
+                .map((item) => item.textContent ?? "");
+            expect(labels[0]).toContain("Parent task");
+            expect(labels[1]).toContain("Heisenberg");
+            expect(labels[2]).toContain("Mill");
         });
     });
 

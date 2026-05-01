@@ -96,4 +96,33 @@ describe("buildAiSessionHierarchyGroups", () => {
 
         expect(result.groups[0].hasOpenSession).toBe(true);
     });
+
+    it("uses the sibling comparator for child session order", () => {
+        const parent = session("parent", "Parent task");
+        const first = session("first", "First worker", {
+            parentSessionId: "parent",
+        });
+        const second = session("second", "Second worker", {
+            parentSessionId: "parent",
+        });
+
+        const result = buildAiSessionHierarchyGroups({
+            sessions: [parent, second, first],
+            compareSiblings: (left, right) => {
+                const order = new Map([
+                    ["first", 1],
+                    ["second", 2],
+                ]);
+                return (
+                    (order.get(left.sessionId) ?? 0) -
+                    (order.get(right.sessionId) ?? 0)
+                );
+            },
+        });
+
+        expect(result.groups[0].children.map((item) => item.sessionId)).toEqual([
+            "first",
+            "second",
+        ]);
+    });
 });

@@ -1068,7 +1068,6 @@ describe("AIChatMessageItem read tool targets", () => {
             toolAction: {
                 kind: "open_session",
                 session_id: "child-session",
-                label: "Open Worker",
             },
             meta: {
                 tool: "other",
@@ -1102,7 +1101,6 @@ describe("AIChatMessageItem read tool targets", () => {
             toolAction: {
                 kind: "open_session",
                 session_id: "missing-child-session",
-                label: "Open Worker",
             },
             meta: {
                 tool: "other",
@@ -1112,6 +1110,78 @@ describe("AIChatMessageItem read tool targets", () => {
 
         expect(screen.getByRole("button", { name: "Open Worker" })).toBeDisabled();
         expect(screen.getByTitle("Session is not available yet")).toBeInTheDocument();
+    });
+
+    it("derives rich subagent action labels from lifecycle titles", () => {
+        renderMessage({
+            id: "tool:subagent-responded",
+            role: "assistant",
+            kind: "tool",
+            title: "Hypatia responded",
+            content: "Hypatia responded",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "missing-child-session",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open Hypatia responded" }),
+        ).toBeDisabled();
+    });
+
+    it("shows open session actions on subagent status breadcrumbs", () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "child-session": {
+                    sessionId: "child-session",
+                    historySessionId: "child-session",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-session",
+                    runtimeState: "live",
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["child-session"],
+        }));
+
+        renderMessage({
+            id: "status:subagent-spawned",
+            role: "system",
+            kind: "status",
+            title: "Spawned Mendel",
+            content: "Status: pending",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "child-session",
+            },
+            meta: {
+                status_event: "item_activity",
+                status: "in_progress",
+                emphasis: "neutral",
+            },
+        });
+
+        expect(
+            screen.getByRole("button", { name: "Open Mendel" }),
+        ).toBeEnabled();
     });
 
     it("opens read target pills in a new tab from the context menu", async () => {

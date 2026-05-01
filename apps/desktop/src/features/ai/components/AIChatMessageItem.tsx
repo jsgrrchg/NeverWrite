@@ -354,6 +354,45 @@ function getOpenSessionActionLabel(message: AIChatMessage) {
     return name.length > 0 && name.length <= 28 ? `Open ${name}` : "Open";
 }
 
+function OpenSessionActionButton({ message }: { message: AIChatMessage }) {
+    const openSessionAction =
+        message.toolAction?.kind === "open_session" ? message.toolAction : null;
+    const openSessionId = openSessionAction?.session_id ?? null;
+    const canOpenSession = useChatStore((state) =>
+        openSessionId ? Boolean(state.sessionsById[openSessionId]) : false,
+    );
+
+    if (!openSessionAction) {
+        return null;
+    }
+
+    const label = getOpenSessionActionLabel(message);
+
+    return (
+        <button
+            type="button"
+            disabled={!canOpenSession || !openSessionId}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+            style={{
+                background: "transparent",
+                border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                color: canOpenSession
+                    ? "var(--text-secondary)"
+                    : "color-mix(in srgb, var(--text-secondary) 62%, transparent)",
+                cursor: canOpenSession ? "pointer" : "default",
+            }}
+            title={canOpenSession ? label : "Session is not available yet"}
+            onClick={(event) => {
+                event.stopPropagation();
+                if (!openSessionId || !canOpenSession) return;
+                void openChatSessionInWorkspace(openSessionId);
+            }}
+        >
+            {label}
+        </button>
+    );
+}
+
 function useChatRowUiEntry(
     sessionId: string | null | undefined,
     messageId: string,
@@ -839,13 +878,6 @@ function ToolMessage({
     const label = shortTarget ?? title;
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
-    const openSessionAction =
-        message.toolAction?.kind === "open_session" ? message.toolAction : null;
-    const openSessionId = openSessionAction?.session_id ?? null;
-    const canOpenSession = useChatStore((state) =>
-        openSessionId ? Boolean(state.sessionsById[openSessionId]) : false,
-    );
-
     if (shouldRenderHistoricalDiffSummary(message, diffPresentationMode)) {
         return <HistoricalDiffSummaryMessage message={message} />;
     }
@@ -925,34 +957,7 @@ function ToolMessage({
                         <path d="M2.5 4L5 6.5L7.5 4" />
                     </svg>
                 )}
-                {openSessionAction ? (
-                    <button
-                        type="button"
-                        disabled={!canOpenSession || !openSessionId}
-                        className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-                        style={{
-                            background: "transparent",
-                            border:
-                                "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                            color: canOpenSession
-                                ? "var(--text-secondary)"
-                                : "color-mix(in srgb, var(--text-secondary) 62%, transparent)",
-                            cursor: canOpenSession ? "pointer" : "default",
-                        }}
-                        title={
-                            canOpenSession
-                                ? getOpenSessionActionLabel(message)
-                                : "Session is not available yet"
-                        }
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            if (!openSessionId || !canOpenSession) return;
-                            void openChatSessionInWorkspace(openSessionId);
-                        }}
-                    >
-                        {getOpenSessionActionLabel(message)}
-                    </button>
-                ) : null}
+                <OpenSessionActionButton message={message} />
             </div>
             {expanded && detail && (
                 <pre
@@ -1670,6 +1675,7 @@ function StatusMessage({ message }: { message: AIChatMessage }) {
                     </svg>
                 )}
                 <span className="min-w-0 flex-1 truncate">{title}</span>
+                <OpenSessionActionButton message={message} />
             </div>
             {detail && (
                 <div

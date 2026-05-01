@@ -137,6 +137,26 @@ function compareOpenHierarchyGroups(
     return compareHierarchyGroupsByUpdatedAtDesc(a, b);
 }
 
+function compareSidebarHierarchySiblings(
+    left: AIChatSession,
+    right: AIChatSession,
+    workingOrder: ReadonlyMap<string, number>,
+) {
+    const leftOrder = workingOrder.get(left.sessionId);
+    const rightOrder = workingOrder.get(right.sessionId);
+    const leftWorking = leftOrder !== undefined;
+    const rightWorking = rightOrder !== undefined;
+
+    if (leftWorking && rightWorking) {
+        return leftOrder - rightOrder;
+    }
+    if (leftWorking !== rightWorking) {
+        return leftWorking ? -1 : 1;
+    }
+
+    return 0;
+}
+
 function getGroupWorkingOrder(
     group: AiSessionHierarchyGroup,
     workingOrder: ReadonlyMap<string, number>,
@@ -322,8 +342,22 @@ export function AgentsSidebarPanel() {
                 normalizedFilter,
                 openSessionIds,
                 pinnedSessionIds: pinnedRootIds,
+                compareSiblings: (left, right) =>
+                    compareSidebarHierarchySiblings(
+                        left,
+                        right,
+                        workingOrderRef.current,
+                    ),
             }),
-        [normalizedFilter, openSessionIds, pinnedRootIds, sessions],
+        // workingOrderRevision keeps this memo in sync with the ref-backed map.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [
+            normalizedFilter,
+            openSessionIds,
+            pinnedRootIds,
+            sessions,
+            workingOrderRevision,
+        ],
     );
 
     // Pins are root-owned: legacy child pins are pruned so subagents stay under
@@ -528,7 +562,6 @@ export function AgentsSidebarPanel() {
                 title={getSessionTitle(session)}
                 preview={getSessionPreview(session)}
                 runtimeLabel={metaLabel}
-                badgeLabel={isSubagent ? "Agent" : undefined}
                 messageCount={messageCount}
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}

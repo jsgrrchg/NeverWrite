@@ -1745,6 +1745,7 @@ function createStatusMessage(payload: AIStatusEventPayload): AIChatMessage {
             status: payload.status,
             emphasis: payload.emphasis,
         },
+        toolAction: payload.tool_action ?? null,
     };
 }
 
@@ -4505,6 +4506,56 @@ function sessionMatchesVaultPath(
     return (session.vaultPath ?? null) === vaultPath;
 }
 
+function normalizeSessionRef(value: string | null | undefined) {
+    const trimmed = value?.trim();
+    return trimmed ? trimmed : null;
+}
+
+function sessionMatchesRef(session: AIChatSession, ref: string) {
+    return (
+        session.sessionId === ref ||
+        session.historySessionId === ref ||
+        session.runtimeSessionId === ref
+    );
+}
+
+function findParentSessionForIncomingChild(
+    sessionsById: Record<string, AIChatSession>,
+    session: AIChatSession,
+) {
+    const parentRef = normalizeSessionRef(session.parentSessionId);
+    if (!parentRef || parentRef === session.sessionId) {
+        return null;
+    }
+
+    return (
+        Object.values(sessionsById).find((candidate) =>
+            sessionMatchesRef(candidate, parentRef),
+        ) ?? null
+    );
+}
+
+function insertSessionAfterParent(
+    sessionOrder: string[],
+    sessionId: string,
+    parentSessionId: string | null,
+) {
+    if (!parentSessionId) {
+        return [...sessionOrder, sessionId];
+    }
+
+    const parentIndex = sessionOrder.indexOf(parentSessionId);
+    if (parentIndex < 0) {
+        return [...sessionOrder, sessionId];
+    }
+
+    return [
+        ...sessionOrder.slice(0, parentIndex + 1),
+        sessionId,
+        ...sessionOrder.slice(parentIndex + 1),
+    ];
+}
+
 function withUniqueAttachment(
     attachments: AIChatAttachment[],
     next: AIChatAttachment,
@@ -4559,6 +4610,7 @@ function mergeSession(
                     persistedTitle: incoming.persistedTitle ?? null,
                     customTitle: incoming.customTitle ?? null,
                     persistedPreview: incoming.persistedPreview ?? null,
+                    parentSessionId: incoming.parentSessionId ?? null,
                     persistedMessageCount:
                         incoming.persistedMessageCount ??
                         incoming.messages.length,
@@ -4611,6 +4663,10 @@ function mergeSession(
                 : normalizedExisting.configOptions,
         historySessionId:
             normalizedExisting.historySessionId ?? incoming.historySessionId,
+        parentSessionId:
+            incoming.parentSessionId ??
+            normalizedExisting.parentSessionId ??
+            null,
         vaultPath: incoming.vaultPath ?? normalizedExisting.vaultPath ?? null,
         isPersistedSession:
             incoming.isPersistedSession ??
@@ -6570,6 +6626,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const isKnown = state.sessionOrder.includes(
                     scopedSession.sessionId,
                 );
+                const parentSession = findParentSessionForIncomingChild(
+                    state.sessionsById,
+                    scopedSession,
+                );
+                const isKnownChildSession =
+                    parentSession != null &&
+                    sessionMatchesVaultPath(parentSession, currentVaultPath);
                 const isWorkspaceSession =
                     state.activeSessionId === scopedSession.sessionId ||
                     workspaceTabs.some(
@@ -6594,7 +6657,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 // Ignore unexpected sessions unless explicitly activated by
                 // this vault/window lifecycle.
-                if (!isKnown && !activate) return state;
+                if (!isKnown && !activate && !isKnownChildSession) {
+                    return state;
+                }
 
                 const nextRuntimes = scopedSession.isPersistedSession
                     ? state.runtimes
@@ -6635,6 +6700,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                               state.sessionOrder,
                               scopedSession.sessionId,
                           )
+                        : !isKnown && isKnownChildSession
+                          ? insertSessionAfterParent(
+                                state.sessionOrder,
+                                scopedSession.sessionId,
+                                parentSession?.sessionId ?? null,
+                            )
                         : state.sessionOrder,
                     activeSessionId:
                         activate || !state.activeSessionId
@@ -7770,6 +7841,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         {
                             ...resumedSession,
                             historySessionId,
+                            parentSessionId:
+                                resumedSession.parentSessionId ??
+                                latestSession.parentSessionId ??
+                                null,
                             messages: [],
                             attachments: latestSession.attachments,
                             effortsByModel:

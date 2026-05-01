@@ -17,7 +17,6 @@ import {
 } from "../../app/store/editorStore";
 import { getSessionTitle } from "../ai/sessionPresentation";
 import { useChatStore } from "../ai/store/chatStore";
-import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import { useInlineRename } from "../ai/components/useInlineRename";
 import { isSearchTab, SEARCH_TAB_TITLE } from "../search/searchTab";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -372,20 +371,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         [renameChatSession],
     );
     const requestCloseTab = useCallback(
-        async (tabId: string) => {
+        (tabId: string) => {
             const tab = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             ).find((candidate) => candidate.id === tabId);
             if (!tab) {
-                return;
-            }
-
-            const approved = await confirmActiveAgentTabClose({
-                actionLabel: "close this tab",
-                tabs: [tab],
-                sessionsById: useChatStore.getState().sessionsById,
-            });
-            if (!approved) {
                 return;
             }
 

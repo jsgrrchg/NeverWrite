@@ -17,7 +17,7 @@ use agent_client_protocol::schema::{
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolKind,
+    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
@@ -59,9 +59,19 @@ const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
 const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
+const CODEX_ACP_REASONING_EFFORT_KEY: &str = "codexAcpReasoningEffort";
+const CODEX_ACP_CWD_KEY: &str = "codexAcpCwd";
+const CODEX_ACP_SUBAGENT_CREATED_EVENT_TYPE: &str = "subagent_session_created";
 const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
+const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY: &str = "codexAcpSubagentEventType";
+const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
+const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
+const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE: &str = "resume_end";
+const CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE: &str = "waiting_end";
 const AUTH_TERMINAL_DEFAULT_COLS: u16 = 100;
 const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
@@ -1282,7 +1292,9 @@ impl NativeAcpClient {
             return;
         }
 
-        if let Some(payload) = map_status_event(session_id, tool_call) {
+        let action = self.subagent_open_session_action(session_id, tool_call);
+
+        if let Some(payload) = map_status_event(session_id, tool_call, action.clone()) {
             self.emit(AI_STATUS_EVENT, payload);
             return;
         }
@@ -1298,7 +1310,7 @@ impl NativeAcpClient {
             map_tool_call(
                 session_id,
                 tool_call,
-                self.subagent_open_session_action(session_id, tool_call),
+                action,
                 self.terminal_summary(session_id, &tool_call.tool_call_id.0),
                 diffs,
             ),
@@ -1317,21 +1329,21 @@ impl NativeAcpClient {
         }
 
         let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)?;
-        let state = self.session_state.lock().ok()?;
-        let child_session = state.sessions.values().find(|managed| {
-            managed.session.session_id == runtime_child_session_id
-                || managed.session.runtime_session_id.as_deref()
-                    == Some(runtime_child_session_id.as_str())
-        })?;
-        if child_session.session.session_id == session_id {
+        let child_session_id = self
+            .find_app_session_id(&runtime_child_session_id)
+            .or_else(|| {
+                self.create_subagent_session_from_meta(&runtime_child_session_id, Some(meta))
+                    .map(|session| session.session_id)
+            })
+            .unwrap_or(runtime_child_session_id);
+        if child_session_id == session_id {
             return None;
         }
 
         Some(AiToolActivityActionPayload {
             kind: "open_session".to_string(),
-            session_id: child_session.session.session_id.clone(),
-            label: meta_string(meta, CODEX_ACP_AGENT_NICKNAME_KEY)
-                .map(|nickname| format!("Open {nickname}")),
+            session_id: child_session_id,
+            label: None,
         })
     }
 
@@ -1473,11 +1485,209 @@ impl NativeAcpClient {
         }
     }
 
+    fn mark_session_idle(&self, session_id: &str) {
+        self.end_thinking(session_id);
+        self.end_message(session_id);
+
+        let session = self.session_state.lock().ok().and_then(|mut state| {
+            let managed = state.sessions.get_mut(session_id)?;
+            managed.session.status = AiSessionStatus::Idle;
+            Some(managed.session.clone())
+        });
+        if let Some(session) = session {
+            self.emit(AI_SESSION_UPDATED_EVENT, session);
+        }
+    }
+
+    fn resolve_app_session_id(&self, runtime_session_id: &str, meta: Option<&Meta>) -> String {
+        if let Some(session_id) = self.find_app_session_id(runtime_session_id) {
+            return session_id;
+        }
+
+        self.create_subagent_session_from_meta(runtime_session_id, meta)
+            .map(|session| session.session_id)
+            .unwrap_or_else(|| runtime_session_id.to_string())
+    }
+
+    fn find_app_session_id(&self, runtime_session_id: &str) -> Option<String> {
+        self.session_state
+            .lock()
+            .ok()?
+            .sessions
+            .values()
+            .find(|managed| {
+                managed.session.session_id == runtime_session_id
+                    || managed.session.runtime_session_id.as_deref() == Some(runtime_session_id)
+            })
+            .map(|managed| managed.session.session_id.clone())
+    }
+
+    fn create_subagent_session_from_meta(
+        &self,
+        runtime_session_id: &str,
+        meta: Option<&Meta>,
+    ) -> Option<AiSession> {
+        let meta = meta?;
+        let event_type = meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY)?;
+        if event_type != CODEX_ACP_SUBAGENT_CREATED_EVENT_TYPE {
+            return None;
+        }
+
+        let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
+            .unwrap_or_else(|| runtime_session_id.to_string());
+        let runtime_parent_session_id = meta_string(meta, CODEX_ACP_PARENT_SESSION_ID_KEY)?;
+        let cwd = meta_string(meta, CODEX_ACP_CWD_KEY).map(PathBuf::from);
+        let model_id = meta_string(meta, CODEX_ACP_MODEL_KEY);
+        let reasoning_effort = meta_string(meta, CODEX_ACP_REASONING_EFFORT_KEY);
+        let title =
+            meta_string(meta, CODEX_ACP_AGENT_NICKNAME_KEY).or_else(|| meta_string(meta, "title"));
+
+        let mut state = self.session_state.lock().ok()?;
+        if let Some(existing) = state.sessions.values().find(|managed| {
+            managed.session.session_id == runtime_child_session_id
+                || managed.session.runtime_session_id.as_deref()
+                    == Some(runtime_child_session_id.as_str())
+        }) {
+            return Some(existing.session.clone());
+        }
+
+        let parent = state
+            .sessions
+            .values()
+            .find(|managed| {
+                managed.session.session_id == runtime_parent_session_id
+                    || managed.session.runtime_session_id.as_deref()
+                        == Some(runtime_parent_session_id.as_str())
+            })?
+            .clone();
+
+        let mut session = parent.session.clone();
+        session.session_id = runtime_child_session_id.clone();
+        session.parent_session_id = Some(parent.session.session_id.clone());
+        session.runtime_session_id = Some(runtime_child_session_id.clone());
+        session.title = title;
+        session.status = AiSessionStatus::Idle;
+
+        if let Some(model_id) = model_id.as_deref() {
+            let base_model_id = strip_effort_suffix(model_id).to_string();
+            session.model_id = base_model_id.clone();
+            if let Some(option) = session
+                .config_options
+                .iter_mut()
+                .find(|option| option.id == "model")
+            {
+                option.value = base_model_id;
+            }
+        }
+
+        if let Some(reasoning_effort) = reasoning_effort {
+            if let Some(option) = session
+                .config_options
+                .iter_mut()
+                .find(|option| option.id == "reasoning_effort")
+            {
+                option.value = reasoning_effort;
+            }
+        }
+
+        let register_cwd = cwd.or_else(|| parent.vault_root.clone());
+        state.sessions.insert(
+            session.session_id.clone(),
+            ManagedAiSession {
+                session: session.clone(),
+                vault_root: parent.vault_root,
+                additional_roots: parent.additional_roots,
+                runtime_handle: parent.runtime_handle,
+            },
+        );
+        touch_session(&mut state, &session.session_id);
+        drop(state);
+
+        if let Some(cwd) = register_cwd {
+            self.tool_diffs
+                .register_session_cwd(&session.session_id, cwd);
+        }
+        self.emit(AI_SESSION_CREATED_EVENT, &session);
+        Some(session)
+    }
+
+    fn handle_subagent_lifecycle_breadcrumb(&self, parent_session_id: &str, meta: Option<&Meta>) {
+        let Some(meta) = meta else {
+            return;
+        };
+        if meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY).as_deref()
+            != Some(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE)
+        {
+            return;
+        }
+
+        let child_session_ids =
+            self.child_session_ids_for_terminal_subagent_breadcrumb(parent_session_id, meta);
+        for child_session_id in child_session_ids {
+            if child_session_id != parent_session_id {
+                self.mark_session_idle(&child_session_id);
+            }
+        }
+    }
+
+    fn child_session_ids_for_terminal_subagent_breadcrumb(
+        &self,
+        parent_session_id: &str,
+        meta: &Meta,
+    ) -> Vec<String> {
+        let Some(subagent_event_type) = meta_string(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY) else {
+            return vec![];
+        };
+
+        let closes_single_child = matches!(
+            subagent_event_type.as_str(),
+            CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE
+                | CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE
+                | CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE
+        );
+        if closes_single_child {
+            return meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
+                .and_then(|runtime_child_session_id| {
+                    self.find_app_session_id(&runtime_child_session_id)
+                })
+                .into_iter()
+                .collect();
+        }
+
+        if subagent_event_type != CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE {
+            return vec![];
+        }
+
+        if let Some(runtime_child_session_id) = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) {
+            return self
+                .find_app_session_id(&runtime_child_session_id)
+                .into_iter()
+                .collect();
+        }
+
+        self.session_state
+            .lock()
+            .ok()
+            .map(|state| {
+                state
+                    .sessions
+                    .values()
+                    .filter(|managed| {
+                        managed.session.parent_session_id.as_deref() == Some(parent_session_id)
+                    })
+                    .map(|managed| managed.session.session_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
     ) -> agent_client_protocol::Result<RequestPermissionResponse> {
-        let session_id = args.session_id.0.to_string();
+        let runtime_session_id = args.session_id.0.to_string();
+        let session_id =
+            self.resolve_app_session_id(&runtime_session_id, args.tool_call.meta.as_ref());
         let request_id = format!(
             "permission-{}",
             SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -1548,7 +1758,9 @@ impl NativeAcpClient {
         &self,
         args: SessionNotification,
     ) -> agent_client_protocol::Result<()> {
-        let session_id = args.session_id.0.to_string();
+        let runtime_session_id = args.session_id.0.to_string();
+        let meta = merged_session_notification_meta(&args);
+        let session_id = self.resolve_app_session_id(&runtime_session_id, meta.as_ref());
         match args.update {
             SessionUpdate::AgentMessageChunk(ContentChunk {
                 content: ContentBlock::Text(text),
@@ -1581,6 +1793,7 @@ impl NativeAcpClient {
                 );
             }
             SessionUpdate::ToolCall(tool_call) => {
+                let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
                 self.record_terminal_meta(
                     &session_id,
                     &tool_call.tool_call_id.0,
@@ -1588,8 +1801,10 @@ impl NativeAcpClient {
                 );
                 let tool_call = self.tool_diffs.upsert_tool_call(&session_id, tool_call);
                 self.emit_tool_activity(&session_id, &tool_call);
+                self.handle_subagent_lifecycle_breadcrumb(&session_id, meta.as_ref());
             }
             SessionUpdate::ToolCallUpdate(update) => {
+                let update = tool_call_update_with_merged_meta(update, meta.as_ref());
                 self.record_terminal_meta(
                     &session_id,
                     &update.tool_call_id.0,
@@ -1598,6 +1813,7 @@ impl NativeAcpClient {
                 if let Some(tool_call) = self.tool_diffs.apply_tool_update(&session_id, update) {
                     self.emit_tool_activity(&session_id, &tool_call);
                 }
+                self.handle_subagent_lifecycle_breadcrumb(&session_id, meta.as_ref());
             }
             SessionUpdate::UsageUpdate(update) => {
                 self.emit(
@@ -2044,6 +2260,7 @@ fn session_from_acp_response(
         session_id,
         parent_session_id: None,
         runtime_session_id: None,
+        title: None,
         runtime_id: runtime_id.to_string(),
         model_id,
         mode_id,
@@ -2362,6 +2579,48 @@ fn map_tool_call(
     }
 }
 
+fn merged_session_notification_meta(args: &SessionNotification) -> Option<Meta> {
+    let mut merged = args.meta.clone().unwrap_or_default();
+    if let Some(update_meta) = session_update_meta(&args.update) {
+        for (key, value) in update_meta {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+
+    (!merged.is_empty()).then_some(merged)
+}
+
+fn session_update_meta(update: &SessionUpdate) -> Option<&Meta> {
+    match update {
+        SessionUpdate::UserMessageChunk(chunk)
+        | SessionUpdate::AgentMessageChunk(chunk)
+        | SessionUpdate::AgentThoughtChunk(chunk) => chunk.meta.as_ref(),
+        SessionUpdate::ToolCall(tool_call) => tool_call.meta.as_ref(),
+        SessionUpdate::ToolCallUpdate(update) => update.meta.as_ref(),
+        SessionUpdate::CurrentModeUpdate(update) => update.meta.as_ref(),
+        SessionUpdate::ConfigOptionUpdate(update) => update.meta.as_ref(),
+        SessionUpdate::SessionInfoUpdate(update) => update.meta.as_ref(),
+        _ => None,
+    }
+}
+
+fn tool_call_with_merged_meta(mut tool_call: ToolCall, meta: Option<&Meta>) -> ToolCall {
+    if let Some(meta) = meta {
+        tool_call.meta = Some(meta.clone());
+    }
+    tool_call
+}
+
+fn tool_call_update_with_merged_meta(
+    mut update: ToolCallUpdate,
+    meta: Option<&Meta>,
+) -> ToolCallUpdate {
+    if let Some(meta) = meta {
+        update.meta = Some(meta.clone());
+    }
+    update
+}
+
 fn meta_string(meta: &Meta, key: &str) -> Option<String> {
     meta.get(key)
         .and_then(Value::as_str)
@@ -2370,12 +2629,18 @@ fn meta_string(meta: &Meta, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn acp_event_type(meta: &Meta) -> Option<&str> {
+    meta.get(ACP_STATUS_EVENT_TYPE_KEY)
+        .or_else(|| meta.get(CODEX_ACP_EVENT_TYPE_KEY))
+        .and_then(Value::as_str)
+}
+
 fn map_image_generation_event(
     session_id: &str,
     tool_call: &ToolCall,
 ) -> Option<AiImageGenerationPayload> {
     let meta = tool_call.meta.as_ref()?;
-    let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    let event_type = acp_event_type(meta)?;
     if event_type != ACP_IMAGE_GENERATION_EVENT_TYPE {
         return None;
     }
@@ -2413,7 +2678,7 @@ fn map_legacy_image_generation_status_event(
     tool_call: &ToolCall,
 ) -> Option<AiImageGenerationPayload> {
     let meta = tool_call.meta.as_ref()?;
-    let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    let event_type = acp_event_type(meta)?;
     if event_type != "status" || tool_call.title != "Generating image" {
         return None;
     }
@@ -2445,9 +2710,13 @@ fn map_legacy_image_generation_status_event(
     })
 }
 
-fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEventPayload> {
+fn map_status_event(
+    session_id: &str,
+    tool_call: &ToolCall,
+    tool_action: Option<AiToolActivityActionPayload>,
+) -> Option<AiStatusEventPayload> {
     let meta = tool_call.meta.as_ref()?;
-    let event_type = meta.get(ACP_STATUS_EVENT_TYPE_KEY)?.as_str()?;
+    let event_type = acp_event_type(meta)?;
     if event_type != "status" {
         return None;
     }
@@ -2468,6 +2737,7 @@ fn map_status_event(session_id: &str, tool_call: &ToolCall) -> Option<AiStatusEv
             .and_then(|value| value.as_str())
             .unwrap_or("info")
             .to_string(),
+        tool_action,
     })
 }
 
@@ -2814,6 +3084,7 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         session_id,
         parent_session_id: None,
         runtime_session_id: None,
+        title: None,
         runtime_id: runtime_id.to_string(),
         model_id: models
             .first()
@@ -3922,9 +4193,9 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::{
         ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigSelectOption, SessionModelState,
-        SessionNotification, SessionUpdate, ToolCallContent, ToolCallId, ToolCallUpdate,
-        ToolCallUpdateFields, ToolKind,
+        SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
+        SessionModelState, SessionNotification, SessionUpdate, ToolCallContent, ToolCallId,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -3971,6 +4242,9 @@ mod tests {
     const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
     const CODEX_ACP_SUBAGENT_CREATED_EVENT: &str = "subagent_session_created";
     const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT: &str = "subagent_breadcrumb";
+    const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY: &str = "codexAcpSubagentEventType";
+    const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT: &str = "close_end";
+    const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
 
@@ -4009,6 +4283,17 @@ mod tests {
             ))),
         )
         .meta(subagent_session_created_meta())
+    }
+
+    fn subagent_session_info_created_notification_fixture() -> SessionNotification {
+        SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::SessionInfoUpdate(
+                SessionInfoUpdate::new()
+                    .title("Galileo")
+                    .meta(subagent_session_created_meta()),
+            ),
+        )
     }
 
     fn subagent_child_message_notification_fixture() -> SessionNotification {
@@ -4090,7 +4375,43 @@ mod tests {
     }
 
     #[test]
-    fn subagent_session_created_metadata_does_not_create_child_session_yet() {
+    fn subagent_session_created_metadata_reads_update_meta() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(
+            client.session_notification(subagent_session_info_created_notification_fixture()),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child session created event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_CREATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("parent_session_id").and_then(Value::as_str),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+
+        let sessions = &session_state.lock().unwrap().sessions;
+        assert!(sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn subagent_session_created_metadata_creates_child_session() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
         insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
@@ -4103,7 +4424,35 @@ mod tests {
 
         let event = event_rx
             .recv_timeout(StdDuration::from_millis(250))
-            .expect("current baseline starts the raw child thinking stream");
+            .expect("child session created event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_CREATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("parent_session_id").and_then(Value::as_str),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("runtime_session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("title").and_then(Value::as_str),
+            Some("Galileo")
+        );
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child thinking started event");
         let RpcOutput::Event {
             event_name,
             payload,
@@ -4119,7 +4468,7 @@ mod tests {
 
         let event = event_rx
             .recv_timeout(StdDuration::from_millis(250))
-            .expect("current baseline emits the raw child thinking delta");
+            .expect("child thinking delta event");
         let RpcOutput::Event {
             event_name,
             payload,
@@ -4135,7 +4484,17 @@ mod tests {
 
         let sessions = &session_state.lock().unwrap().sessions;
         assert!(sessions.contains_key(PARENT_RUNTIME_SESSION_ID));
-        assert!(!sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+        let child = sessions
+            .get(CHILD_RUNTIME_SESSION_ID)
+            .expect("child session should be registered");
+        assert_eq!(
+            child.session.parent_session_id.as_deref(),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            child.session.runtime_session_id.as_deref(),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
     }
 
     #[test]
@@ -4185,6 +4544,187 @@ mod tests {
         let message_ids = client.message_ids.lock().unwrap();
         assert!(message_ids.contains_key(CHILD_RUNTIME_SESSION_ID));
         assert!(!message_ids.contains_key(PARENT_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn subagent_close_breadcrumb_marks_child_idle() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(
+            client.session_notification(subagent_session_info_created_notification_fixture()),
+        )
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        run_client_future(
+            client.session_notification(subagent_child_message_notification_fixture()),
+        )
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+        assert!(client
+            .message_ids
+            .lock()
+            .unwrap()
+            .contains_key(CHILD_RUNTIME_SESSION_ID));
+
+        let close_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_CLOSE_END_EVENT),
+            ),
+        ]);
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-close-1"), "Closed Galileo")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(close_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let mut saw_message_completed = false;
+        let mut saw_idle_update = false;
+        for _ in 0..3 {
+            let RpcOutput::Event {
+                event_name,
+                payload,
+            } = event_rx
+                .recv_timeout(StdDuration::from_millis(250))
+                .expect("close breadcrumb event")
+            else {
+                panic!("expected event");
+            };
+            if event_name == AI_MESSAGE_COMPLETED_EVENT {
+                saw_message_completed = payload.get("session_id").and_then(Value::as_str)
+                    == Some(CHILD_RUNTIME_SESSION_ID);
+            }
+            if event_name == AI_SESSION_UPDATED_EVENT
+                && payload.get("session_id").and_then(Value::as_str)
+                    == Some(CHILD_RUNTIME_SESSION_ID)
+                && payload.get("status").and_then(Value::as_str) == Some("idle")
+            {
+                saw_idle_update = true;
+            }
+        }
+
+        assert!(saw_message_completed);
+        assert!(saw_idle_update);
+        assert!(!client
+            .message_ids
+            .lock()
+            .unwrap()
+            .contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn subagent_waiting_end_breadcrumb_marks_parent_children_idle() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session-1");
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session-2");
+        {
+            let mut state = session_state.lock().unwrap();
+            for (app_session_id, runtime_session_id) in [
+                ("child-app-session-1", "child-runtime-session-1"),
+                ("child-app-session-2", "child-runtime-session-2"),
+            ] {
+                let child = state
+                    .sessions
+                    .get_mut(app_session_id)
+                    .expect("child session should exist");
+                child.session.parent_session_id = Some(PARENT_RUNTIME_SESSION_ID.to_string());
+                child.session.runtime_session_id = Some(runtime_session_id.to_string());
+                child.session.status = AiSessionStatus::Streaming;
+            }
+        }
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        let waiting_end_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_WAITING_END_EVENT),
+            ),
+        ]);
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-waiting-1"), "Subagents finished")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(waiting_end_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let mut idle_updates = vec![];
+        for _ in 0..3 {
+            let RpcOutput::Event {
+                event_name,
+                payload,
+            } = event_rx
+                .recv_timeout(StdDuration::from_millis(250))
+                .expect("waiting-end breadcrumb event")
+            else {
+                panic!("expected event");
+            };
+            if event_name == AI_SESSION_UPDATED_EVENT
+                && payload.get("status").and_then(Value::as_str) == Some("idle")
+            {
+                if let Some(session_id) = payload.get("session_id").and_then(Value::as_str) {
+                    idle_updates.push(session_id.to_string());
+                }
+            }
+        }
+        idle_updates.sort();
+
+        assert_eq!(
+            idle_updates,
+            vec![
+                "child-app-session-1".to_string(),
+                "child-app-session-2".to_string()
+            ]
+        );
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get("child-app-session-1")
+                .expect("first child session")
+                .session
+                .status,
+            AiSessionStatus::Idle
+        );
+        assert_eq!(
+            state
+                .sessions
+                .get("child-app-session-2")
+                .expect("second child session")
+                .session
+                .status,
+            AiSessionStatus::Idle
+        );
     }
 
     #[test]
@@ -4283,7 +4823,224 @@ mod tests {
         );
         assert_eq!(
             payload.pointer("/action/label").and_then(Value::as_str),
-            Some("Open Worker")
+            None
+        );
+    }
+
+    #[test]
+    fn subagent_breadcrumb_tool_update_opens_registered_child_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session");
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut("child-app-session")
+                .expect("child session should exist")
+                .session
+                .runtime_session_id = Some(CHILD_RUNTIME_SESSION_ID.to_string());
+        }
+        let client = test_client_with_state(event_tx, session_state);
+        let begin_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!("spawn_begin"),
+            ),
+        ]);
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-tool-update"), "Spawning subagent")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::InProgress)
+                        .meta(begin_meta),
+                ),
+            )),
+        )
+        .unwrap();
+        let _ = event_rx.recv_timeout(StdDuration::from_millis(250));
+
+        let end_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!("spawn_end"),
+            ),
+            (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Hypatia")),
+        ]);
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new(
+                        "subagent-tool-update",
+                        ToolCallUpdateFields::new()
+                            .title("Spawned Hypatia")
+                            .status(ToolCallStatus::Completed)
+                            .content(vec![ToolCallContent::from("Status: pending")]),
+                    )
+                    .meta(end_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.pointer("/action/kind").and_then(Value::as_str),
+            Some("open_session")
+        );
+        assert_eq!(
+            payload
+                .pointer("/action/session_id")
+                .and_then(Value::as_str),
+            Some("child-app-session")
+        );
+    }
+
+    #[test]
+    fn subagent_breadcrumb_tool_activity_keeps_open_action_before_child_registration() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+        let meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Cicero")),
+        ]);
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-tool-early"), "Spawned Cicero")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.pointer("/action/kind").and_then(Value::as_str),
+            Some("open_session")
+        );
+        assert_eq!(
+            payload
+                .pointer("/action/session_id")
+                .and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+    }
+
+    #[test]
+    fn subagent_status_breadcrumb_includes_open_child_session_action() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session");
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut("child-app-session")
+                .expect("child session should exist")
+                .session
+                .runtime_session_id = Some(CHILD_RUNTIME_SESSION_ID.to_string());
+        }
+        let client = test_client_with_state(event_tx, session_state);
+        let meta = Meta::from_iter([
+            (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
+            (ACP_STATUS_KIND_KEY.to_string(), json!("item_activity")),
+            (ACP_STATUS_EMPHASIS_KEY.to_string(), json!("neutral")),
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Mendel")),
+        ]);
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-status-1"), "Spawned Mendel")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Pending)
+                        .meta(meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("status event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_STATUS_EVENT);
+        assert_eq!(
+            payload.pointer("/tool_action/kind").and_then(Value::as_str),
+            Some("open_session")
+        );
+        assert_eq!(
+            payload
+                .pointer("/tool_action/session_id")
+                .and_then(Value::as_str),
+            Some("child-app-session")
         );
     }
 

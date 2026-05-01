@@ -155,7 +155,6 @@ import {
 } from "./WikilinkSuggester";
 import { isSearchTab } from "../search/searchTab";
 import { useChatStore } from "../ai/store/chatStore";
-import { confirmActiveAgentTabClose } from "../ai/activeAgentTabCloseGuard";
 import { aiRegisterFileBaseline } from "../ai/api";
 import {
     changeAuthorAnnotation,
@@ -790,18 +789,7 @@ export function Editor({
         if (!tab) return;
 
         if (!isNoteTab(tab)) {
-            void (async () => {
-                const approved = await confirmActiveAgentTabClose({
-                    actionLabel: "close this tab",
-                    tabs: [tab],
-                    sessionsById: useChatStore.getState().sessionsById,
-                });
-                if (!approved) {
-                    return;
-                }
-
-                closeTab(activeTabId, { reason: "user" });
-            })();
+            closeTab(activeTabId, { reason: "user" });
             return;
         }
 

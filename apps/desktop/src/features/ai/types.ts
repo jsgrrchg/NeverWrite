@@ -376,6 +376,7 @@ export interface AIBackendSessionPayload {
     session_id: string;
     parent_session_id?: string | null;
     runtime_session_id?: string | null;
+    title?: string | null;
     runtime_id: string;
     model_id: string;
     mode_id: string;
@@ -484,6 +485,7 @@ export interface AIStatusEventPayload {
     title: string;
     detail?: string | null;
     emphasis: string;
+    tool_action?: AIToolActivityAction | null;
 }
 
 export interface AIImageGenerationPayload {

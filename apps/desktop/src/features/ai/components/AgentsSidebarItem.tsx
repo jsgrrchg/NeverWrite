@@ -84,6 +84,13 @@ export function AgentsSidebarItem({
     metrics,
 }: AgentsSidebarItemProps) {
     const hasChildren = childCount > 0;
+    const hierarchyAdornmentWidth =
+        hasChildren || depth > 0 ? metrics.pinButtonSize + metrics.inlineGap : 0;
+    const activityAdornmentWidth = indicator
+        ? metrics.indicatorFontSize + metrics.inlineGap
+        : 0;
+    const subagentTextColumnOffset =
+        depth > 0 ? hierarchyAdornmentWidth + activityAdornmentWidth : 0;
     return (
         <div
             role="option"
@@ -296,6 +303,10 @@ export function AgentsSidebarItem({
                     style={{
                         color: "var(--text-secondary)",
                         fontSize: metrics.previewFontSize,
+                        paddingLeft: subagentTextColumnOffset || undefined,
+                        boxSizing: subagentTextColumnOffset
+                            ? "border-box"
+                            : undefined,
                     }}
                 >
                     {preview}
@@ -307,6 +318,10 @@ export function AgentsSidebarItem({
                 style={{
                     color: "var(--text-secondary)",
                     fontSize: metrics.metaFontSize,
+                    paddingLeft: subagentTextColumnOffset || undefined,
+                    boxSizing: subagentTextColumnOffset
+                        ? "border-box"
+                        : undefined,
                 }}
             >
                 {badgeLabel ? (
