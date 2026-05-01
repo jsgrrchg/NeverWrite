@@ -6,6 +6,7 @@ import {
     useState,
     type MouseEvent as ReactMouseEvent,
 } from "react";
+import { confirm } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
     ContextMenu,
@@ -39,6 +40,7 @@ import {
 import {
     buildAiSessionHierarchyGroups,
     compareHierarchyGroupsByUpdatedAtDesc,
+    countAiSessionChildren,
     type AiSessionHierarchyGroup,
 } from "./sessionHierarchy";
 import { useChatStore } from "./store/chatStore";
@@ -398,11 +400,28 @@ export function AgentsSidebarPanel() {
     }, [commitEditing, renameSession]);
 
     const handleDelete = useCallback(
-        (session: AIChatSession) => {
+        async (session: AIChatSession) => {
+            const title = getSessionTitleText(session);
+            const childCount = countAiSessionChildren(session, sessions);
+            const preservedAgents =
+                childCount === 1
+                    ? "1 subagent will stay in the sidebar as a detached agent."
+                    : `${childCount} subagents will stay in the sidebar as detached agents.`;
+            const message =
+                childCount > 0
+                    ? `Delete "${title}"?\n\nThis deletes only this thread's history and workspace snapshot. ${preservedAgents}\n\nThis cannot be undone.`
+                    : `Delete "${title}"?\n\nThis deletes the thread history and workspace snapshot.\n\nThis cannot be undone.`;
+
+            const approved = await confirm(message, {
+                title: "Delete thread?",
+                kind: "warning",
+            });
+            if (!approved) return;
+
             unpinChat(session.sessionId);
-            void deleteSession(session.sessionId);
+            await deleteSession(session.sessionId);
         },
-        [deleteSession, unpinChat],
+        [deleteSession, sessions, unpinChat],
     );
 
     // --- Context menu ------------------------------------------------------
@@ -730,7 +749,9 @@ export function AgentsSidebarPanel() {
                         {
                             label: "Delete",
                             danger: true,
-                            action: () => handleDelete(contextMenu.payload),
+                            action: () => {
+                                void handleDelete(contextMenu.payload);
+                            },
                         },
                     ]}
                 />

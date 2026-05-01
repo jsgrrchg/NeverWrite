@@ -9831,6 +9831,172 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-1");
     });
 
+    it("deletes a child session without stopping or deleting its parent", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+        };
+
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+
+        await useChatStore.getState().deleteSession(child.sessionId);
+
+        expect(useChatStore.getState().sessionsById[parent.sessionId]).toBe(
+            parent,
+        );
+        expect(
+            useChatStore.getState().sessionsById[child.sessionId],
+        ).toBeUndefined();
+        expect(
+            invokeMock.mock.calls
+                .filter(([command]) => command === "ai_cancel_turn")
+                .map(([, args]) => (args as { sessionId?: string }).sessionId),
+        ).toEqual([child.sessionId]);
+        expect(
+            invokeMock.mock.calls
+                .filter(([command]) => command === "ai_delete_runtime_session")
+                .map(([, args]) => (args as { sessionId?: string }).sessionId),
+        ).toEqual([child.sessionId]);
+    });
+
+    it("deletes a parent session without deleting active child sessions", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+        };
+
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+        useChatTabsStore.setState({
+            tabs: [
+                { id: "tab-parent", sessionId: parent.sessionId },
+                { id: "tab-child", sessionId: child.sessionId },
+            ],
+            activeTabId: "tab-parent",
+        });
+
+        await useChatStore.getState().deleteSession(parent.sessionId);
+
+        expect(
+            useChatStore.getState().sessionsById[parent.sessionId],
+        ).toBeUndefined();
+        expect(useChatStore.getState().sessionsById[child.sessionId]).toBe(
+            child,
+        );
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            { id: "tab-child", sessionId: child.sessionId },
+        ]);
+        expect(
+            invokeMock.mock.calls
+                .filter(([command]) => command === "ai_cancel_turn")
+                .map(([, args]) => (args as { sessionId?: string }).sessionId),
+        ).toEqual([]);
+        expect(
+            invokeMock.mock.calls
+                .filter(([command]) => command === "ai_delete_runtime_session")
+                .map(([, args]) => (args as { sessionId?: string }).sessionId),
+        ).toEqual([parent.sessionId]);
+    });
+
+    it("marks live parent and child sessions as errored when their ACP runtime disconnects", () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "waiting_user_input" as const,
+        };
+        const otherRuntime = {
+            ...createSessionWithTrackedFiles("session-other", []),
+            runtimeId: "claude-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+        };
+
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+                [otherRuntime.sessionId]: otherRuntime,
+            },
+            sessionOrder: [
+                parent.sessionId,
+                child.sessionId,
+                otherRuntime.sessionId,
+            ],
+        });
+
+        useChatStore.getState().applyRuntimeConnection({
+            runtime_id: "codex-acp",
+            status: "error",
+            message: "The ACP process exited.",
+        });
+
+        expect(
+            useChatStore.getState().sessionsById[parent.sessionId],
+        ).toMatchObject({
+            status: "error",
+            runtimeState: "detached",
+            resumeContextPending: true,
+        });
+        expect(
+            useChatStore.getState().sessionsById[child.sessionId],
+        ).toMatchObject({
+            status: "error",
+            runtimeState: "detached",
+            resumeContextPending: true,
+        });
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[parent.sessionId]?.messages.some(
+                    (message) =>
+                        message.kind === "error" &&
+                        message.content === "The ACP process exited.",
+                ),
+        ).toBe(true);
+        expect(
+            useChatStore.getState().sessionsById[otherRuntime.sessionId],
+        ).toBe(otherRuntime);
+    });
+
     it("clears virtualized row UI state when deleting a session", async () => {
         await useChatStore.getState().initialize();
 

@@ -33,12 +33,38 @@ function normalizeSessionRef(value: string | null | undefined) {
     return trimmed ? trimmed : null;
 }
 
-function sessionLookupKeys(session: AIChatSession) {
+export function getAiSessionLookupKeys(
+    session: Pick<
+        AIChatSession,
+        "sessionId" | "historySessionId" | "runtimeSessionId"
+    >,
+) {
     return [
         normalizeSessionRef(session.sessionId),
         normalizeSessionRef(session.historySessionId),
         normalizeSessionRef(session.runtimeSessionId),
     ].filter((key): key is string => Boolean(key));
+}
+
+export function isAiSessionChildOfParent(
+    parent: AIChatSession,
+    candidate: AIChatSession,
+) {
+    const parentRef = normalizeSessionRef(candidate.parentSessionId);
+    if (!parentRef || parent.sessionId === candidate.sessionId) {
+        return false;
+    }
+
+    return getAiSessionLookupKeys(parent).includes(parentRef);
+}
+
+export function countAiSessionChildren(
+    parent: AIChatSession,
+    sessions: readonly AIChatSession[],
+) {
+    return sessions.filter((session) =>
+        isAiSessionChildOfParent(parent, session),
+    ).length;
 }
 
 function sessionMatchesFilter(session: AIChatSession, normalizedFilter: string) {
@@ -70,7 +96,7 @@ export function buildAiSessionHierarchyGroups({
 }: BuildAiSessionHierarchyGroupsOptions): AiSessionHierarchyResult {
     const lookup = new Map<string, AIChatSession>();
     for (const session of sessions) {
-        for (const key of sessionLookupKeys(session)) {
+        for (const key of getAiSessionLookupKeys(session)) {
             if (!lookup.has(key)) {
                 lookup.set(key, session);
             }

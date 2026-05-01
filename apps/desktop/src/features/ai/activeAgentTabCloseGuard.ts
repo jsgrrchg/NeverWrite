@@ -5,6 +5,7 @@ import {
     type Tab,
 } from "../../app/store/editorStore";
 import { resolveAgentSessionActivity } from "./agentSessionActivity";
+import { getAiSessionLookupKeys } from "./sessionHierarchy";
 import { getSessionTitle } from "./sessionPresentation";
 import type { AIChatSession, AIChatSessionStatus } from "./types";
 
@@ -35,25 +36,79 @@ function getLinkedSessionId(tab: Tab) {
     return null;
 }
 
+function collectRelatedSessionRefs(
+    tabs: readonly Tab[],
+    sessionsById: Record<string, AIChatSession>,
+) {
+    const refs = new Set<string>();
+
+    for (const tab of tabs) {
+        const sessionId = getLinkedSessionId(tab);
+        if (!sessionId) continue;
+
+        refs.add(sessionId);
+        const session = sessionsById[sessionId];
+        if (!session) continue;
+
+        for (const key of getAiSessionLookupKeys(session)) {
+            refs.add(key);
+        }
+    }
+
+    let changed = true;
+    while (changed) {
+        changed = false;
+
+        for (const session of Object.values(sessionsById)) {
+            const parentRef = session.parentSessionId?.trim();
+            if (!parentRef || !refs.has(parentRef)) continue;
+
+            for (const key of getAiSessionLookupKeys(session)) {
+                if (refs.has(key)) continue;
+                refs.add(key);
+                changed = true;
+            }
+        }
+    }
+
+    return refs;
+}
+
+function isSessionLinkedToClosedTabs(
+    session: AIChatSession,
+    linkedSessionRefs: ReadonlySet<string>,
+) {
+    if (
+        getAiSessionLookupKeys(session).some((key) =>
+            linkedSessionRefs.has(key),
+        )
+    ) {
+        return true;
+    }
+
+    const parentRef = session.parentSessionId?.trim();
+    return Boolean(parentRef && linkedSessionRefs.has(parentRef));
+}
+
 export function getActiveAgentSessionsForTabs(
     tabs: readonly Tab[],
     sessionsById: Record<string, AIChatSession>,
 ) {
     const sessions = new Map<string, ActiveAgentSessionDescriptor>();
+    const linkedSessionRefs = collectRelatedSessionRefs(tabs, sessionsById);
+    if (linkedSessionRefs.size === 0) {
+        return [];
+    }
 
-    for (const tab of tabs) {
-        const sessionId = getLinkedSessionId(tab);
-        if (!sessionId || sessions.has(sessionId)) {
+    for (const session of Object.values(sessionsById)) {
+        if (sessions.has(session.sessionId)) continue;
+        if (!isSessionActivelyWorking(session)) continue;
+        if (!isSessionLinkedToClosedTabs(session, linkedSessionRefs)) {
             continue;
         }
 
-        const session = sessionsById[sessionId];
-        if (!session || !isSessionActivelyWorking(session)) {
-            continue;
-        }
-
-        sessions.set(sessionId, {
-            sessionId,
+        sessions.set(session.sessionId, {
+            sessionId: session.sessionId,
             title: getSessionTitle(session),
             statusLabel: ACTIVE_AGENT_STATUS_LABELS[session.status],
         });

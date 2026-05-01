@@ -107,6 +107,23 @@ describe("chatTabsStore", () => {
         ]);
     });
 
+    it("closes only the selected session tab when parent and child are open", () => {
+        useChatTabsStore.setState({
+            tabs: [
+                { id: "tab-parent", sessionId: "session-parent" },
+                { id: "tab-child", sessionId: "session-child" },
+            ],
+            activeTabId: "tab-parent",
+        });
+
+        useChatTabsStore.getState().closeTab("tab-parent");
+
+        expect(useChatTabsStore.getState().tabs).toEqual([
+            { id: "tab-child", sessionId: "session-child" },
+        ]);
+        expect(useChatTabsStore.getState().activeTabId).toBe("tab-child");
+    });
+
     it("restores valid metadata tabs against the available sessions", () => {
         useChatTabsStore.getState().restoreWorkspace(
             {

@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { confirm } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -61,6 +62,7 @@ describe("AgentsSidebarPanel", () => {
         });
         usePinnedChatsStore.setState({ entries: {} });
         useEditorStore.getState().hydrateTabs([], null);
+        vi.mocked(confirm).mockResolvedValue(true);
         useChatStore.setState({
             runtimes: [
                 {
@@ -263,5 +265,65 @@ describe("AgentsSidebarPanel", () => {
         fireEvent.doubleClick(screen.getAllByRole("option")[1]);
 
         expect(screen.queryByDisplayValue("Worker investigation")).toBeNull();
+    });
+
+    it("confirms destructive parent delete and preserves child sessions", async () => {
+        const parent = createSession("session-parent", "Parent task");
+        const child = createSession("session-child", "Worker investigation", "idle", 200, {
+            parentSessionId: parent.sessionId,
+        });
+        const deleteSession = vi.fn().mockResolvedValue(undefined);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            deleteSession,
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.contextMenu(screen.getAllByRole("option")[0]);
+        fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+        await waitFor(() => {
+            expect(confirm).toHaveBeenCalledWith(
+                expect.stringContaining(
+                    "1 subagent will stay in the sidebar as a detached agent.",
+                ),
+                expect.objectContaining({ title: "Delete thread?" }),
+            );
+        });
+        await waitFor(() => {
+            expect(deleteSession).toHaveBeenCalledWith(parent.sessionId);
+        });
+    });
+
+    it("does not delete when sidebar delete confirmation is rejected", async () => {
+        vi.mocked(confirm).mockResolvedValue(false);
+        const session = createSession("session-alpha", "Alpha task");
+        const deleteSession = vi.fn().mockResolvedValue(undefined);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            deleteSession,
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.contextMenu(screen.getByRole("option"));
+        fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+
+        await waitFor(() => {
+            expect(confirm).toHaveBeenCalledTimes(1);
+        });
+        expect(deleteSession).not.toHaveBeenCalled();
     });
 });
