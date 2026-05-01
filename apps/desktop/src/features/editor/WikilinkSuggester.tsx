@@ -96,6 +96,7 @@ export function WikilinkSuggester({
             <div
                 style={{
                     overflowY: "auto",
+                    overflowX: "auto",
                     padding: 4,
                     display: "flex",
                     flexDirection: "column",
@@ -133,7 +134,9 @@ export function WikilinkSuggester({
                                     padding: "6px 10px",
                                     textAlign: "left",
                                     cursor: "pointer",
-                                    minWidth: 0,
+                                    minWidth: "100%",
+                                    width: "max-content",
+                                    maxWidth: "none",
                                 }}
                             >
                                 <div
@@ -152,8 +155,8 @@ export function WikilinkSuggester({
                                             fontSize: 13,
                                             fontWeight: 500,
                                             whiteSpace: "nowrap",
-                                            overflow: "hidden",
-                                            textOverflow: "ellipsis",
+                                            overflow: "visible",
+                                            textOverflow: "clip",
                                         }}
                                     >
                                         {item.title}
@@ -163,8 +166,8 @@ export function WikilinkSuggester({
                                             color: "var(--text-secondary)",
                                             fontSize: 11,
                                             whiteSpace: "nowrap",
-                                            overflow: "hidden",
-                                            textOverflow: "ellipsis",
+                                            overflow: "visible",
+                                            textOverflow: "clip",
                                         }}
                                     >
                                         {item.subtitle}

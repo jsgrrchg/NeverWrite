@@ -1,7 +1,12 @@
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use neverwrite_index::VaultIndex;
-use neverwrite_types::{NoteDocument, NoteId, NotePath, PdfDocument, TextRange, WikiLink};
+use neverwrite_types::{
+    AdvancedSearchParams, NoteDocument, NoteId, NotePath, PdfDocument, SearchTermParam, TextRange,
+    WikiLink,
+};
+use neverwrite_vault::Vault;
 
 fn make_note(
     id: &str,
@@ -25,6 +30,34 @@ fn make_note(
         tags: tags.into_iter().map(|t| t.to_string()).collect(),
         frontmatter: None,
     }
+}
+
+fn make_search_params(query: &str, prefer_file_name: bool) -> AdvancedSearchParams {
+    AdvancedSearchParams {
+        terms: vec![SearchTermParam {
+            value: query.to_string(),
+            negated: false,
+            is_regex: false,
+        }],
+        tag_filters: vec![],
+        file_filters: vec![],
+        path_filters: vec![],
+        content_searches: vec![],
+        property_filters: vec![],
+        sort_by: "relevance".to_string(),
+        sort_asc: false,
+        prefer_file_name,
+    }
+}
+
+fn make_empty_temp_vault(name: &str) -> (Vault, PathBuf) {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("neverwrite-index-{name}-{unique}"));
+    std::fs::create_dir_all(&root).unwrap();
+    (Vault { root: root.clone() }, root)
 }
 
 fn build_sample_index() -> VaultIndex {
@@ -303,6 +336,51 @@ fn suggest_wikilinks_can_prefer_file_name_over_title() {
     let ids: Vec<&str> = suggestions.iter().map(|id| id.0.as_str()).collect();
 
     assert_eq!(ids, vec!["docs/invoice-template"]);
+}
+
+#[test]
+fn advanced_search_prefers_file_name_before_title_when_file_oriented() {
+    let index = VaultIndex::build(vec![
+        make_note("docs/diagnostico", "Unrelated title", vec![], vec![]),
+        make_note("docs/roadmap", "Diagnostico by title only", vec![], vec![]),
+    ]);
+    let (vault, root) = make_empty_temp_vault("advanced-search-file-oriented-rank");
+    let params = make_search_params("diagnostico", true);
+
+    let results = index.advanced_search(&params, &vault);
+    let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
+
+    assert_eq!(ids, vec!["docs/diagnostico", "docs/roadmap"]);
+
+    let extension_params = make_search_params("diagnostico.md", true);
+    let extension_results = index.advanced_search(&extension_params, &vault);
+    let extension_ids: Vec<&str> = extension_results
+        .iter()
+        .map(|result| result.id.as_str())
+        .collect();
+
+    assert_eq!(extension_ids, vec!["docs/diagnostico"]);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn advanced_search_keeps_title_as_file_oriented_fallback() {
+    let index = VaultIndex::build(vec![make_note(
+        "docs/roadmap",
+        "Alpha Strategy",
+        vec![],
+        vec![],
+    )]);
+    let (vault, root) = make_empty_temp_vault("advanced-search-title-fallback");
+    let params = make_search_params("strategy", true);
+
+    let results = index.advanced_search(&params, &vault);
+    let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
+
+    assert_eq!(ids, vec!["docs/roadmap"]);
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

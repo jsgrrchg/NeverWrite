@@ -220,6 +220,9 @@ pub struct AdvancedSearchParams {
     /// "relevance" | "title" | "modified"
     pub sort_by: String,
     pub sort_asc: bool,
+    /// Prefer filename/path matches over note title matches for file-oriented UI.
+    #[serde(default)]
+    pub prefer_file_name: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -79,9 +79,9 @@ describe("QuickSwitcher", () => {
         });
         setVaultNotes([
             {
-                id: ".PERSONAL/Diagnósticos/Listos/2026-03-19-diagnostico",
-                path: "/vault/.PERSONAL/Diagnósticos/Listos/2026-03-19-diagnostico.md",
-                title: "Diagnóstico: falso conflicto externo en el editor durante escritura",
+                id: "docs/reports/2026-03-19-editor-conflict-diagnostic",
+                path: "/vault/docs/reports/2026-03-19-editor-conflict-diagnostic.md",
+                title: "Editor conflict diagnostic report",
                 modified_at: 1,
                 created_at: 1,
             },
@@ -94,13 +94,59 @@ describe("QuickSwitcher", () => {
         await vi.runAllTimersAsync();
 
         expect(
-            screen.getByText("2026-03-19-diagnostico.md"),
+            screen.getByText("2026-03-19-editor-conflict-diagnostic.md"),
         ).toBeInTheDocument();
         expect(
-            screen.queryByText(
-                "Diagnóstico: falso conflicto externo en el editor durante escritura",
-            ),
+            screen.queryByText("Editor conflict diagnostic report"),
         ).not.toBeInTheDocument();
+    });
+
+    it("ranks note file name matches before note title matches in all-files mode", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeShowExtensions: true,
+        });
+        setVaultNotes([
+            {
+                id: "notes/diagnostico",
+                path: "/vault/notes/diagnostico.md",
+                title: "Unrelated title",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/roadmap",
+                path: "/vault/notes/roadmap.md",
+                title: "Diagnostico by title only",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "diagnostico" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const labels = screen
+            .getAllByRole("button")
+            .map((button) => button.textContent ?? "");
+
+        expect(labels.slice(0, 2)).toEqual([
+            "diagnostico.mdnotes/diagnostico",
+            "roadmap.mdnotes/roadmap",
+        ]);
     });
 
     it("opens an already open note from the filtered results without reading it again", async () => {

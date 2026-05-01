@@ -207,6 +207,49 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("keeps note title as a fallback in the @ picker when all-files mode is active", async () => {
+        act(() => {
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeShowExtensions: true,
+            });
+        });
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[
+                    {
+                        id: "notes/roadmap.md",
+                        title: "Alpha Strategy",
+                        path: "/vault/notes/roadmap.md",
+                    },
+                ]}
+                status="idle"
+                runtimeName="Assistant"
+                runtimeId={undefined}
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message NeverWrite",
+        });
+        composer.textContent = "@alpha";
+        setCaret(composer.firstChild as Text, 6);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("roadmap.md")).toBeInTheDocument();
+        });
+    });
+
     it("shows text-like vault files in the @ picker when all-files mode is active", async () => {
         act(() => {
             useSettingsStore.setState({

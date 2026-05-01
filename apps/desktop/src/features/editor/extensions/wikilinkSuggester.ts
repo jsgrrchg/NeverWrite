@@ -34,6 +34,33 @@ function normalizeForSearch(value: string): string {
         .trim();
 }
 
+function ensureMarkdownExtension(value: string): string {
+    return value.toLowerCase().endsWith(".md") ? value : `${value}.md`;
+}
+
+function stripMarkdownExtension(value: string): string {
+    return value.replace(/\.md$/i, "");
+}
+
+function getWikilinkNoteFileName(item: WikilinkSuggestionDto): string {
+    const path = item.subtitle || item.id || item.insert_text || item.title;
+    const baseName = path.split(/[\\/]/).filter(Boolean).pop() ?? item.title;
+    return ensureMarkdownExtension(baseName);
+}
+
+function getWikilinkNoteDisplayTitle(
+    item: WikilinkSuggestionDto,
+    preferFileName: boolean,
+    showExtensions: boolean,
+): string {
+    if (!preferFileName) {
+        return item.title;
+    }
+
+    const fileName = getWikilinkNoteFileName(item);
+    return showExtensions ? fileName : stripMarkdownExtension(fileName);
+}
+
 function getFileSuggestions(
     query: string,
     limit: number,
@@ -145,9 +172,10 @@ export async function getWikilinkSuggestions(
     limit = 8,
 ): Promise<WikilinkSuggestionItem[]> {
     const resolverRevision = ensureFreshSuggestionCache();
-    const preferFileName =
-        useSettingsStore.getState().fileTreeContentMode === "all_files";
-    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${query}`;
+    const { fileTreeContentMode, fileTreeShowExtensions } =
+        useSettingsStore.getState();
+    const preferFileName = fileTreeContentMode === "all_files";
+    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${Number(fileTreeShowExtensions)}\u0000${query}`;
     const cached = suggestionCache.get(cacheKey);
     if (cached) {
         return cached;
@@ -166,7 +194,11 @@ export async function getWikilinkSuggestions(
     const items = suggestions.map((item) => ({
         id: item.id,
         kind: "note" as const,
-        title: item.title,
+        title: getWikilinkNoteDisplayTitle(
+            item,
+            preferFileName,
+            fileTreeShowExtensions,
+        ),
         subtitle: item.subtitle,
         insertText: item.insert_text,
     }));

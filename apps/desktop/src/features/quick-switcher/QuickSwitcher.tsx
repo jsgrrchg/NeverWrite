@@ -61,6 +61,47 @@ function fuzzyScore(query: string, text: string): number {
     return qi === q.length ? score : 0;
 }
 
+function normalizeForFileSearch(value: string): string {
+    return value
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+}
+
+function fileOrientedScore(
+    query: string,
+    fields: {
+        fileName: string;
+        path: string;
+        title: string;
+    },
+): number {
+    const q = normalizeForFileSearch(query);
+    if (!q) return 1;
+
+    const fileName = normalizeForFileSearch(fields.fileName);
+    const path = normalizeForFileSearch(fields.path);
+    const title = normalizeForFileSearch(fields.title);
+    const buckets = [
+        fileName === q,
+        fileName.startsWith(q),
+        path.startsWith(q),
+        fileName.includes(q),
+        path.includes(q),
+        title.startsWith(q),
+        title.includes(q),
+    ];
+    const bucket = buckets.findIndex(Boolean);
+
+    if (bucket === -1) return 0;
+
+    const matchedField = [fileName, fileName, path, fileName, path, title, title][
+        bucket
+    ];
+    return 10_000 - bucket * 1_000 + fuzzyScore(q, matchedField);
+}
+
 export function QuickSwitcher() {
     const activeModal = useCommandStore((s) => s.activeModal);
     if (activeModal !== "quick-switcher") return null;
@@ -275,29 +316,43 @@ function QuickSwitcherDialog() {
                 }),
             ...notes.map((note) => ({
                 item: buildNoteItem(note),
-                score: Math.max(
-                    fuzzyScore(
-                        deferredQuery,
-                        getNoteQuickSwitcherTitle(
-                            note,
-                            fileTreeContentMode,
-                            showExtensions,
-                        ),
-                    ),
-                    fuzzyScore(deferredQuery, note.path),
-                    fuzzyScore(deferredQuery, note.id),
-                    fuzzyScore(deferredQuery, note.title),
-                ),
+                score:
+                    fileTreeContentMode === "all_files"
+                        ? fileOrientedScore(deferredQuery, {
+                              fileName: getNoteFileName(note),
+                              path: note.id || note.path,
+                              title: note.title,
+                          })
+                        : Math.max(
+                              fuzzyScore(
+                                  deferredQuery,
+                                  getNoteQuickSwitcherTitle(
+                                      note,
+                                      fileTreeContentMode,
+                                      showExtensions,
+                                  ),
+                              ),
+                              fuzzyScore(deferredQuery, note.path),
+                              fuzzyScore(deferredQuery, note.id),
+                              fuzzyScore(deferredQuery, note.title),
+                          ),
             })),
             ...searchableEntries.map((entry) => ({
                 item: buildEntryItem(entry),
-                score: Math.max(
-                    fuzzyScore(
-                        deferredQuery,
-                        getVaultEntryDisplayName(entry, true),
-                    ),
-                    fuzzyScore(deferredQuery, entry.relative_path),
-                ),
+                score:
+                    fileTreeContentMode === "all_files"
+                        ? fileOrientedScore(deferredQuery, {
+                              fileName: entry.file_name,
+                              path: entry.relative_path,
+                              title: entry.title,
+                          })
+                        : Math.max(
+                              fuzzyScore(
+                                  deferredQuery,
+                                  getVaultEntryDisplayName(entry, true),
+                              ),
+                              fuzzyScore(deferredQuery, entry.relative_path),
+                          ),
             })),
         ]
             .filter(({ score }) => score > 0)

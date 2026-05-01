@@ -14,6 +14,8 @@ const MAX_SUGGESTION_PREFIX_CHARS: usize = 64;
 pub struct SearchEntry {
     pub title_lower: String,
     pub path_lower: String,
+    #[serde(default)]
+    pub file_name_lower: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -176,6 +178,14 @@ impl VaultIndex {
             SearchEntry {
                 title_lower: title.to_lowercase(),
                 path_lower: id.0.to_lowercase(),
+                file_name_lower: path
+                    .0
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.to_lowercase())
+                    .unwrap_or_else(|| {
+                        id.0.rsplit('/').next().unwrap_or(&id.0).to_lowercase()
+                    }),
             },
         );
         self.pdf_metadata.insert(
@@ -451,7 +461,21 @@ impl VaultIndex {
             note.id.clone(),
             SearchEntry {
                 title_lower: note.title.to_lowercase(),
-                path_lower: note.id.0.to_lowercase(),
+                path_lower: format!("{}.md", note.id.0).to_lowercase(),
+                file_name_lower: note
+                    .path
+                    .0
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.to_lowercase())
+                    .unwrap_or_else(|| {
+                        note.id
+                            .0
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&note.id.0)
+                            .to_lowercase()
+                    }),
             },
         );
 

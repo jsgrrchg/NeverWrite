@@ -34,6 +34,19 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.1.3] - 2026-05-01
+
+### Changed
+
+- Aligned file-oriented search across Search Files & Notes, New Tab, `@` mentions, and `[[ ]]` wikilink suggestions so all-files mode treats Markdown notes as files first, ranking file name and path matches before note title matches while keeping title search as a fallback.
+- Updated wikilink suggestions in all-files mode to display Markdown note file names consistently with the file extension setting, so notes can appear as `example.md` when extensions are enabled without changing the inserted wikilink target.
+- Made the wikilink suggestion popup horizontally scrollable so long note names and vault paths can be inspected without widening the popup.
+
+### Fixed
+
+- Fixed a mismatch where the file-oriented search notice promised file-name-first behavior, but Search Files & Notes and New Tab still used older title/path scoring.
+- Fixed `@` mention suggestions in all-files mode so note titles remain searchable as a fallback after file name and path matches.
+
 ## [0.1.2] - 2026-04-30
 
 ### Fixed

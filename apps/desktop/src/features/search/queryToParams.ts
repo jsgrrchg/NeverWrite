@@ -29,12 +29,18 @@ export interface AdvancedSearchParams {
     property_filters: PropertyFilterParam[];
     sort_by: string;
     sort_asc: boolean;
+    prefer_file_name: boolean;
+}
+
+interface AdvancedSearchOptions {
+    preferFileName?: boolean;
 }
 
 export function toAdvancedSearchParams(
     parsed: ParsedQuery,
     sortBy = "relevance",
     sortAsc = false,
+    options: AdvancedSearchOptions = {},
 ): AdvancedSearchParams {
     const params: AdvancedSearchParams = {
         terms: [],
@@ -45,6 +51,7 @@ export function toAdvancedSearchParams(
         property_filters: [],
         sort_by: sortBy,
         sort_asc: sortAsc,
+        prefer_file_name: options.preferFileName ?? false,
     };
 
     for (const token of parsed.tokens) {

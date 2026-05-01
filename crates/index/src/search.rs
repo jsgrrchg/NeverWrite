@@ -7,7 +7,7 @@ use neverwrite_types::{
 use neverwrite_vault::Vault;
 use regex::Regex;
 
-use crate::VaultIndex;
+use crate::{SearchEntry, VaultIndex};
 
 pub struct SearchResult<'a> {
     pub note_id: &'a NoteId,
@@ -39,11 +39,7 @@ impl VaultIndex {
                     Some(e) => e,
                     None => return false,
                 };
-                let filename = entry
-                    .path_lower
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&entry.path_lower);
+                let filename = search_entry_file_name(entry);
                 matcher.matches(filename) != filter.negated
             });
         }
@@ -66,8 +62,14 @@ impl VaultIndex {
                     Some(e) => e,
                     None => return false,
                 };
-                let found =
-                    matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower);
+                let filename = search_entry_file_name(entry);
+                let found = if params.prefer_file_name {
+                    matcher.matches(filename)
+                        || matcher.matches(&entry.path_lower)
+                        || matcher.matches(&entry.title_lower)
+                } else {
+                    matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower)
+                };
                 found != term.negated
             });
         }
@@ -149,11 +151,7 @@ impl VaultIndex {
                     Some(e) => e,
                     None => return false,
                 };
-                let filename = entry
-                    .path_lower
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&entry.path_lower);
+                let filename = search_entry_file_name(entry);
                 matcher.matches(filename) != filter.negated
             });
         }
@@ -170,7 +168,8 @@ impl VaultIndex {
             });
         }
 
-        // Title/path terms (plain search like current behavior)
+        // Plain terms follow the active identity model: title-first for notes-only
+        // mode, filename/path-first for file-oriented all-files mode.
         for term in &params.terms {
             let matcher = build_matcher(&term.value, term.is_regex);
             candidates.retain(|id| {
@@ -178,8 +177,14 @@ impl VaultIndex {
                     Some(e) => e,
                     None => return false,
                 };
-                let found =
-                    matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower);
+                let filename = search_entry_file_name(entry);
+                let found = if params.prefer_file_name {
+                    matcher.matches(filename)
+                        || matcher.matches(&entry.path_lower)
+                        || matcher.matches(&entry.title_lower)
+                } else {
+                    matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower)
+                };
                 found != term.negated
             });
         }
@@ -240,17 +245,21 @@ impl VaultIndex {
                 continue;
             }
 
-            // Compute title/path score
+            // Compute relevance according to the active note identity model.
             let entry = self.search_index.get(*note_id);
             let title_path_score = if let Some(entry) = entry {
                 let mut best = 0.0f64;
                 for term in &params.terms {
                     if !term.negated {
-                        let s1 =
-                            compute_score_match(&term.value, &entry.title_lower, term.is_regex);
-                        let s2 = compute_score_match(&term.value, &entry.path_lower, term.is_regex)
-                            * 0.8;
-                        best = best.max(s1.max(s2));
+                        let score = compute_entry_score_match(
+                            &term.value,
+                            &entry.title_lower,
+                            &entry.path_lower,
+                            search_entry_file_name(entry),
+                            term.is_regex,
+                            params.prefer_file_name,
+                        );
+                        best = best.max(score);
                     }
                 }
                 best
@@ -298,11 +307,7 @@ impl VaultIndex {
                         Some(e) => e,
                         None => return false,
                     };
-                    let filename = entry
-                        .path_lower
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(&entry.path_lower);
+                    let filename = search_entry_file_name(entry);
                     matcher.matches(filename) != filter.negated
                 });
             }
@@ -325,8 +330,14 @@ impl VaultIndex {
                         Some(e) => e,
                         None => return false,
                     };
-                    let found =
-                        matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower);
+                    let filename = search_entry_file_name(entry);
+                    let found = if params.prefer_file_name {
+                        matcher.matches(filename)
+                            || matcher.matches(&entry.path_lower)
+                            || matcher.matches(&entry.title_lower)
+                    } else {
+                        matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower)
+                    };
                     found != term.negated
                 });
             }
@@ -342,12 +353,15 @@ impl VaultIndex {
                     let mut best = 0.0f64;
                     for term in &params.terms {
                         if !term.negated {
-                            let s1 =
-                                compute_score_match(&term.value, &entry.title_lower, term.is_regex);
-                            let s2 =
-                                compute_score_match(&term.value, &entry.path_lower, term.is_regex)
-                                    * 0.8;
-                            best = best.max(s1.max(s2));
+                            let score = compute_entry_score_match(
+                                &term.value,
+                                &entry.title_lower,
+                                &entry.path_lower,
+                                search_entry_file_name(entry),
+                                term.is_regex,
+                                params.prefer_file_name,
+                            );
+                            best = best.max(score);
                         }
                     }
                     best
@@ -384,6 +398,7 @@ impl VaultIndex {
             for entry in generic_entries.iter().filter(|entry| entry.kind == "file") {
                 let title_lower = entry.title.to_lowercase();
                 let path_lower = entry.relative_path.to_lowercase();
+                let file_name_lower = entry.file_name.to_lowercase();
 
                 let file_filter_match = params.file_filters.iter().all(|filter| {
                     let matcher = build_matcher(&filter.value, filter.is_regex);
@@ -403,7 +418,13 @@ impl VaultIndex {
 
                 let term_match = params.terms.iter().all(|term| {
                     let matcher = build_matcher(&term.value, term.is_regex);
-                    let found = matcher.matches(&title_lower) || matcher.matches(&path_lower);
+                    let found = if params.prefer_file_name {
+                        matcher.matches(&file_name_lower)
+                            || matcher.matches(&path_lower)
+                            || matcher.matches(&title_lower)
+                    } else {
+                        matcher.matches(&title_lower) || matcher.matches(&path_lower)
+                    };
                     found != term.negated
                 });
                 if !term_match {
@@ -415,10 +436,15 @@ impl VaultIndex {
                     if term.negated {
                         continue;
                     }
-                    let title_score = compute_score_match(&term.value, &title_lower, term.is_regex);
-                    let path_score =
-                        compute_score_match(&term.value, &path_lower, term.is_regex) * 0.8;
-                    best = best.max(title_score.max(path_score));
+                    let score = compute_file_oriented_score_match(
+                        &term.value,
+                        &file_name_lower,
+                        &path_lower,
+                        &title_lower,
+                        term.is_regex,
+                        params.prefer_file_name,
+                    );
+                    best = best.max(score);
                 }
 
                 results.push(AdvancedSearchResultDto {
@@ -594,6 +620,102 @@ fn compute_score_match(query: &str, target: &str, is_regex: bool) -> f64 {
     } else {
         0.0
     }
+}
+
+fn file_name_from_path(path_lower: &str) -> &str {
+    path_lower.rsplit('/').next().unwrap_or(path_lower)
+}
+
+fn search_entry_file_name(entry: &SearchEntry) -> &str {
+    if entry.file_name_lower.is_empty() {
+        file_name_from_path(&entry.path_lower)
+    } else {
+        &entry.file_name_lower
+    }
+}
+
+fn compute_entry_score_match(
+    query: &str,
+    title_lower: &str,
+    path_lower: &str,
+    file_name_lower: &str,
+    is_regex: bool,
+    prefer_file_name: bool,
+) -> f64 {
+    if !prefer_file_name {
+        let title_score = compute_score_match(query, title_lower, is_regex);
+        let path_score = compute_score_match(query, path_lower, is_regex) * 0.8;
+        return title_score.max(path_score);
+    }
+
+    compute_file_oriented_score_match(
+        query,
+        file_name_lower,
+        path_lower,
+        title_lower,
+        is_regex,
+        true,
+    )
+}
+
+fn compute_file_oriented_score_match(
+    query: &str,
+    file_name_lower: &str,
+    path_lower: &str,
+    title_lower: &str,
+    is_regex: bool,
+    prefer_file_name: bool,
+) -> f64 {
+    if !prefer_file_name {
+        let title_score = compute_score_match(query, title_lower, is_regex);
+        let path_score = compute_score_match(query, path_lower, is_regex) * 0.8;
+        return title_score.max(path_score);
+    }
+
+    if is_regex {
+        if let Ok(re) = Regex::new(query) {
+            if re.is_match(file_name_lower) {
+                return 1.0;
+            }
+            if re.is_match(path_lower) {
+                return 0.9;
+            }
+            if re.is_match(title_lower) {
+                return 0.7;
+            }
+        }
+        return 0.0;
+    }
+
+    let q = query.to_lowercase();
+    if q.is_empty() {
+        return 0.0;
+    }
+
+    // Keep bucket gaps large so filename/path priority always beats title
+    // fallback, while the tiny score component preserves useful tie-breaking.
+    if file_name_lower == q {
+        return 1.0;
+    }
+    if file_name_lower.starts_with(&q) {
+        return 0.9 + compute_score(&q, file_name_lower) * 0.01;
+    }
+    if path_lower.starts_with(&q) {
+        return 0.8 + compute_score(&q, path_lower) * 0.01;
+    }
+    if file_name_lower.contains(&q) {
+        return 0.7 + compute_score(&q, file_name_lower) * 0.01;
+    }
+    if path_lower.contains(&q) {
+        return 0.6 + compute_score(&q, path_lower) * 0.01;
+    }
+    if title_lower.starts_with(&q) {
+        return 0.5 + compute_score(&q, title_lower) * 0.01;
+    }
+    if title_lower.contains(&q) {
+        return 0.4 + compute_score(&q, title_lower) * 0.01;
+    }
+    0.0
 }
 
 // ── Content search helpers ─────────────────────────────

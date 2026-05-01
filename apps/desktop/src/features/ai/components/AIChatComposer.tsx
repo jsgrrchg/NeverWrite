@@ -834,25 +834,41 @@ function getNoteMentionSuggestions(
             const normalizedFileName = normalizeForSearch(
                 getNoteFileNameForSearch(note),
             );
-            const primaryStartsWith =
-                normalizedQuery.length > 0 &&
-                (preferFileName
-                    ? normalizedFileName.startsWith(normalizedQuery)
-                    : normalizedTitle.startsWith(normalizedQuery));
-            const pathStartsWith =
-                normalizedQuery.length > 0 &&
-                normalizedPath.startsWith(normalizedQuery);
+            let rank = 2;
+            if (normalizedQuery.length > 0) {
+                if (preferFileName) {
+                    rank = normalizedFileName.startsWith(normalizedQuery)
+                        ? 0
+                        : normalizedPath.startsWith(normalizedQuery)
+                          ? 1
+                          : normalizedFileName.includes(normalizedQuery)
+                            ? 2
+                            : normalizedPath.includes(normalizedQuery)
+                              ? 3
+                              : normalizedTitle.startsWith(normalizedQuery)
+                                ? 4
+                                : 5;
+                } else {
+                    rank = normalizedTitle.startsWith(normalizedQuery)
+                        ? 0
+                        : normalizedPath.startsWith(normalizedQuery)
+                          ? 1
+                          : 2;
+                }
+            }
             const matches =
                 !normalizedQuery ||
                 (preferFileName
-                    ? normalizedFileName.includes(normalizedQuery)
+                    ? normalizedFileName.includes(normalizedQuery) ||
+                      normalizedPath.includes(normalizedQuery) ||
+                      normalizedTitle.includes(normalizedQuery)
                     : normalizedTitle.includes(normalizedQuery)) ||
                 normalizedPath.includes(normalizedQuery);
 
             return {
                 note,
                 matches,
-                rank: primaryStartsWith ? 0 : pathStartsWith ? 1 : 2,
+                rank,
             };
         })
         .filter((item) => item.matches)

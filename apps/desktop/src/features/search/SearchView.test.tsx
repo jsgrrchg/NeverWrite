@@ -1,10 +1,16 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
 import { SearchView } from "./SearchView";
 
 describe("SearchView", () => {
+    afterEach(() => {
+        useSettingsStore.setState({ fileTreeContentMode: "notes_only" });
+        mockInvoke().mockReset();
+    });
+
     it("restores the previous query and results when the search tab remounts", async () => {
         useVaultStore.setState({ vaultPath: "/vault" });
         mockInvoke().mockImplementation(async (command) => {
@@ -58,5 +64,27 @@ describe("SearchView", () => {
             await new Promise((resolve) => setTimeout(resolve, 350));
         });
         expect(mockInvoke()).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes file-oriented search preference when all-files mode is active", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useSettingsStore.setState({ fileTreeContentMode: "all_files" });
+        const invokeMock = mockInvoke().mockResolvedValue([]);
+
+        renderComponent(<SearchView tabId="search-tab-file-oriented" />);
+        const input = screen.getByPlaceholderText(
+            "Search files and notes... (e.g. tag:project content:react)",
+        );
+
+        fireEvent.change(input, { target: { value: "diagnostico" } });
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith("advanced_search", {
+            params: expect.objectContaining({
+                prefer_file_name: true,
+            }),
+        });
     });
 });

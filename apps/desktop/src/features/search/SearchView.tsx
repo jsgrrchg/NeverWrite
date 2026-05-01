@@ -117,6 +117,7 @@ export function SearchView({ tabId }: SearchViewProps) {
     const openPdf = useEditorStore((s) => s.openPdf);
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const entries = useVaultStore((s) => s.entries);
+    const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
 
     const parsed = useMemo(() => parseQuery(query), [query]);
@@ -146,7 +147,9 @@ export function SearchView({ tabId }: SearchViewProps) {
             setIsSearching(true);
             try {
                 const p = parseQuery(trimmed);
-                const params = toAdvancedSearchParams(p, sort, asc);
+                const params = toAdvancedSearchParams(p, sort, asc, {
+                    preferFileName: fileTreeContentMode === "all_files",
+                });
                 const res = await vaultInvoke<AdvancedSearchResultDto[]>(
                     "advanced_search",
                     { params },
@@ -166,7 +169,7 @@ export function SearchView({ tabId }: SearchViewProps) {
                 }
             }
         },
-        [],
+        [fileTreeContentMode],
     );
 
     useEffect(() => {

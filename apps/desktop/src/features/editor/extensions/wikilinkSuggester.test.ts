@@ -110,4 +110,55 @@ describe("wikilinkSuggester", () => {
             }),
         ]);
     });
+
+    it("shows Markdown note file names with extensions in all-files mode when extensions are enabled", async () => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeShowExtensions: true,
+        });
+        mockInvoke().mockResolvedValue([
+            {
+                id: "Analysis/April 2026/Journal/1-05-27",
+                title: "1-05-27",
+                subtitle: "Analysis/April 2026/Journal/1-05-27",
+                insert_text: "Analysis/April 2026/Journal/1-05-27",
+            },
+        ]);
+
+        const items = await getWikilinkSuggestions("notes/current", "1-05");
+
+        expect(items).toEqual([
+            expect.objectContaining({
+                kind: "note",
+                title: "1-05-27.md",
+                subtitle: "Analysis/April 2026/Journal/1-05-27",
+                insertText: "Analysis/April 2026/Journal/1-05-27",
+            }),
+        ]);
+    });
+
+    it("keeps Markdown note file extensions hidden in all-files mode when extensions are disabled", async () => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeShowExtensions: false,
+        });
+        mockInvoke().mockResolvedValue([
+            {
+                id: "notes/project-alpha",
+                title: "Roadmap",
+                subtitle: "notes/project-alpha",
+                insert_text: "notes/project-alpha",
+            },
+        ]);
+
+        const items = await getWikilinkSuggestions("notes/current", "alpha");
+
+        expect(items).toEqual([
+            expect.objectContaining({
+                kind: "note",
+                title: "project-alpha",
+                insertText: "notes/project-alpha",
+            }),
+        ]);
+    });
 });
