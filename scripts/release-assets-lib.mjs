@@ -30,6 +30,8 @@ export const PUBLIC_DOWNLOAD_VARIANTS = [
     },
 ];
 
+export const WEB_CLIPPER_RELEASE_BROWSERS = ["chrome", "firefox"];
+
 export function targetPlatformFamily(buildTarget) {
     if (buildTarget.endsWith("-apple-darwin")) {
         return "macos";
@@ -38,6 +40,16 @@ export function targetPlatformFamily(buildTarget) {
         return "windows";
     }
     throw new Error(`Unsupported build target "${buildTarget}".`);
+}
+
+export function buildWebClipperReleaseAssetName(version, browser) {
+    const normalizedVersion = normalizeReleaseVersion(version);
+    if (!WEB_CLIPPER_RELEASE_BROWSERS.includes(browser)) {
+        throw new Error(
+            `Unsupported web clipper browser "${browser}". Expected one of: ${WEB_CLIPPER_RELEASE_BROWSERS.join(", ")}.`,
+        );
+    }
+    return `NeverWrite-Web-Clipper-v${normalizedVersion}-${browser}-mv3.zip`;
 }
 
 export function runtimeBinaryFileName(buildTarget, baseName) {
@@ -252,6 +264,20 @@ export function buildReleaseBody(version, releaseNotes) {
         "",
         "Updater artifacts are also attached to the release for in-app updates.",
         "Files ending in `.app.tar.gz`, `.nsis.zip`, or `.sig` are internal updater assets and are not intended for manual installation.",
+        "",
+        "## Browser extensions",
+        "",
+        "Chrome MV3 manual install asset:",
+        "",
+        `\`${buildWebClipperReleaseAssetName(version, "chrome")}\``,
+        "",
+        "Download the zip, unzip it, open `chrome://extensions`, enable Developer mode, and choose `Load unpacked`.",
+        "",
+        "Firefox MV3 build artifact:",
+        "",
+        `\`${buildWebClipperReleaseAssetName(version, "firefox")}\``,
+        "",
+        "This artifact is attached for testing and release traceability. Normal Firefox Release/Beta installation requires a Mozilla-signed package through AMO or self-distribution signing.",
         "",
         "## Release notes",
         "",

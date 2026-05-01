@@ -323,11 +323,129 @@ jobs:
                   path: ${{ runner.temp }}/release-assets/feeds
                   if-no-files-found: error
 
+    build-web-clipper:
+        name: Build Browser Extensions
+        needs: prepare
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - name: Install web clipper dependencies
+              working-directory: apps/web-clipper
+              run: pnpm install --frozen-lockfile
+
+            - name: Validate web clipper
+              working-directory: apps/web-clipper
+              run: |
+                  pnpm run compile
+                  pnpm run test:run
+
+            - name: Build browser extension zips
+              working-directory: apps/web-clipper
+              run: |
+                  pnpm run build:chrome
+                  pnpm run build:firefox
+                  pnpm run zip:chrome
+                  pnpm run zip:firefox
+
+            - name: Stage browser extension release assets
+              shell: bash
+              run: |
+                  mkdir -p "$RUNNER_TEMP/web-clipper-assets"
+
+                  find_single_zip() {
+                    local browser="$1"
+                    local matches
+                    local match_count
+
+                    matches="$(find apps/web-clipper/.output -maxdepth 1 -type f -name "*-${browser}.zip" | sort)"
+                    match_count="$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')"
+                    if [[ "$match_count" != "1" ]]; then
+                      echo "Expected exactly one ${browser} extension zip, found ${match_count}." >&2
+                      exit 1
+                    fi
+                    printf '%s\n' "$matches"
+                  }
+
+                  validate_extension_zip() {
+                    local source_zip="$1"
+                    local browser="$2"
+
+                    unzip -l "$source_zip" | tee "$RUNNER_TEMP/${browser}-extension-zip.txt"
+                    unzip -l "$source_zip" | grep -q 'manifest.json'
+                    unzip -l "$source_zip" | grep -q 'background.js'
+                    MANIFEST_JSON="$(unzip -p "$source_zip" manifest.json)" ZIP_ENTRIES="$(unzip -Z1 "$source_zip")" BROWSER="$browser" node --input-type=module <<'EOF'
+                  const manifest = JSON.parse(process.env.MANIFEST_JSON);
+                  const zipEntries = new Set(process.env.ZIP_ENTRIES.split("\n").filter(Boolean));
+                  const normalizePath = (value) => value.replace(/^\/+/, "");
+                  const assertZipEntry = (value, description) => {
+                    if (!value) {
+                      return;
+                    }
+                    const normalized = normalizePath(value);
+                    if (!zipEntries.has(normalized)) {
+                      throw new Error(`${process.env.BROWSER} manifest references missing ${description}: ${value}`);
+                    }
+                  };
+
+                  if (manifest.manifest_version !== 3) {
+                    throw new Error(`Expected ${process.env.BROWSER} MV3 manifest, got ${manifest.manifest_version}`);
+                  }
+                  if (!manifest.name || !manifest.version) {
+                    throw new Error("Manifest must include name and version.");
+                  }
+                  assertZipEntry(manifest.action?.default_popup, "action popup");
+                  assertZipEntry(manifest.side_panel?.default_path, "side panel");
+                  assertZipEntry(manifest.background?.service_worker, "background service worker");
+                  for (const script of manifest.background?.scripts ?? []) {
+                    assertZipEntry(script, "background script");
+                  }
+                  for (const [index, contentScript] of (manifest.content_scripts ?? []).entries()) {
+                    for (const script of contentScript.js ?? []) {
+                      assertZipEntry(script, `content script ${index} JS`);
+                    }
+                    for (const stylesheet of contentScript.css ?? []) {
+                      assertZipEntry(stylesheet, `content script ${index} CSS`);
+                    }
+                  }
+                  EOF
+                  }
+
+                  chrome_zip="$(find_single_zip chrome)"
+                  firefox_zip="$(find_single_zip firefox)"
+
+                  validate_extension_zip "$chrome_zip" chrome
+                  validate_extension_zip "$firefox_zip" firefox
+
+                  cp "$chrome_zip" "$RUNNER_TEMP/web-clipper-assets/NeverWrite-Web-Clipper-${{ needs.prepare.outputs.tag }}-chrome-mv3.zip"
+                  cp "$firefox_zip" "$RUNNER_TEMP/web-clipper-assets/NeverWrite-Web-Clipper-${{ needs.prepare.outputs.tag }}-firefox-mv3.zip"
+
+            - name: Upload browser extension release assets
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-assets-web-clipper
+                  path: ${{ runner.temp }}/web-clipper-assets
+                  if-no-files-found: error
+
     publish-release:
         name: Publish GitHub Release
         needs:
             - prepare
             - build-target
+            - build-web-clipper
         runs-on: ubuntu-latest
 
         steps:

@@ -42,9 +42,6 @@ export default defineConfig({
                 description: `Open ${WEB_CLIPPER_BRAND_NAME}`,
             },
         },
-        side_panel: {
-            default_path: "/sidepanel.html",
-        },
         icons: {
             16: "/icons/icon-16.png",
             32: "/icons/icon-32.png",

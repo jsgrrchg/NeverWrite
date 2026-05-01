@@ -31,6 +31,16 @@ pnpm build
 - `dist/chrome-mv3/`
 - `dist/firefox-mv3/`
 
+## GitHub Release Install
+
+Chrome:
+
+Download `NeverWrite-Web-Clipper-vX.Y.Z-chrome-mv3.zip` from the GitHub Release, unzip it, then open `chrome://extensions`, enable Developer mode, and choose `Load unpacked`.
+
+Firefox:
+
+`NeverWrite-Web-Clipper-vX.Y.Z-firefox-mv3.zip` is attached as a Firefox MV3 build artifact for testing and release traceability. Normal Firefox Release/Beta installation requires a Mozilla-signed package through AMO or self-distribution signing.
+
 ## Unit Tests
 
 ```bash

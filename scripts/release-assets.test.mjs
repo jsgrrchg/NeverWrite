@@ -7,6 +7,7 @@ import path from "node:path";
 import {
     buildManualDownloadRows,
     buildReleaseBody,
+    buildWebClipperReleaseAssetName,
     collectBundleArtifacts,
     requiredStagedResourcePaths,
     runtimeBinaryFileName,
@@ -95,7 +96,32 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
     assert.match(body, /NeverWrite_0.2.0_macOS_Universal\.dmg/);
     assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
     assert.match(body, /internal updater assets/i);
+    assert.match(body, /## Browser extensions/);
+    assert.match(
+        body,
+        /NeverWrite-Web-Clipper-v0\.2\.0-chrome-mv3\.zip/,
+    );
+    assert.match(
+        body,
+        /NeverWrite-Web-Clipper-v0\.2\.0-firefox-mv3\.zip/,
+    );
+    assert.match(body, /Mozilla-signed package/i);
     assert.match(body, /## Release notes/);
+});
+
+test("buildWebClipperReleaseAssetName names browser extension release zips", () => {
+    assert.equal(
+        buildWebClipperReleaseAssetName("0.2.0", "chrome"),
+        "NeverWrite-Web-Clipper-v0.2.0-chrome-mv3.zip",
+    );
+    assert.equal(
+        buildWebClipperReleaseAssetName("v0.2.0", "firefox"),
+        "NeverWrite-Web-Clipper-v0.2.0-firefox-mv3.zip",
+    );
+    assert.throws(
+        () => buildWebClipperReleaseAssetName("0.2.0", "safari"),
+        /Unsupported web clipper browser/i,
+    );
 });
 
 test("collectBundleArtifacts locates macOS bundles and updater archives", () => {

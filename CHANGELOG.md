@@ -34,11 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [0.1.3] - 2026-05-01
+## [0.2.0] - 2026-05-01
 
 ### Added
 
-- Added **Codex subagents as first-class** sidebar sessions, so running agents stay available even after their chat tabs are closed.
+- Added GitHub Release downloads for the Web Clipper: a Chrome MV3 zip for manual install and a Firefox MV3 build artifact for testing/signing workflows.
+- Added **Codex subagents as first-class** sidebar sessions, so running agents stay available even after their chat tabs are closed. Please welcome your copernicos and galileos!
 - Added dedicated threads for each Codex subagent, **including independent review tabs and inline review for file changes made by each agent**.
 - Added **parent chat breadcrumbs with inline actions for opening subagent threads**, plus persistent parent-child grouping across restarts.
 
