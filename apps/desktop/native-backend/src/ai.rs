@@ -3911,6 +3911,230 @@ mod tests {
             .block_on(future)
     }
 
+    const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+    const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
+    const CODEX_ACP_PARENT_THREAD_ID_KEY: &str = "codexAcpParentThreadId";
+    const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
+    const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
+    const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+    const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
+    const CODEX_ACP_SUBAGENT_CREATED_EVENT: &str = "subagent_session_created";
+    const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
+    const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
+
+    fn subagent_session_created_meta() -> Meta {
+        Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_CREATED_EVENT),
+            ),
+            (
+                CODEX_ACP_PARENT_SESSION_ID_KEY.to_string(),
+                json!(PARENT_RUNTIME_SESSION_ID),
+            ),
+            (
+                CODEX_ACP_PARENT_THREAD_ID_KEY.to_string(),
+                json!("parent-thread-id"),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (
+                CODEX_ACP_CHILD_THREAD_ID_KEY.to_string(),
+                json!("child-thread-id"),
+            ),
+            (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Galileo")),
+            (CODEX_ACP_AGENT_ROLE_KEY.to_string(), json!("worker")),
+        ])
+    }
+
+    fn subagent_session_created_notification_fixture() -> SessionNotification {
+        SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from(
+                "Spawning worker agent",
+            ))),
+        )
+        .meta(subagent_session_created_meta())
+    }
+
+    fn subagent_child_message_notification_fixture() -> SessionNotification {
+        SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Child agent output",
+            ))),
+        )
+    }
+
+    fn insert_test_managed_session(
+        session_state: &Arc<Mutex<NativeAiInner>>,
+        runtime_id: &str,
+        session_id: &str,
+    ) {
+        session_state.lock().unwrap().sessions.insert(
+            session_id.to_string(),
+            ManagedAiSession {
+                session: new_session_with_id(runtime_id, session_id.to_string()).unwrap(),
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+            },
+        );
+    }
+
+    #[test]
+    fn acp_subagent_session_created_fixture_preserves_notification_meta() {
+        let notification = subagent_session_created_notification_fixture();
+        let encoded = serde_json::to_value(&notification).unwrap();
+
+        assert_eq!(
+            encoded.get("sessionId").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            encoded
+                .get("_meta")
+                .and_then(|meta| meta.get(CODEX_ACP_EVENT_TYPE_KEY))
+                .and_then(Value::as_str),
+            Some(CODEX_ACP_SUBAGENT_CREATED_EVENT)
+        );
+        assert_eq!(
+            encoded
+                .get("_meta")
+                .and_then(|meta| meta.get(CODEX_ACP_PARENT_SESSION_ID_KEY))
+                .and_then(Value::as_str),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+
+        let decoded: SessionNotification = serde_json::from_value(encoded).unwrap();
+        let decoded_meta = decoded.meta.expect("subagent metadata should round-trip");
+        assert_eq!(
+            decoded_meta
+                .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
+                .and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+    }
+
+    #[test]
+    fn acp_subagent_fixtures_document_target_child_routing_contract() {
+        let created = subagent_session_created_notification_fixture();
+        let child_update = subagent_child_message_notification_fixture();
+        let meta = created.meta.as_ref().expect("subagent creation meta");
+
+        assert_eq!(
+            meta.get(CODEX_ACP_EVENT_TYPE_KEY).and_then(Value::as_str),
+            Some(CODEX_ACP_SUBAGENT_CREATED_EVENT)
+        );
+        assert_eq!(
+            meta.get(CODEX_ACP_PARENT_SESSION_ID_KEY)
+                .and_then(Value::as_str),
+            Some(PARENT_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(created.session_id.0.as_ref(), CHILD_RUNTIME_SESSION_ID);
+        assert_eq!(child_update.session_id.0.as_ref(), CHILD_RUNTIME_SESSION_ID);
+    }
+
+    #[test]
+    fn subagent_session_created_metadata_does_not_create_child_session_yet() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(
+            client.session_notification(subagent_session_created_notification_fixture()),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("current baseline starts the raw child thinking stream");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_THINKING_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("current baseline emits the raw child thinking delta");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_THINKING_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+
+        let sessions = &session_state.lock().unwrap().sessions;
+        assert!(sessions.contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(!sessions.contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn child_runtime_updates_do_not_mutate_parent_message_state() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(
+            client.session_notification(subagent_child_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child message started event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child message delta event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+
+        let message_ids = client.message_ids.lock().unwrap();
+        assert!(message_ids.contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!message_ids.contains_key(PARENT_RUNTIME_SESSION_ID));
+    }
+
     #[test]
     fn setup_status_accepts_custom_acp_binary_and_auth_env() {
         let (event_tx, _event_rx) = mpsc::channel();
