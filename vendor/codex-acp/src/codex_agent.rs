@@ -14,8 +14,8 @@ use acp::{Agent, Client, ConnectTo, ConnectionTo, Error};
 use agent_client_protocol as acp;
 use codex_config::{McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    NewThread, RolloutRecorder, SortDirection, ThreadManager, ThreadSortKey, config::Config,
-    find_thread_path_by_id_str, parse_cursor,
+    NewThread, RolloutRecorder, SortDirection, ThreadConfigSnapshot, ThreadManager, ThreadSortKey,
+    config::Config, find_thread_path_by_id_str, parse_cursor,
 };
 use codex_exec_server::{EnvironmentManager, EnvironmentManagerArgs, ExecServerRuntimePaths};
 use codex_login::{
@@ -30,11 +30,15 @@ use codex_protocol::{
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::subagents;
 use crate::thread::Thread;
 
 /// The Codex implementation of the ACP Agent.
@@ -49,11 +53,13 @@ pub struct CodexAgent {
     /// The underlying codex configuration
     config: Config,
     /// Thread manager for handling sessions
-    thread_manager: ThreadManager,
+    thread_manager: Arc<ThreadManager>,
     /// Active sessions mapped by `SessionId`
     sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
     /// Session working directories for filesystem sandboxing
     session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>>,
+    /// Ensures we only attach one child-thread observer per ACP connection.
+    subagent_watcher_started: AtomicBool,
 }
 
 const SESSION_LIST_PAGE_SIZE: usize = 25;
@@ -71,7 +77,7 @@ impl CodexAgent {
 
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
         let session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>> = Arc::default();
-        let thread_manager = ThreadManager::new(
+        let thread_manager = Arc::new(ThreadManager::new(
             &config,
             auth_manager.clone(),
             SessionSource::Unknown,
@@ -83,7 +89,7 @@ impl CodexAgent {
                 ExecServerRuntimePaths::new(std::env::current_exe()?, codex_linux_sandbox_exe)?,
             ))),
             None,
-        );
+        ));
         Ok(Self {
             auth_manager,
             client_capabilities,
@@ -91,6 +97,7 @@ impl CodexAgent {
             thread_manager,
             sessions: Arc::default(),
             session_roots,
+            subagent_watcher_started: AtomicBool::new(false),
         })
     }
 
@@ -106,7 +113,8 @@ impl CodexAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
-                    async move |request: InitializeRequest, responder, _cx| {
+                    async move |request: InitializeRequest, responder, cx: ConnectionTo<Client>| {
+                        agent.ensure_subagent_watcher(cx)?;
                         responder.respond_with_result(agent.initialize(request).await)
                     }
                 },
@@ -300,6 +308,57 @@ impl CodexAgent {
         Ok(())
     }
 
+    fn ensure_subagent_watcher(&self, cx: ConnectionTo<Client>) -> acp::Result<()> {
+        if self.subagent_watcher_started.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let thread_manager = self.thread_manager.clone();
+        let sessions = self.sessions.clone();
+        let session_roots = self.session_roots.clone();
+        let auth_manager = self.auth_manager.clone();
+        let models_manager = self.thread_manager.get_models_manager();
+        let client_capabilities = self.client_capabilities.clone();
+        let base_config = self.config.clone();
+
+        let task_cx = cx.clone();
+        cx.spawn(async move {
+            let mut thread_created_rx = thread_manager.subscribe_thread_created();
+
+            loop {
+                match thread_created_rx.recv().await {
+                    Ok(thread_id) => {
+                        if let Err(error) = register_subagent_thread(
+                            thread_id,
+                            thread_manager.clone(),
+                            sessions.clone(),
+                            session_roots.clone(),
+                            auth_manager.clone(),
+                            models_manager.clone(),
+                            client_capabilities.clone(),
+                            base_config.clone(),
+                            task_cx.clone(),
+                        )
+                        .await
+                        {
+                            warn!(
+                                "Failed to register spawned Codex subagent thread {thread_id}: {error:?}"
+                            );
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("Skipped {skipped} Codex subagent thread creation notifications");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
     /// Build a session config from base config, working directory, and MCP servers.
     /// This is shared between `new_session` and `load_session`.
     fn build_session_config(
@@ -428,6 +487,95 @@ impl CodexAgent {
             .map_err(Error::into_internal_error)?;
         Ok(())
     }
+
+    fn sync_config_with_thread_snapshot(
+        config: &mut Config,
+        snapshot: &ThreadConfigSnapshot,
+    ) -> Result<(), Error> {
+        config.cwd = snapshot.cwd.clone();
+        config.model = Some(snapshot.model.clone());
+        config.model_provider_id = snapshot.model_provider_id.clone();
+        config.model_reasoning_effort = snapshot.reasoning_effort;
+        config.service_tier = snapshot.service_tier;
+        config
+            .permissions
+            .approval_policy
+            .set(snapshot.approval_policy)
+            .map_err(Error::into_internal_error)?;
+        config
+            .permissions
+            .sandbox_policy
+            .set(snapshot.sandbox_policy.clone())
+            .map_err(Error::into_internal_error)?;
+        Ok(())
+    }
+}
+
+#[expect(clippy::too_many_arguments)]
+async fn register_subagent_thread(
+    child_thread_id: ThreadId,
+    thread_manager: Arc<ThreadManager>,
+    sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
+    session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>>,
+    auth_manager: Arc<AuthManager>,
+    models_manager: Arc<dyn crate::thread::ModelsManagerImpl>,
+    client_capabilities: Arc<Mutex<ClientCapabilities>>,
+    mut config: Config,
+    cx: ConnectionTo<Client>,
+) -> Result<(), Error> {
+    let child_thread = thread_manager
+        .get_thread(child_thread_id)
+        .await
+        .map_err(|error| Error::internal_error().data(error.to_string()))?;
+    let snapshot = child_thread.config_snapshot().await;
+    let Some(registration) = subagents::registration_for_thread(child_thread_id, &snapshot) else {
+        return Ok(());
+    };
+
+    if sessions
+        .lock()
+        .unwrap()
+        .contains_key(&registration.child_session_id)
+    {
+        return Ok(());
+    }
+
+    CodexAgent::sync_config_with_thread_snapshot(&mut config, &snapshot)?;
+    let thread = Arc::new(Thread::new(
+        registration.child_session_id.clone(),
+        child_thread,
+        auth_manager,
+        models_manager,
+        client_capabilities,
+        config.clone(),
+        cx.clone(),
+    ));
+
+    {
+        let mut sessions = sessions.lock().unwrap();
+        if sessions.contains_key(&registration.child_session_id) {
+            return Ok(());
+        }
+        sessions.insert(registration.child_session_id.clone(), thread);
+    }
+
+    let session_root = session_roots
+        .lock()
+        .unwrap()
+        .get(&registration.parent_session_id)
+        .cloned()
+        .unwrap_or_else(|| config.cwd.to_path_buf());
+    session_roots
+        .lock()
+        .unwrap()
+        .insert(registration.child_session_id.clone(), session_root);
+
+    cx.send_notification(subagents::session_created_notification(
+        &registration,
+        &snapshot,
+    ))?;
+
+    Ok(())
 }
 
 impl CodexAgent {
