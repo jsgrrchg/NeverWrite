@@ -10,11 +10,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
-    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, FileSystemCapabilities,
-    Implementation, InitializeRequest, Meta, NewSessionRequest, PermissionOption,
-    PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
+    FileSystemCapabilities, Implementation, InitializeRequest, Meta, NewSessionRequest,
+    PermissionOption, PermissionOptionKind, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
     SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -492,14 +492,43 @@ impl NativeAi {
             .to_string();
 
         validate_runtime_id(&runtime_id)?;
+        let cwd = resolve_auth_terminal_cwd(args.get("vaultPath").and_then(Value::as_str))?;
+
+        if runtime_id == CODEX_RUNTIME_ID && method_id == "chatgpt" {
+            let setup = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?
+                .setup
+                .get(&runtime_id)
+                .cloned()
+                .unwrap_or_default();
+            let spec = acp_process_spec(&runtime_id, &setup, cwd)?;
+            run_acp_auth(spec, method_id.clone())?;
+
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            let setup = state.setup.entry(runtime_id.clone()).or_default();
+            setup.auth_method = Some(method_id.clone());
+            setup.auth_ready = true;
+            setup.message = None;
+            return Ok(json!(setup_status_for(&runtime_id, setup.clone())?));
+        }
+
         let mut state = self
             .inner
             .lock()
             .map_err(|error| format!("Internal AI state error: {error}"))?;
         let setup = state.setup.entry(runtime_id.clone()).or_default();
         setup.auth_method = Some(method_id.clone());
-        setup.auth_ready = false;
-        setup.message = Some(ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE.to_string());
+        setup.auth_ready = auth_method_has_local_config(setup, &method_id);
+        setup.message = if setup.auth_ready {
+            None
+        } else {
+            Some(ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE.to_string())
+        };
         Ok(json!(setup_status_for(&runtime_id, setup.clone())?))
     }
 
@@ -1889,6 +1918,95 @@ fn start_acp_session(
             }
         })??;
     Ok(CreatedAcpSession { session, handle })
+}
+
+fn run_acp_auth(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
+    let (result_tx, result_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let runtime = match Builder::new_current_thread().enable_all().build() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let _ = result_tx.send(Err(format!("Failed to start ACP runtime: {error}")));
+                return;
+            }
+        };
+        let result = runtime.block_on(run_acp_auth_inner(spec, method_id));
+        let _ = result_tx.send(result);
+    });
+
+    result_rx
+        .recv()
+        .map_err(|_| "AI runtime authentication disconnected before responding.".to_string())?
+}
+
+async fn run_acp_auth_inner(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(&spec.cwd);
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::null());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+
+    let result = Client
+        .builder()
+        .name("neverwrite")
+        .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
+            let auth_result = tokio::select! {
+                response = async {
+                    connection
+                        .send_request(
+                            InitializeRequest::new(ProtocolVersion::LATEST)
+                                .client_capabilities(
+                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
+                                )
+                                .client_info(
+                                    Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    connection
+                        .send_request(AuthenticateRequest::new(method_id))
+                        .block_task()
+                        .await?;
+                    Ok::<(), agent_client_protocol::Error>(())
+                } => response,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(agent_client_protocol::Error::internal_error().data(message));
+                }
+            };
+
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            auth_result
+        })
+        .await;
+
+    result.map_err(|error| error.to_string())
 }
 
 async fn run_acp_actor(
@@ -3512,6 +3630,22 @@ fn inherited_auth_method(runtime_id: &str) -> Option<String> {
     }
 }
 
+fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> bool {
+    match method_id {
+        "codex-api-key" => setup.env.get("CODEX_API_KEY").is_some_and(|value| !value.is_empty()),
+        "openai-api-key" => setup.env.get("OPENAI_API_KEY").is_some_and(|value| !value.is_empty()),
+        "use_gemini" => {
+            setup.env.get("GEMINI_API_KEY").is_some_and(|value| !value.is_empty())
+                || setup
+                    .env
+                    .get("GOOGLE_API_KEY")
+                    .is_some_and(|value| !value.is_empty())
+        }
+        "gateway" => setup.has_gateway_config,
+        _ => false,
+    }
+}
+
 fn env_secret_present(key: &str) -> bool {
     std::env::var_os(key)
         .map(|value| !value.to_string_lossy().trim().is_empty())
@@ -4757,6 +4891,71 @@ mod tests {
             status.get("onboarding_required").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn start_auth_preserves_configured_api_key_auth() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("fake-acp");
+        fs::write(&runtime, "#!/bin/sh\n").unwrap();
+
+        ai.update_setup(&json!({
+            "runtimeId": CODEX_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": runtime,
+                "openai_api_key": { "action": "set", "value": "test-key" }
+            }
+        }))
+        .expect("setup should update");
+
+        let status = ai
+            .start_auth(&json!({
+                "input": {
+                    "runtimeId": CODEX_RUNTIME_ID,
+                    "methodId": "openai-api-key"
+                },
+                "vaultPath": temp.path()
+            }))
+            .expect("configured API key auth should not require interactive login");
+
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("openai-api-key")
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(status.get("message").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn start_auth_chatgpt_requires_a_resolved_codex_runtime() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+
+        ai.update_setup(&json!({
+            "runtimeId": CODEX_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": temp.path().join("missing-codex-acp")
+            }
+        }))
+        .expect("setup should update");
+
+        let error = ai
+            .start_auth(&json!({
+                "input": {
+                    "runtimeId": CODEX_RUNTIME_ID,
+                    "methodId": "chatgpt"
+                },
+                "vaultPath": temp.path()
+            }))
+            .expect_err("ChatGPT auth should fail before pretending it connected");
+
+        assert!(error.contains("No Codex runtime binary is configured."));
     }
 
     #[test]
