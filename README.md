@@ -1,6 +1,11 @@
+
 # NeverWrite
 
 <img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
+
+**Note**: To everyone who has starred the repo: thank you. You’ve made me genuinely happy, I published this 3 days ago and I’ll keep improving this app for the long run. If you’re a Linux developer, I’d really appreciate your help getting the app fully up and running on Linux. I’m still a bit lost with the different package formats and how to wire them all into the GitHub Actions release pipeline, so a PR on this front would be amazing. Next, I’ll be focusing on adding Cron jobs — similar in spirit to OpenClaw — plus hardening, modularizing some of the larger files, and fixing edge cases in the live Markdown preview. Obsidian, one of my favorite apps, has years of patches behind its editor, and getting CodeMirror to render Markdown, hide source decorations, and stay fast is surprisingly difficult. If you run into rendering bugs or weird editor behavior, please help me find and fix them. Thank you again for the support.
+
+----
 
 NeverWrite is a local-first knowledge workspace for people who need to handle workflows with multiple parallel agents and subagents. Built like a code editor, but for markdown. It has inline review changes, like Cursor and others. Please help me test it!
 
