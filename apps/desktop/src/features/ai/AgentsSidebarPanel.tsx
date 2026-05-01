@@ -22,6 +22,10 @@ import {
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../app/utils/safeStorage";
+import {
     createNewChatInWorkspace,
     openChatHistoryInWorkspace,
     openChatSessionInWorkspace,
@@ -32,6 +36,11 @@ import {
     getSessionTitleText,
     getSessionUpdatedAt,
 } from "./sessionPresentation";
+import {
+    buildAiSessionHierarchyGroups,
+    compareHierarchyGroupsByUpdatedAtDesc,
+    type AiSessionHierarchyGroup,
+} from "./sessionHierarchy";
 import { useChatStore } from "./store/chatStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import type { AIChatSession } from "./types";
@@ -49,6 +58,9 @@ import { AgentsSidebarSection } from "./components/AgentsSidebarSection";
 // conversations still open as center editor tabs). Groups sessions into
 // Pinned / Open / All, supports inline rename, pin toggle and a right-click
 // context menu for rename/pin/delete.
+
+const AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY =
+    "neverwrite.ai.agentsSidebar.collapsedParents";
 
 type ActivitySession = Pick<AIChatSession, "status">;
 
@@ -96,10 +108,6 @@ function formatAgentTimestamp(timestamp: number): string {
     }).format(timestamp);
 }
 
-function compareByUpdatedAtDesc(a: AIChatSession, b: AIChatSession) {
-    return getSessionUpdatedAt(b) - getSessionUpdatedAt(a);
-}
-
 function getRuntimeMenuLabel(name: string) {
     return name.trim().replace(/ ACP$/, "");
 }
@@ -108,24 +116,62 @@ function isSessionWorking(session: AIChatSession) {
     return deriveActivityIndicator(session)?.tone === "working";
 }
 
-function compareOpenSessions(
-    a: AIChatSession,
-    b: AIChatSession,
+function compareOpenHierarchyGroups(
+    a: AiSessionHierarchyGroup,
+    b: AiSessionHierarchyGroup,
     workingOrder: ReadonlyMap<string, number>,
 ) {
-    const aOrder = workingOrder.get(a.sessionId);
-    const bOrder = workingOrder.get(b.sessionId);
+    const aOrder = getGroupWorkingOrder(a, workingOrder);
+    const bOrder = getGroupWorkingOrder(b, workingOrder);
     const aWorking = aOrder !== undefined;
     const bWorking = bOrder !== undefined;
 
     if (aWorking && bWorking) {
-        // Keep actively streaming agents from reshuffling on every update.
         return aOrder - bOrder;
     }
     if (aWorking !== bWorking) {
         return aWorking ? -1 : 1;
     }
-    return compareByUpdatedAtDesc(a, b);
+    return compareHierarchyGroupsByUpdatedAtDesc(a, b);
+}
+
+function getGroupWorkingOrder(
+    group: AiSessionHierarchyGroup,
+    workingOrder: ReadonlyMap<string, number>,
+) {
+    let earliest: number | undefined;
+    for (const sessionId of group.sessionIds) {
+        const order = workingOrder.get(sessionId);
+        if (order === undefined) continue;
+        earliest = earliest === undefined ? order : Math.min(earliest, order);
+    }
+    return earliest;
+}
+
+function loadCollapsedParentSessionIds() {
+    try {
+        const raw = safeStorageGetItem(AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY);
+        const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+        if (!Array.isArray(parsed)) return new Set<string>();
+        return new Set(parsed.filter((id): id is string => typeof id === "string"));
+    } catch {
+        return new Set<string>();
+    }
+}
+
+function persistCollapsedParentSessionIds(ids: ReadonlySet<string>) {
+    try {
+        safeStorageSetItem(
+            AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY,
+            JSON.stringify([...ids]),
+        );
+    } catch {
+        // Sidebar collapse state is a convenience preference; ignore quota failures.
+    }
+}
+
+function isSubagentSession(session: AIChatSession) {
+    return Boolean(session.parentSessionId?.trim());
 }
 
 function scaleMetric(base: number, scale: number, min: number) {
@@ -224,24 +270,9 @@ export function AgentsSidebarPanel() {
         [sessionOrder, sessionsById],
     );
 
-    // Prune pins that no longer correspond to a live session on load/update.
-    useEffect(() => {
-        reconcilePinned(sessions.map((session) => session.sessionId));
-    }, [reconcilePinned, sessions]);
-
     const [filterText, setFilterText] = useState("");
     const normalizedFilter = filterText.trim().toLowerCase();
     const hasFilter = normalizedFilter.length > 0;
-
-    const filteredSessions = useMemo(() => {
-        if (!hasFilter) return sessions;
-        return sessions.filter((session) => {
-            const title = getSessionTitleText(session).toLowerCase();
-            if (title.includes(normalizedFilter)) return true;
-            const preview = getSessionPreview(session).toLowerCase();
-            return preview.includes(normalizedFilter);
-        });
-    }, [hasFilter, normalizedFilter, sessions]);
 
     const workingOrderRef = useRef<Map<string, number>>(new Map());
     const workingCounterRef = useRef(0);
@@ -278,46 +309,70 @@ export function AgentsSidebarPanel() {
         }
     }, [sessions]);
 
-    const { pinnedSessions, openSessions, otherSessions } = useMemo(() => {
-        const pinned: AIChatSession[] = [];
-        const open: AIChatSession[] = [];
-        const other: AIChatSession[] = [];
-        for (const session of filteredSessions) {
-            if (pinnedEntries[session.sessionId]) {
-                pinned.push(session);
-            } else if (openSessionIds.has(session.sessionId)) {
-                open.push(session);
+    const pinnedRootIds = useMemo(
+        () => new Set(Object.keys(pinnedEntries)),
+        [pinnedEntries],
+    );
+    const hierarchy = useMemo(
+        () =>
+            buildAiSessionHierarchyGroups({
+                sessions,
+                normalizedFilter,
+                openSessionIds,
+                pinnedSessionIds: pinnedRootIds,
+            }),
+        [normalizedFilter, openSessionIds, pinnedRootIds, sessions],
+    );
+
+    // Pins are root-owned: legacy child pins are pruned so subagents stay under
+    // their parent instead of jumping into a separate Pinned bucket.
+    useEffect(() => {
+        reconcilePinned(hierarchy.rootSessionIds);
+    }, [hierarchy.rootSessionIds, reconcilePinned]);
+
+    const { pinnedGroups, openGroups, otherGroups } = useMemo(() => {
+        const pinned: AiSessionHierarchyGroup[] = [];
+        const open: AiSessionHierarchyGroup[] = [];
+        const other: AiSessionHierarchyGroup[] = [];
+        for (const group of hierarchy.groups) {
+            if (group.isPinnedRoot) {
+                pinned.push(group);
+            } else if (group.hasOpenSession) {
+                open.push(group);
             } else {
-                other.push(session);
+                other.push(group);
             }
         }
         pinned.sort((a, b) => {
-            const aPinned = pinnedEntries[a.sessionId]?.pinnedAt ?? 0;
-            const bPinned = pinnedEntries[b.sessionId]?.pinnedAt ?? 0;
+            const aPinned = pinnedEntries[a.root.sessionId]?.pinnedAt ?? 0;
+            const bPinned = pinnedEntries[b.root.sessionId]?.pinnedAt ?? 0;
             if (bPinned !== aPinned) return bPinned - aPinned;
-            return compareByUpdatedAtDesc(a, b);
+            return compareHierarchyGroupsByUpdatedAtDesc(a, b);
         });
         open.sort((a, b) =>
-            compareOpenSessions(a, b, workingOrderRef.current),
+            compareOpenHierarchyGroups(a, b, workingOrderRef.current),
         );
-        other.sort(compareByUpdatedAtDesc);
+        other.sort(compareHierarchyGroupsByUpdatedAtDesc);
         return {
-            pinnedSessions: pinned,
-            openSessions: open,
-            otherSessions: other,
+            pinnedGroups: pinned,
+            openGroups: open,
+            otherGroups: other,
         };
         // workingOrderRevision keeps this memo in sync with the ref-backed map.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [filteredSessions, openSessionIds, pinnedEntries, workingOrderRevision]);
+    }, [hierarchy.groups, pinnedEntries, workingOrderRevision]);
 
     const totalCount = sessions.length;
-    const filteredCount = filteredSessions.length;
+    const filteredCount = hierarchy.groups.reduce(
+        (count, group) => count + 1 + group.visibleChildren.length,
+        0,
+    );
     // Only decorate Open/All headers when there is more than one non-pinned
     // section or when Pinned is already showing — otherwise a single "Open"
     // header above a lonely list reads as noise.
     const showOpenAllHeaders =
-        pinnedSessions.length > 0 ||
-        (openSessions.length > 0 && otherSessions.length > 0);
+        pinnedGroups.length > 0 ||
+        (openGroups.length > 0 && otherGroups.length > 0);
 
     const {
         editingKey,
@@ -395,8 +450,37 @@ export function AgentsSidebarPanel() {
         () => buildAgentsSidebarMetrics(agentsSidebarScale),
         [agentsSidebarScale],
     );
+    const [collapsedParentIds, setCollapsedParentIds] = useState(
+        loadCollapsedParentSessionIds,
+    );
 
-    const renderItem = (session: AIChatSession) => {
+    const toggleCollapsedParent = useCallback((sessionId: string) => {
+        setCollapsedParentIds((current) => {
+            const next = new Set(current);
+            if (next.has(sessionId)) {
+                next.delete(sessionId);
+            } else {
+                next.add(sessionId);
+            }
+            persistCollapsedParentSessionIds(next);
+            return next;
+        });
+    }, []);
+
+    const renderItem = (
+        session: AIChatSession,
+        options?: {
+            depth?: number;
+            childCount?: number;
+            isCollapsed?: boolean;
+            canPin?: boolean;
+            canRename?: boolean;
+            onToggleCollapse?: () => void;
+        },
+    ) => {
+        const isSubagent = isSubagentSession(session);
+        const canPin = options?.canPin ?? !isSubagent;
+        const canRename = options?.canRename ?? !isSubagent;
         const isPinned = Boolean(pinnedEntries[session.sessionId]);
         const indicator = deriveActivityIndicator(session);
         const updatedAt = getSessionUpdatedAt(session);
@@ -407,6 +491,9 @@ export function AgentsSidebarPanel() {
             session.runtimeId,
             runtimeDescriptor?.runtime.name,
         );
+        const metaLabel = isSubagent
+            ? `${getRuntimeMenuLabel(runtimeLabel)} agent`
+            : runtimeLabel;
         const messageCount =
             session.persistedMessageCount ?? session.messages.length;
         const timestampLabel = indicator
@@ -421,12 +508,18 @@ export function AgentsSidebarPanel() {
                 session={session}
                 title={getSessionTitle(session)}
                 preview={getSessionPreview(session)}
-                runtimeLabel={runtimeLabel}
+                runtimeLabel={metaLabel}
+                badgeLabel={isSubagent ? "Agent" : undefined}
                 messageCount={messageCount}
                 timestampLabel={timestampLabel}
                 isActive={activeSidebarId === session.sessionId}
-                isPinned={isPinned}
+                isPinned={canPin && isPinned}
+                canPin={canPin}
+                canRename={canRename}
+                depth={options?.depth ?? 0}
                 indicator={indicator}
+                childCount={options?.childCount ?? 0}
+                isCollapsed={options?.isCollapsed ?? false}
                 isRenaming={editingKey === session.sessionId}
                 renameValue={editValue}
                 onRenameChange={setEditValue}
@@ -436,11 +529,54 @@ export function AgentsSidebarPanel() {
                 onOpen={() => {
                     void openChatSessionInWorkspace(session.sessionId);
                 }}
-                onStartRename={() => handleStartRename(session)}
-                onTogglePin={() => togglePinnedChat(session.sessionId)}
+                onStartRename={() => {
+                    if (canRename) handleStartRename(session);
+                }}
+                onTogglePin={() => {
+                    if (canPin) togglePinnedChat(session.sessionId);
+                }}
+                onToggleCollapse={options?.onToggleCollapse}
                 onContextMenu={(event) => handleContextMenu(event, session)}
                 metrics={metrics.item}
             />
+        );
+    };
+
+    const renderGroup = (group: AiSessionHierarchyGroup) => {
+        const collapsed = collapsedParentIds.has(group.root.sessionId);
+        const forceChildrenVisible =
+            hasFilter ||
+            group.visibleChildren.some(
+                (child) =>
+                    child.sessionId === activeSidebarId ||
+                    isSessionWorking(child),
+            );
+        const showChildren =
+            group.visibleChildren.length > 0 &&
+            (!collapsed || forceChildrenVisible);
+
+        return (
+            <div key={group.root.sessionId} className="flex flex-col">
+                {renderItem(group.root, {
+                    childCount: group.children.length,
+                    isCollapsed: collapsed && !forceChildrenVisible,
+                    onToggleCollapse:
+                        group.children.length > 0
+                            ? () => toggleCollapsedParent(group.root.sessionId)
+                            : undefined,
+                    canPin: !group.isDetachedAgent,
+                    canRename: !group.isDetachedAgent,
+                })}
+                {showChildren
+                    ? group.visibleChildren.map((child) =>
+                          renderItem(child, {
+                              depth: 1,
+                              canPin: false,
+                              canRename: false,
+                          }),
+                      )
+                    : null}
+            </div>
         );
     };
 
@@ -546,26 +682,26 @@ export function AgentsSidebarPanel() {
                     <>
                         <AgentsSidebarSection
                             title="Pinned"
-                            count={pinnedSessions.length}
+                            count={pinnedGroups.length}
                             headerMetrics={metrics.header}
                         >
-                            {pinnedSessions.map(renderItem)}
+                            {pinnedGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                         <AgentsSidebarSection
                             title="Open"
-                            count={openSessions.length}
+                            count={openGroups.length}
                             showHeader={showOpenAllHeaders}
                             headerMetrics={metrics.header}
                         >
-                            {openSessions.map(renderItem)}
+                            {openGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                         <AgentsSidebarSection
                             title="All"
-                            count={otherSessions.length}
+                            count={otherGroups.length}
                             showHeader={showOpenAllHeaders}
                             headerMetrics={metrics.header}
                         >
-                            {otherSessions.map(renderItem)}
+                            {otherGroups.map(renderGroup)}
                         </AgentsSidebarSection>
                     </>
                 )}
@@ -580,11 +716,13 @@ export function AgentsSidebarPanel() {
                             label: pinnedEntries[contextMenu.payload.sessionId]
                                 ? "Unpin from Sidebar"
                                 : "Pin to Sidebar",
+                            disabled: isSubagentSession(contextMenu.payload),
                             action: () =>
                                 togglePinnedChat(contextMenu.payload.sessionId),
                         },
                         {
                             label: "Rename",
+                            disabled: isSubagentSession(contextMenu.payload),
                             action: () =>
                                 handleStartRename(contextMenu.payload),
                         },

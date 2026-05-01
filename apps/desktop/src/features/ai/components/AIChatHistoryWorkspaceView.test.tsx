@@ -184,4 +184,119 @@ describe("AIChatHistoryWorkspaceView", () => {
             expect(deleteSession).toHaveBeenCalledWith("session-a");
         });
     });
+
+    it("shows historical subagents under their parent and restores the selected child", async () => {
+        const parent = createSession("parent-session", "Parent strategy", {
+            persistedUpdatedAt: 20,
+        });
+        const child = createSession("child-session", "Child execution", {
+            parentSessionId: parent.historySessionId,
+            persistedUpdatedAt: 10,
+        });
+        const loadSession = vi.fn().mockResolvedValue(undefined);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            loadSession,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "codex-acp",
+                        name: "Codex ACP",
+                        description: "",
+                        capabilities: [],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [child.sessionId]: child,
+                [parent.sessionId]: parent,
+            },
+            sessionOrder: [child.sessionId, parent.sessionId],
+        }));
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+
+        const parentRowTitle = (await screen.findAllByText(
+            "Parent strategy",
+        ))[0]!;
+        const childRowTitle = screen.getAllByText("Child execution")[0]!;
+        expect(
+            parentRowTitle.compareDocumentPosition(childRowTitle) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+
+        fireEvent.click(childRowTitle);
+        fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+        await waitFor(() => {
+            expect(loadSession).toHaveBeenCalledWith("child-session");
+        });
+    });
+
+    it("keeps parent context visible when history search matches only a subagent", async () => {
+        const parent = createSession("parent-session", "Parent strategy", {
+            persistedUpdatedAt: 20,
+        });
+        const child = createSession("child-session", "Galileo telemetry", {
+            parentSessionId: parent.historySessionId,
+            persistedUpdatedAt: 10,
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [],
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+        }));
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+
+        fireEvent.change(screen.getByPlaceholderText("Search chats…"), {
+            target: { value: "galileo" },
+        });
+
+        expect(await screen.findAllByText("Parent strategy")).not.toHaveLength(
+            0,
+        );
+        expect(screen.getAllByText("Galileo telemetry")).not.toHaveLength(0);
+    });
+
+    it("does not start inline rename for historical subagents", async () => {
+        const parent = createSession("parent-session", "Parent strategy", {
+            persistedUpdatedAt: 20,
+        });
+        const child = createSession("child-session", "Child execution", {
+            parentSessionId: parent.historySessionId,
+            persistedUpdatedAt: 10,
+        });
+        const renameSession = vi.fn();
+
+        useChatStore.setState((state) => ({
+            ...state,
+            renameSession,
+            runtimes: [],
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+        }));
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+
+        const childRowTitle = (await screen.findAllByText(
+            "Child execution",
+        ))[0]!;
+        fireEvent.doubleClick(childRowTitle);
+
+        expect(screen.queryByDisplayValue("Child execution")).toBeNull();
+        expect(renameSession).not.toHaveBeenCalled();
+    });
 });

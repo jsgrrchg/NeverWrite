@@ -41,7 +41,11 @@ import {
     appendScreenshotPart,
     createEmptyComposerParts,
 } from "../composerParts";
-import { getSessionTitle, getSessionTitleText } from "../sessionPresentation";
+import {
+    findSessionForHistorySelection,
+    getSessionTitle,
+    getSessionTitleText,
+} from "../sessionPresentation";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -70,6 +74,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     // Session data
     const {
         session,
+        parentSession,
         composerParts,
         queuedMessages,
         queuedMessageEdit,
@@ -81,8 +86,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 ? (state.sessionsById[sessionId] ?? null)
                 : null;
             const sid = s?.sessionId ?? null;
+            const parent = s?.parentSessionId
+                ? findSessionForHistorySelection(
+                      state.sessionsById,
+                      s.parentSessionId,
+                  )
+                : null;
             return {
                 session: s,
+                parentSession: parent,
                 composerParts: sid
                     ? (state.composerPartsBySessionId[sid] ??
                       EMPTY_COMPOSER_PARTS)
@@ -331,11 +343,13 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     }, [session, sessionId]);
 
     const sessionTitle = session ? getSessionTitleText(session) : "Chat";
+    const isSubagent = Boolean(session?.parentSessionId?.trim());
+    const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
 
     const startTitleEdit = useCallback(() => {
-        if (!session || !sessionId) return;
+        if (!session || !sessionId || isSubagent) return;
         startEditing(sessionId, getSessionTitleText(session));
-    }, [session, sessionId, startEditing]);
+    }, [isSubagent, session, sessionId, startEditing]);
 
     const commitTitleEdit = useCallback(() => {
         commitEditing(chatActions.renameSession);
@@ -394,12 +408,35 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     <span
                         className="min-w-0 flex-1 overflow-hidden whitespace-nowrap font-medium"
                         onDoubleClick={startTitleEdit}
-                        title="Double-click to rename"
+                        title={
+                            isSubagent
+                                ? "Subagents are named by their parent run"
+                                : "Double-click to rename"
+                        }
                         style={{ color: "var(--text-primary)" }}
                     >
                         {sessionTitle}
                     </span>
                 )}
+                {isSubagent ? (
+                    <span
+                        className="max-w-[45%] truncate rounded px-1.5 py-0.5 text-[10px]"
+                        title={
+                            parentTitle
+                                ? `Subagent of ${parentTitle}`
+                                : "Subagent"
+                        }
+                        style={{
+                            color: "var(--accent)",
+                            background:
+                                "color-mix(in srgb, var(--accent) 10%, transparent)",
+                        }}
+                    >
+                        {parentTitle
+                            ? `Subagent of ${parentTitle}`
+                            : "Subagent"}
+                    </span>
+                ) : null}
             </div>
 
             <AIChatRuntimeBanner

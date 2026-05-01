@@ -46,6 +46,8 @@ pub struct PersistedSessionHistory {
     pub version: u32,
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
     pub model_id: String,
     pub mode_id: String,
@@ -99,6 +101,8 @@ pub struct SessionSearchResult {
 struct PersistedSessionMetadata {
     version: u32,
     session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
     model_id: String,
@@ -328,6 +332,7 @@ fn metadata_from_history(
     PersistedSessionMetadata {
         version: history.version,
         session_id: history.session_id.clone(),
+        parent_session_id: history.parent_session_id.clone(),
         runtime_id: history.runtime_id.clone(),
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
@@ -357,6 +362,7 @@ fn history_from_metadata(
     PersistedSessionHistory {
         version: metadata.version,
         session_id: metadata.session_id,
+        parent_session_id: metadata.parent_session_id,
         runtime_id: metadata.runtime_id,
         model_id: metadata.model_id,
         mode_id: metadata.mode_id,
@@ -379,6 +385,7 @@ fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, Stri
     Ok(PersistedSessionHistory {
         version: history.version,
         session_id: history.session_id,
+        parent_session_id: history.parent_session_id,
         runtime_id: history.runtime_id,
         model_id: history.model_id,
         mode_id: history.mode_id,
@@ -632,7 +639,9 @@ fn read_indexed_transcript_message(
                 .map_err(|e| e.to_string())?;
             let mut line = Vec::new();
             let mut reader = BufReader::new(transcript);
-            let read = reader.read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .map_err(|e| e.to_string())?;
             if read == 0 {
                 return Err(format!(
                     "Persisted transcript message at offset {offset} is empty: {index_error}"
@@ -948,6 +957,7 @@ pub fn load_all_session_histories(
                 PersistedSessionHistory {
                     version: history.version,
                     session_id: history.session_id,
+                    parent_session_id: history.parent_session_id,
                     runtime_id: history.runtime_id,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
@@ -975,6 +985,7 @@ pub fn load_all_session_histories(
                 PersistedSessionHistory {
                     version: history.version,
                     session_id: history.session_id,
+                    parent_session_id: history.parent_session_id,
                     runtime_id: history.runtime_id,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
@@ -1191,6 +1202,7 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
     let new_metadata = PersistedSessionMetadata {
         version: source_meta.version,
         session_id: new_session_id.clone(),
+        parent_session_id: None,
         runtime_id: source_meta.runtime_id,
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
@@ -1267,6 +1279,7 @@ mod tests {
         PersistedSessionHistory {
             version: 1,
             session_id: "session-1".to_string(),
+            parent_session_id: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -1468,6 +1481,91 @@ mod tests {
     }
 
     #[test]
+    fn preserves_parent_session_id_in_lazy_metadata() {
+        let dir = make_temp_dir();
+        let mut history = sample_history_with_session_id("child-session");
+        history.parent_session_id = Some("parent-session".to_string());
+
+        save_session_history(&dir, &history).expect("child history should persist");
+
+        let metadata =
+            load_session_metadata(&dir, "child-session").expect("child metadata should load");
+        assert_eq!(
+            metadata.parent_session_id.as_deref(),
+            Some("parent-session")
+        );
+
+        let summaries =
+            load_all_session_histories(&dir, false).expect("history summaries should load");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].parent_session_id.as_deref(),
+            Some("parent-session")
+        );
+
+        let full = load_all_session_histories(&dir, true).expect("full history should load");
+        assert_eq!(full[0].parent_session_id.as_deref(), Some("parent-session"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn preserves_empty_persisted_subagent_sessions() {
+        let dir = make_temp_dir();
+        let mut history = sample_history_with_session_id("empty-child-session");
+        history.parent_session_id = Some("parent-session".to_string());
+        history.start_index = Some(0);
+        history.message_count = Some(0);
+        history.messages = vec![];
+        history.title = Some("Worker".to_string());
+        history.preview = None;
+
+        save_session_history(&dir, &history).expect("empty child history should persist");
+
+        let summaries =
+            load_all_session_histories(&dir, false).expect("history summaries should load");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].session_id, "empty-child-session");
+        assert_eq!(
+            summaries[0].parent_session_id.as_deref(),
+            Some("parent-session")
+        );
+        assert_eq!(summaries[0].message_count, Some(0));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_histories_without_parent_session_id_still_load() {
+        let dir = make_temp_dir();
+        let legacy_path = sessions_dir(&dir).join("legacy-no-parent.json");
+        ensure_sessions_root(&dir).expect("sessions root should exist");
+        fs::write(
+            &legacy_path,
+            serde_json::json!({
+                "version": 1,
+                "session_id": "legacy-no-parent",
+                "runtime_id": "codex-acp",
+                "model_id": "test-model",
+                "mode_id": "default",
+                "created_at": 10,
+                "updated_at": 20,
+                "messages": []
+            })
+            .to_string(),
+        )
+        .expect("legacy file should persist");
+
+        let histories =
+            load_all_session_histories(&dir, false).expect("legacy history should load");
+        assert_eq!(histories.len(), 1);
+        assert_eq!(histories[0].session_id, "legacy-no-parent");
+        assert_eq!(histories[0].parent_session_id, None);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn preserves_agent_catalog_metadata_across_lazy_history_roundtrips() {
         let dir = make_temp_dir();
         let mut history = sample_history();
@@ -1534,6 +1632,7 @@ mod tests {
         let patch = PersistedSessionHistory {
             version: 1,
             session_id: "session-1".to_string(),
+            parent_session_id: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -1715,6 +1814,7 @@ mod tests {
         let patch = PersistedSessionHistory {
             version: 1,
             session_id: "session-1".to_string(),
+            parent_session_id: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),

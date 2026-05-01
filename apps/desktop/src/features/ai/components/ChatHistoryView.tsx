@@ -180,6 +180,33 @@ export function ChatHistoryView({
     const cancelDelete = useCallback(() => {
         setDeleteConfirmIds([]);
     }, []);
+    const preservedSubagentCount = useMemo(() => {
+        if (deleteConfirmIds.length === 0) return 0;
+        const deletedSessionIds = new Set(deleteConfirmIds);
+        const deletedRefs = new Set<string>();
+
+        for (const sessionId of deleteConfirmIds) {
+            const session = sessionsById[sessionId];
+            for (const ref of [
+                session?.sessionId,
+                session?.historySessionId,
+                session?.runtimeSessionId,
+            ]) {
+                const trimmed = ref?.trim();
+                if (trimmed) {
+                    deletedRefs.add(trimmed);
+                }
+            }
+        }
+
+        return Object.values(sessionsById).filter((session) => {
+            if (!session || deletedSessionIds.has(session.sessionId)) {
+                return false;
+            }
+            const parentRef = session.parentSessionId?.trim();
+            return parentRef ? deletedRefs.has(parentRef) : false;
+        }).length;
+    }, [deleteConfirmIds, sessionsById]);
 
     const handleExportSession = useCallback(
         (sessionId: string) => {
@@ -377,6 +404,7 @@ export function ChatHistoryView({
                             getDeleteSessionTitle(sessionsById[sessionId]),
                         )
                         .filter(Boolean)}
+                    preservedSubagentCount={preservedSubagentCount}
                     onConfirm={confirmDelete}
                     onCancel={cancelDelete}
                 />
@@ -400,10 +428,12 @@ function getDeleteSessionTitle(
 
 function DeleteConfirmDialog({
     sessionTitles,
+    preservedSubagentCount,
     onConfirm,
     onCancel,
 }: {
     sessionTitles: string[];
+    preservedSubagentCount: number;
     onConfirm: () => void;
     onCancel: () => void;
 }) {
@@ -438,6 +468,15 @@ function DeleteConfirmDialog({
                     {isBatchDelete
                         ? `${sessionTitles.length} conversations will be permanently deleted. This cannot be undone.`
                         : `\u201c${sessionTitles[0]}\u201d will be permanently deleted. This cannot be undone.`}
+                    {preservedSubagentCount > 0 ? (
+                        <span className="mt-2 block">
+                            {preservedSubagentCount}{" "}
+                            {preservedSubagentCount === 1
+                                ? "subagent"
+                                : "subagents"}{" "}
+                            will stay in history as detached agents.
+                        </span>
+                    ) : null}
                 </div>
                 <div className="flex justify-end gap-2">
                     <button

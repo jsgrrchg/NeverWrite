@@ -7,13 +7,17 @@ import {
 } from "react";
 import { aiSearchSessionContent, type SessionSearchResult } from "../api";
 import {
+    buildAiSessionHierarchyGroups,
+    compareHierarchyGroupsByUpdatedAtDesc,
+    type AiSessionHierarchyGroup,
+} from "../sessionHierarchy";
+import {
     DATE_GROUP_ORDER,
     findSessionForHistorySelection,
     formatSessionTime,
     getDateGroup,
     getHistorySelectionId,
     getSessionTitle,
-    getSessionUpdatedAt,
     type DateGroup,
 } from "../sessionPresentation";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -33,25 +37,17 @@ interface HistorySessionListProps {
     onRenameSession: (sessionId: string, newTitle: string | null) => void;
 }
 
-function matchesSearch(session: AIChatSession, query: string): boolean {
-    const lower = query.toLowerCase();
-    const title = getSessionTitle(session).toLowerCase();
-    if (title.includes(lower)) return true;
-    const preview = (session.persistedPreview ?? "").toLowerCase();
-    return preview.includes(lower);
-}
-
 function groupByDate(
-    sessions: AIChatSession[],
-): [DateGroup, AIChatSession[]][] {
-    const groups = new Map<DateGroup, AIChatSession[]>();
-    for (const session of sessions) {
-        const group = getDateGroup(getSessionUpdatedAt(session));
+    hierarchyGroups: AiSessionHierarchyGroup[],
+): [DateGroup, AiSessionHierarchyGroup[]][] {
+    const groups = new Map<DateGroup, AiSessionHierarchyGroup[]>();
+    for (const hierarchyGroup of hierarchyGroups) {
+        const group = getDateGroup(hierarchyGroup.latestUpdatedAt);
         const list = groups.get(group);
         if (list) {
-            list.push(session);
+            list.push(hierarchyGroup);
         } else {
-            groups.set(group, [session]);
+            groups.set(group, [hierarchyGroup]);
         }
     }
     return DATE_GROUP_ORDER.filter((g) => groups.has(g)).map((g) => [
@@ -83,26 +79,33 @@ export function HistorySessionList({
     );
     const vaultPath = useVaultStore((s) => s.vaultPath);
 
-    const sorted = useMemo(() => {
-        const copy = [...sessions];
-        copy.sort((a, b) => getSessionUpdatedAt(b) - getSessionUpdatedAt(a));
-        return copy;
-    }, [sessions]);
-
-    const filtered = useMemo(() => {
-        if (!search.trim()) return sorted;
-        return sorted.filter((s) => matchesSearch(s, search));
-    }, [sorted, search]);
+    const hierarchy = useMemo(() => {
+        const normalizedFilter = search.trim().toLowerCase();
+        const result = buildAiSessionHierarchyGroups({
+            sessions,
+            normalizedFilter,
+        });
+        return {
+            ...result,
+            groups: [...result.groups].sort(compareHierarchyGroupsByUpdatedAtDesc),
+        };
+    }, [sessions, search]);
     const visibleHistoryIds = useMemo(
-        () => filtered.map((session) => getHistorySelectionId(session)),
-        [filtered],
+        () =>
+            hierarchy.groups.flatMap((group) => [
+                getHistorySelectionId(group.root),
+                ...group.visibleChildren.map((session) =>
+                    getHistorySelectionId(session),
+                ),
+            ]),
+        [hierarchy.groups],
     );
     const visibleHistoryIdSet = useMemo(
         () => new Set(visibleHistoryIds),
         [visibleHistoryIds],
     );
 
-    const groups = useMemo(() => groupByDate(filtered), [filtered]);
+    const groups = useMemo(() => groupByDate(hierarchy.groups), [hierarchy]);
     const selectedHistoryId =
         findSessionForHistorySelection(sessions, selectedSessionId)
             ?.historySessionId ??
@@ -433,61 +436,130 @@ export function HistorySessionList({
                                     {group}
                                 </div>
                                 <div className="flex flex-col gap-0.5">
-                                    {groupSessions.map((session) => {
-                                        const historyId =
-                                            getHistorySelectionId(session);
-                                        const hasBatchSelection =
-                                            batchSelectedHistoryIdSet.size > 0;
-                                        return (
-                                            <HistorySessionCard
-                                                key={session.sessionId}
-                                                session={session}
-                                                runtimes={runtimes}
-                                                isSelected={
-                                                    hasBatchSelection
-                                                        ? batchSelectedHistoryIdSet.has(
-                                                              historyId,
-                                                          )
-                                                        : historyId ===
-                                                          selectedHistoryId
-                                                }
-                                                isActive={
-                                                    historyId ===
-                                                    selectedHistoryId
-                                                }
-                                                onOpen={() =>
-                                                    handleSessionOpen(session)
-                                                }
-                                                onSelect={(event) =>
-                                                    handleSessionSelect(
+                                    {groupSessions.flatMap(
+                                        (hierarchyGroup) => {
+                                            const parentTitle =
+                                                getSessionTitle(
+                                                    hierarchyGroup.root,
+                                                );
+                                            const rows = [
+                                                {
+                                                    session:
+                                                        hierarchyGroup.root,
+                                                    depth: 0,
+                                                    badgeLabel:
+                                                        hierarchyGroup.isDetachedAgent
+                                                            ? "Agent"
+                                                            : undefined,
+                                                    canRename:
+                                                        !hierarchyGroup.isDetachedAgent,
+                                                    childCount:
+                                                        hierarchyGroup.children
+                                                            .length,
+                                                    parentTitle: null,
+                                                },
+                                                ...hierarchyGroup.visibleChildren.map(
+                                                    (session) => ({
                                                         session,
-                                                        event,
-                                                    )
-                                                }
-                                                onDelete={() =>
-                                                    onDeleteSession(
-                                                        session.sessionId,
-                                                    )
-                                                }
-                                                onFork={() =>
-                                                    onForkSession(
-                                                        session.sessionId,
-                                                    )
-                                                }
-                                                onExport={() =>
-                                                    onExportSession(
-                                                        session.sessionId,
-                                                    )
-                                                }
-                                                onRename={(newTitle) =>
-                                                    onRenameSession(
-                                                        session.sessionId,
-                                                        newTitle,
-                                                    )
-                                                }
-                                            />
-                                        );
-                                    })}
+                                                        depth: 1,
+                                                        badgeLabel: "Agent",
+                                                        canRename: false,
+                                                        childCount: 0,
+                                                        parentTitle,
+                                                    }),
+                                                ),
+                                            ];
+
+                                            return rows.map(
+                                                ({
+                                                    session,
+                                                    depth,
+                                                    badgeLabel,
+                                                    canRename,
+                                                    childCount,
+                                                    parentTitle,
+                                                }) => {
+                                                    const historyId =
+                                                        getHistorySelectionId(
+                                                            session,
+                                                        );
+                                                    const hasBatchSelection =
+                                                        batchSelectedHistoryIdSet.size >
+                                                        0;
+                                                    return (
+                                                        <HistorySessionCard
+                                                            key={
+                                                                session.sessionId
+                                                            }
+                                                            session={session}
+                                                            runtimes={runtimes}
+                                                            isSelected={
+                                                                hasBatchSelection
+                                                                    ? batchSelectedHistoryIdSet.has(
+                                                                          historyId,
+                                                                      )
+                                                                    : historyId ===
+                                                                      selectedHistoryId
+                                                            }
+                                                            isActive={
+                                                                historyId ===
+                                                                selectedHistoryId
+                                                            }
+                                                            badgeLabel={
+                                                                badgeLabel
+                                                            }
+                                                            canRename={
+                                                                canRename
+                                                            }
+                                                            childCount={
+                                                                childCount
+                                                            }
+                                                            depth={depth}
+                                                            parentTitle={
+                                                                parentTitle
+                                                            }
+                                                            onOpen={() =>
+                                                                handleSessionOpen(
+                                                                    session,
+                                                                )
+                                                            }
+                                                            onSelect={(
+                                                                event,
+                                                            ) =>
+                                                                handleSessionSelect(
+                                                                    session,
+                                                                    event,
+                                                                )
+                                                            }
+                                                            onDelete={() =>
+                                                                onDeleteSession(
+                                                                    session.sessionId,
+                                                                )
+                                                            }
+                                                            onFork={() =>
+                                                                onForkSession(
+                                                                    session.sessionId,
+                                                                )
+                                                            }
+                                                            onExport={() =>
+                                                                onExportSession(
+                                                                    session.sessionId,
+                                                                )
+                                                            }
+                                                            onRename={(
+                                                                newTitle,
+                                                            ) =>
+                                                                onRenameSession(
+                                                                    session.sessionId,
+                                                                    newTitle,
+                                                                )
+                                                            }
+                                                        />
+                                                    );
+                                                },
+                                            );
+                                        },
+                                    )}
                                 </div>
                             </div>
                         ))}

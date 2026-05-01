@@ -21,6 +21,7 @@ function createSession(
     title: string,
     status: AIChatSessionStatus = "idle",
     timestamp = 10,
+    overrides: Partial<AIChatSession> = {},
 ): AIChatSession {
     return {
         sessionId,
@@ -45,6 +46,7 @@ function createSession(
         activeWorkCycleId: null,
         visibleWorkCycleId: null,
         runtimeState: "live",
+        ...overrides,
     };
 }
 
@@ -165,5 +167,101 @@ describe("AgentsSidebarPanel", () => {
             expect(labels[0]).toContain("Alpha task");
             expect(labels[1]).toContain("Beta task");
         });
+    });
+
+    it("renders subagents under their parent and opens the child row", async () => {
+        const parent = createSession("session-parent", "Parent task");
+        const child = createSession(
+            "session-child",
+            "Worker investigation",
+            "streaming",
+            200,
+            { parentSessionId: parent.sessionId },
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [child.sessionId, parent.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        const labels = screen
+            .getAllByRole("option")
+            .map((item) => item.textContent ?? "");
+        expect(labels[0]).toContain("Parent task");
+        expect(labels[1]).toContain("Worker investigation");
+        expect(labels[1]).toContain("Agent");
+        expect(labels[1]).toContain("Working");
+
+        fireEvent.click(screen.getAllByRole("option")[1]);
+
+        await waitFor(() => {
+            expect(
+                chatPaneMovementMock.openChatSessionInWorkspace,
+            ).toHaveBeenCalledWith("session-child");
+        });
+    });
+
+    it("keeps parent context visible when filtering by child content", () => {
+        const parent = createSession("session-parent", "Parent task");
+        const child = createSession(
+            "session-child",
+            "Needle subagent result",
+            "idle",
+            200,
+            { parentSessionId: parent.sessionId },
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.change(screen.getByLabelText("Filter threads"), {
+            target: { value: "needle" },
+        });
+
+        const labels = screen
+            .getAllByRole("option")
+            .map((item) => item.textContent ?? "");
+        expect(labels[0]).toContain("Parent task");
+        expect(labels[1]).toContain("Needle subagent result");
+    });
+
+    it("does not start inline rename for subagents", () => {
+        const parent = createSession("session-parent", "Parent task");
+        const child = createSession(
+            "session-child",
+            "Worker investigation",
+            "idle",
+            200,
+            { parentSessionId: parent.sessionId },
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+        }));
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.doubleClick(screen.getAllByRole("option")[1]);
+
+        expect(screen.queryByDisplayValue("Worker investigation")).toBeNull();
     });
 });

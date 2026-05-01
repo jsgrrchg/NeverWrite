@@ -319,6 +319,8 @@ export interface AIChatMessage {
 export interface AIChatSession {
     sessionId: string;
     historySessionId: string;
+    parentSessionId?: string | null;
+    runtimeSessionId?: string | null;
     vaultPath?: string | null;
     status: AIChatSessionStatus;
     activeWorkCycleId?: string | null;
@@ -371,6 +373,8 @@ export interface AIRuntimeDescriptor {
 
 export interface AIBackendSessionPayload {
     session_id: string;
+    parent_session_id?: string | null;
+    runtime_session_id?: string | null;
     runtime_id: string;
     model_id: string;
     mode_id: string;
@@ -628,6 +632,7 @@ export interface PersistedMessage {
 export interface PersistedSessionHistory {
     version: number;
     session_id: string;
+    parent_session_id?: string | null;
     runtime_id?: string;
     model_id: string;
     mode_id: string;

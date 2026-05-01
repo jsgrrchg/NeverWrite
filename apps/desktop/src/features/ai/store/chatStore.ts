@@ -4312,6 +4312,8 @@ function applyPersistedHistoryMetadata(
     return hydrateSessionCatalogFromSnapshot(
         {
             ...session,
+            parentSessionId:
+                history.parent_session_id ?? session.parentSessionId ?? null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
@@ -4342,6 +4344,7 @@ function applyPersistedHistoryPage(
     const pageMessages = restoreMessagesFromHistory({
         version: 1,
         session_id: page.session_id,
+        parent_session_id: session.parentSessionId ?? undefined,
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
@@ -4418,6 +4421,8 @@ function createPersistedSession(
         {
             sessionId: `persisted:${history.session_id}`,
             historySessionId: history.session_id,
+            parentSessionId: history.parent_session_id ?? null,
+            runtimeSessionId: null,
             vaultPath,
             runtimeId,
             modelId: history.model_id,
@@ -4821,6 +4826,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
     return {
         version: 1,
         session_id: session.historySessionId || session.sessionId,
+        parent_session_id: session.parentSessionId ?? undefined,
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
@@ -4869,7 +4875,8 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
 }
 
 function hasPersistableSessionContent(session: AIChatSession) {
-    return toPersistedHistory(session).messages.length > 0;
+    const history = toPersistedHistory(session);
+    return history.messages.length > 0 || history.parent_session_id != null;
 }
 
 const _queueDrainLocks = new Set<string>();

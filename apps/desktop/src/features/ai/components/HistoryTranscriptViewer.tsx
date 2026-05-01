@@ -45,6 +45,7 @@ function TranscriptHeader({
 }) {
     const runtimes = useChatStore((s) => s.runtimes);
     const forkSession = useChatStore((s) => s.forkSession);
+    const sessionsById = useChatStore((s) => s.sessionsById);
     const runtimeOptions = useMemo(
         () => runtimes.map((d) => d.runtime),
         [runtimes],
@@ -53,6 +54,15 @@ function TranscriptHeader({
     const runtimeLabel = getRuntimeName(session.runtimeId, runtimeOptions);
     const modelLabel = session.modelId;
     const updatedAt = session.persistedUpdatedAt ?? 0;
+    const parentSession = useMemo(
+        () =>
+            findSessionForHistorySelection(
+                sessionsById,
+                session.parentSessionId,
+            ),
+        [session.parentSessionId, sessionsById],
+    );
+    const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
 
     return (
         <div
@@ -65,6 +75,25 @@ function TranscriptHeader({
             <span className="min-w-0 flex-1 truncate text-xs font-medium">
                 {title}
             </span>
+            {session.parentSessionId ? (
+                <span
+                    className="shrink-0 rounded-full px-2 py-1 text-[10px] font-medium"
+                    style={{
+                        background:
+                            "color-mix(in srgb, var(--accent) 10%, transparent)",
+                        border:
+                            "1px solid color-mix(in srgb, var(--accent) 24%, transparent)",
+                        color: "var(--text-secondary)",
+                    }}
+                    title={
+                        parentTitle
+                            ? `Subagent of ${parentTitle}`
+                            : "Subagent"
+                    }
+                >
+                    {parentTitle ? `Subagent of ${parentTitle}` : "Subagent"}
+                </span>
+            ) : null}
             {onRestore && (
                 <button
                     type="button"

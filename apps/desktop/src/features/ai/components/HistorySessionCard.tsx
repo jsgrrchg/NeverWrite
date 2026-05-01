@@ -24,6 +24,11 @@ interface HistorySessionCardProps {
     runtimes: AIRuntimeOption[];
     isSelected: boolean;
     isActive: boolean;
+    badgeLabel?: string;
+    canRename?: boolean;
+    childCount?: number;
+    depth?: number;
+    parentTitle?: string | null;
     onOpen: () => void;
     onSelect: (event: MouseEvent<HTMLDivElement>) => void;
     onDelete: () => void;
@@ -37,6 +42,11 @@ export function HistorySessionCard({
     runtimes,
     isSelected,
     isActive,
+    badgeLabel,
+    canRename = true,
+    childCount = 0,
+    depth = 0,
+    parentTitle = null,
     onOpen,
     onSelect,
     onDelete,
@@ -70,44 +80,54 @@ export function HistorySessionCard({
     const stableSessionId = getHistorySelectionId(session);
     const fullTitle = getSessionTitleText(session);
     const startEditing = useCallback(() => {
+        if (!canRename) return;
         beginInlineRename(session.sessionId, getSessionTitle(session));
-    }, [beginInlineRename, session]);
+    }, [beginInlineRename, canRename, session]);
     const contextMenuEntries = useMemo<ContextMenuEntry[]>(
-        () => [
-            {
-                label: "Restore in chat",
-                action: onOpen,
-            },
-            {
-                label: "Rename chat",
-                action: startEditing,
-            },
-            {
-                label: "Fork chat",
-                action: onFork,
-            },
-            {
-                label: "Export to note",
-                action: onExport,
-            },
-            { type: "separator" },
-            {
-                label: "Copy chat title",
-                action: () => void navigator.clipboard.writeText(fullTitle),
-            },
-            {
-                label: "Copy chat ID",
-                action: () =>
-                    void navigator.clipboard.writeText(stableSessionId),
-            },
-            { type: "separator" },
-            {
-                label: "Delete",
-                action: onDelete,
-                danger: true,
-            },
-        ],
+        () => {
+            const entries: ContextMenuEntry[] = [
+                {
+                    label: "Restore in chat",
+                    action: onOpen,
+                },
+            ];
+            if (canRename) {
+                entries.push({
+                    label: "Rename chat",
+                    action: startEditing,
+                });
+            }
+            entries.push(
+                {
+                    label: "Fork chat",
+                    action: onFork,
+                },
+                {
+                    label: "Export to note",
+                    action: onExport,
+                },
+                { type: "separator" },
+                {
+                    label: "Copy chat title",
+                    action: () =>
+                        void navigator.clipboard.writeText(fullTitle),
+                },
+                {
+                    label: "Copy chat ID",
+                    action: () =>
+                        void navigator.clipboard.writeText(stableSessionId),
+                },
+                { type: "separator" },
+                {
+                    label: "Delete",
+                    action: onDelete,
+                    danger: true,
+                },
+            );
+            return entries;
+        },
         [
+            canRename,
             fullTitle,
             onDelete,
             onExport,
@@ -132,6 +152,7 @@ export function HistorySessionCard({
             <div
                 className="rounded-md px-3 py-2"
                 style={{
+                    paddingLeft: 12 + depth * 16,
                     backgroundColor: isActive
                         ? "var(--bg-tertiary)"
                         : isSelected
@@ -219,6 +240,32 @@ export function HistorySessionCard({
                             )}
                         </span>
                     )}
+                    {badgeLabel ? (
+                        <span
+                            className="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                            style={{
+                                background:
+                                    "color-mix(in srgb, var(--accent) 12%, transparent)",
+                                border:
+                                    "1px solid color-mix(in srgb, var(--accent) 28%, transparent)",
+                                color: "var(--text-secondary)",
+                            }}
+                        >
+                            {badgeLabel}
+                        </span>
+                    ) : null}
+                    {childCount > 0 ? (
+                        <span
+                            className="shrink-0 text-[10px]"
+                            style={{
+                                color: "var(--text-secondary)",
+                                opacity: 0.65,
+                            }}
+                        >
+                            {childCount}{" "}
+                            {childCount === 1 ? "agent" : "agents"}
+                        </span>
+                    ) : null}
 
                     {/* Export button (visible on hover) */}
                     <button
@@ -327,7 +374,17 @@ export function HistorySessionCard({
                     className="mt-1 flex items-center gap-1.5 text-[10px]"
                     style={{ color: "var(--text-secondary)", opacity: 0.6 }}
                 >
-                    <span className="shrink-0">{runtimeLabel}</span>
+                    <span className="shrink-0">
+                        {badgeLabel ? `${runtimeLabel} agent` : runtimeLabel}
+                    </span>
+                    {parentTitle ? (
+                        <>
+                            <span>·</span>
+                            <span className="min-w-0 truncate">
+                                Subagent of {parentTitle}
+                            </span>
+                        </>
+                    ) : null}
                     {stats.modelUsed && (
                         <>
                             <span>·</span>

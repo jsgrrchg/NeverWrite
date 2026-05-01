@@ -2005,6 +2005,8 @@ fn session_from_acp_response(
 
     AiSession {
         session_id,
+        parent_session_id: None,
+        runtime_session_id: None,
         runtime_id: runtime_id.to_string(),
         model_id,
         mode_id,
@@ -2763,6 +2765,8 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
     let config_options = default_config_options(runtime_id, &models, &modes);
     Ok(AiSession {
         session_id,
+        parent_session_id: None,
+        runtime_session_id: None,
         runtime_id: runtime_id.to_string(),
         model_id: models
             .first()

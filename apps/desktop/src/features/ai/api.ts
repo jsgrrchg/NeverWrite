@@ -86,6 +86,8 @@ export function normalizeBackendSession(
     return {
         sessionId: session.session_id,
         historySessionId: session.session_id,
+        parentSessionId: session.parent_session_id ?? null,
+        runtimeSessionId: session.runtime_session_id ?? null,
         runtimeId: session.runtime_id,
         modelId: session.model_id,
         modeId: session.mode_id,
