@@ -38,6 +38,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ### Changed
 
+- Removed the redundant collapse-all control from the note outline so the panel starts directly with the document structure while preserving per-section collapsing.
 - Aligned file-oriented search across Search Files & Notes, New Tab, `@` mentions, and `[[ ]]` wikilink suggestions so all-files mode treats Markdown notes as files first, ranking file name and path matches before note title matches while keeping title search as a fallback.
 - Updated wikilink suggestions in all-files mode to display Markdown note file names consistently with the file extension setting, so notes can appear as `example.md` when extensions are enabled without changing the inserted wikilink target.
 - Made the wikilink suggestion popup horizontally scrollable so long note names and vault paths can be inspected without widening the popup.
