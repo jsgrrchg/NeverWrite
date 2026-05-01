@@ -1022,6 +1022,98 @@ describe("AIChatMessageItem user mention pills", () => {
 });
 
 describe("AIChatMessageItem read tool targets", () => {
+    it("opens child sessions from subagent breadcrumb tool actions", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "child-session": {
+                    sessionId: "child-session",
+                    historySessionId: "child-session",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-session",
+                    runtimeState: "live",
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["child-session"],
+        }));
+
+        renderMessage({
+            id: "tool:subagent",
+            role: "assistant",
+            kind: "tool",
+            title: "Spawned Worker",
+            content: "Spawned Worker",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "child-session",
+                label: "Open Worker",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.some(
+                        (tab) =>
+                            tab.kind === "ai-chat" &&
+                            tab.sessionId === "child-session",
+                    ),
+            ).toBe(true);
+        });
+    });
+
+    it("shows unavailable subagent actions as non-interactive", () => {
+        renderMessage({
+            id: "tool:subagent-missing",
+            role: "assistant",
+            kind: "tool",
+            title: "Spawned Worker",
+            content: "Spawned Worker",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "missing-child-session",
+                label: "Open Worker",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        expect(screen.getByRole("button", { name: "Open Worker" })).toBeDisabled();
+        expect(screen.getByTitle("Session is not available yet")).toBeInTheDocument();
+    });
+
     it("opens read target pills in a new tab from the context menu", async () => {
         setVaultNotes([
             {

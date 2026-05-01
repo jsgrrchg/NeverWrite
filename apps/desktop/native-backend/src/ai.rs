@@ -27,14 +27,15 @@ use neverwrite_ai::{
     AiPermissionRequestPayload, AiRuntimeBinarySource, AiRuntimeConnectionPayload,
     AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload,
     AiSessionStatus, AiStatusEventPayload, AiTokenUsageCostPayload, AiTokenUsagePayload,
-    AiToolActivityPayload, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
-    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
-    AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
-    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_RUNTIME_CONNECTION_EVENT,
-    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
-    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
-    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
-    GEMINI_RUNTIME_ID, KILO_RUNTIME_ID,
+    AiToolActivityActionPayload, AiToolActivityPayload, ToolDiffState,
+    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
+    AI_AUTH_TERMINAL_STARTED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
+    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
+    AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT,
+    AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
+    AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
+    KILO_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -57,6 +58,10 @@ const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
 const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
+const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
+const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
 const AUTH_TERMINAL_DEFAULT_COLS: u16 = 100;
 const AUTH_TERMINAL_DEFAULT_ROWS: u16 = 28;
 const AUTH_TERMINAL_MONITOR_INTERVAL: Duration = Duration::from_millis(120);
@@ -1293,10 +1298,41 @@ impl NativeAcpClient {
             map_tool_call(
                 session_id,
                 tool_call,
+                self.subagent_open_session_action(session_id, tool_call),
                 self.terminal_summary(session_id, &tool_call.tool_call_id.0),
                 diffs,
             ),
         );
+    }
+
+    fn subagent_open_session_action(
+        &self,
+        session_id: &str,
+        tool_call: &ToolCall,
+    ) -> Option<AiToolActivityActionPayload> {
+        let meta = tool_call.meta.as_ref()?;
+        let event_type = meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY)?;
+        if event_type != CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE {
+            return None;
+        }
+
+        let runtime_child_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)?;
+        let state = self.session_state.lock().ok()?;
+        let child_session = state.sessions.values().find(|managed| {
+            managed.session.session_id == runtime_child_session_id
+                || managed.session.runtime_session_id.as_deref()
+                    == Some(runtime_child_session_id.as_str())
+        })?;
+        if child_session.session.session_id == session_id {
+            return None;
+        }
+
+        Some(AiToolActivityActionPayload {
+            kind: "open_session".to_string(),
+            session_id: child_session.session.session_id.clone(),
+            label: meta_string(meta, CODEX_ACP_AGENT_NICKNAME_KEY)
+                .map(|nickname| format!("Open {nickname}")),
+        })
     }
 
     fn record_terminal_meta(&self, session_id: &str, tool_call_id: &str, meta: Option<&Meta>) {
@@ -1478,6 +1514,7 @@ impl NativeAcpClient {
             map_tool_call(
                 &session_id,
                 &registered,
+                self.subagent_open_session_action(&session_id, &registered),
                 self.terminal_summary(&session_id, &registered.tool_call_id.0),
                 diffs.clone(),
             ),
@@ -2305,6 +2342,7 @@ fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload 
 fn map_tool_call(
     session_id: &str,
     tool_call: &ToolCall,
+    action: Option<AiToolActivityActionPayload>,
     summary: Option<String>,
     diffs: Vec<AiFileDiffPayload>,
 ) -> AiToolActivityPayload {
@@ -2314,6 +2352,7 @@ fn map_tool_call(
         title: tool_call.title.clone(),
         kind: tool_kind_label(&tool_call.kind),
         status: tool_status_label(&tool_call.status),
+        action,
         target: tool_call
             .locations
             .first()
@@ -2321,6 +2360,14 @@ fn map_tool_call(
         summary: summary.or_else(|| summarize_tool_content(tool_call)),
         diffs: (!diffs.is_empty()).then_some(diffs),
     }
+}
+
+fn meta_string(meta: &Meta, key: &str) -> Option<String> {
+    meta.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn map_image_generation_event(
@@ -3923,6 +3970,7 @@ mod tests {
     const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
     const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
     const CODEX_ACP_SUBAGENT_CREATED_EVENT: &str = "subagent_session_created";
+    const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT: &str = "subagent_breadcrumb";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
 
@@ -4168,6 +4216,74 @@ mod tests {
         assert_eq!(
             status.get("onboarding_required").and_then(Value::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn subagent_breadcrumb_tool_activity_opens_registered_child_session() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session");
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut("child-app-session")
+                .expect("child session should exist")
+                .session
+                .runtime_session_id = Some(CHILD_RUNTIME_SESSION_ID.to_string());
+        }
+        let client = test_client_with_state(event_tx, session_state);
+        let meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                json!(CHILD_RUNTIME_SESSION_ID),
+            ),
+            (CODEX_ACP_AGENT_NICKNAME_KEY.to_string(), json!("Worker")),
+        ]);
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-tool-1"), "Spawned Worker")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.pointer("/action/kind").and_then(Value::as_str),
+            Some("open_session")
+        );
+        assert_eq!(
+            payload
+                .pointer("/action/session_id")
+                .and_then(Value::as_str),
+            Some("child-app-session")
+        );
+        assert_eq!(
+            payload.pointer("/action/label").and_then(Value::as_str),
+            Some("Open Worker")
         );
     }
 
@@ -4548,6 +4664,7 @@ mod tests {
                 .kind(ToolKind::Read)
                 .status(ToolCallStatus::Completed)
                 .content(vec![ToolCallContent::from("README.md")]),
+            None,
             None,
             vec![],
         );

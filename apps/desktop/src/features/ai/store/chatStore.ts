@@ -4810,6 +4810,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             user_input_questions: m.userInputQuestions,
             plan_entries: m.planEntries,
             plan_detail: m.planDetail,
+            tool_action: m.toolAction,
         }));
 
     const timestamps = messages.map((m) => m.timestamp);
@@ -5186,6 +5187,7 @@ function restoreMessagesFromHistory(
         userInputQuestions: m.user_input_questions,
         planEntries: m.plan_entries,
         planDetail: m.plan_detail,
+        toolAction: m.tool_action,
     }));
 }
 
@@ -7150,6 +7152,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     timestamp: eventTimestamp,
                     workCycleId: nextSession.activeWorkCycleId,
                     diffs: payload.diffs,
+                    toolAction: payload.action ?? null,
                     meta: {
                         tool: payload.kind,
                         status: payload.status,

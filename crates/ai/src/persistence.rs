@@ -39,6 +39,8 @@ pub struct PersistedMessage {
     pub plan_entries: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_action: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1309,6 +1311,7 @@ mod tests {
                     user_input_questions: None,
                     plan_entries: None,
                     plan_detail: None,
+                    tool_action: None,
                 },
                 PersistedMessage {
                     id: "assistant:1".to_string(),
@@ -1325,6 +1328,7 @@ mod tests {
                     user_input_questions: None,
                     plan_entries: None,
                     plan_detail: None,
+                    tool_action: None,
                 },
             ],
         }
@@ -1662,6 +1666,7 @@ mod tests {
                     user_input_questions: None,
                     plan_entries: None,
                     plan_detail: None,
+                    tool_action: None,
                 },
                 PersistedMessage {
                     id: "plan:1".to_string(),
@@ -1678,6 +1683,7 @@ mod tests {
                     user_input_questions: None,
                     plan_entries: None,
                     plan_detail: Some("Do the thing".to_string()),
+                    tool_action: None,
                 },
             ],
         };
@@ -1717,6 +1723,7 @@ mod tests {
             user_input_questions: None,
             plan_entries: None,
             plan_detail: None,
+            tool_action: None,
         };
         let permission = PersistedMessage {
             id: "permission:1".to_string(),
@@ -1754,6 +1761,7 @@ mod tests {
             user_input_questions: None,
             plan_entries: None,
             plan_detail: None,
+            tool_action: None,
         };
         let user_input = PersistedMessage {
             id: "input:1".to_string(),
@@ -1780,6 +1788,7 @@ mod tests {
             ])),
             plan_entries: None,
             plan_detail: None,
+            tool_action: None,
         };
         let plan = PersistedMessage {
             id: "plan:1".to_string(),
@@ -1802,6 +1811,11 @@ mod tests {
                 }
             ])),
             plan_detail: Some("Verify all message fields survive paging.".to_string()),
+            tool_action: Some(serde_json::json!({
+                "kind": "open_session",
+                "session_id": "child-session",
+                "label": "Open child"
+            })),
         };
 
         let expected_messages = vec![

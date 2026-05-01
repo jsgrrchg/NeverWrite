@@ -314,6 +314,7 @@ export interface AIChatMessage {
     userInputQuestions?: AIUserInputQuestion[];
     planEntries?: AIPlanEntry[];
     planDetail?: string;
+    toolAction?: AIToolActivityAction | null;
 }
 
 export interface AIChatSession {
@@ -463,10 +464,17 @@ export interface AIToolActivityPayload {
     title: string;
     kind: string;
     status: string;
+    action?: AIToolActivityAction | null;
     target?: string | null;
     summary?: string | null;
     diffs?: AIFileDiff[];
 }
+
+export type AIToolActivityAction = {
+    kind: "open_session";
+    session_id: string;
+    label?: string | null;
+};
 
 export interface AIStatusEventPayload {
     session_id: string;
@@ -627,6 +635,7 @@ export interface PersistedMessage {
     user_input_questions?: AIUserInputQuestion[];
     plan_entries?: AIPlanEntry[];
     plan_detail?: string;
+    tool_action?: AIToolActivityAction | null;
 }
 
 export interface PersistedSessionHistory {

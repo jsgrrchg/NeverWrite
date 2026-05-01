@@ -72,12 +72,22 @@ pub struct AiMessageCompletedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AiToolActivityActionPayload {
+    pub kind: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AiToolActivityPayload {
     pub session_id: String,
     pub tool_call_id: String,
     pub title: String,
     pub kind: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<AiToolActivityActionPayload>,
     pub target: Option<String>,
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
