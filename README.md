@@ -3,7 +3,11 @@
 
 <img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
 
-**Note**: To everyone who has starred the repo: thank you. You’ve made me genuinely happy, I published this 3 days ago and I’ll keep improving this app for the long run. If you’re a Linux developer, I’d really appreciate your help getting the app fully up and running on Linux. I’m still a bit lost with the different package formats and how to wire them all into the GitHub Actions release pipeline, so a PR on this front would be amazing. Next, I’ll be focusing on adding Cron jobs — similar in spirit to OpenClaw — plus hardening, modularizing some of the larger files, and fixing edge cases in the live Markdown preview. Obsidian, one of my favorite apps, has years of patches behind its editor, and getting CodeMirror to render Markdown, hide source decorations, and stay fast is surprisingly difficult. If you run into rendering bugs or weird editor behavior, please help me find and fix them. Thank you again for the support.
+**Note**: To everyone who has starred the repo: thank you. You’ve made me genuinely happy, I published this 3 days ago and I’ll keep improving this app for the long run. If you’re a Linux developer, I’d really appreciate your help getting the app fully up and running on Linux. I’m still a bit lost with the different package formats and how to wire them all into the GitHub Actions release pipeline, so a PR on this front would be amazing. Next, I’ll be focusing on adding Cron jobs — similar in spirit to OpenClaw — plus hardening, modularizing some of the larger files, and fixing edge cases in the live Markdown preview. Obsidian, one of my favorite apps, has years of patches behind its editor, and getting CodeMirror to render Markdown, hide source decorations, and stay fast is surprisingly difficult. If you run into rendering bugs or weird editor behavior, please help me find and fix them. 
+
+Also, NeverWrite will expand its current provider list to include all ACP compliant providers. This will take time, and API credits, because each provider needs to be extensively tested and adapted where necessary to support NeverWrite’s AI change-control layer. Because of NeverWrite’s ethics, I have to prioritize making every change reviewable by the user: no black boxes, no obfuscation, and no hidden writes of any kind. The most urgent feature right now is to give power users a way to set up a custom ACP implementation themselves. 
+
+Thanks again for your support!
 
 ----
 
@@ -17,8 +21,6 @@ Today the repository combines:
 - An ACP-based AI layer with Codex, Claude, Gemini, and Kilo runtimes.
 - An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
 - A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback. Compatible with both Firefox and Chromium.
-
-This README reflects the code currently present in the repository, not a future roadmap.
 
 ## What NeverWrite Is Today
 
