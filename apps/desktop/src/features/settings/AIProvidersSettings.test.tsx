@@ -12,6 +12,7 @@ const apiMocks = vi.hoisted(() => ({
     aiGetEnvironmentDiagnostics: vi.fn(),
     aiGetSetupStatus: vi.fn(),
     aiListRuntimes: vi.fn(),
+    aiLogout: vi.fn(),
     aiStartAuth: vi.fn(),
     aiUpdateSetup: vi.fn(),
     aiStartAuthTerminalSession: vi.fn(),
@@ -160,6 +161,13 @@ function mockProviders({
             onboardingRequired: false,
         }),
     );
+    apiMocks.aiLogout.mockImplementation(async (input: { runtimeId: string }) => ({
+        ...(statuses[input.runtimeId] ??
+            createSetupStatus({ runtimeId: input.runtimeId })),
+        authReady: false,
+        authMethod: undefined,
+        onboardingRequired: true,
+    }));
     apiMocks.aiStartAuthTerminalSession.mockImplementation(
         async (input: { runtimeId: string }) =>
             createTerminalSnapshot(input.runtimeId),
@@ -300,6 +308,27 @@ describe("AIProvidersSettings", () => {
                 }),
             );
         });
+    });
+
+    it("logs providers out through the native backend logout command", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Codex");
+        fireEvent.click(screen.getByRole("button", { name: "Log Out" }));
+
+        await waitFor(() => {
+            expect(apiMocks.aiLogout).toHaveBeenCalledWith({
+                runtimeId: "codex-acp",
+                vaultPath: null,
+            });
+        });
+        expect(apiMocks.aiUpdateSetup).not.toHaveBeenCalledWith(
+            expect.objectContaining({
+                runtimeId: "codex-acp",
+                codexApiKey: { action: "clear" },
+                openaiApiKey: { action: "clear" },
+            }),
+        );
     });
 
     it("submits Gemini API keys through provider settings", async () => {

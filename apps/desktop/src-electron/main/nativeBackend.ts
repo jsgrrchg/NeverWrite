@@ -56,6 +56,7 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_get_environment_diagnostics",
     "ai_update_setup",
     "ai_start_auth",
+    "ai_logout",
     "ai_list_sessions",
     "ai_load_session",
     "ai_load_runtime_session",

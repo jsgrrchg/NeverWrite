@@ -836,6 +836,7 @@ impl NativeBackend {
             "ai_get_environment_diagnostics" => Ok(self.ai.get_environment_diagnostics()),
             "ai_update_setup" => self.ai.update_setup(&args),
             "ai_start_auth" => self.ai.start_auth(&args),
+            "ai_logout" => self.ai.logout(&args),
             "ai_list_sessions" => {
                 let vault_root = self.optional_open_vault_root(&args)?;
                 self.ai.list_sessions(vault_root)

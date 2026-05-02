@@ -88,6 +88,7 @@ const aiApiMocks = vi.hoisted(() => ({
               },
     ),
     aiUpdateSetup: vi.fn(),
+    aiLogout: vi.fn(),
     aiStartAuth: vi.fn(),
     aiStartAuthTerminalSession: vi.fn(),
     aiCloseAuthTerminalSession: vi.fn(async () => undefined),

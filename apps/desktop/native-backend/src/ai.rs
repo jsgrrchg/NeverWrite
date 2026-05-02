@@ -11,8 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
     AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    FileSystemCapabilities, Implementation, InitializeRequest, Meta, NewSessionRequest,
-    PermissionOption, PermissionOptionKind, PromptRequest, ProtocolVersion,
+    FileSystemCapabilities, Implementation, InitializeRequest, LogoutRequest, Meta,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest, ProtocolVersion,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
@@ -289,6 +289,7 @@ struct AuthTerminalLaunchConfig {
     cwd: PathBuf,
     env: HashMap<String, String>,
     runtime_id: String,
+    method_id: String,
 }
 
 struct AuthTerminalHandle {
@@ -529,6 +530,34 @@ impl NativeAi {
         } else {
             Some(ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE.to_string())
         };
+        Ok(json!(setup_status_for(&runtime_id, setup.clone())?))
+    }
+
+    pub(crate) fn logout(&self, args: &Value) -> Result<Value, String> {
+        let runtime_id = required_runtime_id(args)?;
+        validate_runtime_id(&runtime_id)?;
+        let cwd = resolve_auth_terminal_cwd(args.get("vaultPath").and_then(Value::as_str))?;
+
+        let setup = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?
+            .setup
+            .get(&runtime_id)
+            .cloned()
+            .unwrap_or_default();
+
+        if runtime_id == CODEX_RUNTIME_ID && setup.auth_method.as_deref() == Some("chatgpt") {
+            let spec = acp_process_spec(&runtime_id, &setup, cwd)?;
+            run_acp_logout(spec)?;
+        }
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let setup = state.setup.entry(runtime_id.clone()).or_default();
+        clear_runtime_auth_state(setup);
         Ok(json!(setup_status_for(&runtime_id, setup.clone())?))
     }
 
@@ -885,6 +914,7 @@ impl NativeAi {
         let cwd = resolve_auth_terminal_cwd(input.vault_path.as_deref())?;
         let launch_config =
             auth_terminal_launch_config(&input.runtime_id, &method_id, &setup, cwd)?;
+        mark_runtime_auth_pending(&self.inner, &input.runtime_id, &method_id);
         let snapshot = self.spawn_auth_terminal_session(
             session_id,
             launch_config,
@@ -1053,7 +1083,7 @@ impl NativeAi {
 
         let snapshot = Arc::new(Mutex::new(AiAuthTerminalSessionSnapshot {
             session_id: session_id.clone(),
-            runtime_id: launch_config.runtime_id,
+            runtime_id: launch_config.runtime_id.clone(),
             program: launch_config.program.display().to_string(),
             display_name: launch_config.display_name,
             cwd: launch_config.cwd.to_string_lossy().into_owned(),
@@ -1087,6 +1117,9 @@ impl NativeAi {
             Arc::clone(&handle.killer),
             Arc::clone(&handle.snapshot),
             Arc::clone(&handle.closed),
+            Arc::clone(&self.inner),
+            launch_config.runtime_id.clone(),
+            launch_config.method_id.clone(),
             self.event_tx.clone(),
         );
 
@@ -1921,6 +1954,20 @@ fn start_acp_session(
 }
 
 fn run_acp_auth(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
+    run_acp_auth_command(spec, AcpAuthCommand::Authenticate(method_id))
+}
+
+fn run_acp_logout(spec: AcpProcessSpec) -> Result<(), String> {
+    run_acp_auth_command(spec, AcpAuthCommand::Logout)
+}
+
+#[derive(Debug, Clone)]
+enum AcpAuthCommand {
+    Authenticate(String),
+    Logout,
+}
+
+fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -1930,7 +1977,7 @@ fn run_acp_auth(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
                 return;
             }
         };
-        let result = runtime.block_on(run_acp_auth_inner(spec, method_id));
+        let result = runtime.block_on(run_acp_auth_inner(spec, auth_command));
         let _ = result_tx.send(result);
     });
 
@@ -1939,7 +1986,10 @@ fn run_acp_auth(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
         .map_err(|_| "AI runtime authentication disconnected before responding.".to_string())?
 }
 
-async fn run_acp_auth_inner(spec: AcpProcessSpec, method_id: String) -> Result<(), String> {
+async fn run_acp_auth_inner(
+    spec: AcpProcessSpec,
+    auth_command: AcpAuthCommand,
+) -> Result<(), String> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
     command.current_dir(&spec.cwd);
@@ -1984,10 +2034,20 @@ async fn run_acp_auth_inner(spec: AcpProcessSpec, method_id: String) -> Result<(
                         )
                         .block_task()
                         .await?;
-                    connection
-                        .send_request(AuthenticateRequest::new(method_id))
-                        .block_task()
-                        .await?;
+                    match auth_command {
+                        AcpAuthCommand::Authenticate(method_id) => {
+                            connection
+                                .send_request(AuthenticateRequest::new(method_id))
+                                .block_task()
+                                .await?;
+                        }
+                        AcpAuthCommand::Logout => {
+                            connection
+                                .send_request(LogoutRequest::new())
+                                .block_task()
+                                .await?;
+                        }
+                    }
                     Ok::<(), agent_client_protocol::Error>(())
                 } => response,
                 wait_result = child.wait() => {
@@ -3238,12 +3298,8 @@ fn setup_status_for(
         AiRuntimeBinarySource::Missing
     };
     let inherited_auth_method = inherited_auth_method(runtime_id);
-    let auth_ready = setup.auth_ready
-        || inherited_auth_method.is_some()
-        || (binary_ready && runtime_delegates_auth(runtime_id));
-    let auth_method = setup.auth_method.or(inherited_auth_method).or_else(|| {
-        (binary_ready && runtime_delegates_auth(runtime_id)).then(|| "runtime-managed".to_string())
-    });
+    let auth_ready = setup.auth_ready || inherited_auth_method.is_some();
+    let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
         setup.message
     } else if auth_ready {
@@ -3502,6 +3558,7 @@ fn auth_terminal_launch_config(
         cwd,
         env: setup.env.clone(),
         runtime_id: runtime_id.to_string(),
+        method_id: method_id.to_string(),
     })
 }
 
@@ -3632,10 +3689,19 @@ fn inherited_auth_method(runtime_id: &str) -> Option<String> {
 
 fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> bool {
     match method_id {
-        "codex-api-key" => setup.env.get("CODEX_API_KEY").is_some_and(|value| !value.is_empty()),
-        "openai-api-key" => setup.env.get("OPENAI_API_KEY").is_some_and(|value| !value.is_empty()),
+        "codex-api-key" => setup
+            .env
+            .get("CODEX_API_KEY")
+            .is_some_and(|value| !value.is_empty()),
+        "openai-api-key" => setup
+            .env
+            .get("OPENAI_API_KEY")
+            .is_some_and(|value| !value.is_empty()),
         "use_gemini" => {
-            setup.env.get("GEMINI_API_KEY").is_some_and(|value| !value.is_empty())
+            setup
+                .env
+                .get("GEMINI_API_KEY")
+                .is_some_and(|value| !value.is_empty())
                 || setup
                     .env
                     .get("GOOGLE_API_KEY")
@@ -3646,17 +3712,31 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
     }
 }
 
+fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
+    setup.auth_ready = false;
+    setup.auth_method = None;
+    setup.has_gateway_config = false;
+    setup.has_gateway_url = false;
+    setup.message = None;
+    for key in [
+        "CODEX_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_BASE_URL",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ] {
+        setup.env.remove(key);
+    }
+}
+
 fn env_secret_present(key: &str) -> bool {
     std::env::var_os(key)
         .map(|value| !value.to_string_lossy().trim().is_empty())
         .unwrap_or(false)
-}
-
-fn runtime_delegates_auth(runtime_id: &str) -> bool {
-    matches!(
-        runtime_id,
-        CODEX_RUNTIME_ID | CLAUDE_RUNTIME_ID | GEMINI_RUNTIME_ID | KILO_RUNTIME_ID
-    )
 }
 
 fn runtime_name(runtime_id: &str) -> &'static str {
@@ -4084,18 +4164,98 @@ fn find_program_on_path(name: &str) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
     }
+    let executable_extensions = executable_extensions_for_path_lookup();
     let candidate = PathBuf::from(name);
-    if candidate.components().count() > 1 && is_executable_file(&candidate) {
-        return Some(candidate);
+    if candidate.components().count() > 1 {
+        return find_executable_candidate(candidate, &executable_extensions);
     }
     let path_value = std::env::var_os("PATH")?;
-    for entry in std::env::split_paths(&path_value) {
-        let candidate = entry.join(name);
-        if is_executable_file(&candidate) {
+    find_program_in_path_entries(
+        name,
+        std::env::split_paths(&path_value),
+        &executable_extensions,
+    )
+}
+
+fn find_program_in_path_entries<I>(
+    name: &str,
+    entries: I,
+    executable_extensions: &[String],
+) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    for entry in entries {
+        if let Some(candidate) = find_executable_candidate(entry.join(name), executable_extensions)
+        {
             return Some(candidate);
         }
     }
     None
+}
+
+fn find_executable_candidate(
+    candidate: PathBuf,
+    executable_extensions: &[String],
+) -> Option<PathBuf> {
+    if is_executable_file(&candidate) {
+        return Some(candidate);
+    }
+    if candidate.extension().is_some() {
+        return None;
+    }
+    for extension in executable_extensions {
+        let mut with_extension = candidate.as_os_str().to_os_string();
+        with_extension.push(extension);
+        let with_extension = PathBuf::from(with_extension);
+        if is_executable_file(&with_extension) {
+            return Some(with_extension);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn executable_extensions_for_path_lookup() -> Vec<String> {
+    parse_windows_pathext(
+        std::env::var_os("PATHEXT")
+            .map(|value| value.to_string_lossy().into_owned())
+            .as_deref(),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn executable_extensions_for_path_lookup() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_windows_pathext(raw: Option<&str>) -> Vec<String> {
+    let mut extensions = raw
+        .unwrap_or("")
+        .split(';')
+        .filter_map(|extension| {
+            let extension = extension.trim();
+            if extension.is_empty() {
+                return None;
+            }
+            let extension = if extension.starts_with('.') {
+                extension.to_string()
+            } else {
+                format!(".{extension}")
+            };
+            Some(extension.to_ascii_lowercase())
+        })
+        .collect::<Vec<_>>();
+
+    if extensions.is_empty() {
+        extensions = [".exe", ".cmd", ".bat", ".com"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+    }
+
+    extensions
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -4189,6 +4349,9 @@ fn spawn_auth_terminal_exit_monitor(
     killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     closed: Arc<AtomicBool>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    runtime_id: String,
+    method_id: String,
     event_tx: Sender<RpcOutput>,
 ) {
     thread::spawn(move || loop {
@@ -4234,13 +4397,17 @@ fn spawn_auth_terminal_exit_monitor(
         };
 
         if let Some(exit_status) = exit_status {
+            let exit_code = i32::try_from(exit_status.exit_code()).ok();
+            if exit_code == Some(0) {
+                mark_runtime_auth_verified(&session_state, &runtime_id, &method_id);
+            }
             let snapshot = {
                 let mut snapshot_guard = match snapshot.lock() {
                     Ok(snapshot_guard) => snapshot_guard,
                     Err(_) => break,
                 };
                 snapshot_guard.status = AiAuthTerminalStatus::Exited;
-                snapshot_guard.exit_code = i32::try_from(exit_status.exit_code()).ok();
+                snapshot_guard.exit_code = exit_code;
                 snapshot_guard.error_message = None;
                 snapshot_guard.clone()
             };
@@ -4265,6 +4432,32 @@ fn append_auth_terminal_buffer(buffer: &mut String, chunk: &str) {
         .find(|index| *index >= excess)
         .unwrap_or(excess);
     buffer.drain(..trim_to);
+}
+
+fn mark_runtime_auth_pending(
+    session_state: &Arc<Mutex<NativeAiInner>>,
+    runtime_id: &str,
+    method_id: &str,
+) {
+    if let Ok(mut state) = session_state.lock() {
+        let setup = state.setup.entry(runtime_id.to_string()).or_default();
+        setup.auth_method = Some(method_id.to_string());
+        setup.auth_ready = false;
+        setup.message = None;
+    }
+}
+
+fn mark_runtime_auth_verified(
+    session_state: &Arc<Mutex<NativeAiInner>>,
+    runtime_id: &str,
+    method_id: &str,
+) {
+    if let Ok(mut state) = session_state.lock() {
+        let setup = state.setup.entry(runtime_id.to_string()).or_default();
+        setup.auth_method = Some(method_id.to_string());
+        setup.auth_ready = true;
+        setup.message = None;
+    }
 }
 
 fn emit_auth_terminal_started(
@@ -4894,6 +5087,128 @@ mod tests {
     }
 
     #[test]
+    fn setup_status_does_not_treat_binary_as_authentication() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("fake-kilo");
+        fs::write(&runtime, "#!/bin/sh\n").unwrap();
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": KILO_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": runtime
+                }
+            }))
+            .expect("setup should update");
+
+        assert_eq!(
+            status.get("binary_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            status.get("onboarding_required").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn verified_terminal_auth_marks_runtime_ready() {
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+
+        mark_runtime_auth_verified(&session_state, KILO_RUNTIME_ID, "kilo-login");
+
+        let state = session_state.lock().unwrap();
+        let setup = state.setup.get(KILO_RUNTIME_ID).expect("runtime setup");
+        assert!(setup.auth_ready);
+        assert_eq!(setup.auth_method.as_deref(), Some("kilo-login"));
+        assert_eq!(setup.message, None);
+    }
+
+    #[test]
+    fn pending_terminal_auth_records_method_without_auth_ready() {
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+
+        mark_runtime_auth_pending(&session_state, GEMINI_RUNTIME_ID, "login_with_google");
+
+        let state = session_state.lock().unwrap();
+        let setup = state.setup.get(GEMINI_RUNTIME_ID).expect("runtime setup");
+        assert!(!setup.auth_ready);
+        assert_eq!(setup.auth_method.as_deref(), Some("login_with_google"));
+        assert_eq!(setup.message, None);
+    }
+
+    #[test]
+    fn logout_clears_local_runtime_auth_state() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = temp.path().join("fake-gemini");
+        fs::write(&runtime, "#!/bin/sh\n").unwrap();
+
+        ai.update_setup(&json!({
+            "runtimeId": GEMINI_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": runtime,
+                "gemini_api_key": { "action": "set", "value": "test-key" }
+            }
+        }))
+        .expect("setup should update");
+
+        let status = ai
+            .logout(&json!({
+                "runtimeId": GEMINI_RUNTIME_ID,
+                "vaultPath": temp.path()
+            }))
+            .expect("logout should clear local setup");
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            status.get("onboarding_required").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn logout_does_not_require_acp_for_codex_api_keys() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+
+        ai.update_setup(&json!({
+            "runtimeId": CODEX_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": temp.path().join("missing-codex-acp"),
+                "openai_api_key": { "action": "set", "value": "test-key" }
+            }
+        }))
+        .expect("setup should update");
+
+        let status = ai
+            .logout(&json!({
+                "runtimeId": CODEX_RUNTIME_ID,
+                "vaultPath": temp.path()
+            }))
+            .expect("API key logout should only clear local setup");
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+    }
+
+    #[test]
     fn start_auth_preserves_configured_api_key_auth() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
@@ -4956,6 +5271,33 @@ mod tests {
             .expect_err("ChatGPT auth should fail before pretending it connected");
 
         assert!(error.contains("No Codex runtime binary is configured."));
+    }
+
+    #[test]
+    fn path_lookup_resolves_windows_cmd_shims_from_pathext() {
+        let temp = tempfile::tempdir().unwrap();
+        let shim = temp.path().join("gemini.cmd");
+        fs::write(&shim, "").unwrap();
+
+        let resolved = find_program_in_path_entries(
+            "gemini",
+            vec![temp.path().to_path_buf()],
+            &parse_windows_pathext(Some(".COM;.EXE;.BAT;.CMD")),
+        );
+
+        assert_eq!(resolved, Some(shim));
+    }
+
+    #[test]
+    fn explicit_program_path_resolves_windows_extension_fallbacks() {
+        let temp = tempfile::tempdir().unwrap();
+        let shim = temp.path().join("kilo.cmd");
+        fs::write(&shim, "").unwrap();
+
+        let resolved =
+            find_executable_candidate(temp.path().join("kilo"), &parse_windows_pathext(None));
+
+        assert_eq!(resolved, Some(shim));
     }
 
     #[test]
@@ -5057,10 +5399,13 @@ mod tests {
             client.session_notification(SessionNotification::new(
                 PARENT_RUNTIME_SESSION_ID,
                 SessionUpdate::ToolCall(
-                    ToolCall::new(ToolCallId::from("subagent-tool-update"), "Spawning subagent")
-                        .kind(ToolKind::Other)
-                        .status(ToolCallStatus::InProgress)
-                        .meta(begin_meta),
+                    ToolCall::new(
+                        ToolCallId::from("subagent-tool-update"),
+                        "Spawning subagent",
+                    )
+                    .kind(ToolKind::Other)
+                    .status(ToolCallStatus::InProgress)
+                    .meta(begin_meta),
                 ),
             )),
         )

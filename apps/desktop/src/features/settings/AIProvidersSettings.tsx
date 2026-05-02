@@ -4,6 +4,7 @@ import {
     aiGetEnvironmentDiagnostics,
     aiGetSetupStatus,
     aiListRuntimes,
+    aiLogout,
     aiStartAuth,
     aiUpdateSetup,
 } from "../ai/api";
@@ -986,21 +987,16 @@ export function AIProvidersSettings({
         async (runtimeId: string) => {
             setSavingId(runtimeId);
             try {
-                await aiUpdateSetup({
-                    runtimeId,
-                    codexApiKey: clearSecretPatch,
-                    openaiApiKey: clearSecretPatch,
-                    geminiApiKey: clearSecretPatch,
-                    googleApiKey: clearSecretPatch,
-                    googleCloudProject: undefined,
-                    googleCloudLocation: undefined,
-                    gatewayBaseUrl: undefined,
-                    gatewayHeaders: unchangedSecretPatch,
-                    anthropicBaseUrl: "",
-                    anthropicCustomHeaders: clearSecretPatch,
-                    anthropicAuthToken: clearSecretPatch,
+                const status = await aiLogout({ runtimeId, vaultPath });
+                setSetupStatusMap((prev) => ({
+                    ...prev,
+                    [runtimeId]: status,
+                }));
+                setErrorMap((prev) => {
+                    const next = { ...prev };
+                    delete next[runtimeId];
+                    return next;
                 });
-                await refreshRuntime(runtimeId);
             } catch (error) {
                 setErrorMap((prev) => ({
                     ...prev,
@@ -1010,7 +1006,7 @@ export function AIProvidersSettings({
                 setSavingId(null);
             }
         },
-        [refreshRuntime],
+        [vaultPath],
     );
 
     const handleClearGateway = useCallback(

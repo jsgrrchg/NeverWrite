@@ -321,6 +321,20 @@ export async function aiStartAuth(
     return normalizeRuntimeSetupStatus(status);
 }
 
+export async function aiLogout(input: {
+    runtimeId: string;
+    vaultPath: string | null;
+}) {
+    const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
+        "ai_logout",
+        {
+            runtimeId: input.runtimeId,
+            vaultPath: input.vaultPath ?? null,
+        },
+    );
+    return normalizeRuntimeSetupStatus(status);
+}
+
 export async function aiStartAuthTerminalSession(input: {
     runtimeId: string;
     methodId?: string;
