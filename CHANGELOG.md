@@ -38,6 +38,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ### Added
 
+- Added Web Clipper release artifacts to the `0.2.1` GitHub Release pipeline, including Chrome MV3 manual-install and Firefox MV3 testing/signing zips.
 - Added working ChatGPT account sign-in for the Codex runtime through the ACP authentication flow, including backend logout support.
 - Added Anthropic API key sign-in as an explicit Claude provider option.
 

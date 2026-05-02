@@ -231,10 +231,11 @@ Versions are kept in sync across:
 - `apps/desktop/package.json`
 - `apps/desktop/package-lock.json`
 - `apps/desktop/native-backend/Cargo.toml`
+- `apps/web-clipper/package.json`
 - `CHANGELOG.md`
 
-Use `scripts/bump-version.sh` to update the package and native backend
-version files at once, then add the matching `CHANGELOG.md` release entry.
+Use `scripts/bump-version.sh` to update the package, native backend, and Web
+Clipper version files at once, then add the matching `CHANGELOG.md` release entry.
 Before creating a release tag, run:
 
 ```bash
@@ -244,13 +245,14 @@ node scripts/validate-release-metadata.mjs --tag vX.Y.Z
 ## Release automation
 
 Desktop releases are maintainer-driven and run through the Electron release workflow in GitHub Actions.
+The same workflow validates and attaches the Web Clipper Chrome and Firefox MV3 zip artifacts to the GitHub Release.
 
 Before triggering [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml):
 
 - Bump the desktop version sources with `scripts/bump-version.sh X.Y.Z`
 - Add or update the matching `CHANGELOG.md` entry
 - Run `node scripts/validate-release-metadata.mjs --tag vX.Y.Z`
-- Create and push the release tag, for example `v0.2.0`
+- Create and push the release tag, for example `v0.2.1`
 - Ensure the required signing secrets are configured in the GitHub repository settings
 - Review the Electron release topology and signing requirements documented in [`release/appcast/README.md`](release/appcast/README.md)
 

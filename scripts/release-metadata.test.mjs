@@ -41,12 +41,13 @@ test("collectVersionIssues reports mismatches and invalid semver", () => {
                 packageLock: "0.2.0",
                 packageLockRoot: "0.2.0",
                 nativeBackendCargo: "0.2",
+                webClipperPackageJson: "0.2.0",
             },
             "0.2.0",
         ),
         [
             'nativeBackendCargo version "0.2" is not strict semver (X.Y.Z).',
-            "Desktop versions do not match: package.json=0.2.0, package-lock.json=0.2.0, package-lock root=0.2.0, native-backend/Cargo.toml=0.2.",
+            "Release versions do not match: package.json=0.2.0, package-lock.json=0.2.0, package-lock root=0.2.0, native-backend/Cargo.toml=0.2, web-clipper/package.json=0.2.0.",
         ],
     );
 });
@@ -59,11 +60,30 @@ test("collectVersionIssues reports stale package-lock versions", () => {
                 packageLock: "0.1.0",
                 packageLockRoot: "0.1.0",
                 nativeBackendCargo: "0.2.0",
+                webClipperPackageJson: "0.2.0",
             },
             "0.2.0",
         ),
         [
-            "Desktop versions do not match: package.json=0.2.0, package-lock.json=0.1.0, package-lock root=0.1.0, native-backend/Cargo.toml=0.2.0.",
+            "Release versions do not match: package.json=0.2.0, package-lock.json=0.1.0, package-lock root=0.1.0, native-backend/Cargo.toml=0.2.0, web-clipper/package.json=0.2.0.",
+        ],
+    );
+});
+
+test("collectVersionIssues reports stale web clipper versions", () => {
+    assert.deepEqual(
+        collectVersionIssues(
+            {
+                packageJson: "0.2.0",
+                packageLock: "0.2.0",
+                packageLockRoot: "0.2.0",
+                nativeBackendCargo: "0.2.0",
+                webClipperPackageJson: "0.1.0",
+            },
+            "0.2.0",
+        ),
+        [
+            "Release versions do not match: package.json=0.2.0, package-lock.json=0.2.0, package-lock root=0.2.0, native-backend/Cargo.toml=0.2.0, web-clipper/package.json=0.1.0.",
         ],
     );
 });

@@ -23,6 +23,10 @@ export const DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH = path.join(
     REPO_ROOT,
     "apps/desktop/native-backend/Cargo.toml",
 );
+export const WEB_CLIPPER_PACKAGE_JSON_PATH = path.join(
+    REPO_ROOT,
+    "apps/web-clipper/package.json",
+);
 export const CHANGELOG_PATH = path.join(REPO_ROOT, "CHANGELOG.md");
 
 const STRICT_SEMVER_RE = /^\d+\.\d+\.\d+$/;
@@ -56,6 +60,7 @@ export function readFile(filePath) {
 export function readDesktopVersions() {
     const packageJson = readJsonFile(DESKTOP_PACKAGE_JSON_PATH);
     const packageLock = readJsonFile(DESKTOP_PACKAGE_LOCK_PATH);
+    const webClipperPackageJson = readJsonFile(WEB_CLIPPER_PACKAGE_JSON_PATH);
     const nativeBackendCargoToml = readFile(
         DESKTOP_NATIVE_BACKEND_CARGO_TOML_PATH,
     );
@@ -65,6 +70,7 @@ export function readDesktopVersions() {
         packageLock: packageLock.version,
         packageLockRoot: packageLock.packages?.[""]?.version,
         nativeBackendCargo: readCargoPackageVersion(nativeBackendCargoToml),
+        webClipperPackageJson: webClipperPackageJson.version,
     };
 }
 
@@ -114,7 +120,13 @@ export function readCargoPackageVersion(cargoTomlText) {
 }
 
 export function collectVersionIssues(
-    { packageJson, packageLock, packageLockRoot, nativeBackendCargo },
+    {
+        packageJson,
+        packageLock,
+        packageLockRoot,
+        nativeBackendCargo,
+        webClipperPackageJson,
+    },
     tagVersion,
 ) {
     const issues = [];
@@ -123,6 +135,7 @@ export function collectVersionIssues(
         packageLock,
         packageLockRoot,
         nativeBackendCargo,
+        webClipperPackageJson,
     ];
 
     for (const [sourceName, value] of Object.entries({
@@ -130,6 +143,7 @@ export function collectVersionIssues(
         packageLock,
         packageLockRoot,
         nativeBackendCargo,
+        webClipperPackageJson,
     })) {
         if (!isStrictSemver(value)) {
             issues.push(
@@ -140,13 +154,13 @@ export function collectVersionIssues(
 
     if (new Set(versions).size !== 1) {
         issues.push(
-            `Desktop versions do not match: package.json=${packageJson}, package-lock.json=${packageLock}, package-lock root=${packageLockRoot}, native-backend/Cargo.toml=${nativeBackendCargo}.`,
+            `Release versions do not match: package.json=${packageJson}, package-lock.json=${packageLock}, package-lock root=${packageLockRoot}, native-backend/Cargo.toml=${nativeBackendCargo}, web-clipper/package.json=${webClipperPackageJson}.`,
         );
     }
 
     if (tagVersion && packageJson !== tagVersion) {
         issues.push(
-            `Desktop version ${packageJson} does not match release tag version ${tagVersion}.`,
+            `Release version ${packageJson} does not match release tag version ${tagVersion}.`,
         );
     }
 

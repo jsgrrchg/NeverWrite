@@ -106,10 +106,11 @@ sure these files all refer to `X.Y.Z`:
 - `apps/desktop/package.json`
 - `apps/desktop/package-lock.json`
 - `apps/desktop/native-backend/Cargo.toml`
+- `apps/web-clipper/package.json`
 - `CHANGELOG.md`
 
-Use the helper from the repository root to update the package and native
-backend version files:
+Use the helper from the repository root to update the package, native backend,
+and Web Clipper version files:
 
 ```bash
 scripts/bump-version.sh X.Y.Z
@@ -124,8 +125,8 @@ node scripts/validate-release-metadata.mjs --tag vX.Y.Z
 
 Do not push the tag until this check passes. The app's user-visible Electron
 version comes from `apps/desktop/package.json`; the lockfile and native backend
-version are kept aligned so packaging and release validation remain
-deterministic.
+version are kept aligned with the Web Clipper manifest version so packaging and
+release validation remain deterministic.
 
 ## Local build commands
 
@@ -178,6 +179,17 @@ The validation pack includes:
 - target-specific valid feeds
 - target-specific invalid-checksum fixtures
 - a checklist for clean install, update, target routing, and sensitive-state confirmation
+
+## Browser extension release assets
+
+The desktop release workflow also builds the Web Clipper from `apps/web-clipper`
+and attaches browser-extension zips to the GitHub Release:
+
+- `NeverWrite-Web-Clipper-vX.Y.Z-chrome-mv3.zip`
+- `NeverWrite-Web-Clipper-vX.Y.Z-firefox-mv3.zip`
+
+The Chrome zip is for manual unpacked installation. The Firefox zip is a build
+artifact for testing, traceability, and Mozilla signing workflows.
 
 ## Rollback
 

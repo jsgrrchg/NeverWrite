@@ -61,7 +61,7 @@ async function main() {
     }
 
     console.log(
-        `Desktop version sources are aligned at ${versions.packageJson}.`,
+        `Release version sources are aligned at ${versions.packageJson}.`,
     );
     console.log(`CHANGELOG.md contains an entry for ${expectedVersion}.`);
 }
