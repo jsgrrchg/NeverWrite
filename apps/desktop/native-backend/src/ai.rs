@@ -357,6 +357,14 @@ enum AcpCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpConfigOptionRemoteCommand {
+    SetConfigOption,
+    SetModel,
+    SetMode,
+    LocalOnly,
+}
+
 #[derive(Clone)]
 pub(crate) struct NativeAi {
     inner: Arc<Mutex<NativeAiInner>>,
@@ -735,12 +743,22 @@ impl NativeAi {
 
     pub(crate) fn set_config_option(&self, args: &Value) -> Result<Value, String> {
         let input: AiSetConfigOptionInput = input_from_args(args)?;
-        let config_options = self
-            .session_handle(&input.session_id)?
-            .map(|handle| {
-                handle.set_config_option(&input.session_id, &input.option_id, &input.value)
-            })
-            .transpose()?;
+        let remote_command =
+            self.session_config_option_remote_command(&input.session_id, &input.option_id)?;
+        let config_options = match (self.session_handle(&input.session_id)?, remote_command) {
+            (Some(handle), AcpConfigOptionRemoteCommand::SetConfigOption) => {
+                Some(handle.set_config_option(&input.session_id, &input.option_id, &input.value)?)
+            }
+            (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
+                handle.set_model(&input.session_id, &input.value)?;
+                None
+            }
+            (Some(handle), AcpConfigOptionRemoteCommand::SetMode) => {
+                handle.set_mode(&input.session_id, &input.value)?;
+                None
+            }
+            (_, AcpConfigOptionRemoteCommand::LocalOnly) | (None, _) => None,
+        };
         self.update_session(&input.session_id, |session| {
             if let Some(config_options) = config_options {
                 let mapped_options =
@@ -1172,6 +1190,26 @@ impl NativeAi {
             .get(session_id)
             .map(|managed| managed.session.runtime_id.clone())
             .ok_or_else(|| format!("AI session not found: {session_id}"))
+    }
+
+    fn session_config_option_remote_command(
+        &self,
+        session_id: &str,
+        option_id: &str,
+    ) -> Result<AcpConfigOptionRemoteCommand, String> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let managed = state
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+        Ok(acp_config_option_remote_command(
+            &managed.session.runtime_id,
+            &managed.session.config_options,
+            option_id,
+        ))
     }
 
     fn session_handle(&self, session_id: &str) -> Result<Option<AcpSessionHandle>, String> {
@@ -2727,6 +2765,29 @@ fn apply_local_config_option_selection(
         .ok_or_else(|| format!("AI config option not found: {option_id}"))?;
     option.value = value;
     Ok(())
+}
+
+fn acp_config_option_remote_command(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+    option_id: &str,
+) -> AcpConfigOptionRemoteCommand {
+    if runtime_id != GEMINI_RUNTIME_ID {
+        return AcpConfigOptionRemoteCommand::SetConfigOption;
+    }
+
+    let category = config_options
+        .iter()
+        .find(|option| option.id == option_id)
+        .map(|option| &option.category);
+    match category {
+        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
+        Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::SetMode,
+        Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
+        None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
+        None if option_id == "mode" => AcpConfigOptionRemoteCommand::SetMode,
+        None => AcpConfigOptionRemoteCommand::LocalOnly,
+    }
 }
 
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
@@ -6089,6 +6150,56 @@ mod tests {
             mapped[0].category,
             AiConfigOptionCategory::Reasoning
         ));
+    }
+
+    #[test]
+    fn gemini_config_options_route_to_supported_acp_methods() {
+        let options = map_session_config_options(
+            GEMINI_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "gemini-2.5-pro",
+                    vec![SessionConfigSelectOption::new(
+                        "gemini-2.5-pro",
+                        "Gemini 2.5 Pro",
+                    )],
+                )
+                .category(SessionConfigOptionCategory::Model),
+                SessionConfigOption::select(
+                    "mode",
+                    "Mode",
+                    "default",
+                    vec![SessionConfigSelectOption::new("default", "Default")],
+                )
+                .category(SessionConfigOptionCategory::Mode),
+                SessionConfigOption::select(
+                    "thought_level",
+                    "Thought Level",
+                    "high",
+                    vec![SessionConfigSelectOption::new("high", "High")],
+                )
+                .category(SessionConfigOptionCategory::ThoughtLevel),
+            ],
+        );
+
+        assert_eq!(
+            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "model"),
+            AcpConfigOptionRemoteCommand::SetModel
+        );
+        assert_eq!(
+            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "mode"),
+            AcpConfigOptionRemoteCommand::SetMode
+        );
+        assert_eq!(
+            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "thought_level"),
+            AcpConfigOptionRemoteCommand::LocalOnly
+        );
+        assert_eq!(
+            acp_config_option_remote_command(CODEX_RUNTIME_ID, &options, "model"),
+            AcpConfigOptionRemoteCommand::SetConfigOption
+        );
     }
 
     #[test]
