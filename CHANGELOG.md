@@ -56,6 +56,10 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Fixed AI provider logout so local auth state and Google Cloud environment settings are cleared consistently.
 - Fixed Claude gateway setup so remote HTTP URLs are rejected by the backend, localhost HTTP remains allowed, and gateway-with-token setups stay labeled as gateway auth.
 - Fixed Windows runtime lookup for CLI shims that depend on `PATHEXT`, such as `.cmd` and `.exe` launchers.
+- Fixed Gemini startup on Windows so NeverWrite prefers the executable `.cmd` shim over npm's extensionless shim, avoiding `CreateProcessW` Win32 launch failures.
+- Fixed Gemini Google sign-in hydration so NeverWrite marks the provider as connected as soon as the Gemini CLI reports successful authentication, instead of waiting for the login terminal process to exit.
+- Fixed Gemini ACP sessions on Windows by stripping verbatim `\\?\` path prefixes before launching the Node-based CLI, avoiding `EISDIR: illegal operation on a directory, lstat 'C:'` failures.
+- Fixed Gemini model and mode changes so NeverWrite uses Gemini's supported ACP `session/set_model` and `session/set_mode` requests instead of the unsupported `session/set_config_option` request.
 - Fixed Codex subagent persistence so background subagent threads are saved when they are created or receive tool, status, plan, image, permission, or input events while their chat tab is closed, using the subagent's own vault path for delayed saves.
 
 ## [0.2.0] - 2026-05-01
