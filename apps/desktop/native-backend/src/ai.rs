@@ -1998,7 +1998,7 @@ async fn run_acp_auth_inner(
 ) -> Result<(), String> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
-    command.current_dir(&spec.cwd);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::null());
@@ -2110,7 +2110,7 @@ async fn run_acp_actor_inner(
 ) -> Result<(), String> {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
-    command.current_dir(&spec.cwd);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -4628,8 +4628,25 @@ fn acp_session_wire_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
     cwd.to_path_buf()
 }
 
+fn acp_process_launch_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
+    if runtime_id == GEMINI_RUNTIME_ID {
+        return PathBuf::from(normalize_path_for_node_acp(cwd));
+    }
+    cwd.to_path_buf()
+}
+
 fn normalize_path_for_node_acp(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    strip_windows_verbatim_prefix(&path.to_string_lossy().replace('\\', "/"))
+}
+
+fn strip_windows_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        return format!("//{rest}");
+    }
+    if let Some(rest) = path.strip_prefix("//?/") {
+        return rest.to_string();
+    }
+    path.to_string()
 }
 
 fn spawn_auth_terminal_exit_monitor(
@@ -6855,6 +6872,25 @@ mod tests {
 
         assert_eq!(gemini_cwd.to_string_lossy(), "C:/Users/jsgrr/Vault");
         assert_eq!(codex_cwd, cwd);
+    }
+
+    #[test]
+    fn gemini_acp_session_cwd_strips_windows_verbatim_prefix() {
+        let cwd = PathBuf::from(r"\\?\C:\Users\jsgrr\Vault");
+        let unc = PathBuf::from(r"\\?\UNC\server\share\Vault");
+
+        assert_eq!(
+            acp_session_wire_cwd(GEMINI_RUNTIME_ID, &cwd).to_string_lossy(),
+            "C:/Users/jsgrr/Vault"
+        );
+        assert_eq!(
+            acp_process_launch_cwd(GEMINI_RUNTIME_ID, &cwd).to_string_lossy(),
+            "C:/Users/jsgrr/Vault"
+        );
+        assert_eq!(
+            acp_session_wire_cwd(GEMINI_RUNTIME_ID, &unc).to_string_lossy(),
+            "//server/share/Vault"
+        );
     }
 
     #[test]
