@@ -61,6 +61,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Fixed Gemini ACP sessions on Windows by stripping verbatim `\\?\` path prefixes before launching the Node-based CLI, avoiding `EISDIR: illegal operation on a directory, lstat 'C:'` failures.
 - Fixed Gemini model and mode changes so NeverWrite uses Gemini's supported ACP `session/set_model` and `session/set_mode` requests instead of the unsupported `session/set_config_option` request.
 - Fixed Codex subagent persistence so background subagent threads are saved when they are created or receive tool, status, plan, image, permission, or input events while their chat tab is closed, using the subagent's own vault path for delayed saves.
+- NOTE ABOUT SUB AGENTS, chat gpt models tend to forget that they can't fork the context of subagents when you ask them to spawn childs with an aspecific model prompting like ''spawn 3 subagents to write this 3 docs using 5.4 mid effort...'', so there's a custom instruction in the acp that act like ''harness'' in order to orient the model to perform the action as you asked it. Weird edge case developing for frontier moderls, you will notice this when the acp refuses to perform the action and tells the agent mid session to do it the right way. I comment this because eventually you will encounter this scenario and the comments that gpt makes may sound odd. 
 
 ## [0.2.0] - 2026-05-01
 
