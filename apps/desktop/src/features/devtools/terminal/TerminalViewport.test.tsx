@@ -139,4 +139,18 @@ describe("TerminalViewport", () => {
             vi.useRealTimers();
         }
     });
+
+    it("can keep the first terminal output scrolled to the top", async () => {
+        renderComponent(
+            <TerminalViewport
+                initialScrollPosition="top"
+                session={createSessionView({
+                    rawOutput: "first line\nsecond line\nthird line",
+                })}
+            />,
+        );
+        await flushPromises();
+
+        expect(getXtermMockInstances()[0]?.scrollToTopCalls).toBe(1);
+    });
 });

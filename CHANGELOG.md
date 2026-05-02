@@ -34,6 +34,30 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.1] - 2026-05-02
+
+### Added
+
+- Added working ChatGPT account sign-in for the Codex runtime through the ACP authentication flow, including backend logout support.
+- Added Anthropic API key sign-in as an explicit Claude provider option.
+
+### Changed
+
+- Hardened Claude sign-in options so remote or no-browser environments use the appropriate terminal login method, while local environments keep Claude subscription, Anthropic Console, API key, and gateway choices.
+- Hardened Gemini Google sign-in so the terminal launch explicitly maps the UI method to the Gemini CLI `oauth-personal` auth type instead of relying on ambiguous defaults.
+
+### Fixed
+
+- Fixed AI provider setup status so finding a runtime binary no longer incorrectly marks the provider as connected.
+- Fixed terminal sign-in state so providers become connected only after the sign-in process exits successfully.
+- Fixed AI sign-in terminals so refreshes no longer restart the active auth session or reopen duplicate browser tabs.
+- Fixed AI sign-in terminals so they open focused and scrolled to the beginning of the auth prompt, allowing interactive choices such as Gemini Google sign-in to receive Enter correctly.
+- Fixed AI provider setup recognition after restart by detecting persisted CLI account credentials for Codex, Claude, Gemini, and Kilo.
+- Fixed AI provider logout so local auth state and Google Cloud environment settings are cleared consistently.
+- Fixed Claude gateway setup so remote HTTP URLs are rejected by the backend, localhost HTTP remains allowed, and gateway-with-token setups stay labeled as gateway auth.
+- Fixed Windows runtime lookup for CLI shims that depend on `PATHEXT`, such as `.cmd` and `.exe` launchers.
+- Fixed Codex subagent persistence so background subagent threads are saved when they are created or receive tool, status, plan, image, permission, or input events while their chat tab is closed, using the subagent's own vault path for delayed saves.
+
 ## [0.2.0] - 2026-05-01
 
 ### Added

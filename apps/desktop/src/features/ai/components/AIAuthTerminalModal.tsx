@@ -76,6 +76,11 @@ export function AIAuthTerminalModal({
     );
     const [rawOutput, setRawOutput] = useState("");
     const [busy, setBusy] = useState(false);
+    const onRefreshSetupRef = useRef(onRefreshSetup);
+
+    useEffect(() => {
+        onRefreshSetupRef.current = onRefreshSetup;
+    }, [onRefreshSetup]);
 
     useEffect(() => {
         if (!open) return;
@@ -127,7 +132,7 @@ export function AIAuthTerminalModal({
                         if (payload.sessionId !== sessionIdRef.current) return;
                         setSnapshot(payload);
                         setBusy(false);
-                        void onRefreshSetup(runtimeId);
+                        void onRefreshSetupRef.current(runtimeId);
                     }),
                 ),
                 registerListener(
@@ -180,7 +185,7 @@ export function AIAuthTerminalModal({
                     errorMessage: getErrorMessage(error),
                 }));
                 setBusy(false);
-                await onRefreshSetup(runtimeId);
+                await onRefreshSetupRef.current(runtimeId);
             }
         };
 
@@ -204,7 +209,7 @@ export function AIAuthTerminalModal({
                 void unlisten();
             });
         };
-    }, [open, runtimeId, methodId, vaultPath, customBinaryPath, onRefreshSetup]);
+    }, [open, runtimeId, methodId, vaultPath, customBinaryPath]);
 
     const handleClose = useCallback(() => {
         const sessionId = sessionIdRef.current;
@@ -212,9 +217,9 @@ export function AIAuthTerminalModal({
         if (sessionId) {
             void aiCloseAuthTerminalSession(sessionId).catch(() => undefined);
         }
-        void onRefreshSetup(runtimeId);
+        void onRefreshSetupRef.current(runtimeId);
         onClose();
-    }, [onClose, onRefreshSetup, runtimeId]);
+    }, [onClose, runtimeId]);
 
     const handleRetry = useCallback(async () => {
         const sessionId = sessionIdRef.current;
@@ -245,12 +250,11 @@ export function AIAuthTerminalModal({
                 errorMessage: getErrorMessage(error),
             }));
             setBusy(false);
-            await onRefreshSetup(runtimeId);
+            await onRefreshSetupRef.current(runtimeId);
         }
     }, [
         customBinaryPath,
         methodId,
-        onRefreshSetup,
         runtimeId,
         runtimeName,
         vaultPath,
@@ -385,7 +389,11 @@ export function AIAuthTerminalModal({
                     </div>
 
                     <div className="min-h-0 flex-1">
-                        <TerminalViewport session={sessionView} />
+                        <TerminalViewport
+                            autoFocus
+                            initialScrollPosition="top"
+                            session={sessionView}
+                        />
                     </div>
 
                     {snapshot.errorMessage ? (

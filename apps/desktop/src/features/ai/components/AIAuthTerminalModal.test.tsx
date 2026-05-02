@@ -1,6 +1,9 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import { type Mock, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderComponent } from "../../../test/test-utils";
+import {
+    getXtermMockInstances,
+    renderComponent,
+} from "../../../test/test-utils";
 import { AIAuthTerminalModal } from "./AIAuthTerminalModal";
 
 const apiMocks = vi.hoisted(() => ({
@@ -113,6 +116,7 @@ describe("AIAuthTerminalModal", () => {
             expect(
                 screen.getByText("Waiting for Gemini sign-in"),
             ).toBeInTheDocument();
+            expect(getXtermMockInstances()[0]?.focusCalls).toBeGreaterThan(0);
         });
     });
 
@@ -166,5 +170,52 @@ describe("AIAuthTerminalModal", () => {
         expect(exitedUnlisten).toHaveBeenCalledOnce();
         expect(errorUnlisten).toHaveBeenCalledOnce();
         expect(apiMocks.aiStartAuthTerminalSession).not.toHaveBeenCalled();
+    });
+
+    it("does not restart sign-in when refresh callback identity changes", async () => {
+        const snapshot = {
+            sessionId: "authterm-stable",
+            runtimeId: "claude-acp",
+            program: "claude-agent-acp",
+            displayName: "Claude sign-in",
+            cwd: "/vault",
+            cols: 100,
+            rows: 28,
+            buffer: "Open browser to continue",
+            status: "running",
+            exitCode: null,
+            errorMessage: null,
+        };
+        apiMocks.aiStartAuthTerminalSession.mockResolvedValue(snapshot);
+
+        const view = renderComponent(
+            <AIAuthTerminalModal
+                open
+                runtimeId="claude-acp"
+                runtimeName="Claude"
+                vaultPath="/vault"
+                onClose={vi.fn()}
+                onRefreshSetup={vi.fn(async () => undefined)}
+            />,
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledOnce();
+        });
+
+        view.rerender(
+            <AIAuthTerminalModal
+                open
+                runtimeId="claude-acp"
+                runtimeName="Claude"
+                vaultPath="/vault"
+                onClose={vi.fn()}
+                onRefreshSetup={vi.fn(async () => undefined)}
+            />,
+        );
+        await Promise.resolve();
+
+        expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledOnce();
+        expect(apiMocks.aiCloseAuthTerminalSession).not.toHaveBeenCalled();
     });
 });

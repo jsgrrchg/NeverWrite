@@ -9935,7 +9935,7 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-1");
     });
 
-    it("accepts a newly created child session for a known parent without activating it", () => {
+    it("accepts and persists a newly created child session for a known parent without activating it", async () => {
         const parent = {
             ...createSessionWithTrackedFiles("session-parent", []),
             runtimeId: "codex-acp",
@@ -9973,6 +9973,120 @@ describe("chatStore", () => {
             child.sessionId,
         ]);
         expect(useChatStore.getState().activeSessionId).toBe(parent.sessionId);
+        await Promise.resolve();
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: child.sessionId,
+                parent_session_id: parent.sessionId,
+                messages: [],
+            }),
+        });
+    });
+
+    it("persists background child tool activity even when the child is not open", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+            vaultPath: "/vault",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+            vaultPath: "/vault",
+        };
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: child.sessionId,
+            tool_call_id: "tool-background-edit",
+            title: "Run edit",
+            kind: "edit",
+            status: "in_progress",
+            target: "/vault/notes/today.md",
+            summary: "Editing notes/today.md",
+        });
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: child.sessionId,
+                parent_session_id: parent.sessionId,
+                messages: expect.arrayContaining([
+                    expect.objectContaining({
+                        id: "tool:tool-background-edit",
+                        kind: "tool",
+                        content: "Editing notes/today.md",
+                    }),
+                ]),
+            }),
+        });
+    });
+
+    it("persists background child sessions to their own vault path", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+            vaultPath: "/vault-a",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "streaming" as const,
+            vaultPath: "/vault-a",
+        };
+
+        useVaultStore.setState({ vaultPath: "/vault-b" });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: child.sessionId,
+            event_id: "background-status",
+            kind: "item_activity",
+            status: "completed",
+            title: "Finished check",
+            detail: "Background status persisted",
+            emphasis: "neutral",
+        });
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault-a",
+            history: expect.objectContaining({
+                session_id: child.sessionId,
+                parent_session_id: parent.sessionId,
+            }),
+        });
     });
 
     it("preserves a known child parent when a runtime update omits it", () => {

@@ -57,10 +57,12 @@ const TERMINAL_RESIZE_SETTLE_MS = 80;
 export function TerminalViewport({
     active = true,
     autoFocus = false,
+    initialScrollPosition = "bottom",
     session,
 }: {
     active?: boolean;
     autoFocus?: boolean;
+    initialScrollPosition?: "top" | "bottom";
     session: TerminalSessionView;
 }) {
     const { rawOutput, resize, snapshot, writeInput } = session;
@@ -82,6 +84,7 @@ export function TerminalViewport({
     const lastSessionIdRef = useRef<string | null>(null);
     const lastRawOutputRef = useRef("");
     const lastRestoredFocusSessionIdRef = useRef<string | null>(null);
+    const shouldApplyInitialScrollRef = useRef(false);
     const shouldRestoreFocusRef = useRef(false);
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -319,6 +322,7 @@ export function TerminalViewport({
             lastSessionIdRef.current = null;
             lastRawOutputRef.current = "";
             lastRestoredFocusSessionIdRef.current = null;
+            shouldApplyInitialScrollRef.current = false;
             shouldRestoreFocusRef.current = false;
             setHasSelection(false);
             setFocused(false);
@@ -373,6 +377,8 @@ export function TerminalViewport({
             terminal.reset();
             lastSessionIdRef.current = sessionId;
             lastRawOutputRef.current = "";
+            shouldApplyInitialScrollRef.current =
+                initialScrollPosition === "top";
             queueMicrotask(() => {
                 setHasSelection(false);
                 setSearchResultCount(0);
@@ -390,7 +396,13 @@ export function TerminalViewport({
         ) {
             terminal.reset();
             if (rawOutput.length > 0) {
-                terminal.write(rawOutput);
+                terminal.write(rawOutput, () => {
+                    if (!shouldApplyInitialScrollRef.current) return;
+                    shouldApplyInitialScrollRef.current = false;
+                    terminal.scrollToTop();
+                });
+            } else {
+                shouldApplyInitialScrollRef.current = false;
             }
             lastRawOutputRef.current = rawOutput;
             return;
@@ -398,10 +410,14 @@ export function TerminalViewport({
 
         const nextChunk = rawOutput.slice(lastRawOutputRef.current.length);
         if (nextChunk.length > 0) {
-            terminal.write(nextChunk);
+            terminal.write(nextChunk, () => {
+                if (!shouldApplyInitialScrollRef.current) return;
+                shouldApplyInitialScrollRef.current = false;
+                terminal.scrollToTop();
+            });
         }
         lastRawOutputRef.current = rawOutput;
-    }, [rawOutput, snapshot.sessionId]);
+    }, [initialScrollPosition, rawOutput, snapshot.sessionId]);
 
     useEffect(() => {
         if (

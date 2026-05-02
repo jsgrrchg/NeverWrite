@@ -223,6 +223,7 @@ struct RuntimeSetupState {
     custom_binary_path: Option<String>,
     auth_ready: bool,
     auth_method: Option<String>,
+    suppress_persisted_auth: bool,
     has_gateway_config: bool,
     has_gateway_url: bool,
     message: Option<String>,
@@ -3299,7 +3300,7 @@ fn setup_status_for(
     } else {
         AiRuntimeBinarySource::Missing
     };
-    let inherited_auth_method = inherited_auth_method(runtime_id);
+    let inherited_auth_method = inherited_auth_method(runtime_id, !setup.suppress_persisted_auth);
     let auth_ready = setup.auth_ready || inherited_auth_method.is_some();
     let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
@@ -3342,7 +3343,10 @@ fn acp_process_spec(
     let mut env = setup.env.clone();
     if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == GEMINI_RUNTIME_ID {
-            env.insert("GEMINI_DEFAULT_AUTH_TYPE".to_string(), method.to_string());
+            env.insert(
+                "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
+                gemini_cli_auth_type(method).to_string(),
+            );
         }
     }
     Ok(AcpProcessSpec {
@@ -3501,6 +3505,14 @@ fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
     }
 }
 
+fn gemini_cli_auth_type(method_id: &str) -> &str {
+    match method_id {
+        "login_with_google" => "oauth-personal",
+        "use_gemini" => "gemini-api-key",
+        method_id => method_id,
+    }
+}
+
 fn auth_terminal_launch_config(
     runtime_id: &str,
     method_id: &str,
@@ -3543,7 +3555,7 @@ fn auth_terminal_launch_config(
         (GEMINI_RUNTIME_ID, "login_with_google") => {
             env.insert(
                 "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
-                "login_with_google".to_string(),
+                gemini_cli_auth_type(method_id).to_string(),
             );
             "Gemini Login".to_string()
         }
@@ -3677,22 +3689,103 @@ fn runtime_bin_env_var(runtime_id: &str) -> &'static str {
     }
 }
 
-fn inherited_auth_method(runtime_id: &str) -> Option<String> {
+fn inherited_auth_method(runtime_id: &str, include_persisted: bool) -> Option<String> {
     match runtime_id {
         CODEX_RUNTIME_ID => env_secret_present("CODEX_API_KEY")
             .then(|| "codex-api-key".to_string())
-            .or_else(|| env_secret_present("OPENAI_API_KEY").then(|| "openai-api-key".to_string())),
+            .or_else(|| env_secret_present("OPENAI_API_KEY").then(|| "openai-api-key".to_string()))
+            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
         CLAUDE_RUNTIME_ID => env_secret_present("ANTHROPIC_AUTH_TOKEN")
             .then(|| "console-login".to_string())
             .or_else(|| {
                 env_secret_present("ANTHROPIC_API_KEY").then(|| "anthropic-api-key".to_string())
             })
-            .or_else(|| env_secret_present("ANTHROPIC_BASE_URL").then(|| "gateway".to_string())),
+            .or_else(|| env_secret_present("ANTHROPIC_BASE_URL").then(|| "gateway".to_string()))
+            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
         GEMINI_RUNTIME_ID => env_secret_present("GEMINI_API_KEY")
             .then(|| "use_gemini".to_string())
-            .or_else(|| env_secret_present("GOOGLE_API_KEY").then(|| "use_gemini".to_string())),
-        KILO_RUNTIME_ID => None,
+            .or_else(|| env_secret_present("GOOGLE_API_KEY").then(|| "use_gemini".to_string()))
+            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
+        KILO_RUNTIME_ID => inherited_persisted_auth_method(runtime_id, include_persisted),
         _ => None,
+    }
+}
+
+fn inherited_persisted_auth_method(runtime_id: &str, include_persisted: bool) -> Option<String> {
+    include_persisted
+        .then(|| persisted_cli_auth_method(runtime_id))
+        .flatten()
+}
+
+fn persisted_cli_auth_method(runtime_id: &str) -> Option<String> {
+    let home = home_dir()?;
+    persisted_cli_auth_method_for_home(runtime_id, &home, is_claude_remote_environment())
+}
+
+fn persisted_cli_auth_method_for_home(
+    runtime_id: &str,
+    home: &Path,
+    is_claude_remote: bool,
+) -> Option<String> {
+    match runtime_id {
+        CODEX_RUNTIME_ID if non_empty_file_exists(&home.join(".codex").join("auth.json")) => {
+            Some("chatgpt".to_string())
+        }
+        CLAUDE_RUNTIME_ID if non_empty_file_exists(&home.join(".claude.json")) => {
+            let method_id = if is_claude_remote {
+                "claude-login"
+            } else {
+                "claude-ai-login"
+            };
+            Some(method_id.to_string())
+        }
+        GEMINI_RUNTIME_ID => non_empty_file_exists(&home.join(".gemini").join("oauth_creds.json"))
+            .then(|| "login_with_google".to_string()),
+        KILO_RUNTIME_ID if non_empty_file_exists_any(kilo_auth_file_candidates(home)) => {
+            Some("kilo-login".to_string())
+        }
+        _ => None,
+    }
+}
+
+fn kilo_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    candidates.push(
+        home.join(".local")
+            .join("share")
+            .join("kilo")
+            .join("auth.json"),
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(
+            std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+                .join("kilo")
+                .join("auth.json"),
+        );
+        candidates.push(
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData").join("Local"))
+                .join("kilo")
+                .join("auth.json"),
+        );
+    }
+
+    candidates
+}
+
+fn non_empty_file_exists_any(paths: impl IntoIterator<Item = PathBuf>) -> bool {
+    paths.into_iter().any(|path| non_empty_file_exists(&path))
+}
+
+fn non_empty_file_exists(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.is_file() && metadata.len() > 0,
+        Err(_) => false,
     }
 }
 
@@ -3742,6 +3835,7 @@ fn has_local_auth_config(setup: &RuntimeSetupState) -> bool {
 fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
     setup.auth_ready = false;
     setup.auth_method = None;
+    setup.suppress_persisted_auth = true;
     setup.has_gateway_config = false;
     setup.has_gateway_url = false;
     setup.message = None;
@@ -4062,6 +4156,7 @@ fn update_auth_state(
     }
     if touched_auth {
         setup.auth_ready = has_local_auth_config(setup);
+        setup.suppress_persisted_auth = false;
         setup.message = None;
     }
     Ok(())
@@ -4596,6 +4691,7 @@ fn mark_runtime_auth_pending(
         let setup = state.setup.entry(runtime_id.to_string()).or_default();
         setup.auth_method = Some(method_id.to_string());
         setup.auth_ready = false;
+        setup.suppress_persisted_auth = false;
         setup.message = None;
     }
 }
@@ -4609,6 +4705,7 @@ fn mark_runtime_auth_verified(
         let setup = state.setup.entry(runtime_id.to_string()).or_default();
         setup.auth_method = Some(method_id.to_string());
         setup.auth_ready = true;
+        setup.suppress_persisted_auth = false;
         setup.message = None;
     }
 }
@@ -5246,6 +5343,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let runtime = temp.path().join("fake-kilo");
         fs::write(&runtime, "#!/bin/sh\n").unwrap();
+        ai.inner.lock().unwrap().setup.insert(
+            KILO_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                suppress_persisted_auth: true,
+                ..RuntimeSetupState::default()
+            },
+        );
 
         let status = ai
             .update_setup(&json!({
@@ -6545,6 +6649,86 @@ mod tests {
     }
 
     #[test]
+    fn detects_persisted_gemini_oauth_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let gemini_dir = temp.path().join(".gemini");
+        fs::create_dir_all(&gemini_dir).unwrap();
+        fs::write(gemini_dir.join("oauth_creds.json"), "{}").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GEMINI_RUNTIME_ID, temp.path(), false),
+            Some("login_with_google".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_empty_persisted_gemini_oauth_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let gemini_dir = temp.path().join(".gemini");
+        fs::create_dir_all(&gemini_dir).unwrap();
+        fs::write(gemini_dir.join("oauth_creds.json"), "").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GEMINI_RUNTIME_ID, temp.path(), false),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_persisted_claude_credentials_for_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join(".claude.json"), "{}").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(CLAUDE_RUNTIME_ID, temp.path(), false),
+            Some("claude-ai-login".to_string())
+        );
+        assert_eq!(
+            persisted_cli_auth_method_for_home(CLAUDE_RUNTIME_ID, temp.path(), true),
+            Some("claude-login".to_string())
+        );
+    }
+
+    #[test]
+    fn detects_persisted_codex_chatgpt_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        fs::create_dir_all(&codex_dir).unwrap();
+        fs::write(codex_dir.join("auth.json"), "{}").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(CODEX_RUNTIME_ID, temp.path(), false),
+            Some("chatgpt".to_string())
+        );
+    }
+
+    #[test]
+    fn detects_persisted_kilo_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let kilo_dir = temp.path().join(".local").join("share").join("kilo");
+        fs::create_dir_all(&kilo_dir).unwrap();
+        fs::write(kilo_dir.join("auth.json"), "{}").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(KILO_RUNTIME_ID, temp.path(), false),
+            Some("kilo-login".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_empty_persisted_kilo_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let kilo_dir = temp.path().join(".local").join("share").join("kilo");
+        fs::create_dir_all(&kilo_dir).unwrap();
+        fs::write(kilo_dir.join("auth.json"), "").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(KILO_RUNTIME_ID, temp.path(), false),
+            None
+        );
+    }
+
+    #[test]
     fn auth_terminal_launch_config_does_not_use_acp_args_for_login() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
@@ -6587,7 +6771,25 @@ mod tests {
                 .env
                 .get("GEMINI_DEFAULT_AUTH_TYPE")
                 .map(String::as_str),
-            Some("login_with_google")
+            Some("oauth-personal")
+        );
+    }
+
+    #[test]
+    fn acp_process_spec_maps_gemini_api_key_method_to_cli_auth_type() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("use_gemini".to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GEMINI_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Gemini ACP process spec should resolve");
+
+        assert_eq!(
+            spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
+            Some("gemini-api-key")
         );
     }
 }

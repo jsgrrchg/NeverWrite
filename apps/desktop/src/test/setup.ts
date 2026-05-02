@@ -179,6 +179,7 @@ vi.mock("@xterm/xterm", () => ({
         screen: HTMLDivElement | null = null;
         textarea: HTMLTextAreaElement | undefined;
         focusCalls = 0;
+        scrollToTopCalls = 0;
         options: Record<string, unknown>;
         private selection = "";
         private readonly dataListeners = new Set<(data: string) => void>();
@@ -208,9 +209,10 @@ vi.mock("@xterm/xterm", () => ({
             this.textarea = textarea;
         }
 
-        write(text: string) {
+        write(text: string, callback?: () => void) {
             if (!this.screen) return;
             this.screen.textContent = (this.screen.textContent ?? "") + text;
+            callback?.();
         }
 
         reset() {
@@ -227,6 +229,10 @@ vi.mock("@xterm/xterm", () => ({
         focus() {
             this.focusCalls += 1;
             this.textarea?.dispatchEvent(new FocusEvent("focus"));
+        }
+
+        scrollToTop() {
+            this.scrollToTopCalls += 1;
         }
 
         selectAll() {

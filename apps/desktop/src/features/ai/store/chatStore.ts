@@ -4949,7 +4949,7 @@ function getSessionPersistenceKey(session: AIChatSession) {
 }
 
 async function persistSessionNow(session: AIChatSession) {
-    const vaultPath = useVaultStore.getState().vaultPath;
+    const vaultPath = getSessionVaultPath(session);
     if (!vaultPath) return;
     if (!hasPersistableSessionContent(session)) return;
 
@@ -5208,6 +5208,13 @@ function clearBufferedDeltasForSession(sessionId: string) {
 
 async function persistSession(session: AIChatSession) {
     scheduleSessionPersistence(session);
+}
+
+function persistCurrentSession(sessionId: string) {
+    const session = useChatStore.getState().sessionsById[sessionId];
+    if (session) {
+        void persistSession(session);
+    }
 }
 
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
@@ -6610,6 +6617,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         upsertSession: (session, activate = false) => {
             let shouldDrainQueue = false;
+            let sessionToPersist: AIChatSession | null = null;
             set((state) => {
                 const currentVaultPath = useVaultStore.getState().vaultPath;
                 const existing = state.sessionsById[session.sessionId];
@@ -6694,6 +6702,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     (existing?.status !== "idle" ||
                         Boolean(reconciledQueueState)) &&
                     !nextSession.isResumingSession;
+                sessionToPersist = nextSession;
 
                 return {
                     runtimes: nextRuntimes,
@@ -6737,6 +6746,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             if (shouldDrainQueue) {
                 void get().tryDrainQueue(session.sessionId);
+            }
+            if (sessionToPersist) {
+                void persistSession(sessionToPersist);
             }
         },
 
@@ -7100,8 +7112,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 };
             });
 
-            const updatedSession = get().sessionsById[session_id];
-            if (updatedSession) persistSession(updatedSession);
+            persistCurrentSession(session_id);
             void get().tryDrainQueue(session_id);
         },
 
@@ -7194,6 +7205,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            persistCurrentSession(session_id);
         },
 
         applyToolActivity: (payload) => {
@@ -7277,6 +7289,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
 
             const updatedSession = get().sessionsById[payload.session_id];
+            if (updatedSession) {
+                void persistSession(updatedSession);
+            }
             if (
                 payload.status === "completed" &&
                 updatedSession?.actionLog &&
@@ -7355,6 +7370,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            persistCurrentSession(payload.session_id);
         },
 
         applyImageGeneration: (payload) => {
@@ -7394,6 +7410,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            persistCurrentSession(payload.session_id);
         },
 
         applyPlanUpdate: (payload) => {
@@ -7432,6 +7449,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            persistCurrentSession(payload.session_id);
         },
 
         applyAvailableCommandsUpdate: (payload) => {
@@ -7517,6 +7535,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            persistCurrentSession(payload.session_id);
         },
 
         applyUserInputRequest: (payload) => {
@@ -7568,6 +7587,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ),
                 };
             });
+            persistCurrentSession(payload.session_id);
         },
 
         reconcileTrackedFilesFromVaultChange: async (change) => {
