@@ -3640,8 +3640,10 @@ fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> Resolv
     }
     let path = PathBuf::from(trimmed);
     if path.components().count() > 1 {
+        let executable_extensions = executable_extensions_for_path_lookup();
+        let program = find_executable_candidate(path.clone(), &executable_extensions);
         return ResolvedAcpCommand {
-            program: path.is_file().then_some(path.clone()),
+            program,
             args: Vec::new(),
             display: Some(path.display().to_string()),
             source,
@@ -4446,11 +4448,8 @@ fn find_executable_candidate(
     candidate: PathBuf,
     executable_extensions: &[String],
 ) -> Option<PathBuf> {
-    if is_executable_file(&candidate) {
-        return Some(candidate);
-    }
     if candidate.extension().is_some() {
-        return None;
+        return is_executable_file(&candidate).then_some(candidate);
     }
     for extension in executable_extensions {
         let mut with_extension = candidate.as_os_str().to_os_string();
@@ -4459,6 +4458,9 @@ fn find_executable_candidate(
         if is_executable_file(&with_extension) {
             return Some(with_extension);
         }
+    }
+    if is_executable_file(&candidate) {
+        return Some(candidate);
     }
     None
 }
@@ -5625,6 +5627,7 @@ mod tests {
     #[test]
     fn path_lookup_resolves_windows_cmd_shims_from_pathext() {
         let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("gemini"), "#!/usr/bin/env node\n").unwrap();
         let shim = temp.path().join("gemini.cmd");
         fs::write(&shim, "").unwrap();
 
@@ -5635,6 +5638,22 @@ mod tests {
         );
 
         assert_eq!(resolved, Some(shim));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn explicit_program_path_prefers_windows_extension_shim() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("gemini"), "#!/usr/bin/env node\n").unwrap();
+        let shim = temp.path().join("gemini.cmd");
+        fs::write(&shim, "").unwrap();
+
+        let resolved = resolve_command_candidate(
+            &temp.path().join("gemini").display().to_string(),
+            AiRuntimeBinarySource::Custom,
+        );
+
+        assert_eq!(resolved.program, Some(shim));
     }
 
     #[test]
