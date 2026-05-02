@@ -1111,6 +1111,9 @@ impl NativeAi {
             reader,
             Arc::clone(&handle.snapshot),
             Arc::clone(&handle.closed),
+            Arc::clone(&self.inner),
+            launch_config.runtime_id.clone(),
+            launch_config.method_id.clone(),
             self.event_tx.clone(),
         );
         spawn_auth_terminal_exit_monitor(
@@ -2200,7 +2203,10 @@ async fn run_acp_actor_inner(
                         }),
                     );
                     connection
-                        .send_request(NewSessionRequest::new(spec.cwd.clone()))
+                        .send_request(NewSessionRequest::new(acp_session_wire_cwd(
+                            &spec.runtime_id,
+                            &spec.cwd,
+                        )))
                         .block_task()
                         .await
                 } => response?,
@@ -4545,10 +4551,14 @@ fn spawn_auth_terminal_output_reader(
     mut reader: Box<dyn Read + Send>,
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     closed: Arc<AtomicBool>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    runtime_id: String,
+    method_id: String,
     event_tx: Sender<RpcOutput>,
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; AUTH_TERMINAL_OUTPUT_CHUNK_SIZE];
+        let mut verified_auth = false;
         loop {
             if closed.load(Ordering::Relaxed) {
                 break;
@@ -4563,6 +4573,15 @@ fn spawn_auth_terminal_output_reader(
                     let session_id = match snapshot.lock() {
                         Ok(mut snapshot) => {
                             append_auth_terminal_buffer(&mut snapshot.buffer, &chunk);
+                            if !verified_auth
+                                && auth_terminal_output_indicates_success(
+                                    &runtime_id,
+                                    &snapshot.buffer,
+                                )
+                            {
+                                mark_runtime_auth_verified(&session_state, &runtime_id, &method_id);
+                                verified_auth = true;
+                            }
                             snapshot.session_id.clone()
                         }
                         Err(_) => break,
@@ -4590,6 +4609,27 @@ fn spawn_auth_terminal_output_reader(
             }
         }
     });
+}
+
+fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> bool {
+    match runtime_id {
+        GEMINI_RUNTIME_ID => {
+            buffer.contains("Authentication succeeded")
+                || buffer.contains("successfully signed in with Google")
+        }
+        _ => false,
+    }
+}
+
+fn acp_session_wire_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
+    if runtime_id == GEMINI_RUNTIME_ID {
+        return PathBuf::from(normalize_path_for_node_acp(cwd));
+    }
+    cwd.to_path_buf()
+}
+
+fn normalize_path_for_node_acp(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn spawn_auth_terminal_exit_monitor(
@@ -6792,6 +6832,29 @@ mod tests {
                 .map(String::as_str),
             Some("oauth-personal")
         );
+    }
+
+    #[test]
+    fn gemini_auth_terminal_success_output_is_detected_before_exit() {
+        assert!(auth_terminal_output_indicates_success(
+            GEMINI_RUNTIME_ID,
+            "\u{1b}[33mAuthentication succeeded\u{1b}[0m\nYou've successfully signed in with Google."
+        ));
+        assert!(!auth_terminal_output_indicates_success(
+            CLAUDE_RUNTIME_ID,
+            "Authentication succeeded"
+        ));
+    }
+
+    #[test]
+    fn gemini_acp_session_cwd_uses_node_friendly_separators() {
+        let cwd = PathBuf::from(r"C:\Users\jsgrr\Vault");
+
+        let gemini_cwd = acp_session_wire_cwd(GEMINI_RUNTIME_ID, &cwd);
+        let codex_cwd = acp_session_wire_cwd(CODEX_RUNTIME_ID, &cwd);
+
+        assert_eq!(gemini_cwd.to_string_lossy(), "C:/Users/jsgrr/Vault");
+        assert_eq!(codex_cwd, cwd);
     }
 
     #[test]

@@ -292,6 +292,10 @@ export function AIAuthTerminalModal({
 
     const terminalExited =
         snapshot.status === "exited" || snapshot.status === "error";
+    const authSucceeded =
+        runtimeId === "gemini-acp" &&
+        (rawOutput.includes("Authentication succeeded") ||
+            rawOutput.includes("successfully signed in with Google"));
 
     return (
         <>
@@ -367,7 +371,9 @@ export function AIAuthTerminalModal({
                             <span style={{ color: "var(--text-primary)" }}>
                                 {snapshot.status === "starting"
                                     ? "Starting sign-in terminal"
-                                    : snapshot.status === "running"
+                                    : authSucceeded
+                                      ? `${runtimeName} sign-in succeeded`
+                                      : snapshot.status === "running"
                                       ? getRunningStatusLabel(runtimeName)
                                       : snapshot.status === "exited"
                                         ? "Terminal closed"
@@ -420,6 +426,8 @@ export function AIAuthTerminalModal({
                         >
                             {terminalExited
                                 ? `If sign-in completed, ${APP_BRAND_NAME} will detect it after refreshing setup.`
+                                : authSucceeded
+                                  ? `Sign-in completed. You can close this dialog; ${APP_BRAND_NAME} will refresh setup.`
                                 : "Complete the sign-in flow in the terminal, then close this dialog or wait for it to exit."}
                         </div>
                         <div className="flex items-center gap-2">
