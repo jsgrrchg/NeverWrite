@@ -1156,6 +1156,7 @@ interface ChatStore {
         anthropicBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
+        anthropicApiKey?: AISecretPatch;
     }) => Promise<void>;
     startAuth: (input: {
         runtimeId?: string;
@@ -1172,6 +1173,7 @@ interface ChatStore {
         anthropicBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
+        anthropicApiKey?: AISecretPatch;
     }) => Promise<void>;
     upsertSession: (session: AIChatSession, activate?: boolean) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
@@ -6520,7 +6522,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     secretPatchChanged(input.gatewayHeaders) ||
                     input.anthropicBaseUrl ||
                     secretPatchChanged(input.anthropicCustomHeaders) ||
-                    secretPatchChanged(input.anthropicAuthToken)
+                    secretPatchChanged(input.anthropicAuthToken) ||
+                    secretPatchChanged(
+                        input.anthropicApiKey ?? { action: "unchanged" },
+                    )
                 ) {
                     const setupStatus = await aiUpdateSetup({
                         runtimeId: targetRuntimeId,
@@ -6536,6 +6541,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         anthropicBaseUrl: input.anthropicBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
+                        anthropicApiKey: input.anthropicApiKey,
                     });
                     set((state) => ({
                         selectedRuntimeId: targetRuntimeId,

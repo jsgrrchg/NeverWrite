@@ -42,7 +42,10 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 function isApiKeyMethod(id?: string) {
     return (
-        id === "openai-api-key" || id === "codex-api-key" || id === "use_gemini"
+        id === "openai-api-key" ||
+        id === "codex-api-key" ||
+        id === "anthropic-api-key" ||
+        id === "use_gemini"
     );
 }
 
@@ -72,6 +75,8 @@ function getShortMethodDesc(id: string): string {
             return "OpenAI API key";
         case "codex-api-key":
             return "Codex API key";
+        case "anthropic-api-key":
+            return "Anthropic API key";
         case "gateway":
             return "Custom endpoint";
         case "login_with_google":
@@ -99,6 +104,8 @@ function getAuthHelpText(id: string): string {
             return `Store an OpenAI API key locally for ${APP_BRAND_NAME} only.`;
         case "codex-api-key":
             return `Store a Codex API key locally for ${APP_BRAND_NAME} only.`;
+        case "anthropic-api-key":
+            return `Store an Anthropic API key locally for ${APP_BRAND_NAME} only.`;
         case "gateway":
             return "Route requests through a custom gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
         case "login_with_google":
@@ -113,6 +120,7 @@ function getAuthHelpText(id: string): string {
 function getApiKeyPlaceholder(id?: string): string {
     if (id === "codex-api-key") return "Codex API key";
     if (id === "openai-api-key") return "OpenAI API key";
+    if (id === "anthropic-api-key") return "Anthropic API key";
     if (id === "use_gemini") return "Gemini API key";
     return "API key";
 }
@@ -406,6 +414,7 @@ function ProviderExpandedPanel({
         anthropicBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
+        anthropicApiKey: AISecretPatch;
     }) => void;
     onClearGateway: () => void;
     onLogout: () => void;
@@ -424,6 +433,7 @@ function ProviderExpandedPanel({
     const gatewaySelected = isGatewayMethod(selectedMethodId);
     const isOpenAi = selectedMethodId === "openai-api-key";
     const isCodex = selectedMethodId === "codex-api-key";
+    const isAnthropic = selectedMethodId === "anthropic-api-key";
     const isGemini = selectedMethodId === "use_gemini";
     const gatewayUrlError = gatewaySelected
         ? getClaudeGatewayUrlValidationMessage(gatewayUrl)
@@ -447,6 +457,9 @@ function ProviderExpandedPanel({
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
             geminiApiKey: isGemini
+                ? setSecretPatch(apiKey)
+                : unchangedSecretPatch,
+            anthropicApiKey: isAnthropic
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
             anthropicBaseUrl: gatewaySelected
@@ -903,6 +916,7 @@ export function AIProvidersSettings({
             anthropicBaseUrl?: string;
             anthropicCustomHeaders: AISecretPatch;
             anthropicAuthToken: AISecretPatch;
+            anthropicApiKey: AISecretPatch;
         }) => {
             const runtime = runtimes.find(
                 (r) => r.runtime.id === input.runtimeId,
@@ -930,6 +944,7 @@ export function AIProvidersSettings({
                     input.codexApiKey.action !== "unchanged" ||
                     input.openaiApiKey.action !== "unchanged" ||
                     input.geminiApiKey.action !== "unchanged" ||
+                    input.anthropicApiKey.action !== "unchanged" ||
                     input.anthropicBaseUrl !== undefined ||
                     input.anthropicCustomHeaders.action !== "unchanged" ||
                     input.anthropicAuthToken.action !== "unchanged"
@@ -948,6 +963,7 @@ export function AIProvidersSettings({
                         anthropicBaseUrl: input.anthropicBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
+                        anthropicApiKey: input.anthropicApiKey,
                     });
                     setSetupStatusMap((prev) => ({
                         ...prev,

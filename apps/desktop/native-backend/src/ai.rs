@@ -139,6 +139,8 @@ struct AiRuntimeSetupPayload {
     anthropic_custom_headers: Option<AiSecretPatch>,
     #[serde(default)]
     anthropic_auth_token: Option<AiSecretPatch>,
+    #[serde(default)]
+    anthropic_api_key: Option<AiSecretPatch>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -470,7 +472,7 @@ impl NativeAi {
             .custom_binary_path
             .clone()
             .and_then(normalize_optional_string);
-        update_auth_state(setup, &runtime_id, input);
+        update_auth_state(setup, &runtime_id, input)?;
         Ok(json!(setup_status_for(&runtime_id, setup.clone())?))
     }
 
@@ -3109,25 +3111,25 @@ fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
             CODEX_RUNTIME_ID,
             "Codex",
             "OpenAI Codex-compatible agent runtime.",
-            vec!["chatgpt", "openai-api-key", "codex-api-key"],
+            auth_method_ids(CODEX_RUNTIME_ID),
         ),
         (
             CLAUDE_RUNTIME_ID,
             "Claude",
             "Claude ACP-compatible agent runtime.",
-            vec!["claude-ai-login", "console-login", "gateway"],
+            auth_method_ids(CLAUDE_RUNTIME_ID),
         ),
         (
             GEMINI_RUNTIME_ID,
             "Gemini",
             "Gemini ACP-compatible agent runtime.",
-            vec!["login_with_google", "use_gemini"],
+            auth_method_ids(GEMINI_RUNTIME_ID),
         ),
         (
             KILO_RUNTIME_ID,
             "Kilo",
             "Kilo ACP-compatible agent runtime.",
-            vec!["kilo-login"],
+            auth_method_ids(KILO_RUNTIME_ID),
         ),
     ]
     .into_iter()
@@ -3492,7 +3494,7 @@ fn runtime_binary_name(base: &str) -> String {
 
 fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
     match runtime_id {
-        CLAUDE_RUNTIME_ID => "claude-ai-login",
+        CLAUDE_RUNTIME_ID => default_claude_terminal_auth_method(),
         GEMINI_RUNTIME_ID => "login_with_google",
         KILO_RUNTIME_ID => "kilo-login",
         _ => "terminal-login",
@@ -3514,6 +3516,7 @@ fn auth_terminal_launch_config(
         )
     })?;
     let mut args = resolved.args;
+    let mut env = setup.env.clone();
     let display_name = match (runtime_id, method_id) {
         (CLAUDE_RUNTIME_ID, "claude-ai-login") => {
             args.extend([
@@ -3537,7 +3540,13 @@ fn auth_terminal_launch_config(
             args.push("--cli".to_string());
             "Claude Login".to_string()
         }
-        (GEMINI_RUNTIME_ID, "login_with_google") => "Gemini Login".to_string(),
+        (GEMINI_RUNTIME_ID, "login_with_google") => {
+            env.insert(
+                "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
+                "login_with_google".to_string(),
+            );
+            "Gemini Login".to_string()
+        }
         (KILO_RUNTIME_ID, "kilo-login") => {
             args.extend(["auth".to_string(), "login".to_string()]);
             "Kilo Login".to_string()
@@ -3556,7 +3565,7 @@ fn auth_terminal_launch_config(
         args,
         display_name,
         cwd,
-        env: setup.env.clone(),
+        env,
         runtime_id: runtime_id.to_string(),
         method_id: method_id.to_string(),
     })
@@ -3676,7 +3685,7 @@ fn inherited_auth_method(runtime_id: &str) -> Option<String> {
         CLAUDE_RUNTIME_ID => env_secret_present("ANTHROPIC_AUTH_TOKEN")
             .then(|| "console-login".to_string())
             .or_else(|| {
-                env_secret_present("ANTHROPIC_API_KEY").then(|| "console-login".to_string())
+                env_secret_present("ANTHROPIC_API_KEY").then(|| "anthropic-api-key".to_string())
             })
             .or_else(|| env_secret_present("ANTHROPIC_BASE_URL").then(|| "gateway".to_string())),
         GEMINI_RUNTIME_ID => env_secret_present("GEMINI_API_KEY")
@@ -3697,6 +3706,10 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .env
             .get("OPENAI_API_KEY")
             .is_some_and(|value| !value.is_empty()),
+        "anthropic-api-key" => setup
+            .env
+            .get("ANTHROPIC_API_KEY")
+            .is_some_and(|value| !value.is_empty()),
         "use_gemini" => {
             setup
                 .env
@@ -3712,6 +3725,20 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
     }
 }
 
+fn has_local_auth_config(setup: &RuntimeSetupState) -> bool {
+    setup.has_gateway_config
+        || [
+            "CODEX_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        ]
+        .into_iter()
+        .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()))
+}
+
 fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
     setup.auth_ready = false;
     setup.auth_method = None;
@@ -3722,6 +3749,7 @@ fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
         "CODEX_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
         "ANTHROPIC_CUSTOM_HEADERS",
         "ANTHROPIC_BASE_URL",
         "GEMINI_API_KEY",
@@ -3784,23 +3812,7 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
                 description: "Use a Codex API key stored locally.".to_string(),
             },
         ],
-        CLAUDE_RUNTIME_ID => vec![
-            AiAuthMethod {
-                id: "claude-ai-login".to_string(),
-                name: "Claude subscription".to_string(),
-                description: "Open a terminal-based Claude subscription login flow.".to_string(),
-            },
-            AiAuthMethod {
-                id: "console-login".to_string(),
-                name: "Anthropic Console".to_string(),
-                description: "Open a terminal-based Anthropic Console login flow.".to_string(),
-            },
-            AiAuthMethod {
-                id: "gateway".to_string(),
-                name: "Custom gateway".to_string(),
-                description: "Use a custom Anthropic-compatible gateway.".to_string(),
-            },
-        ],
+        CLAUDE_RUNTIME_ID => claude_auth_methods_for_environment(is_claude_remote_environment()),
         GEMINI_RUNTIME_ID => vec![
             AiAuthMethod {
                 id: "login_with_google".to_string(),
@@ -3823,35 +3835,153 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
     }
 }
 
+fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
+    match runtime_id {
+        CODEX_RUNTIME_ID => vec!["chatgpt", "openai-api-key", "codex-api-key"],
+        CLAUDE_RUNTIME_ID => claude_auth_method_ids_for_environment(is_claude_remote_environment()),
+        GEMINI_RUNTIME_ID => vec!["login_with_google", "use_gemini"],
+        KILO_RUNTIME_ID => vec!["kilo-login"],
+        _ => vec![],
+    }
+}
+
+fn is_claude_remote_environment() -> bool {
+    [
+        "NO_BROWSER",
+        "SSH_CONNECTION",
+        "SSH_CLIENT",
+        "SSH_TTY",
+        "CLAUDE_CODE_REMOTE",
+    ]
+    .into_iter()
+    .any(|key| std::env::var_os(key).is_some())
+}
+
+fn default_claude_terminal_auth_method() -> &'static str {
+    if is_claude_remote_environment() {
+        "claude-login"
+    } else {
+        "claude-ai-login"
+    }
+}
+
+fn claude_auth_method_ids_for_environment(is_remote: bool) -> Vec<&'static str> {
+    if is_remote {
+        vec!["claude-login", "anthropic-api-key", "gateway"]
+    } else {
+        vec![
+            "claude-ai-login",
+            "console-login",
+            "anthropic-api-key",
+            "gateway",
+        ]
+    }
+}
+
+fn claude_auth_methods_for_environment(is_remote: bool) -> Vec<AiAuthMethod> {
+    let gateway = AiAuthMethod {
+        id: "gateway".to_string(),
+        name: "Custom gateway".to_string(),
+        description: "Use a custom Anthropic-compatible gateway.".to_string(),
+    };
+
+    if is_remote {
+        return vec![
+            AiAuthMethod {
+                id: "claude-login".to_string(),
+                name: "Log in with Claude".to_string(),
+                description:
+                    "Open Claude's terminal login flow for remote or no-browser environments."
+                        .to_string(),
+            },
+            AiAuthMethod {
+                id: "anthropic-api-key".to_string(),
+                name: "Anthropic API key".to_string(),
+                description: "Use an Anthropic API key stored locally.".to_string(),
+            },
+            gateway,
+        ];
+    }
+
+    vec![
+        AiAuthMethod {
+            id: "claude-ai-login".to_string(),
+            name: "Claude subscription".to_string(),
+            description: "Open a terminal-based Claude subscription login flow.".to_string(),
+        },
+        AiAuthMethod {
+            id: "console-login".to_string(),
+            name: "Anthropic Console".to_string(),
+            description: "Open a terminal-based Anthropic Console login flow.".to_string(),
+        },
+        AiAuthMethod {
+            id: "anthropic-api-key".to_string(),
+            name: "Anthropic API key".to_string(),
+            description: "Use an Anthropic API key stored locally.".to_string(),
+        },
+        gateway,
+    ]
+}
+
+fn validate_claude_gateway_url(raw: &str) -> Result<(), String> {
+    let parsed =
+        reqwest::Url::parse(raw.trim()).map_err(|_| "Enter a valid gateway URL.".to_string())?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Gateway URL must not include embedded credentials.".to_string());
+    }
+    let host = parsed
+        .host_str()
+        .filter(|host| !host.trim().is_empty())
+        .ok_or_else(|| "Enter a valid gateway URL.".to_string())?;
+
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_gateway_hostname(host) => Ok(()),
+        "http" => Err("HTTP gateways are only allowed for localhost.".to_string()),
+        _ => Err("Gateway URL must use HTTPS.".to_string()),
+    }
+}
+
+fn is_loopback_gateway_hostname(hostname: &str) -> bool {
+    let normalized = hostname
+        .trim_matches(|ch| ch == '[' || ch == ']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    if normalized == "localhost" || normalized.ends_with(".localhost") || normalized == "::1" {
+        return true;
+    }
+
+    normalized
+        .parse::<std::net::Ipv4Addr>()
+        .map(|addr| addr.octets()[0] == 127)
+        .unwrap_or(false)
+}
+
 fn update_auth_state(
     setup: &mut RuntimeSetupState,
     runtime_id: &str,
     input: AiRuntimeSetupPayload,
-) {
-    let has_gateway_url = input
+) -> Result<(), String> {
+    let gateway_url_touched =
+        input.gateway_base_url.is_some() || input.anthropic_base_url.is_some();
+    let gateway_headers_patch = input
+        .anthropic_custom_headers
+        .clone()
+        .or_else(|| input.gateway_headers.clone());
+    let gateway_config_touched = runtime_id == CLAUDE_RUNTIME_ID
+        && (gateway_url_touched
+            || gateway_headers_patch.is_some()
+            || (input.anthropic_auth_token.is_some() && gateway_url_touched));
+    let gateway_base_url = input
         .gateway_base_url
         .as_ref()
-        .and_then(|value| normalize_optional_string(value.clone()))
-        .or_else(|| {
-            input
-                .anthropic_base_url
-                .as_ref()
-                .and_then(|value| normalize_optional_string(value.clone()))
-        })
-        .is_some();
-    let has_gateway_config = has_gateway_url
-        || input.gateway_headers.is_some()
-        || input.anthropic_custom_headers.is_some()
-        || input
-            .google_cloud_project
-            .as_ref()
-            .and_then(|value| normalize_optional_string(value.clone()))
-            .is_some()
-        || input
-            .google_cloud_location
-            .as_ref()
-            .and_then(|value| normalize_optional_string(value.clone()))
-            .is_some();
+        .or(input.anthropic_base_url.as_ref())
+        .and_then(|value| normalize_optional_string(value.clone()));
+    if let Some(value) = gateway_base_url.as_deref() {
+        validate_claude_gateway_url(value)?;
+    }
+
     let mut touched_auth = false;
     if runtime_id == CODEX_RUNTIME_ID {
         if let Some(patch) = input.openai_api_key.clone() {
@@ -3862,12 +3992,28 @@ fn update_auth_state(
         }
     }
     if runtime_id == CLAUDE_RUNTIME_ID {
-        if let Some(patch) = input.anthropic_auth_token.clone() {
+        if let Some(patch) = input.anthropic_api_key.clone() {
             touched_auth |=
-                apply_secret_patch(setup, "ANTHROPIC_AUTH_TOKEN", patch, "console-login");
+                apply_secret_patch(setup, "ANTHROPIC_API_KEY", patch, "anthropic-api-key");
         }
-        if let Some(patch) = input.anthropic_custom_headers.clone() {
+        if let Some(patch) = input.anthropic_auth_token.clone() {
+            let auth_method = if gateway_url_touched || gateway_headers_patch.is_some() {
+                "gateway"
+            } else {
+                "console-login"
+            };
+            touched_auth |= apply_secret_patch(setup, "ANTHROPIC_AUTH_TOKEN", patch, auth_method);
+        }
+        if let Some(patch) = gateway_headers_patch {
             touched_auth |= apply_secret_patch(setup, "ANTHROPIC_CUSTOM_HEADERS", patch, "gateway");
+        }
+        if gateway_url_touched {
+            if let Some(value) = gateway_base_url {
+                setup.env.insert("ANTHROPIC_BASE_URL".to_string(), value);
+            } else {
+                setup.env.remove("ANTHROPIC_BASE_URL");
+            }
+            touched_auth = true;
         }
     }
     if runtime_id == GEMINI_RUNTIME_ID {
@@ -3879,37 +4025,46 @@ fn update_auth_state(
         }
     }
 
-    setup.has_gateway_url = has_gateway_url;
-    setup.has_gateway_config = has_gateway_config;
-    if has_gateway_config {
-        setup
-            .auth_method
-            .get_or_insert_with(|| "gateway".to_string());
+    if input.google_cloud_project.is_some() {
         if let Some(value) = input
-            .gateway_base_url
-            .or(input.anthropic_base_url)
+            .google_cloud_project
             .and_then(normalize_optional_string)
         {
-            setup.env.insert("ANTHROPIC_BASE_URL".to_string(), value);
+            setup.env.insert("GOOGLE_CLOUD_PROJECT".to_string(), value);
+        } else {
+            setup.env.remove("GOOGLE_CLOUD_PROJECT");
         }
+    }
+    if input.google_cloud_location.is_some() {
+        if let Some(value) = input
+            .google_cloud_location
+            .and_then(normalize_optional_string)
+        {
+            setup.env.insert("GOOGLE_CLOUD_LOCATION".to_string(), value);
+        } else {
+            setup.env.remove("GOOGLE_CLOUD_LOCATION");
+        }
+    }
+
+    setup.has_gateway_url = setup
+        .env
+        .get("ANTHROPIC_BASE_URL")
+        .is_some_and(|value| !value.is_empty());
+    setup.has_gateway_config = runtime_id == CLAUDE_RUNTIME_ID
+        && (setup.has_gateway_url
+            || setup
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .is_some_and(|value| !value.is_empty()));
+    if setup.has_gateway_config && gateway_config_touched {
+        setup.auth_method = Some("gateway".to_string());
         touched_auth = true;
     }
-    if let Some(value) = input
-        .google_cloud_project
-        .and_then(normalize_optional_string)
-    {
-        setup.env.insert("GOOGLE_CLOUD_PROJECT".to_string(), value);
-    }
-    if let Some(value) = input
-        .google_cloud_location
-        .and_then(normalize_optional_string)
-    {
-        setup.env.insert("GOOGLE_CLOUD_LOCATION".to_string(), value);
-    }
     if touched_auth {
-        setup.auth_ready = !setup.env.is_empty() || has_gateway_config;
+        setup.auth_ready = has_local_auth_config(setup);
         setup.message = None;
     }
+    Ok(())
 }
 
 fn apply_secret_patch(
@@ -3922,9 +4077,7 @@ fn apply_secret_patch(
         "set" => {
             if let Some(value) = patch.value.and_then(normalize_optional_string) {
                 setup.env.insert(env_key.to_string(), value);
-                setup
-                    .auth_method
-                    .get_or_insert_with(|| auth_method.to_string());
+                setup.auth_method = Some(auth_method.to_string());
                 setup.auth_ready = true;
                 setup.message = None;
                 return true;
@@ -5209,6 +5362,98 @@ mod tests {
     }
 
     #[test]
+    fn setup_rejects_remote_http_claude_gateway_urls() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+
+        let error = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_base_url": "http://gateway.example",
+                    "anthropic_auth_token": { "action": "set", "value": "test-token" }
+                }
+            }))
+            .expect_err("remote HTTP gateway URLs should be rejected by the backend");
+
+        assert_eq!(error, "HTTP gateways are only allowed for localhost.");
+    }
+
+    #[test]
+    fn setup_accepts_local_http_claude_gateway_urls() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_base_url": "http://localhost:3000",
+                    "anthropic_auth_token": { "action": "set", "value": "test-token" }
+                }
+            }))
+            .expect("localhost HTTP gateways are allowed for development");
+
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("gateway")
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn setup_uses_gateway_auth_method_when_gateway_has_token() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_base_url": "https://gateway.example",
+                    "anthropic_auth_token": { "action": "set", "value": "test-token" }
+                }
+            }))
+            .expect("gateway setup should update");
+
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("gateway")
+        );
+        assert_eq!(
+            status.get("has_gateway_config").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn setup_accepts_anthropic_api_key_auth() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_api_key": { "action": "set", "value": "test-key" }
+                }
+            }))
+            .expect("Anthropic API key setup should update");
+
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("anthropic-api-key")
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn start_auth_preserves_configured_api_key_auth() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
@@ -6265,6 +6510,41 @@ mod tests {
     }
 
     #[test]
+    fn claude_auth_methods_match_local_environment_contract() {
+        let method_ids = claude_auth_method_ids_for_environment(false);
+        assert_eq!(
+            method_ids,
+            vec![
+                "claude-ai-login",
+                "console-login",
+                "anthropic-api-key",
+                "gateway"
+            ]
+        );
+
+        let methods = claude_auth_methods_for_environment(false)
+            .into_iter()
+            .map(|method| method.id)
+            .collect::<Vec<_>>();
+        assert_eq!(methods, method_ids);
+    }
+
+    #[test]
+    fn claude_auth_methods_match_remote_environment_contract() {
+        let method_ids = claude_auth_method_ids_for_environment(true);
+        assert_eq!(
+            method_ids,
+            vec!["claude-login", "anthropic-api-key", "gateway"]
+        );
+
+        let methods = claude_auth_methods_for_environment(true)
+            .into_iter()
+            .map(|method| method.id)
+            .collect::<Vec<_>>();
+        assert_eq!(methods, method_ids);
+    }
+
+    #[test]
     fn auth_terminal_launch_config_does_not_use_acp_args_for_login() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
@@ -6282,5 +6562,32 @@ mod tests {
 
         assert_eq!(config.args, vec!["auth".to_string(), "login".to_string()]);
         assert_eq!(config.display_name, "Kilo Login");
+    }
+
+    #[test]
+    fn auth_terminal_launch_config_forces_gemini_google_login_method() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            GEMINI_RUNTIME_ID,
+            "login_with_google",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert!(config.args.is_empty());
+        assert_eq!(config.display_name, "Gemini Login");
+        assert_eq!(
+            config
+                .env
+                .get("GEMINI_DEFAULT_AUTH_TYPE")
+                .map(String::as_str),
+            Some("login_with_google")
+        );
     }
 }

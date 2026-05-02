@@ -277,6 +277,7 @@ export async function aiUpdateSetup(input: {
     anthropicBaseUrl?: string;
     anthropicCustomHeaders: AISecretPatch;
     anthropicAuthToken: AISecretPatch;
+    anthropicApiKey?: AISecretPatch;
 }) {
     const status = await invoke<AIBackendRuntimeSetupStatusPayload>(
         "ai_update_setup",
@@ -294,6 +295,7 @@ export async function aiUpdateSetup(input: {
                 anthropic_base_url: input.anthropicBaseUrl ?? null,
                 anthropic_custom_headers: input.anthropicCustomHeaders,
                 anthropic_auth_token: input.anthropicAuthToken,
+                anthropic_api_key: input.anthropicApiKey ?? { action: "unchanged" },
             },
             runtimeId: input.runtimeId,
         },

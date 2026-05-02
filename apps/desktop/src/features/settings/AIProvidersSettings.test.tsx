@@ -120,6 +120,11 @@ function createDefaultProviders() {
                         "Open a terminal-based Anthropic Console login flow.",
                 },
                 {
+                    id: "anthropic-api-key",
+                    name: "Anthropic API key",
+                    description: "Use an Anthropic API key stored locally.",
+                },
+                {
                     id: "gateway",
                     name: "Custom gateway",
                     description:
@@ -308,6 +313,38 @@ describe("AIProvidersSettings", () => {
                 }),
             );
         });
+    });
+
+    it("submits Anthropic API keys through provider settings", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Claude");
+        fireEvent.click(getButtonFromText("Anthropic API key"));
+        fireEvent.change(screen.getByPlaceholderText("Anthropic API key"), {
+            target: { value: "anthropic-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and connect" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "claude-acp",
+                    anthropicApiKey: {
+                        action: "set",
+                        value: "anthropic-secret",
+                    },
+                    anthropicBaseUrl: undefined,
+                    anthropicCustomHeaders: { action: "unchanged" },
+                    anthropicAuthToken: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
+            { methodId: "anthropic-api-key", runtimeId: "claude-acp" },
+            null,
+        );
     });
 
     it("logs providers out through the native backend logout command", async () => {
