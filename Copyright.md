@@ -254,7 +254,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | No local source delta; synced to upstream `@agentclientprotocol/claude-agent-acp` `0.31.4` with rebuilt `dist/` runtime files |
+| Vendored snapshot     | No local source delta; synced to upstream `@agentclientprotocol/claude-agent-acp` `0.31.4-3-gc78ac62` with rebuilt `dist/` runtime files |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at

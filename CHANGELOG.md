@@ -36,6 +36,14 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [0.2.2] - 2026-05-03
 
+### Changed
+
+- Updated the embedded Claude ACP runtime to the latest upstream `0.31.4` snapshot, keeping NeverWrite aligned with Claude Code `v2.1.123` and picking up upstream runtime dependency fixes.
+
+### Security
+
+- Updated the embedded Claude ACP runtime's vendored dependencies to include upstream Hono security fixes for JSX tag validation and chunked request body limits.
+
 ### Fixed
 
 - Fixed Codex subagent threads so their sidebar `Working` state now follows the child agent's own turn lifecycle instead of relying on parent-thread breadcrumbs.
