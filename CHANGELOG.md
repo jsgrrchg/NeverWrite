@@ -34,6 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.2] - 2026-05-03
+
+### Fixed
+
+- Fixed Codex subagent threads so their sidebar `Working` state now follows the child agent's own turn lifecycle instead of relying on parent-thread breadcrumbs.
+- Fixed subagent completion handling so child threads return to idle when their ACP turn completes, aborts, or shuts down, even when the parent thread is not actively open.
+- Fixed stale Codex subagent turn completion events so an older completed turn can no longer mark a reactivated child agent as idle while it is already working on a newer turn.
+- Fixed subagent reactivation so resumed or still-running child agents are no longer incorrectly marked idle by parent `interaction_end`, `resume_end`, or `waiting_end` breadcrumbs.
+- Fixed subagent reactivation in the sidebar so live child sessions can return to `Working` from backend lifecycle updates while root sessions remain protected from stale streaming updates.
+- Fixed multi-subagent waiting updates so a completed child no longer causes every sibling subagent under the same parent to stop showing as working.
+- Fixed Codex ACP lifecycle projection by emitting structured turn lifecycle metadata and structured waiting-status metadata for subagents.
+
 ## [0.2.1] - 2026-05-02
 
 ### Added

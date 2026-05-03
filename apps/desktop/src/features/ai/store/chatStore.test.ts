@@ -568,6 +568,41 @@ describe("chatStore", () => {
         });
     });
 
+    it("keeps root backend streaming upserts from reviving stale sessions", () => {
+        const session = createSessionWithTrackedFiles("root-session", []);
+        useChatStore.getState().upsertSession(session, true);
+        useChatStore.getState().upsertSession({
+            ...session,
+            status: "streaming",
+            runtimeState: "live",
+        });
+
+        expect(
+            useChatStore.getState().sessionsById["root-session"]?.status,
+        ).toBe("idle");
+    });
+
+    it("allows backend streaming upserts to reactivate live child sessions", () => {
+        const parent = createSessionWithTrackedFiles("parent-session", []);
+        const child = {
+            ...createSessionWithTrackedFiles("child-session", []),
+            parentSessionId: "parent-session",
+            runtimeSessionId: "child-runtime-session",
+            runtimeState: "live" as const,
+        };
+
+        useChatStore.getState().upsertSession(parent, true);
+        useChatStore.getState().upsertSession(child);
+        useChatStore.getState().upsertSession({
+            ...child,
+            status: "streaming",
+        });
+
+        expect(
+            useChatStore.getState().sessionsById["child-session"]?.status,
+        ).toBe("streaming");
+    });
+
     it("persists auto context per vault path", () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();

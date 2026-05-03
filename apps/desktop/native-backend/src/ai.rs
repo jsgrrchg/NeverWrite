@@ -62,12 +62,21 @@ const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
+const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
 const CODEX_ACP_REASONING_EFFORT_KEY: &str = "codexAcpReasoningEffort";
 const CODEX_ACP_CWD_KEY: &str = "codexAcpCwd";
 const CODEX_ACP_SUBAGENT_CREATED_EVENT_TYPE: &str = "subagent_session_created";
 const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
 const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY: &str = "codexAcpSubagentEventType";
+const CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE: &str = "turn_lifecycle";
+const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
+const CODEX_ACP_TURN_ID_KEY: &str = "codexAcpTurnId";
+const CODEX_ACP_TURN_STARTED_EVENT_TYPE: &str = "turn_started";
+const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
+const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
+const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE: &str = "resume_end";
@@ -236,6 +245,7 @@ struct ManagedAiSession {
     vault_root: Option<PathBuf>,
     additional_roots: Vec<PathBuf>,
     runtime_handle: Option<AcpSessionHandle>,
+    active_turn_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -648,6 +658,7 @@ impl NativeAi {
                 vault_root,
                 additional_roots,
                 runtime_handle: Some(handle),
+                active_turn_id: None,
             },
         );
         touch_session(&mut state, &session.session_id);
@@ -675,6 +686,7 @@ impl NativeAi {
                 vault_root,
                 additional_roots: vec![],
                 runtime_handle: None,
+                active_turn_id: None,
             },
         );
         touch_session(&mut state, &session.session_id);
@@ -709,6 +721,7 @@ impl NativeAi {
                 vault_root,
                 additional_roots: vec![],
                 runtime_handle: None,
+                active_turn_id: None,
             },
         );
         touch_session(&mut state, &session.session_id);
@@ -1597,12 +1610,64 @@ impl NativeAcpClient {
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
             let managed = state.sessions.get_mut(session_id)?;
+            managed.active_turn_id = None;
             managed.session.status = AiSessionStatus::Idle;
             Some(managed.session.clone())
         });
         if let Some(session) = session {
             self.emit(AI_SESSION_UPDATED_EVENT, session);
         }
+    }
+
+    fn begin_session_turn(&self, session_id: &str, turn_id: Option<String>) {
+        let session = self.session_state.lock().ok().and_then(|mut state| {
+            let managed = state.sessions.get_mut(session_id)?;
+            managed.active_turn_id = turn_id;
+            if managed.session.status == AiSessionStatus::Streaming {
+                return None;
+            }
+            managed.session.status = AiSessionStatus::Streaming;
+            let session = managed.session.clone();
+            touch_session(&mut state, session_id);
+            Some(session)
+        });
+        if let Some(session) = session {
+            self.emit(AI_SESSION_UPDATED_EVENT, session);
+        }
+    }
+
+    fn end_session_turn(&self, session_id: &str, turn_id: Option<&str>) {
+        let should_mark_idle = match self.session_state.lock().ok() {
+            Some(mut state) => {
+                let Some(managed) = state.sessions.get_mut(session_id) else {
+                    return;
+                };
+                if let Some(active_turn_id) = managed.active_turn_id.as_deref() {
+                    if turn_id.is_some_and(|turn_id| turn_id != active_turn_id) {
+                        return;
+                    }
+                }
+                managed.active_turn_id = None;
+                true
+            }
+            None => false,
+        };
+        if should_mark_idle {
+            self.mark_session_idle(session_id);
+        }
+    }
+
+    fn is_child_session(&self, session_id: &str) -> bool {
+        self.session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|managed| managed.session.parent_session_id.is_some())
+            })
+            .unwrap_or(false)
     }
 
     fn resolve_app_session_id(&self, runtime_session_id: &str, meta: Option<&Meta>) -> String {
@@ -1704,6 +1769,7 @@ impl NativeAcpClient {
                 vault_root: parent.vault_root,
                 additional_roots: parent.additional_roots,
                 runtime_handle: parent.runtime_handle,
+                active_turn_id: None,
             },
         );
         touch_session(&mut state, &session.session_id);
@@ -1715,6 +1781,39 @@ impl NativeAcpClient {
         }
         self.emit(AI_SESSION_CREATED_EVENT, &session);
         Some(session)
+    }
+
+    fn handle_turn_lifecycle_update(&self, session_id: &str, meta: Option<&Meta>) -> bool {
+        let Some(meta) = meta else {
+            return false;
+        };
+        if meta_string(meta, CODEX_ACP_EVENT_TYPE_KEY).as_deref()
+            != Some(CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE)
+        {
+            return false;
+        }
+
+        let Some(turn_event_type) = meta_string(meta, CODEX_ACP_TURN_EVENT_TYPE_KEY) else {
+            return true;
+        };
+
+        // Root sessions already close through the blocking ACP PromptRequest path.
+        // Applying lifecycle only to children prevents duplicate main-thread turn closure.
+        if !self.is_child_session(session_id) {
+            return true;
+        }
+
+        let turn_id = meta_string(meta, CODEX_ACP_TURN_ID_KEY);
+        match turn_event_type.as_str() {
+            CODEX_ACP_TURN_STARTED_EVENT_TYPE => self.begin_session_turn(session_id, turn_id),
+            CODEX_ACP_TURN_COMPLETE_EVENT_TYPE
+            | CODEX_ACP_TURN_ABORTED_EVENT_TYPE
+            | CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE => {
+                self.end_session_turn(session_id, turn_id.as_deref());
+            }
+            _ => {}
+        }
+        true
     }
 
     fn handle_subagent_lifecycle_breadcrumb(&self, parent_session_id: &str, meta: Option<&Meta>) {
@@ -1738,26 +1837,32 @@ impl NativeAcpClient {
 
     fn child_session_ids_for_terminal_subagent_breadcrumb(
         &self,
-        parent_session_id: &str,
+        _parent_session_id: &str,
         meta: &Meta,
     ) -> Vec<String> {
         let Some(subagent_event_type) = meta_string(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY) else {
             return vec![];
         };
 
-        let closes_single_child = matches!(
-            subagent_event_type.as_str(),
-            CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE
-                | CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE
-                | CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE
-        );
-        if closes_single_child {
-            return meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
-                .and_then(|runtime_child_session_id| {
-                    self.find_app_session_id(&runtime_child_session_id)
-                })
+        if subagent_event_type == CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE {
+            return self
+                .child_session_id_from_breadcrumb_meta(meta)
                 .into_iter()
                 .collect();
+        }
+
+        if matches!(
+            subagent_event_type.as_str(),
+            CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE
+                | CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE
+        ) {
+            if codex_acp_agent_status_is_terminal(meta).unwrap_or(false) {
+                return self
+                    .child_session_id_from_breadcrumb_meta(meta)
+                    .into_iter()
+                    .collect();
+            }
+            return vec![];
         }
 
         if subagent_event_type != CODEX_ACP_SUBAGENT_WAITING_END_EVENT_TYPE {
@@ -1765,23 +1870,44 @@ impl NativeAcpClient {
         }
 
         if let Some(runtime_child_session_id) = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY) {
-            return self
-                .find_app_session_id(&runtime_child_session_id)
-                .into_iter()
-                .collect();
+            if codex_acp_agent_status_is_terminal(meta).unwrap_or(false) {
+                return self
+                    .find_app_session_id(&runtime_child_session_id)
+                    .into_iter()
+                    .collect();
+            }
+            return vec![];
         }
 
-        self.session_state
-            .lock()
-            .ok()
-            .map(|state| {
-                state
-                    .sessions
-                    .values()
-                    .filter(|managed| {
-                        managed.session.parent_session_id.as_deref() == Some(parent_session_id)
+        self.terminal_child_session_ids_from_agent_statuses(meta)
+    }
+
+    fn child_session_id_from_breadcrumb_meta(&self, meta: &Meta) -> Option<String> {
+        meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY).and_then(|runtime_child_session_id| {
+            self.find_app_session_id(&runtime_child_session_id)
+        })
+    }
+
+    fn terminal_child_session_ids_from_agent_statuses(&self, meta: &Meta) -> Vec<String> {
+        meta.get(CODEX_ACP_AGENT_STATUSES_KEY)
+            .and_then(Value::as_array)
+            .map(|statuses| {
+                statuses
+                    .iter()
+                    .filter(|status| {
+                        status
+                            .get(CODEX_ACP_AGENT_STATUS_KEY)
+                            .and_then(codex_acp_agent_status_value_is_terminal)
+                            .unwrap_or(false)
                     })
-                    .map(|managed| managed.session.session_id.clone())
+                    .filter_map(|status| {
+                        status
+                            .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
+                            .and_then(Value::as_str)
+                            .and_then(|runtime_child_session_id| {
+                                self.find_app_session_id(runtime_child_session_id)
+                            })
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -1867,6 +1993,9 @@ impl NativeAcpClient {
         let runtime_session_id = args.session_id.0.to_string();
         let meta = merged_session_notification_meta(&args);
         let session_id = self.resolve_app_session_id(&runtime_session_id, meta.as_ref());
+        if self.handle_turn_lifecycle_update(&session_id, meta.as_ref()) {
+            return Ok(());
+        }
         match args.update {
             SessionUpdate::AgentMessageChunk(ContentChunk {
                 content: ContentBlock::Text(text),
@@ -2875,6 +3004,37 @@ fn meta_string(meta: &Meta, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+fn codex_acp_agent_status_is_terminal(meta: &Meta) -> Option<bool> {
+    meta.get(CODEX_ACP_AGENT_STATUS_KEY)
+        .and_then(codex_acp_agent_status_value_is_terminal)
+}
+
+fn codex_acp_agent_status_value_is_terminal(value: &Value) -> Option<bool> {
+    if let Some(status) = value.as_str() {
+        return Some(matches!(
+            status,
+            "errored" | "interrupted" | "shutdown" | "not_found"
+        ));
+    }
+
+    let object = value.as_object()?;
+    if object.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "errored" | "interrupted" | "shutdown" | "not_found"
+        )
+    }) {
+        return Some(true);
+    }
+    if object
+        .keys()
+        .any(|key| matches!(key.as_str(), "running" | "pending_init"))
+    {
+        return Some(false);
+    }
+    None
 }
 
 fn acp_event_type(meta: &Meta) -> Option<&str> {
@@ -4937,10 +5097,18 @@ mod tests {
     const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
     const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
     const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
+    const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
+    const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
     const CODEX_ACP_SUBAGENT_CREATED_EVENT: &str = "subagent_session_created";
     const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT: &str = "subagent_breadcrumb";
     const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY: &str = "codexAcpSubagentEventType";
+    const CODEX_ACP_TURN_LIFECYCLE_EVENT: &str = "turn_lifecycle";
+    const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
+    const CODEX_ACP_TURN_STARTED_EVENT: &str = "turn_started";
+    const CODEX_ACP_TURN_COMPLETE_EVENT: &str = "turn_complete";
     const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT: &str = "close_end";
+    const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT: &str = "interaction_end";
+    const CODEX_ACP_SUBAGENT_RESUME_END_EVENT: &str = "resume_end";
     const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
@@ -5002,6 +5170,27 @@ mod tests {
         )
     }
 
+    fn turn_lifecycle_notification_fixture(
+        runtime_session_id: &str,
+        turn_event_type: &str,
+        turn_id: &str,
+    ) -> SessionNotification {
+        SessionNotification::new(
+            SessionId::new(runtime_session_id.to_string()),
+            SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().meta(Meta::from_iter([
+                (
+                    CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                    json!(CODEX_ACP_TURN_LIFECYCLE_EVENT),
+                ),
+                (
+                    CODEX_ACP_TURN_EVENT_TYPE_KEY.to_string(),
+                    json!(turn_event_type),
+                ),
+                (CODEX_ACP_TURN_ID_KEY.to_string(), json!(turn_id)),
+            ]))),
+        )
+    }
+
     fn insert_test_managed_session(
         session_state: &Arc<Mutex<NativeAiInner>>,
         runtime_id: &str,
@@ -5014,8 +5203,23 @@ mod tests {
                 vault_root: None,
                 additional_roots: vec![],
                 runtime_handle: None,
+                active_turn_id: None,
             },
         );
+    }
+
+    fn mark_test_session_as_child(
+        session_state: &Arc<Mutex<NativeAiInner>>,
+        session_id: &str,
+        runtime_session_id: &str,
+    ) {
+        let mut state = session_state.lock().unwrap();
+        let child = state
+            .sessions
+            .get_mut(session_id)
+            .expect("child session should exist");
+        child.session.parent_session_id = Some(PARENT_RUNTIME_SESSION_ID.to_string());
+        child.session.runtime_session_id = Some(runtime_session_id.to_string());
     }
 
     #[test]
@@ -5244,6 +5448,213 @@ mod tests {
     }
 
     #[test]
+    fn child_turn_started_lifecycle_marks_child_streaming() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &session_state,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(
+            client.session_notification(turn_lifecycle_notification_fixture(
+                CHILD_RUNTIME_SESSION_ID,
+                CODEX_ACP_TURN_STARTED_EVENT,
+                "turn-1",
+            )),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("turn-start lifecycle should update child session")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("status").and_then(Value::as_str),
+            Some("streaming")
+        );
+    }
+
+    #[test]
+    fn child_turn_complete_lifecycle_closes_child_message_and_marks_idle() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &session_state,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist")
+                .session
+                .status = AiSessionStatus::Streaming;
+        }
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.begin_message(CHILD_RUNTIME_SESSION_ID);
+        while event_rx.try_recv().is_ok() {}
+
+        run_client_future(
+            client.session_notification(turn_lifecycle_notification_fixture(
+                CHILD_RUNTIME_SESSION_ID,
+                CODEX_ACP_TURN_COMPLETE_EVENT,
+                "turn-1",
+            )),
+        )
+        .unwrap();
+
+        let mut saw_message_completed = false;
+        let mut saw_idle_update = false;
+        for _ in 0..2 {
+            let RpcOutput::Event {
+                event_name,
+                payload,
+            } = event_rx
+                .recv_timeout(StdDuration::from_millis(250))
+                .expect("turn-complete lifecycle event")
+            else {
+                panic!("expected event");
+            };
+            if event_name == AI_MESSAGE_COMPLETED_EVENT
+                && payload.get("session_id").and_then(Value::as_str)
+                    == Some(CHILD_RUNTIME_SESSION_ID)
+            {
+                saw_message_completed = true;
+            }
+            if event_name == AI_SESSION_UPDATED_EVENT
+                && payload.get("session_id").and_then(Value::as_str)
+                    == Some(CHILD_RUNTIME_SESSION_ID)
+                && payload.get("status").and_then(Value::as_str) == Some("idle")
+            {
+                saw_idle_update = true;
+            }
+        }
+
+        assert!(saw_message_completed);
+        assert!(saw_idle_update);
+        assert!(!client
+            .message_ids
+            .lock()
+            .unwrap()
+            .contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn stale_child_turn_complete_does_not_mark_new_turn_idle() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &session_state,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(
+            client.session_notification(turn_lifecycle_notification_fixture(
+                CHILD_RUNTIME_SESSION_ID,
+                CODEX_ACP_TURN_STARTED_EVENT,
+                "turn-2",
+            )),
+        )
+        .unwrap();
+        client.begin_message(CHILD_RUNTIME_SESSION_ID);
+        while event_rx.try_recv().is_ok() {}
+
+        run_client_future(
+            client.session_notification(turn_lifecycle_notification_fixture(
+                CHILD_RUNTIME_SESSION_ID,
+                CODEX_ACP_TURN_COMPLETE_EVENT,
+                "turn-1",
+            )),
+        )
+        .unwrap();
+
+        assert!(event_rx.try_recv().is_err());
+        assert!(client
+            .message_ids
+            .lock()
+            .unwrap()
+            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist")
+                .session
+                .status,
+            AiSessionStatus::Streaming
+        );
+    }
+
+    #[test]
+    fn root_turn_lifecycle_does_not_close_main_thread_path() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut(PARENT_RUNTIME_SESSION_ID)
+                .expect("parent session should exist")
+                .session
+                .status = AiSessionStatus::Streaming;
+        }
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.begin_message(PARENT_RUNTIME_SESSION_ID);
+        while event_rx.try_recv().is_ok() {}
+
+        run_client_future(
+            client.session_notification(turn_lifecycle_notification_fixture(
+                PARENT_RUNTIME_SESSION_ID,
+                CODEX_ACP_TURN_COMPLETE_EVENT,
+                "turn-1",
+            )),
+        )
+        .unwrap();
+
+        assert!(event_rx.try_recv().is_err());
+        assert!(client
+            .message_ids
+            .lock()
+            .unwrap()
+            .contains_key(PARENT_RUNTIME_SESSION_ID));
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get(PARENT_RUNTIME_SESSION_ID)
+                .expect("parent session should exist")
+                .session
+                .status,
+            AiSessionStatus::Streaming
+        );
+    }
+
+    #[test]
     fn subagent_close_breadcrumb_marks_child_idle() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
@@ -5329,7 +5740,89 @@ mod tests {
     }
 
     #[test]
-    fn subagent_waiting_end_breadcrumb_marks_parent_children_idle() {
+    fn subagent_interaction_and_resume_running_breadcrumbs_do_not_mark_child_idle() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &session_state,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist")
+                .session
+                .status = AiSessionStatus::Streaming;
+        }
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.begin_message(CHILD_RUNTIME_SESSION_ID);
+        while event_rx.try_recv().is_ok() {}
+
+        for (event_type, call_id) in [
+            (CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT, "interaction-end"),
+            (CODEX_ACP_SUBAGENT_RESUME_END_EVENT, "resume-end"),
+        ] {
+            let meta = Meta::from_iter([
+                (
+                    CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                    json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+                ),
+                (
+                    CODEX_ACP_CHILD_SESSION_ID_KEY.to_string(),
+                    json!(CHILD_RUNTIME_SESSION_ID),
+                ),
+                (
+                    CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                    json!(event_type),
+                ),
+                (CODEX_ACP_AGENT_STATUS_KEY.to_string(), json!("running")),
+            ]);
+            run_client_future(
+                client.session_notification(SessionNotification::new(
+                    PARENT_RUNTIME_SESSION_ID,
+                    SessionUpdate::ToolCall(
+                        ToolCall::new(ToolCallId::from(call_id), "Subagent still running")
+                            .kind(ToolKind::Other)
+                            .status(ToolCallStatus::Completed)
+                            .meta(meta),
+                    ),
+                )),
+            )
+            .unwrap();
+
+            let RpcOutput::Event { event_name, .. } = event_rx
+                .recv_timeout(StdDuration::from_millis(250))
+                .expect("breadcrumb should still emit tool activity")
+            else {
+                panic!("expected event");
+            };
+            assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        }
+
+        assert!(client
+            .message_ids
+            .lock()
+            .unwrap()
+            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist")
+                .session
+                .status,
+            AiSessionStatus::Streaming
+        );
+    }
+
+    #[test]
+    fn subagent_waiting_end_without_child_statuses_does_not_idle_all_children() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
         insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
@@ -5375,8 +5868,98 @@ mod tests {
         )
         .unwrap();
 
-        let mut idle_updates = vec![];
-        for _ in 0..3 {
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("waiting-end breadcrumb should still emit tool activity")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert!(event_rx.try_recv().is_err());
+
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get("child-app-session-1")
+                .expect("first child session")
+                .session
+                .status,
+            AiSessionStatus::Streaming
+        );
+        assert_eq!(
+            state
+                .sessions
+                .get("child-app-session-2")
+                .expect("second child session")
+                .session
+                .status,
+            AiSessionStatus::Streaming
+        );
+    }
+
+    #[test]
+    fn subagent_waiting_end_with_structured_statuses_idles_only_terminal_children() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session-1");
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, "child-app-session-2");
+        {
+            let mut state = session_state.lock().unwrap();
+            for (app_session_id, runtime_session_id) in [
+                ("child-app-session-1", "child-runtime-session-1"),
+                ("child-app-session-2", "child-runtime-session-2"),
+            ] {
+                let child = state
+                    .sessions
+                    .get_mut(app_session_id)
+                    .expect("child session should exist");
+                child.session.parent_session_id = Some(PARENT_RUNTIME_SESSION_ID.to_string());
+                child.session.runtime_session_id = Some(runtime_session_id.to_string());
+                child.session.status = AiSessionStatus::Streaming;
+            }
+        }
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        let waiting_end_meta = Meta::from_iter([
+            (
+                CODEX_ACP_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT),
+            ),
+            (
+                CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY.to_string(),
+                json!(CODEX_ACP_SUBAGENT_WAITING_END_EVENT),
+            ),
+            (
+                CODEX_ACP_AGENT_STATUSES_KEY.to_string(),
+                json!([
+                    {
+                        "codexAcpChildSessionId": "child-runtime-session-1",
+                        "codexAcpAgentStatus": "shutdown",
+                    },
+                    {
+                        "codexAcpChildSessionId": "child-runtime-session-2",
+                        "codexAcpAgentStatus": "running",
+                    },
+                ]),
+            ),
+        ]);
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                PARENT_RUNTIME_SESSION_ID,
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("subagent-waiting-1"), "Subagents finished")
+                        .kind(ToolKind::Other)
+                        .status(ToolCallStatus::Completed)
+                        .meta(waiting_end_meta),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let mut saw_first_child_idle = false;
+        for _ in 0..2 {
             let RpcOutput::Event {
                 event_name,
                 payload,
@@ -5387,22 +5970,14 @@ mod tests {
                 panic!("expected event");
             };
             if event_name == AI_SESSION_UPDATED_EVENT
+                && payload.get("session_id").and_then(Value::as_str) == Some("child-app-session-1")
                 && payload.get("status").and_then(Value::as_str) == Some("idle")
             {
-                if let Some(session_id) = payload.get("session_id").and_then(Value::as_str) {
-                    idle_updates.push(session_id.to_string());
-                }
+                saw_first_child_idle = true;
             }
         }
-        idle_updates.sort();
 
-        assert_eq!(
-            idle_updates,
-            vec![
-                "child-app-session-1".to_string(),
-                "child-app-session-2".to_string()
-            ]
-        );
+        assert!(saw_first_child_idle);
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -5420,7 +5995,7 @@ mod tests {
                 .expect("second child session")
                 .session
                 .status,
-            AiSessionStatus::Idle
+            AiSessionStatus::Streaming
         );
     }
 
@@ -6301,6 +6876,7 @@ mod tests {
                 vault_root: None,
                 additional_roots: vec![],
                 runtime_handle: None,
+                active_turn_id: None,
             },
         );
 

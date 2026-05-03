@@ -4586,6 +4586,11 @@ function mergeSession(
     existing: AIChatSession | undefined,
     incoming: AIChatSession,
 ): AIChatSession {
+    const canAcceptBackendStreaming =
+        incoming.status === "streaming" &&
+        incoming.parentSessionId != null &&
+        (incoming.runtimeState ?? existing?.runtimeState ?? "live") === "live";
+
     if (!existing) {
         return synchronizeSessionConfigSelections(
             replaceSessionTranscript(
@@ -4602,7 +4607,8 @@ function mergeSession(
                     // The backend never resets session status to "idle" after streaming,
                     // so cap stale "streaming" for freshly loaded sessions.
                     status:
-                        incoming.status === "streaming"
+                        incoming.status === "streaming" &&
+                        !canAcceptBackendStreaming
                             ? "idle"
                             : incoming.status,
                     messages: [],
@@ -4639,14 +4645,18 @@ function mergeSession(
     const normalizedExisting = normalizeSessionTranscript(existing);
     const incomingMessages = incoming.messages ?? [];
 
-    // Never let upsertSession set status to "streaming".
+    // Never let root upserts set status to "streaming".
     // The backend session status stays "streaming" forever after a prompt starts
     // (it's never reset to "idle"). So "streaming" from the backend is always stale.
     // All legitimate "streaming" transitions happen through direct event handlers:
     // sendMessage (optimistic), respondPermission (optimistic),
-    // applyMessageStarted, applyThinkingStarted.
+    // applyMessageStarted, applyThinkingStarted. Child sessions are different:
+    // Codex ACP projects turn_started as a backend session update, and that is
+    // the only reliable signal when the parent reactivates a background agent.
     const status =
-        incoming.status === "streaming" ? existing.status : incoming.status;
+        incoming.status === "streaming" && !canAcceptBackendStreaming
+            ? existing.status
+            : incoming.status;
 
     const merged = {
         ...normalizedExisting,

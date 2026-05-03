@@ -24,6 +24,7 @@ const CODEX_ACP_CHILD_THREAD_ID_KEY: &str = "codexAcpChildThreadId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const CODEX_ACP_AGENT_ROLE_KEY: &str = "codexAcpAgentRole";
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
+const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
 const CODEX_ACP_REASONING_EFFORT_KEY: &str = "codexAcpReasoningEffort";
 const CODEX_ACP_CWD_KEY: &str = "codexAcpCwd";
@@ -233,14 +234,7 @@ pub(crate) fn projection_for_collab_event(event: &EventMsg) -> Option<SubagentPr
                     ))
                     .raw_output(raw_event(event)),
             )
-            .meta(breadcrumb_meta(
-                "waiting_end",
-                event.sender_thread_id,
-                None,
-                None,
-                None,
-                None,
-            )),
+            .meta(waiting_end_breadcrumb_meta(event)),
         )),
         EventMsg::CollabResumeBegin(event) => {
             let display_name = subagent_display_name(
@@ -437,6 +431,54 @@ fn breadcrumb_meta(
         meta.insert(CODEX_ACP_AGENT_STATUS_KEY.to_string(), json!(status));
     }
     meta
+}
+
+fn waiting_end_breadcrumb_meta(event: &codex_protocol::protocol::CollabWaitingEndEvent) -> Meta {
+    let mut meta = breadcrumb_meta(
+        "waiting_end",
+        event.sender_thread_id,
+        None,
+        None,
+        None,
+        None,
+    );
+    let statuses = waiting_end_statuses(event);
+    if !statuses.is_empty() {
+        meta.insert(CODEX_ACP_AGENT_STATUSES_KEY.to_string(), json!(statuses));
+    }
+    meta
+}
+
+fn waiting_end_statuses(
+    event: &codex_protocol::protocol::CollabWaitingEndEvent,
+) -> Vec<serde_json::Value> {
+    if !event.agent_statuses.is_empty() {
+        return event
+            .agent_statuses
+            .iter()
+            .map(|entry| {
+                json!({
+                    "codexAcpChildSessionId": entry.thread_id.to_string(),
+                    "codexAcpChildThreadId": entry.thread_id.to_string(),
+                    "codexAcpAgentNickname": entry.agent_nickname,
+                    "codexAcpAgentRole": entry.agent_role,
+                    "codexAcpAgentStatus": entry.status,
+                })
+            })
+            .collect();
+    }
+
+    event
+        .statuses
+        .iter()
+        .map(|(thread_id, status)| {
+            json!({
+                "codexAcpChildSessionId": thread_id.to_string(),
+                "codexAcpChildThreadId": thread_id.to_string(),
+                "codexAcpAgentStatus": status,
+            })
+        })
+        .collect()
 }
 
 fn subagent_tool_call_id(call_id: &str) -> String {
@@ -713,6 +755,56 @@ mod tests {
                 .and_then(|meta| meta.get(CODEX_ACP_CHILD_THREAD_ID_KEY))
                 .and_then(|value| value.as_str()),
             Some(child_thread_id.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn collab_waiting_end_projects_structured_agent_statuses() {
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let projection = projection_for_collab_event(&EventMsg::CollabWaitingEnd(
+            codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: parent_thread_id,
+                call_id: "wait-1".to_string(),
+                agent_statuses: vec![codex_protocol::protocol::CollabAgentStatusEntry {
+                    thread_id: child_thread_id,
+                    agent_nickname: Some("Galileo".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    status: AgentStatus::Completed(Some("done".to_string())),
+                }],
+                statuses: HashMap::new(),
+            },
+        ))
+        .expect("waiting end should project");
+        let SubagentProjection::ToolCallUpdate(update) = projection else {
+            panic!("expected ToolCallUpdate projection");
+        };
+        let statuses = update
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get(CODEX_ACP_AGENT_STATUSES_KEY))
+            .and_then(|value| value.as_array())
+            .expect("waiting_end should include structured statuses");
+        let status = statuses.first().expect("first status should exist");
+
+        assert_eq!(
+            status
+                .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
+                .and_then(|value| value.as_str()),
+            Some(child_thread_id.to_string().as_str())
+        );
+        assert_eq!(
+            status
+                .get(CODEX_ACP_AGENT_NICKNAME_KEY)
+                .and_then(|value| value.as_str()),
+            Some("Galileo")
+        );
+        assert!(
+            status
+                .get(CODEX_ACP_AGENT_STATUS_KEY)
+                .and_then(|value| value.get("completed"))
+                .is_some(),
+            "status={status:?}"
         );
     }
 }
