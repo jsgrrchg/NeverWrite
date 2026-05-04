@@ -36,6 +36,10 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ## [0.2.3] - Unreleased
 
+### Added
+
+- Added a "release notes" button in Settings → Updates that opens the latest GitHub release in the user's browser.
+
 ### Changed
 
 - Changed file-tree drag behavior so dropping existing notes, PDFs, and files onto editor panes opens them as tabs instead of inserting embed markup into the active note.

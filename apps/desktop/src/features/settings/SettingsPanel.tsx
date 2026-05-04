@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@neverwrite/runtime";
 import { getCurrentWebviewWindow } from "@neverwrite/runtime";
-import { openPath, revealItemInDir } from "@neverwrite/runtime";
+import { openPath, openUrl, revealItemInDir } from "@neverwrite/runtime";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
     useSettingsStore,
@@ -2378,6 +2378,9 @@ type UpdateStateKind =
 const MONO_FONT_STACK =
     'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace';
 
+const RELEASE_NOTES_URL =
+    "https://github.com/jsgrrchg/NeverWrite/releases/latest";
+
 function UpdatesSettings({
     searchQuery,
 }: {
@@ -2507,6 +2510,9 @@ function UpdatesSettings({
                 `You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`,
                 currentVersionLabel,
                 primaryAction.label,
+                "release notes",
+                "changelog",
+                "github",
             ],
             [
                 "Channel",
@@ -2562,7 +2568,13 @@ function UpdatesSettings({
                 section="Version"
                 label="Current version"
                 description={`You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`}
-                keywords={[currentVersionLabel, primaryAction.label]}
+                keywords={[
+                    currentVersionLabel,
+                    primaryAction.label,
+                    "release notes",
+                    "changelog",
+                    "github",
+                ]}
                 control={
                     <div
                         style={{
@@ -2572,6 +2584,14 @@ function UpdatesSettings({
                         }}
                     >
                         <VersionPill label={currentVersionLabel} />
+                        <UpdaterActionButton
+                            active={false}
+                            onClick={() => {
+                                void openUrl(RELEASE_NOTES_URL);
+                            }}
+                        >
+                            release notes
+                        </UpdaterActionButton>
                         <UpdaterActionButton
                             active={primaryAction.active}
                             disabled={primaryAction.disabled}
