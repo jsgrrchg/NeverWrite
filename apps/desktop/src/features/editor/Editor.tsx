@@ -62,7 +62,6 @@ export const REQUEST_CLOSE_ACTIVE_TAB_EVENT =
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
-import { fileTreeDropExtension } from "./extensions/fileTreeDrop";
 import {
     createMarkdownSearchPanel,
     markdownSearchMatchTheme,
@@ -2526,7 +2525,6 @@ export function Editor({
                     ),
                     urlLinksExtension,
                     imagePasteDropExtension(),
-                    fileTreeDropExtension(),
                     EditorView.updateListener.of((update) => {
                         if (!update.docChanged || isInternalRef.current) return;
                         const tab = activeTabRef.current;

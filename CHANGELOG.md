@@ -34,6 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.3] - Unreleased
+
+### Changed
+
+- Changed file-tree drag behavior so dropping existing notes, PDFs, and files onto editor panes opens them as tabs instead of inserting embed markup into the active note.
+
 ## [0.2.2] - 2026-05-03
 
 ### Changed
