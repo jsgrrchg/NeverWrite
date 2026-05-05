@@ -1659,6 +1659,17 @@ export function AIChatComposer({
                     tabIndex={-1}
                     onClick={onToggleExpanded}
                     onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor =
+                            "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                        e.currentTarget.style.color = "var(--text-primary)";
+                        e.currentTarget.style.opacity = "1";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.color = "var(--text-secondary)";
+                        e.currentTarget.style.opacity = "0.45";
+                    }}
                     className="absolute right-2 top-2 flex items-center justify-center rounded"
                     style={{
                         width: 22,
@@ -1669,6 +1680,8 @@ export function AIChatComposer({
                         opacity: 0.45,
                         outline: "none",
                         zIndex: 1,
+                        transition:
+                            "background-color 100ms ease, color 100ms ease, opacity 100ms ease",
                     }}
                     title={expanded ? "Collapse composer" : "Expand composer"}
                     aria-label={
@@ -1685,7 +1698,7 @@ export function AIChatComposer({
                             strokeWidth="1.6"
                             strokeLinecap="round"
                         >
-                            <path d="M9 1h4v4M5 13H1V9M1 1l5 5M13 13l-5-5" />
+                            <path d="M1 5V1h4M9 13h4V9M1 1l4 4M13 13l-4-4" />
                         </svg>
                     ) : (
                         <svg
@@ -1697,7 +1710,7 @@ export function AIChatComposer({
                             strokeWidth="1.6"
                             strokeLinecap="round"
                         >
-                            <path d="M1 5V1h4M9 13h4V9M6 1l-5 5M8 13l5-5" />
+                            <path d="M9 1h4v4M5 13H1V9M13 1l-5 5M1 13l5-5" />
                         </svg>
                     )}
                 </button>
