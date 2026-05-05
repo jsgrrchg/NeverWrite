@@ -459,6 +459,21 @@ function getPersistedHistorySessionId(sessionId: string) {
     return sessionId.slice("persisted:".length) || null;
 }
 
+function getRuntimeHistorySessionId(session: AIChatSession) {
+    return (
+        session.historySessionId ||
+        getPersistedHistorySessionId(session.sessionId) ||
+        session.sessionId
+    );
+}
+
+function isLiveRuntimeSession(session: AIChatSession) {
+    return (
+        session.runtimeState === "live" &&
+        getPersistedHistorySessionId(session.sessionId) === null
+    );
+}
+
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
     const tab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
         (candidate) => isChatTab(candidate) && candidate.sessionId === sessionId,
@@ -632,8 +647,13 @@ async function ensureLiveSessionForAgentConfigChange(
 ): Promise<string | null> {
     const session = useChatStore.getState().sessionsById[sessionId];
     if (!session) return null;
-    if (session.runtimeState === "live") return sessionId;
-    if (!session.isPersistedSession) return sessionId;
+    if (isLiveRuntimeSession(session)) return sessionId;
+    if (
+        !session.isPersistedSession &&
+        getPersistedHistorySessionId(session.sessionId) === null
+    ) {
+        return sessionId;
+    }
 
     const resumedSessionId = await useChatStore
         .getState()
@@ -644,7 +664,9 @@ async function ensureLiveSessionForAgentConfigChange(
 
     const resumedSession =
         useChatStore.getState().sessionsById[resumedSessionId] ?? null;
-    return resumedSession?.runtimeState === "live" ? resumedSessionId : null;
+    return resumedSession && isLiveRuntimeSession(resumedSession)
+        ? resumedSessionId
+        : null;
 }
 
 function sessionHasAgentCatalog(
@@ -675,7 +697,7 @@ async function ensureSessionAgentCatalogLoaded(
                 session;
         }
 
-        if (session.runtimeState !== "live") {
+        if (!isLiveRuntimeSession(session)) {
             const liveSessionId =
                 await ensureLiveSessionForAgentConfigChange(sessionId);
             if (!liveSessionId) {
@@ -690,6 +712,9 @@ async function ensureSessionAgentCatalogLoaded(
 
         if (!sessionHasAgentCatalog(session)) {
             try {
+                if (getPersistedHistorySessionId(session.sessionId)) {
+                    return null;
+                }
                 const loaded = await aiLoadSession(session.sessionId);
                 const latest =
                     useChatStore.getState().sessionsById[session.sessionId] ??
@@ -767,7 +792,7 @@ async function prepareSessionForAgentConfigMutation(
         return { kind: "abort" };
     }
 
-    if (session.runtimeState !== "live") {
+    if (!isLiveRuntimeSession(session)) {
         const liveSessionId =
             await ensureLiveSessionForAgentConfigChange(resolvedSessionId);
         if (
@@ -781,13 +806,13 @@ async function prepareSessionForAgentConfigMutation(
         }
     }
 
-    if (session.runtimeState === "live" && !sessionHasAgentCatalog(session)) {
+    if (isLiveRuntimeSession(session) && !sessionHasAgentCatalog(session)) {
         await ensureSessionAgentCatalogLoaded(session.sessionId);
         session =
             useChatStore.getState().sessionsById[session.sessionId] ?? session;
     }
 
-    if (session.runtimeState !== "live") {
+    if (!isLiveRuntimeSession(session)) {
         return { kind: "preference-only", session };
     }
 
@@ -2016,7 +2041,7 @@ function canRecreateSessionForAdditionalRoots(
 
     if (
         session.isResumingSession ||
-        session.runtimeState !== "live" ||
+        !isLiveRuntimeSession(session) ||
         session.status !== "idle" ||
         session.messages.length > 0
     ) {
@@ -2171,7 +2196,7 @@ function migrateSessionLocalState(
 
 function registerOpenEditorBaselines(sessionId: string) {
     const session = useChatStore.getState().sessionsById[sessionId];
-    if (!session || session.runtimeState !== "live") {
+    if (!session || !isLiveRuntimeSession(session)) {
         return;
     }
 
@@ -5010,6 +5035,10 @@ function scheduleStaleStreamingCheck(_sessionId: string) {}
 function clearStaleStreamingCheck(_sessionId: string) {}
 
 function markSessionStreamingIfLive(session: AIChatSession): AIChatSession {
+    if (getPersistedHistorySessionId(session.sessionId)) {
+        return session;
+    }
+
     if (session.runtimeState != null && session.runtimeState !== "live") {
         return session;
     }
@@ -5274,7 +5303,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         const session = get().sessionsById[sessionId];
         if (!session) return false;
         const expectedHistorySessionId =
-            session.historySessionId || session.sessionId;
+            getRuntimeHistorySessionId(session);
 
         const persistedCount = session.persistedMessageCount ?? 0;
         if (persistedCount === 0) {
@@ -5377,7 +5406,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         try {
             const payload: unknown = await aiLoadSessionHistoryPage(
                 vaultPath,
-                session.historySessionId || session.sessionId,
+                getRuntimeHistorySessionId(session),
                 startIndex,
                 limit,
             );
@@ -5777,7 +5806,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         clearInterruptedTurnState(activeSessionId);
 
-        if (session.runtimeState !== "live") {
+        if (!isLiveRuntimeSession(session)) {
             const resumedSessionId = await get().resumeSession(activeSessionId);
             if (!resumedSessionId) {
                 if (source === "queue") {
@@ -6220,8 +6249,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     if (
                         nextActiveSessionId &&
                         get().sessionsById[nextActiveSessionId] &&
-                        get().sessionsById[nextActiveSessionId]!
-                            .runtimeState !== "live"
+                        !isLiveRuntimeSession(
+                            get().sessionsById[nextActiveSessionId]!,
+                        )
                     ) {
                         await get().resumeSession(nextActiveSessionId);
                     } else if (nextActiveSessionId) {
@@ -6393,7 +6423,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             if (
-                activeSession.runtimeState !== "live" &&
+                !isLiveRuntimeSession(activeSession) &&
                 !activeSession.isResumingSession
             ) {
                 const resumedSessionId =
@@ -6409,7 +6439,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             await ensureSessionAgentCatalogLoaded(activeSession.sessionId);
-            if (activeSession.runtimeState === "live") {
+            if (isLiveRuntimeSession(activeSession)) {
                 await get().ensureSessionTranscriptLoaded(
                     activeSession.sessionId,
                     "latest",
@@ -6787,7 +6817,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 )) {
                     if (
                         session.runtimeId !== runtime_id ||
-                        session.runtimeState !== "live"
+                        !isLiveRuntimeSession(session)
                     ) {
                         continue;
                     }
@@ -7739,12 +7769,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const session = state.sessionsById[sessionId];
             if (!session) return null;
             if (session.isPendingSessionCreation) return sessionId;
-            if (session.runtimeState === "live") return sessionId;
+            if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;
 
             set((currentState) => {
                 const currentSession = currentState.sessionsById[sessionId];
-                if (!currentSession || currentSession.runtimeState === "live") {
+                if (!currentSession || isLiveRuntimeSession(currentSession)) {
                     return currentState;
                 }
 
@@ -7761,7 +7791,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             try {
                 const currentSession = get().sessionsById[sessionId];
-                if (!currentSession || currentSession.runtimeState === "live") {
+                if (!currentSession || isLiveRuntimeSession(currentSession)) {
                     return get().activeSessionId;
                 }
 
@@ -7785,7 +7815,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const latestSession =
                     get().sessionsById[sessionId] ?? currentSession;
                 const historySessionId =
-                    latestSession.historySessionId || latestSession.sessionId;
+                    getRuntimeHistorySessionId(latestSession);
                 const latestCatalog = getRuntimeCatalogSnapshot(latestSession);
 
                 let resumedSession: AIChatSession;
@@ -7944,7 +7974,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (existing.isPendingSessionCreation) {
                     return;
                 }
-                if (existing.runtimeState !== "live") {
+                if (!isLiveRuntimeSession(existing)) {
                     await get().resumeSession(sessionId);
                     return;
                 }
@@ -8625,7 +8655,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             const targetSession = get().sessionsById[resolvedSessionId];
-            if (!targetSession || targetSession.runtimeState !== "live") {
+            if (!targetSession || !isLiveRuntimeSession(targetSession)) {
                 return;
             }
 
@@ -8725,7 +8755,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         respondPermissionForSession: async (sessionId, requestId, optionId) => {
             const targetSession = get().sessionsById[sessionId];
-            if (!targetSession || targetSession.runtimeState !== "live") {
+            if (!targetSession || !isLiveRuntimeSession(targetSession)) {
                 return;
             }
 
@@ -9767,14 +9797,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
             _pendingStopBySessionId.delete(sessionId);
             if (
                 targetSession &&
-                targetSession.runtimeState === "live" &&
+                isLiveRuntimeSession(targetSession) &&
                 (targetSession.status === "streaming" ||
                     targetSession.status === "waiting_permission" ||
                     targetSession.status === "waiting_user_input")
             ) {
                 await aiCancelTurn(sessionId).catch(() => {});
             }
-            if (targetSession?.runtimeState === "live") {
+            if (targetSession && isLiveRuntimeSession(targetSession)) {
                 await aiDeleteRuntimeSession(sessionId).catch(() => {});
             }
             if (vaultPath) {
@@ -9868,7 +9898,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 snapshotSessions.map(async (session) => {
                     clearStaleStreamingCheck(session.sessionId);
                     if (
-                        session.runtimeState === "live" &&
+                        isLiveRuntimeSession(session) &&
                         (session.status === "streaming" ||
                             session.status === "waiting_permission" ||
                             session.status === "waiting_user_input")

@@ -532,7 +532,11 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
 
         const sessions = useChatStore.getState().sessionsById;
         for (const [sessionId, session] of Object.entries(sessions)) {
-            if (session.status !== "streaming" && session.status !== "idle") {
+            if (
+                session.runtimeState !== "live" ||
+                sessionId.startsWith("persisted:") ||
+                (session.status !== "streaming" && session.status !== "idle")
+            ) {
                 continue;
             }
 

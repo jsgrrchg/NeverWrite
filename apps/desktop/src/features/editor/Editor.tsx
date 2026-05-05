@@ -3084,8 +3084,10 @@ export function Editor({
             const fileId = `${activeNoteId}.md`;
             for (const [sid, session] of Object.entries(sessions)) {
                 if (
-                    session.status === "streaming" ||
-                    session.status === "idle"
+                    session.runtimeState === "live" &&
+                    !sid.startsWith("persisted:") &&
+                    (session.status === "streaming" ||
+                        session.status === "idle")
                 ) {
                     aiRegisterFileBaseline(
                         sid,

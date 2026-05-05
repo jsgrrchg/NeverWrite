@@ -45,6 +45,10 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Changed file-tree drag behavior so dropping existing notes, PDFs, and files onto editor panes opens them as tabs instead of inserting embed markup into the active note.
 - Polished the chat composer expand/collapse button: the diagonal arrows now point toward the natural corners (top-right / bottom-left when collapsed, inward when expanded) and the button gains a subtle hover highlight that matches the other composer controls.
 
+### Fixed
+
+- Fixed AI chat tabs restored from saved history so their `persisted:*` identifiers no longer leak into live runtime commands, preventing repeated "AI session not found" errors when switching between a Markdown note and an empty or saved chat in the same pane.
+
 ## [0.2.2] - 2026-05-03
 
 ### Changed

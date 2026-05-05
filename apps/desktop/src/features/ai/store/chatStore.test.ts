@@ -8779,6 +8779,81 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("treats persisted-prefixed sessions as saved chats even if stale state marks them live", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description: "Claude runtime embedded as an ACP sidecar.",
+                        capabilities: ["create_session", "resume_session"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-1": {
+                    ...createSessionWithTrackedFiles(
+                        "persisted:history-1",
+                        [],
+                    ),
+                    historySessionId: "",
+                    runtimeId: "claude-acp",
+                    runtimeState: "live",
+                    isPersistedSession: false,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session") {
+                throw new Error("persisted ids must not hit ai_load_session");
+            }
+
+            if (command === "ai_resume_runtime_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: "claude-acp",
+                        session_id: "history-1",
+                    },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: "claude-session-1",
+                    runtime_id: "claude-acp",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().loadSession("persisted:history-1");
+
+        expect(useChatStore.getState().activeSessionId).toBe("claude-session-1");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command, args]) =>
+                    command === "ai_resume_runtime_session" &&
+                    (args as { input?: { session_id?: string } }).input
+                        ?.session_id === "persisted:history-1",
+            ),
+        ).toBe(false);
+    });
+
     it("rehydrates Claude histories with their runtime and resumes them natively", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",

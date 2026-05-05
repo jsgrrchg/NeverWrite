@@ -206,6 +206,14 @@ function normalizeEnvironmentDiagnostics(diagnostics: {
     };
 }
 
+function assertRuntimeSessionId(sessionId: string, operation: string) {
+    if (sessionId.startsWith("persisted:")) {
+        throw new Error(
+            `Cannot ${operation} before the saved chat is reconnected.`,
+        );
+    }
+}
+
 export async function aiListRuntimes() {
     try {
         const descriptors =
@@ -401,6 +409,7 @@ export async function aiGetAuthTerminalSessionSnapshot(sessionId: string) {
 }
 
 export async function aiLoadSession(sessionId: string) {
+    assertRuntimeSessionId(sessionId, "load a runtime session");
     const session = await invoke<AIBackendSessionPayload>("ai_load_session", {
         sessionId,
     });
@@ -477,6 +486,7 @@ export async function aiCreateSession(
 }
 
 export async function aiSetModel(sessionId: string, modelId: string) {
+    assertRuntimeSessionId(sessionId, "change the model");
     const session = await invoke<AIBackendSessionPayload>("ai_set_model", {
         sessionId,
         modelId,
@@ -485,6 +495,7 @@ export async function aiSetModel(sessionId: string, modelId: string) {
 }
 
 export async function aiSetMode(sessionId: string, modeId: string) {
+    assertRuntimeSessionId(sessionId, "change the mode");
     const session = await invoke<AIBackendSessionPayload>("ai_set_mode", {
         sessionId,
         modeId,
@@ -497,6 +508,7 @@ export async function aiSetConfigOption(
     optionId: string,
     value: string,
 ) {
+    assertRuntimeSessionId(sessionId, "change the agent configuration");
     const session = await invoke<AIBackendSessionPayload>(
         "ai_set_config_option",
         {
@@ -515,6 +527,7 @@ export async function aiSendMessage(
     content: string,
     attachments: AIChatAttachment[],
 ) {
+    assertRuntimeSessionId(sessionId, "send a message");
     const session = await invoke<AIBackendSessionPayload>("ai_send_message", {
         sessionId,
         content,
@@ -524,6 +537,7 @@ export async function aiSendMessage(
 }
 
 export async function aiCancelTurn(sessionId: string) {
+    assertRuntimeSessionId(sessionId, "stop the current turn");
     const session = await invoke<AIBackendSessionPayload>("ai_cancel_turn", {
         sessionId,
     });
@@ -535,6 +549,7 @@ export async function aiRespondPermission(
     requestId: string,
     optionId?: string,
 ) {
+    assertRuntimeSessionId(sessionId, "respond to a permission request");
     const session = await invoke<AIBackendSessionPayload>(
         "ai_respond_permission",
         {
@@ -553,6 +568,7 @@ export async function aiRespondUserInput(
     requestId: string,
     answers: Record<string, string[]>,
 ) {
+    assertRuntimeSessionId(sessionId, "respond to a user input request");
     const session = await invoke<AIBackendSessionPayload>(
         "ai_respond_user_input",
         {
@@ -798,6 +814,7 @@ export async function aiDeleteAllSessionHistories(
 }
 
 export async function aiDeleteRuntimeSession(sessionId: string): Promise<void> {
+    assertRuntimeSessionId(sessionId, "delete a runtime session");
     await invoke("ai_delete_runtime_session", { sessionId });
 }
 
@@ -824,6 +841,7 @@ export async function aiRegisterFileBaseline(
     displayPath: string,
     content: string,
 ): Promise<void> {
+    assertRuntimeSessionId(sessionId, "register a file baseline");
     await invoke("ai_register_file_baseline", {
         sessionId,
         displayPath,
