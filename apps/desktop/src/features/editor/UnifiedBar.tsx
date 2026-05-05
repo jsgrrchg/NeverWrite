@@ -463,6 +463,23 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 }
             }
 
+            if (isChatTab(targetTab)) {
+                const session = useChatStore.getState().sessionsById[targetTab.sessionId];
+                if (
+                    session &&
+                    (session.status === "streaming" ||
+                        session.status === "waiting_permission" ||
+                        session.status === "waiting_user_input")
+                ) {
+                    const confirmed = await confirm(
+                        "The AI agent is still running. Are you sure you want to close this tab?",
+                    );
+                    if (!confirmed) {
+                        return;
+                    }
+                }
+            }
+
             closeTab(tabId, { reason: "user" });
         },
         [closeTab, windowMode],
@@ -487,6 +504,27 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
 
             if (tabsToClose.length === 0) {
                 return false;
+            }
+
+            const sessionsById = useChatStore.getState().sessionsById;
+            const hasActiveAgent = tabsToClose.some((tab) => {
+                if (!isChatTab(tab)) return false;
+                const session = sessionsById[tab.sessionId];
+                return (
+                    session &&
+                    (session.status === "streaming" ||
+                        session.status === "waiting_permission" ||
+                        session.status === "waiting_user_input")
+                );
+            });
+
+            if (hasActiveAgent) {
+                const confirmed = await confirm(
+                    "An AI agent is still running. Are you sure you want to close these tabs?",
+                );
+                if (!confirmed) {
+                    return false;
+                }
             }
 
             for (const id of tabIds) {

@@ -29,7 +29,7 @@ import {
 } from "@codemirror/search";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { indentUnit } from "@codemirror/language";
-import { getCurrentWebview } from "@neverwrite/runtime";
+import { getCurrentWebview, confirm } from "@neverwrite/runtime";
 import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -41,6 +41,7 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
     isNoteTab,
+    isChatTab,
     selectFocusedPaneId,
     selectEditorPaneState,
     type Tab,
@@ -788,6 +789,25 @@ export function Editor({
         if (!tab) return;
 
         if (!isNoteTab(tab)) {
+            if (isChatTab(tab)) {
+                const session = useChatStore.getState().sessionsById[tab.sessionId];
+                if (
+                    session &&
+                    (session.status === "streaming" ||
+                        session.status === "waiting_permission" ||
+                        session.status === "waiting_user_input")
+                ) {
+                    void (async () => {
+                        const confirmed = await confirm(
+                            "The AI agent is still running. Are you sure you want to close this tab?",
+                        );
+                        if (confirmed) {
+                            closeTab(activeTabId, { reason: "user" });
+                        }
+                    })();
+                    return;
+                }
+            }
             closeTab(activeTabId, { reason: "user" });
             return;
         }

@@ -69,7 +69,10 @@ await runOnce(
 const vite = run(
     "npx",
     ["vite", "--config", "electron.vite.config.ts", "--host", "127.0.0.1"],
-    { env: { NEVERWRITE_ELECTRON_TARGET: "renderer" } },
+    {
+        env: { NEVERWRITE_ELECTRON_TARGET: "renderer" },
+        stdio: ["ignore", "inherit", "inherit"],
+    },
 );
 
 await waitForRenderer();
@@ -83,6 +86,7 @@ const electron = run(electronBin, ["."], {
     env: {
         ELECTRON_RENDERER_URL: rendererUrl,
     },
+    stdio: ["ignore", "inherit", "inherit"],
 });
 
 function shutdown() {

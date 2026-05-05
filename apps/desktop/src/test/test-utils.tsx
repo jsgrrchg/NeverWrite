@@ -110,6 +110,7 @@ export function getXtermMockInstances() {
             __xtermMockInstances: Array<{
                 emitData: (data: string) => void;
                 focusCalls: number;
+                scrollToTopCalls: number;
             }>;
         }
     ).__xtermMockInstances;

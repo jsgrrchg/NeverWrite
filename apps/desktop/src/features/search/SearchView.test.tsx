@@ -81,10 +81,13 @@ describe("SearchView", () => {
             await new Promise((resolve) => setTimeout(resolve, 350));
         });
 
-        expect(invokeMock).toHaveBeenCalledWith("advanced_search", {
-            params: expect.objectContaining({
-                prefer_file_name: true,
+        expect(invokeMock).toHaveBeenCalledWith(
+            "advanced_search",
+            expect.objectContaining({
+                params: expect.objectContaining({
+                    prefer_file_name: true,
+                }),
             }),
-        });
+        );
     });
 });

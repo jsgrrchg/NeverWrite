@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
+import { confirm } from "@neverwrite/runtime";
 import {
     type Tab,
     type TerminalTab,
@@ -371,12 +372,29 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         [renameChatSession],
     );
     const requestCloseTab = useCallback(
-        (tabId: string) => {
+        async (tabId: string) => {
             const tab = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             ).find((candidate) => candidate.id === tabId);
             if (!tab) {
                 return;
+            }
+
+            if (isChatTab(tab)) {
+                const session = useChatStore.getState().sessionsById[tab.sessionId];
+                if (
+                    session &&
+                    (session.status === "streaming" ||
+                        session.status === "waiting_permission" ||
+                        session.status === "waiting_user_input")
+                ) {
+                    const confirmed = await confirm(
+                        "The AI agent is still running. Are you sure you want to close this tab?",
+                    );
+                    if (!confirmed) {
+                        return;
+                    }
+                }
             }
 
             closeTab(tab.id);
