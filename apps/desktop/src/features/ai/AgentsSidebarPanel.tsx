@@ -6,6 +6,7 @@ import {
     useState,
     type MouseEvent as ReactMouseEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { confirm } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -31,6 +32,7 @@ import {
     openChatHistoryInWorkspace,
     openChatSessionInWorkspace,
 } from "./chatPaneMovement";
+import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
     getSessionPreview,
     getSessionTitle,
@@ -65,6 +67,14 @@ const AGENTS_SIDEBAR_COLLAPSED_PARENTS_KEY =
     "neverwrite.ai.agentsSidebar.collapsedParents";
 
 type ActivitySession = Pick<AIChatSession, "status">;
+
+type AgentDragPreview = {
+    x: number;
+    y: number;
+    title: string;
+    runtimeLabel: string;
+    indicator: AgentsSidebarActivityIndicator;
+};
 
 function deriveActivityIndicator(
     session: ActivitySession,
@@ -464,6 +474,9 @@ export function AgentsSidebarPanel() {
     >(null);
     const [newChatMenu, setNewChatMenu] =
         useState<ContextMenuState<void> | null>(null);
+    const [dragPreview, setDragPreview] = useState<AgentDragPreview | null>(
+        null,
+    );
 
     const newChatMenuEntries = useMemo<ContextMenuEntry[]>(() => {
         const sortedRuntimes = [...runtimes].sort((left, right) => {
@@ -554,6 +567,16 @@ export function AgentsSidebarPanel() {
                 ? "Error"
                 : "Working…"
             : formatAgentTimestamp(updatedAt);
+        const dragTitle = getSessionTitleText(session);
+        const updateDragPreview = (clientX: number, clientY: number) => {
+            setDragPreview({
+                x: clientX,
+                y: clientY,
+                title: dragTitle,
+                runtimeLabel: metaLabel,
+                indicator,
+            });
+        };
 
         return (
             <AgentsSidebarItem
@@ -589,6 +612,46 @@ export function AgentsSidebarPanel() {
                 }}
                 onToggleCollapse={options?.onToggleCollapse}
                 onContextMenu={(event) => handleContextMenu(event, session)}
+                onDragStart={({ clientX, clientY }) => {
+                    updateDragPreview(clientX, clientY);
+                    emitAgentSidebarDrag({
+                        phase: "start",
+                        x: clientX,
+                        y: clientY,
+                        sessionId: session.sessionId,
+                        title: dragTitle,
+                    });
+                }}
+                onDragMove={({ clientX, clientY }) => {
+                    updateDragPreview(clientX, clientY);
+                    emitAgentSidebarDrag({
+                        phase: "move",
+                        x: clientX,
+                        y: clientY,
+                        sessionId: session.sessionId,
+                        title: dragTitle,
+                    });
+                }}
+                onDragEnd={({ clientX, clientY }) => {
+                    setDragPreview(null);
+                    emitAgentSidebarDrag({
+                        phase: "end",
+                        x: clientX,
+                        y: clientY,
+                        sessionId: session.sessionId,
+                        title: dragTitle,
+                    });
+                }}
+                onDragCancel={() => {
+                    setDragPreview(null);
+                    emitAgentSidebarDrag({
+                        phase: "cancel",
+                        x: 0,
+                        y: 0,
+                        sessionId: session.sessionId,
+                        title: dragTitle,
+                    });
+                }}
                 metrics={metrics.item}
             />
         );
@@ -797,6 +860,89 @@ export function AgentsSidebarPanel() {
                     minWidth={132}
                 />
             )}
+            {dragPreview && typeof document !== "undefined"
+                ? createPortal(
+                      <AgentSidebarDragGhost preview={dragPreview} />,
+                      document.body,
+                  )
+                : null}
+        </div>
+    );
+}
+
+function AgentSidebarDragGhost({ preview }: { preview: AgentDragPreview }) {
+    const toneColor =
+        preview.indicator?.tone === "danger"
+            ? "var(--diff-remove, #f43f5e)"
+            : preview.indicator?.tone === "working"
+              ? "var(--diff-warn, #d97706)"
+              : "var(--accent)";
+
+    return (
+        <div
+            aria-hidden="true"
+            style={{
+                position: "fixed",
+                left: preview.x + 14,
+                top: preview.y + 14,
+                pointerEvents: "none",
+                zIndex: 10050,
+                maxWidth: 260,
+                minWidth: 160,
+                borderRadius: 10,
+                border: "1px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
+                background:
+                    "linear-gradient(135deg, color-mix(in srgb, var(--bg-secondary) 96%, var(--accent) 4%), var(--bg-secondary))",
+                color: "var(--text-primary)",
+                boxShadow:
+                    "0 12px 28px rgba(0,0,0,0.24), 0 0 0 1px rgba(255,255,255,0.04)",
+                padding: "8px 10px",
+                transform: "translate3d(0, 0, 0) scale(1.02)",
+            }}
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold"
+                    style={{
+                        color: toneColor,
+                        background:
+                            "color-mix(in srgb, var(--accent) 12%, transparent)",
+                        boxShadow:
+                            "inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent)",
+                    }}
+                >
+                    AI
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11.5px] font-medium leading-tight">
+                        {preview.title}
+                    </div>
+                    <div
+                        className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] leading-tight"
+                        style={{ color: "var(--text-secondary)" }}
+                    >
+                        {preview.indicator ? (
+                            <span
+                                aria-hidden="true"
+                                style={{
+                                    color: toneColor,
+                                    fontSize: 8,
+                                    lineHeight: 1,
+                                }}
+                            >
+                                ●
+                            </span>
+                        ) : null}
+                        <span className="truncate">
+                            Drag to open in pane
+                            {preview.runtimeLabel
+                                ? ` · ${preview.runtimeLabel}`
+                                : ""}
+                        </span>
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }

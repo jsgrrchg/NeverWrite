@@ -1,4 +1,8 @@
-import { type MouseEvent as ReactMouseEvent } from "react";
+import {
+    useRef,
+    type MouseEvent as ReactMouseEvent,
+    type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { AIChatSession } from "../types";
 
 // Comando-style session row for the left sidebar Agents panel. Presentational
@@ -23,6 +27,11 @@ export interface AgentsSidebarItemMetrics {
     indicatorFontSize: number;
     pinButtonSize: number;
     pinIconSize: number;
+}
+
+export interface AgentsSidebarItemDragCoordinates {
+    clientX: number;
+    clientY: number;
 }
 
 export interface AgentsSidebarItemProps {
@@ -52,7 +61,21 @@ export interface AgentsSidebarItemProps {
     onTogglePin: () => void;
     onToggleCollapse?: () => void;
     onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
+    onDragStart?: (coords: AgentsSidebarItemDragCoordinates) => void;
+    onDragMove?: (coords: AgentsSidebarItemDragCoordinates) => void;
+    onDragEnd?: (coords: AgentsSidebarItemDragCoordinates) => void;
+    onDragCancel?: () => void;
     metrics: AgentsSidebarItemMetrics;
+}
+
+function isInteractiveDragTarget(target: EventTarget | null) {
+    return target instanceof Element
+        ? Boolean(
+              target.closest(
+                  "button,input,textarea,select,a,[role='button']",
+              ),
+          )
+        : false;
 }
 
 export function AgentsSidebarItem({
@@ -81,8 +104,19 @@ export function AgentsSidebarItem({
     onTogglePin,
     onToggleCollapse,
     onContextMenu,
+    onDragStart,
+    onDragMove,
+    onDragEnd,
+    onDragCancel,
     metrics,
 }: AgentsSidebarItemProps) {
+    const dragStateRef = useRef<{
+        pointerId: number;
+        startX: number;
+        startY: number;
+        active: boolean;
+    } | null>(null);
+    const suppressClickRef = useRef(false);
     const hasChildren = childCount > 0;
     const hierarchyAdornmentWidth =
         hasChildren || depth > 0 ? metrics.pinButtonSize + metrics.inlineGap : 0;
@@ -113,8 +147,82 @@ export function AgentsSidebarItem({
                     "background-color 100ms ease, border-color 100ms ease",
             }}
             onClick={() => {
+                if (suppressClickRef.current) return;
                 if (isRenaming) return;
                 onOpen();
+            }}
+            onPointerDown={(event) => {
+                if (
+                    isRenaming ||
+                    (event.button ?? 0) !== 0 ||
+                    isInteractiveDragTarget(event.target)
+                ) {
+                    return;
+                }
+
+                dragStateRef.current = {
+                    pointerId: event.pointerId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    active: false,
+                };
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+            }}
+            onPointerMove={(event: ReactPointerEvent<HTMLElement>) => {
+                const state = dragStateRef.current;
+                if (!state || state.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                const coords = {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                };
+                if (!state.active) {
+                    const dx = event.clientX - state.startX;
+                    const dy = event.clientY - state.startY;
+                    if (Math.hypot(dx, dy) < 5) {
+                        return;
+                    }
+
+                    state.active = true;
+                    onDragStart?.(coords);
+                }
+
+                event.preventDefault();
+                onDragMove?.(coords);
+            }}
+            onPointerUp={(event) => {
+                const state = dragStateRef.current;
+                if (!state || state.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                dragStateRef.current = null;
+                event.currentTarget.releasePointerCapture?.(event.pointerId);
+                if (!state.active) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                suppressClickRef.current = true;
+                window.requestAnimationFrame(() => {
+                    suppressClickRef.current = false;
+                });
+                onDragEnd?.({
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                });
+            }}
+            onPointerCancel={(event) => {
+                const state = dragStateRef.current;
+                if (!state || state.pointerId !== event.pointerId) {
+                    return;
+                }
+
+                dragStateRef.current = null;
+                onDragCancel?.();
             }}
             onDoubleClick={(event) => {
                 if (isRenaming || !canRename) return;

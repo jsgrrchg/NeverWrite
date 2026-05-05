@@ -166,6 +166,7 @@ export interface EditorWorkspaceActions {
             background?: boolean;
             title?: string;
             paneId?: string;
+            insertIndex?: number;
             historySessionId?: string | null;
         },
     ) => void;
@@ -210,6 +211,12 @@ export interface EditorWorkspaceActions {
         paneId?: string,
     ) => string | null;
     insertExternalTabInNewPane: (tab: TabInput) => string | null;
+    insertExternalTabAtPaneDropTarget: (
+        tab: TabInput,
+        targetPaneId: string,
+        position: WorkspaceMovePosition | "center",
+        index?: number,
+    ) => string | null;
     moveTabToNewSplit: (
         tabId: string,
         direction: WorkspaceSplitDirection,
@@ -2446,7 +2453,11 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                       })
                     : createEditorPaneState(
                           focusedPane.id,
-                          insertNormalizedTab(focusedPane, newTab),
+                          insertNormalizedTab(
+                              focusedPane,
+                              newTab,
+                              options?.insertIndex,
+                          ),
                       );
 
                 if (options?.background) {
@@ -2971,6 +2982,87 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
 
         insertExternalTabInNewPane: (tab) => {
             return get().insertExternalTabInNewSplit(tab, "row");
+        },
+
+        insertExternalTabAtPaneDropTarget: (
+            tab,
+            targetPaneId,
+            position,
+            index,
+        ) => {
+            if (position === "center") {
+                get().insertExternalTabInPane(tab, targetPaneId, index);
+                return targetPaneId;
+            }
+
+            const incoming = normalizeExternalTab(tab);
+            if (!incoming) {
+                return null;
+            }
+
+            const workspace = getEffectivePaneWorkspace(get());
+            const targetPane = workspace.panes.find(
+                (pane) => pane.id === targetPaneId,
+            );
+            const nextPaneId = getNextEditorPaneId(workspace.panes);
+            if (!targetPane || !nextPaneId) {
+                return null;
+            }
+
+            set((state) => {
+                const currentWorkspace = getEffectivePaneWorkspace(state);
+                const currentTargetPane = currentWorkspace.panes.find(
+                    (pane) => pane.id === targetPaneId,
+                );
+                if (!currentTargetPane) {
+                    return state;
+                }
+
+                const splitDirection =
+                    position === "left" || position === "right"
+                        ? "row"
+                        : "column";
+                const splitLayoutTree = splitPane(
+                    currentWorkspace.layoutTree,
+                    currentTargetPane.id,
+                    splitDirection,
+                    nextPaneId,
+                );
+                const nextLayoutTree =
+                    position === "right" || position === "down"
+                        ? splitLayoutTree
+                        : movePane(
+                              splitLayoutTree,
+                              nextPaneId,
+                              currentTargetPane.id,
+                              position,
+                          );
+                const nextPaneMap = new Map<string, EditorPaneState>(
+                    currentWorkspace.panes.map((pane) => [pane.id, pane]),
+                );
+                nextPaneMap.set(
+                    nextPaneId,
+                    createEditorPaneState(
+                        nextPaneId,
+                        insertNormalizedTab(
+                            createEditorPaneState(nextPaneId),
+                            incoming,
+                        ),
+                    ),
+                );
+
+                return buildWorkspaceSnapshot({
+                    panes: getLayoutPaneIds(nextLayoutTree).map(
+                        (paneId) =>
+                            nextPaneMap.get(paneId) ??
+                            createEditorPaneState(paneId),
+                    ),
+                    focusedPaneId: nextPaneId,
+                    layoutTree: nextLayoutTree,
+                });
+            });
+
+            return nextPaneId;
         },
 
         moveTabToNewSplit: (tabId, direction) => {

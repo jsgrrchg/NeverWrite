@@ -23,16 +23,27 @@ import {
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
+import {
+    AGENT_SIDEBAR_DRAG_EVENT,
+    type AgentSidebarDragDetail,
+} from "../ai/agentSidebarDragEvents";
+import { openOrMoveChatSessionAtDropTarget } from "../ai/chatPaneMovement";
 import { WorkspaceSplitContainer } from "./WorkspaceSplitContainer";
 import {
-    openDroppedTreeItemsInPane,
-    openDroppedVaultPathsInPane,
-    resolveWorkspacePaneFileDropTarget,
+    getWorkspaceFileDropPaneId,
+    isWorkspaceFileDropTarget,
+    openDroppedTreeItemsAtTarget,
+    openDroppedVaultPathsAtTarget,
+    resolveWorkspaceFileDropIntent,
 } from "./workspacePaneFileDrop";
 import {
     CROSS_PANE_TAB_DROP_PREVIEW_EVENT,
+    dispatchCrossPaneTabDropPreview,
+    resolveWorkspaceTabDropIntent,
     type CrossPaneTabDropPreview,
 } from "./workspaceTabDropPreview";
+
+const AGENT_SIDEBAR_DROP_SOURCE_PANE_ID = "__agents-sidebar__";
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -349,12 +360,15 @@ export function MultiPaneWorkspace() {
                     }
                 ).position;
                 const target = position
-                    ? resolveWorkspacePaneFileDropTarget(position.x, position.y)
-                    : null;
+                    ? resolveWorkspaceFileDropIntent(position.x, position.y)
+                    : { target: { type: "none" as const }, preview: null };
+                dispatchCrossPaneTabDropPreview(target.preview);
 
                 if (type === "enter" || type === "over") {
                     if (mounted) {
-                        setExternalFileDropPaneId(target?.paneId ?? null);
+                        setExternalFileDropPaneId(
+                            getWorkspaceFileDropPaneId(target.target),
+                        );
                     }
                     return;
                 }
@@ -362,8 +376,12 @@ export function MultiPaneWorkspace() {
                 if (mounted) {
                     setExternalFileDropPaneId(null);
                 }
+                dispatchCrossPaneTabDropPreview(null);
 
-                if (type !== "drop" || !target) {
+                if (
+                    type !== "drop" ||
+                    !isWorkspaceFileDropTarget(target.target)
+                ) {
                     return;
                 }
 
@@ -373,11 +391,7 @@ export function MultiPaneWorkspace() {
                     return;
                 }
 
-                void openDroppedVaultPathsInPane(
-                    paths,
-                    target.paneId,
-                    target.insertIndex,
-                );
+                void openDroppedVaultPathsAtTarget(paths, target.target);
             })
             .then((cleanup) => {
                 if (mounted) {
@@ -390,6 +404,7 @@ export function MultiPaneWorkspace() {
         return () => {
             mounted = false;
             setExternalFileDropPaneId(null);
+            dispatchCrossPaneTabDropPreview(null);
             unlisten?.();
         };
     }, []);
@@ -401,40 +416,87 @@ export function MultiPaneWorkspace() {
             const hasTabPayload =
                 detail.notes.length > 0 || (detail.files?.length ?? 0) > 0;
 
-            if (
-                !hasTabPayload ||
-                detail.phase === "attach" ||
-                detail.phase === "cancel" ||
-                detail.origin?.kind === "workspace-tab"
-            ) {
-                setExternalFileDropPaneId(null);
+            if (detail.origin?.kind === "workspace-tab") {
                 return;
             }
 
-            const target = resolveWorkspacePaneFileDropTarget(
+            if (
+                !hasTabPayload ||
+                detail.phase === "attach" ||
+                detail.phase === "cancel"
+            ) {
+                setExternalFileDropPaneId(null);
+                dispatchCrossPaneTabDropPreview(null);
+                return;
+            }
+
+            const { target, preview } = resolveWorkspaceFileDropIntent(
                 detail.x,
                 detail.y,
             );
-            setExternalFileDropPaneId(target?.paneId ?? null);
+            setExternalFileDropPaneId(getWorkspaceFileDropPaneId(target));
+            dispatchCrossPaneTabDropPreview(preview);
 
-            if (detail.phase !== "end" || !target) {
+            if (
+                detail.phase !== "end" ||
+                !isWorkspaceFileDropTarget(target)
+            ) {
                 return;
             }
 
             setExternalFileDropPaneId(null);
-            void openDroppedTreeItemsInPane(
-                detail,
-                target.paneId,
-                target.insertIndex,
-            );
+            dispatchCrossPaneTabDropPreview(null);
+            void openDroppedTreeItemsAtTarget(detail, target);
         };
 
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleTreeDrag);
         return () => {
             setExternalFileDropPaneId(null);
+            dispatchCrossPaneTabDropPreview(null);
             window.removeEventListener(
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleTreeDrag,
+            );
+        };
+    }, []);
+
+    useEffect(() => {
+        const handleAgentDrag = (event: Event) => {
+            const detail = (event as CustomEvent<AgentSidebarDragDetail>)
+                .detail;
+
+            if (detail.phase === "cancel") {
+                dispatchCrossPaneTabDropPreview(null);
+                return;
+            }
+
+            const { target, preview } = resolveWorkspaceTabDropIntent({
+                sourcePaneId: AGENT_SIDEBAR_DROP_SOURCE_PANE_ID,
+                tabId: `agent:${detail.sessionId}`,
+                clientX: detail.x,
+                clientY: detail.y,
+            });
+            dispatchCrossPaneTabDropPreview(preview);
+
+            if (
+                detail.phase !== "end" ||
+                (target.type !== "strip" &&
+                    target.type !== "pane-center" &&
+                    target.type !== "split")
+            ) {
+                return;
+            }
+
+            dispatchCrossPaneTabDropPreview(null);
+            openOrMoveChatSessionAtDropTarget(detail.sessionId, target);
+        };
+
+        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleAgentDrag);
+        return () => {
+            dispatchCrossPaneTabDropPreview(null);
+            window.removeEventListener(
+                AGENT_SIDEBAR_DRAG_EVENT,
+                handleAgentDrag,
             );
         };
     }, []);

@@ -7,6 +7,7 @@ import {
     type TabInput,
 } from "../store/editorStore";
 import { inferFileViewer } from "../store/editorTabs";
+import type { WorkspaceDropTarget } from "../store/workspaceContracts";
 import type { WorkspaceSplitDirection } from "../store/workspaceLayoutTree";
 import { useVaultStore, type VaultEntryDto } from "../store/vaultStore";
 import { toVaultRelativePath } from "./vaultPaths";
@@ -398,6 +399,44 @@ export async function insertVaultEntryTab(
     }
     store.insertExternalTab(nextTab, index);
     return true;
+}
+
+type VaultEntryPaneDropTarget = Extract<
+    WorkspaceDropTarget,
+    { type: "strip" | "pane-center" | "split" }
+>;
+
+export async function insertVaultEntryTabAtPaneDropTarget(
+    entry: VaultEntryDto,
+    target: VaultEntryPaneDropTarget,
+    index?: number,
+) {
+    const nextTab = await buildVaultEntryTab(entry);
+    if (!nextTab) {
+        return null;
+    }
+
+    const store = useEditorStore.getState();
+    if (target.type === "strip") {
+        store.insertExternalTabInPane(
+            nextTab,
+            target.paneId,
+            index ?? target.index,
+        );
+        return target.paneId;
+    }
+
+    if (target.type === "pane-center") {
+        store.insertExternalTabInPane(nextTab, target.paneId, index);
+        return target.paneId;
+    }
+
+    return store.insertExternalTabAtPaneDropTarget(
+        nextTab,
+        target.paneId,
+        target.direction,
+        index,
+    );
 }
 
 export function isExcalidrawVaultEntry(

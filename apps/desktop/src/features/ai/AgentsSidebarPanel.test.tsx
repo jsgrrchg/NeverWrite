@@ -8,6 +8,10 @@ import { AgentsSidebarPanel } from "./AgentsSidebarPanel";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import type { AIChatSession, AIChatSessionStatus } from "./types";
+import {
+    AGENT_SIDEBAR_DRAG_EVENT,
+    type AgentSidebarDragDetail,
+} from "./agentSidebarDragEvents";
 
 const chatPaneMovementMock = vi.hoisted(() => ({
     createNewChatInWorkspace: vi.fn(),
@@ -207,6 +211,68 @@ describe("AgentsSidebarPanel", () => {
                 chatPaneMovementMock.openChatSessionInWorkspace,
             ).toHaveBeenCalledWith("session-child");
         });
+    });
+
+    it("emits agent drag events from a sidebar row without opening it", () => {
+        const alpha = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [alpha.sessionId]: alpha,
+            },
+            sessionOrder: [alpha.sessionId],
+        }));
+
+        const dragEvents: AgentSidebarDragDetail[] = [];
+        const handleDrag = (event: Event) => {
+            dragEvents.push(
+                (event as CustomEvent<AgentSidebarDragDetail>).detail,
+            );
+        };
+        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+
+        try {
+            renderComponent(<AgentsSidebarPanel />);
+
+            const row = screen.getByRole("option");
+            fireEvent.pointerDown(row, {
+                button: 0,
+                pointerId: 1,
+                clientX: 10,
+                clientY: 10,
+            });
+            fireEvent.pointerMove(row, {
+                pointerId: 1,
+                clientX: 20,
+                clientY: 10,
+            });
+            expect(
+                screen.getByText("Drag to open in pane · Codex"),
+            ).toBeInTheDocument();
+            fireEvent.pointerUp(row, {
+                pointerId: 1,
+                clientX: 24,
+                clientY: 12,
+            });
+            expect(
+                screen.queryByText("Drag to open in pane · Codex"),
+            ).toBeNull();
+
+            expect(dragEvents.map((event) => event.phase)).toEqual([
+                "start",
+                "move",
+                "end",
+            ]);
+            expect(dragEvents[0]).toMatchObject({
+                sessionId: alpha.sessionId,
+                title: "Alpha task",
+            });
+            expect(
+                chatPaneMovementMock.openChatSessionInWorkspace,
+            ).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+        }
     });
 
     it("keeps working subagents in activation order under their parent", async () => {

@@ -1,4 +1,9 @@
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    isChatTab,
+    useEditorStore,
+} from "../../app/store/editorStore";
+import { createChatTab } from "../../app/store/editorTabs";
+import type { WorkspaceDropTarget } from "../../app/store/workspaceContracts";
 import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
@@ -7,9 +12,15 @@ import type { AIChatSession, AIRuntimeDescriptor } from "./types";
 
 interface OpenChatInWorkspaceOptions {
     paneId?: string;
+    insertIndex?: number;
     background?: boolean;
     skipLoad?: boolean;
 }
+
+type ChatWorkspaceDropTarget = Extract<
+    WorkspaceDropTarget,
+    { type: "strip" | "pane-center" | "split" }
+>;
 
 function getConfigDefaultValue(
     runtime: AIRuntimeDescriptor,
@@ -83,22 +94,26 @@ function createPendingWorkspaceSession(
     };
 }
 
-export function openChatSessionInWorkspace(
-    sessionId: string,
-    options?: OpenChatInWorkspaceOptions,
-) {
+function prepareChatSessionForWorkspace(sessionId: string) {
     const session = useChatStore.getState().sessionsById[sessionId];
+    const historySessionId = session?.historySessionId ?? null;
     useChatTabsStore.getState().openSessionTab(sessionId, {
         activate: true,
-        historySessionId: session?.historySessionId ?? null,
+        historySessionId,
         runtimeId: session?.runtimeId ?? null,
     });
-    useEditorStore.getState().openChat(sessionId, {
+
+    return {
+        session,
         title: session ? getSessionTitle(session) : "Chat",
-        paneId: options?.paneId,
-        background: options?.background,
-        historySessionId: session?.historySessionId ?? null,
-    });
+        historySessionId,
+    };
+}
+
+function finalizeChatSessionWorkspaceOpen(
+    sessionId: string,
+    options?: Pick<OpenChatInWorkspaceOptions, "background" | "skipLoad">,
+) {
     if (!options?.background) {
         useChatStore.getState().markSessionFocused(sessionId);
     }
@@ -106,11 +121,98 @@ export function openChatSessionInWorkspace(
     if (!options?.skipLoad) {
         void useChatStore.getState().loadSession(sessionId);
     }
+}
+
+function findWorkspaceChatTab(
+    sessionId: string,
+    historySessionId: string | null,
+) {
+    const workspace = useEditorStore.getState();
+    for (const pane of workspace.panes) {
+        for (const tab of pane.tabs) {
+            if (
+                isChatTab(tab) &&
+                (tab.sessionId === sessionId ||
+                    (historySessionId !== null &&
+                        tab.historySessionId === historySessionId))
+            ) {
+                return { paneId: pane.id, tab };
+            }
+        }
+    }
+    return null;
+}
+
+export function openChatSessionInWorkspace(
+    sessionId: string,
+    options?: OpenChatInWorkspaceOptions,
+) {
+    const { title, historySessionId } = prepareChatSessionForWorkspace(sessionId);
+    useEditorStore.getState().openChat(sessionId, {
+        title,
+        paneId: options?.paneId,
+        insertIndex: options?.insertIndex,
+        background: options?.background,
+        historySessionId,
+    });
+    finalizeChatSessionWorkspaceOpen(sessionId, options);
     return sessionId;
 }
 
 export function openChatHistoryInWorkspace() {
     useEditorStore.getState().openChatHistory();
+}
+
+export function openOrMoveChatSessionAtDropTarget(
+    sessionId: string,
+    target: ChatWorkspaceDropTarget,
+) {
+    const { title, historySessionId } = prepareChatSessionForWorkspace(sessionId);
+    const existing = findWorkspaceChatTab(sessionId, historySessionId);
+    const editor = useEditorStore.getState();
+
+    if (existing) {
+        if (target.type === "strip") {
+            if (existing.paneId === target.paneId) {
+                editor.switchTab(existing.tab.id);
+            } else {
+                editor.moveTabToPane(
+                    existing.tab.id,
+                    target.paneId,
+                    target.index,
+                );
+            }
+        } else if (target.type === "pane-center") {
+            if (existing.paneId === target.paneId) {
+                editor.switchTab(existing.tab.id);
+            } else {
+                editor.moveTabToPane(existing.tab.id, target.paneId);
+            }
+        } else {
+            editor.moveTabToPaneDropTarget(
+                existing.tab.id,
+                target.paneId,
+                target.direction,
+            );
+        }
+        finalizeChatSessionWorkspaceOpen(sessionId);
+        return existing.tab.id;
+    }
+
+    const chatTab = createChatTab(sessionId, title, historySessionId);
+    if (target.type === "strip") {
+        editor.insertExternalTabInPane(chatTab, target.paneId, target.index);
+    } else if (target.type === "pane-center") {
+        editor.insertExternalTabInPane(chatTab, target.paneId);
+    } else {
+        editor.insertExternalTabAtPaneDropTarget(
+            chatTab,
+            target.paneId,
+            target.direction,
+        );
+    }
+    finalizeChatSessionWorkspaceOpen(sessionId);
+    return chatTab.id;
 }
 
 export async function createNewChatInWorkspace(

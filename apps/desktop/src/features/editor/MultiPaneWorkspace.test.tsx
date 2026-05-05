@@ -421,6 +421,86 @@ describe("MultiPaneWorkspace", () => {
         ).toHaveLength(0);
     });
 
+    it("creates a split pane when a dragged vault file lands on a pane edge", async () => {
+        setVaultEntries([
+            {
+                id: "docs/reference.txt",
+                path: "/vault/docs/reference.txt",
+                relative_path: "docs/reference.txt",
+                title: "Reference",
+                file_name: "reference.txt",
+                extension: "txt",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 32,
+                mime_type: "text/plain",
+            },
+        ]);
+        mockInvoke().mockResolvedValue({
+            relative_path: "docs/reference.txt",
+            path: "/vault/docs/reference.txt",
+            file_name: "reference.txt",
+            mime_type: "text/plain",
+            content: "reference",
+            size_bytes: 32,
+            content_truncated: false,
+        });
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]') as HTMLElement | null;
+        expect(primaryPane).not.toBeNull();
+
+        vi.spyOn(primaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 300,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        await act(async () => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "end",
+                        x: 292,
+                        y: 120,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: "/vault/docs/reference.txt",
+                                fileName: "reference.txt",
+                                mimeType: "text/plain",
+                            },
+                        ],
+                    },
+                }),
+            );
+            await flushPromises();
+        });
+
+        const state = useEditorStore.getState();
+        const focusedPane = state.panes.find(
+            (pane) => pane.id === state.focusedPaneId,
+        );
+        expect(state.panes).toHaveLength(4);
+        expect(focusedPane?.tabs).toHaveLength(1);
+        expect(focusedPane?.tabs[0]).toMatchObject({
+            kind: "file",
+            relativePath: "docs/reference.txt",
+            title: "reference.txt",
+        });
+    });
+
     it("renders a divider between each adjacent pane", () => {
         renderComponent(<MultiPaneWorkspace />);
 
@@ -622,6 +702,68 @@ describe("MultiPaneWorkspace", () => {
 
         expect(
             document.querySelector('[data-workspace-drop-line="true"]'),
+        ).not.toBeNull();
+    });
+
+    it("does not let file attachment events from workspace tab drags clear tab drop previews", () => {
+        renderComponent(<MultiPaneWorkspace />);
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(CROSS_PANE_TAB_DROP_PREVIEW_EVENT, {
+                    detail: {
+                        sourcePaneId: "primary",
+                        targetPaneId: "primary",
+                        position: "right",
+                        insertIndex: null,
+                        tabId: "tab-a",
+                        overlayRect: {
+                            left: 220,
+                            top: 40,
+                            right: 430,
+                            bottom: 220,
+                            width: 210,
+                            height: 180,
+                        },
+                        lineRect: null,
+                    },
+                }),
+            );
+        });
+
+        expect(
+            document.querySelector(
+                '[data-workspace-drop-overlay-position="right"]',
+            ),
+        ).not.toBeNull();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "move",
+                        x: 320,
+                        y: 120,
+                        notes: [
+                            {
+                                id: "note-a",
+                                title: "Note A",
+                                path: "/vault/note-a.md",
+                            },
+                        ],
+                        origin: {
+                            kind: "workspace-tab",
+                            tabId: "tab-a",
+                        },
+                    },
+                }),
+            );
+        });
+
+        expect(
+            document.querySelector(
+                '[data-workspace-drop-overlay-position="right"]',
+            ),
         ).not.toBeNull();
     });
 });

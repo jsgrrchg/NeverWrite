@@ -34,20 +34,24 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [0.2.3] - Unreleased
+## [0.2.3] - 2026-05-05
 
 ### Added
 
 - Added a "release notes" button in Settings → Updates that opens the latest GitHub release in the user's browser.
+- Added pane-native drag and drop for Agents sidebar threads: drag a chat or subagent from the sidebar onto a pane, tab strip, or pane edge to open it there, move the existing chat tab without duplicating it, or create a new split pane.
+- Added a floating drag preview for Agents sidebar threads, including the thread title, runtime, and active/error state while dragging.
 
 ### Changed
 
 - Changed file-tree drag behavior so dropping existing notes, PDFs, and files onto editor panes opens them as tabs instead of inserting embed markup into the active note.
+- Changed file-tree and external file drops to use the same pane-native targeting as workspace tabs: drop on a pane center to open there, on a tab strip to choose the tab position, or on a pane edge to create a split. Drops over the AI composer still attach to the chat composer instead of opening editor panes.
 - Polished the chat composer expand/collapse button: the diagonal arrows now point toward the natural corners (top-right / bottom-left when collapsed, inward when expanded) and the button gains a subtle hover highlight that matches the other composer controls.
 
 ### Fixed
 
 - Fixed AI chat tabs restored from saved history so their `persisted:*` identifiers no longer leak into live runtime commands, preventing repeated "AI session not found" errors when switching between a Markdown note and an empty or saved chat in the same pane.
+- Fixed workspace tab dragging so file-attachment drag events emitted by tabs no longer clear the pane split/drop preview.
 
 ## [0.2.2] - 2026-05-03
 
