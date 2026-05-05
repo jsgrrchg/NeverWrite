@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "neverwrite-native-backend"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "agent-client-protocol",
  "neverwrite-ai",
