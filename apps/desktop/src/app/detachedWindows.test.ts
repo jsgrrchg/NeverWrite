@@ -29,7 +29,7 @@ function createChatSession(overrides: Partial<AIChatSession> = {}): AIChatSessio
             {
                 id: "msg-1",
                 role: "user",
-                kind: "message",
+                kind: "text",
                 content: "keep this",
                 timestamp: 1,
             },

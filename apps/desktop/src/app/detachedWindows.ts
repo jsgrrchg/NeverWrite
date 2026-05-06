@@ -101,7 +101,7 @@ export interface DetachedWindowPayload {
 }
 
 export interface AttachExternalTabPayload {
-    tab: Tab;
+    tab: TabInput;
     aiSessions?: AIChatSession[];
 }
 
@@ -428,7 +428,7 @@ export async function commitDetachedTabDrop({
     await openDetachedNoteWindow(
         createDetachedWindowPayload(transferTab, vaultPath),
         {
-            title: transferTab.title,
+            title: transferTab.title ?? undefined,
             position: getDetachedWindowPosition(screenX, screenY),
         },
     );
