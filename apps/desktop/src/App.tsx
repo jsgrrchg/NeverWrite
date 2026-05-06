@@ -89,6 +89,7 @@ import {
     canUseExcalidrawRuntime,
     readSearchParam,
 } from "./app/utils/safeBrowser";
+import { getVaultChangeSyncStrategy } from "./app/utils/vaultChangeSync";
 import { logError } from "./app/utils/runtimeLog";
 import {
     flushChatTabsPersistence,
@@ -109,14 +110,6 @@ import {
     WINDOW_OPERATIONAL_STATE_PUBLISH_DEBOUNCE_MS,
     writeWindowOperationalState,
 } from "./features/updates/sensitiveState";
-
-function shouldApplyVaultChangeToVaultStore(change: VaultNoteChange) {
-    return (
-        change.origin === "external" ||
-        change.origin === "unknown" ||
-        change.origin === "agent"
-    );
-}
 
 interface WebClipperSavedPayload {
     requestId: string;
@@ -1248,6 +1241,7 @@ export default function App() {
     const vaultPath = useVaultStore((s) => s.vaultPath);
     const applyVaultNoteChange = useVaultStore((s) => s.applyVaultNoteChange);
     const refreshEntries = useVaultStore((s) => s.refreshEntries);
+    const refreshStructure = useVaultStore((s) => s.refreshStructure);
     const hydrateWorkspace = useEditorStore((s) => s.hydrateWorkspace);
     const hydrateTabs = useEditorStore((s) => s.hydrateTabs);
     const workspaceTabs = useEditorStore(useShallow(selectEditorWorkspaceTabs));
@@ -1827,9 +1821,16 @@ export default function App() {
                 )
                     return;
 
-                if (shouldApplyVaultChangeToVaultStore(event.payload)) {
+                const syncStrategy = getVaultChangeSyncStrategy(event.payload);
+                if (
+                    syncStrategy === "apply-note-change-and-refresh-entries"
+                ) {
                     applyVaultNoteChange(event.payload);
                     void refreshEntries();
+                } else if (syncStrategy === "refresh-entries") {
+                    void refreshEntries();
+                } else if (syncStrategy === "refresh-structure") {
+                    void refreshStructure();
                 }
 
                 // Reload editor content for open tabs when file changes externally
@@ -1976,7 +1977,7 @@ export default function App() {
             fileReloadVersions.clear();
             unlisten?.();
         };
-    }, [applyVaultNoteChange, refreshEntries, windowMode]);
+    }, [applyVaultNoteChange, refreshEntries, refreshStructure, windowMode]);
 
     useEffect(() => {
         let disposed = false;
