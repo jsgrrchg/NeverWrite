@@ -15,7 +15,7 @@ import {
 } from "./chatPaneMovement";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import { resetChatTabsStore } from "./store/chatTabsStore";
-import type { AIChatSession } from "./types";
+import type { AIChatSession, AIRuntimeSetupStatus } from "./types";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -56,6 +56,43 @@ const runtimeDescriptor = {
     ],
 };
 
+const claudeRuntimeDescriptor = {
+    runtime: {
+        id: "claude-acp",
+        name: "Claude ACP",
+        description: "Claude runtime",
+        capabilities: ["create_session"],
+    },
+    models: [
+        {
+            id: "claude-model",
+            runtimeId: "claude-acp",
+            name: "Claude Model",
+            description: "Model for tests",
+        },
+    ],
+    modes: [
+        {
+            id: "default",
+            runtimeId: "claude-acp",
+            name: "Default",
+            description: "Default mode",
+            disabled: false,
+        },
+    ],
+    configOptions: [
+        {
+            id: "model",
+            runtimeId: "claude-acp",
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "claude-model",
+            options: [{ value: "claude-model", label: "Claude Model" }],
+        },
+    ],
+};
+
 const setupStatusPayload = {
     runtime_id: "codex-acp",
     binary_ready: true,
@@ -66,6 +103,17 @@ const setupStatusPayload = {
     auth_methods: [],
     onboarding_required: false,
     message: null,
+};
+
+const readySetupStatusState: AIRuntimeSetupStatus = {
+    runtimeId: "codex-acp",
+    binaryReady: true,
+    binaryPath: "/Applications/NeverWrite/codex-acp",
+    binarySource: "bundled",
+    authReady: true,
+    authMethod: "openai-api-key",
+    authMethods: [],
+    onboardingRequired: false,
 };
 
 const createdSessionPayload = {
@@ -212,6 +260,58 @@ describe("createNewChatInWorkspace", () => {
             throw new Error("Expected the focused tab to remain a chat tab");
         }
         expect(focusedResolvedTab.sessionId).toBe("codex-session-1");
+    });
+
+    it("uses the first configured runtime when the selected runtime still needs onboarding", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            selectedRuntimeId: "codex-acp",
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    ...readySetupStatusState,
+                    authReady: false,
+                    onboardingRequired: true,
+                },
+                "claude-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "claude-acp",
+                    authMethod: "claude-login",
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation((command) => {
+            if (command === "ai_get_setup_status") {
+                return Promise.resolve({
+                    ...setupStatusPayload,
+                    runtime_id: "claude-acp",
+                    auth_method: "claude-login",
+                });
+            }
+            if (command === "ai_create_session") {
+                return Promise.resolve({
+                    ...createdSessionPayload,
+                    session_id: "claude-session-1",
+                    runtime_id: "claude-acp",
+                });
+            }
+            return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+        });
+
+        const pendingSessionId = await createNewChatInWorkspace();
+        expect(pendingSessionId).toMatch(/^pending:/);
+
+        const pendingSession =
+            useChatStore.getState().sessionsById[pendingSessionId!];
+        expect(pendingSession?.runtimeId).toBe("claude-acp");
+        expect(pendingSession?.modelId).toBe("claude-model");
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().sessionsById["claude-session-1"],
+            ).toBeDefined();
+        });
     });
 });
 
