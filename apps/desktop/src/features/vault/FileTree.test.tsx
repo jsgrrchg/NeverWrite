@@ -13,6 +13,10 @@ import {
     isFileTab,
     isNoteTab,
 } from "../../app/store/editorStore";
+import {
+    FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+    FILE_TREE_NOTE_DRAG_EVENT,
+} from "../ai/dragEvents";
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
@@ -2086,6 +2090,281 @@ describe("FileTree", () => {
         expect(
             await screen.findByRole("button", { name: "Add to Chat" }),
         ).toBeInTheDocument();
+    });
+
+    it("adds folders, notes, and sidebar files to chat from the context menu", async () => {
+        const user = userEvent.setup();
+        const events: CustomEvent[] = [];
+        const handleAttach = (event: Event) => {
+            events.push(event as CustomEvent);
+        };
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                ...buildFileEntry("docs/reference.pdf", "application/pdf"),
+                kind: "pdf" as const,
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleAttach);
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "docs");
+
+            fireEvent.contextMenu(getFolderRow("docs"));
+            await user.click(
+                await screen.findByRole("button", { name: "Add to Chat" }),
+            );
+            await waitFor(() => expect(events).toHaveLength(1));
+            expect(events[0].detail).toMatchObject({
+                phase: "attach",
+                notes: [],
+                folder: { path: "docs", name: "docs" },
+            });
+
+            fireEvent.contextMenu(getNoteRow("Alpha"));
+            await user.click(
+                await screen.findByRole("button", { name: "Add to Chat" }),
+            );
+            await waitFor(() => expect(events).toHaveLength(2));
+            expect(events[1].detail).toMatchObject({
+                phase: "attach",
+                notes: [
+                    {
+                        id: "docs/alpha",
+                        title: "Alpha",
+                        path: "/vault/docs/alpha.md",
+                    },
+                ],
+            });
+
+            fireEvent.contextMenu(getFileRow("config"));
+            await user.click(
+                await screen.findByRole("button", { name: "Add to Chat" }),
+            );
+            await waitFor(() => expect(events).toHaveLength(3));
+            expect(events[2].detail).toMatchObject({
+                phase: "attach",
+                notes: [],
+                files: [
+                    {
+                        filePath: "/vault/docs/config.toml",
+                        fileName: "config.toml",
+                        mimeType: "application/toml",
+                    },
+                ],
+            });
+
+            fireEvent.contextMenu(getFileRow("reference"));
+            await user.click(
+                await screen.findByRole("button", { name: "Add to Chat" }),
+            );
+            await waitFor(() => expect(events).toHaveLength(4));
+            expect(events[3].detail).toMatchObject({
+                phase: "attach",
+                notes: [],
+                files: [
+                    {
+                        filePath: "/vault/docs/reference.pdf",
+                        fileName: "reference.pdf",
+                        mimeType: "application/pdf",
+                    },
+                ],
+            });
+        } finally {
+            window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleAttach);
+        }
+    });
+
+    it("adds folders, notes, and sidebar files to a new chat from the context menu", async () => {
+        const user = userEvent.setup();
+        const events: CustomEvent[] = [];
+        const handleAttachToNewChat = (event: Event) => {
+            events.push(event as CustomEvent);
+        };
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                ...buildFileEntry("docs/reference.pdf", "application/pdf"),
+                kind: "pdf" as const,
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        window.addEventListener(
+            FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+            handleAttachToNewChat,
+        );
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "docs");
+
+            fireEvent.contextMenu(getFolderRow("docs"));
+            await user.click(
+                await screen.findByRole("button", {
+                    name: "Add to New Chat",
+                }),
+            );
+            await waitFor(() => expect(events).toHaveLength(1));
+            expect(events[0].detail).toMatchObject({
+                phase: "attach",
+                notes: [],
+                folder: { path: "docs", name: "docs" },
+            });
+
+            fireEvent.contextMenu(getNoteRow("Alpha"));
+            await user.click(
+                await screen.findByRole("button", {
+                    name: "Add to New Chat",
+                }),
+            );
+            await waitFor(() => expect(events).toHaveLength(2));
+            expect(events[1].detail).toMatchObject({
+                phase: "attach",
+                notes: [
+                    {
+                        id: "docs/alpha",
+                        title: "Alpha",
+                        path: "/vault/docs/alpha.md",
+                    },
+                ],
+            });
+
+            fireEvent.contextMenu(getFileRow("config"));
+            await user.click(
+                await screen.findByRole("button", {
+                    name: "Add to New Chat",
+                }),
+            );
+            await waitFor(() => expect(events).toHaveLength(3));
+            expect(events[2].detail).toMatchObject({
+                phase: "attach",
+                notes: [],
+                files: [
+                    {
+                        filePath: "/vault/docs/config.toml",
+                        fileName: "config.toml",
+                        mimeType: "application/toml",
+                    },
+                ],
+            });
+
+            fireEvent.contextMenu(getFileRow("reference"));
+            await user.click(
+                await screen.findByRole("button", {
+                    name: "Add to New Chat",
+                }),
+            );
+            await waitFor(() => expect(events).toHaveLength(4));
+            expect(events[3].detail).toMatchObject({
+                phase: "attach",
+                notes: [],
+                files: [
+                    {
+                        filePath: "/vault/docs/reference.pdf",
+                        fileName: "reference.pdf",
+                        mimeType: "application/pdf",
+                    },
+                ],
+            });
+        } finally {
+            window.removeEventListener(
+                FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+                handleAttachToNewChat,
+            );
+        }
+    });
+
+    it("copies full paths for folders, notes, and sidebar files", async () => {
+        const user = userEvent.setup();
+        const writeText = vi
+            .spyOn(navigator.clipboard, "writeText")
+            .mockResolvedValue(undefined);
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                ...buildFileEntry("docs/reference.pdf", "application/pdf"),
+                kind: "pdf" as const,
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.contextMenu(getFolderRow("docs"));
+        await user.click(
+            await screen.findByRole("button", { name: "Copy Full Path" }),
+        );
+        await waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith("/vault/docs");
+        });
+
+        fireEvent.contextMenu(getNoteRow("Alpha"));
+        await user.click(
+            await screen.findByRole("button", { name: "Copy Full Path" }),
+        );
+        await waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith("/vault/docs/alpha.md");
+        });
+
+        fireEvent.contextMenu(getFileRow("config"));
+        await user.click(
+            await screen.findByRole("button", { name: "Copy Full Path" }),
+        );
+        await waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith("/vault/docs/config.toml");
+        });
+
+        fireEvent.contextMenu(getFileRow("reference"));
+        await user.click(
+            await screen.findByRole("button", { name: "Copy Full Path" }),
+        );
+        await waitFor(() => {
+            expect(writeText).toHaveBeenCalledWith(
+                "/vault/docs/reference.pdf",
+            );
+        });
     });
 
     it("moves generic files to another folder via drag and drop", async () => {

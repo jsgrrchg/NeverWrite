@@ -56,7 +56,11 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "../../components/icons/FolderTypeIcon";
-import { emitFileTreeNoteDrag } from "../ai/dragEvents";
+import {
+    emitFileTreeAttachToNewChat,
+    emitFileTreeNoteDrag,
+    type FileTreeNoteDragDetail,
+} from "../ai/dragEvents";
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { perfMeasure, perfNow } from "../../app/utils/perfInstrumentation";
@@ -435,6 +439,43 @@ function shouldConvertRenamedNoteToFile(name: string) {
         return false;
     }
     return !isMarkdownLeafName(leafName);
+}
+
+function isAbsolutePath(path: string) {
+    const normalized = path.replace(/\\/g, "/");
+    return (
+        normalized.startsWith("/") ||
+        normalized.startsWith("//") ||
+        /^[A-Za-z]:\//.test(normalized)
+    );
+}
+
+function getAbsoluteVaultPath(vaultPath: string | null, path: string) {
+    if (!path || isAbsolutePath(path)) return path;
+    if (!vaultPath) return path;
+    return `${vaultPath.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+function getDraggedVaultFile(entry: VaultEntryDto) {
+    return {
+        filePath: entry.path,
+        fileName: entry.file_name,
+        mimeType:
+            entry.kind === "pdf"
+                ? "application/pdf"
+                : (entry.mime_type ?? "application/octet-stream"),
+    };
+}
+
+function emitFileTreeAttachment(
+    detail: FileTreeNoteDragDetail,
+    target: "current-chat" | "new-chat",
+) {
+    if (target === "new-chat") {
+        emitFileTreeAttachToNewChat(detail);
+        return;
+    }
+    emitFileTreeNoteDrag(detail);
 }
 
 // --- Icons ---
@@ -2962,37 +3003,78 @@ export function FileTree() {
         setSelectedEntryPaths(new Set());
     }, []);
 
-    const handleAddPdfToChat = useCallback((entry: VaultEntryDto) => {
-        emitFileTreeNoteDrag({
-            phase: "attach",
-            x: 0,
-            y: 0,
-            notes: [],
-            files: [
-                {
-                    filePath: entry.path,
-                    fileName: entry.file_name,
-                    mimeType: "application/pdf",
-                },
-            ],
-        });
+    const handleCopyFullPath = useCallback((path: string) => {
+        if (!path) return;
+        void navigator.clipboard.writeText(path);
     }, []);
 
-    const handleAddFileToChat = useCallback((entry: VaultEntryDto) => {
-        emitFileTreeNoteDrag({
-            phase: "attach",
-            x: 0,
-            y: 0,
-            notes: [],
-            files: [
+    const handleAddFolderToChat = useCallback(
+        (path: string, target: "current-chat" | "new-chat" = "current-chat") => {
+            emitFileTreeAttachment(
                 {
-                    filePath: entry.path,
-                    fileName: entry.file_name,
-                    mimeType: entry.mime_type ?? "application/octet-stream",
+                    phase: "attach",
+                    x: 0,
+                    y: 0,
+                    notes: [],
+                    folder: {
+                        path,
+                        name: getBaseName(path),
+                    },
                 },
-            ],
-        });
-    }, []);
+                target,
+            );
+        },
+        [],
+    );
+
+    const handleAddNotesToChat = useCallback(
+        (
+            notesToAdd: NoteDto[],
+            target: "current-chat" | "new-chat" = "current-chat",
+        ) => {
+            if (notesToAdd.length === 0) return;
+            emitFileTreeAttachment(
+                {
+                    phase: "attach",
+                    x: 0,
+                    y: 0,
+                    notes: notesToAdd.map((note) => ({
+                        id: note.id,
+                        title: note.title,
+                        path: note.path,
+                    })),
+                },
+                target,
+            );
+        },
+        [],
+    );
+
+    const handleAddEntriesToChat = useCallback(
+        (
+            entriesToAdd: VaultEntryDto[],
+            target: "current-chat" | "new-chat" = "current-chat",
+        ) => {
+            const files = entriesToAdd
+                .filter(
+                    (entry) => entry.kind === "pdf" || entry.kind === "file",
+                )
+                .map(getDraggedVaultFile);
+            if (files.length === 0) return;
+
+            emitFileTreeAttachment(
+                {
+                    phase: "attach",
+                    x: 0,
+                    y: 0,
+                    notes: [],
+                    files,
+                },
+                target,
+            );
+        },
+        [],
+    );
 
     const readNoteContent = useCallback(
         (noteId: string) =>
@@ -3151,6 +3233,23 @@ export function FileTree() {
             return [note];
         },
         [notes, selectedNoteIds],
+    );
+
+    const getContextTargetEntries = useCallback(
+        (entry: VaultEntryDto) => {
+            if (
+                selectedEntryPaths.size > 1 &&
+                selectedEntryPaths.has(entry.path)
+            ) {
+                return entries.filter(
+                    (item) =>
+                        selectedEntryPaths.has(item.path) &&
+                        (item.kind === "pdf" || item.kind === "file"),
+                );
+            }
+            return [entry];
+        },
+        [entries, selectedEntryPaths],
     );
 
     const applyMove = useCallback(
@@ -3700,6 +3799,7 @@ export function FileTree() {
             case "folder": {
                 const { path, expanded } = contextMenu.payload;
                 const folderName = path.split("/").pop() ?? path;
+                const absolutePath = getAbsoluteVaultPath(vaultPath, path);
                 return [
                     {
                         label: "New Note Here",
@@ -3722,6 +3822,14 @@ export function FileTree() {
                             (treeClipboard.kind === "folder" &&
                                 !canPasteFolderClipboard(treeClipboard, path)),
                     },
+                    {
+                        label: "Add to Chat",
+                        action: () => handleAddFolderToChat(path),
+                    },
+                    {
+                        label: "Add to New Chat",
+                        action: () => handleAddFolderToChat(path, "new-chat"),
+                    },
                     { type: "separator" },
                     {
                         label: expanded ? "Collapse" : "Expand",
@@ -3736,8 +3844,8 @@ export function FileTree() {
                         action: () => handleRevealFolderInFinder(path),
                     },
                     {
-                        label: "Copy Folder Path",
-                        action: () => void navigator.clipboard.writeText(path),
+                        label: "Copy Full Path",
+                        action: () => handleCopyFullPath(absolutePath),
                     },
                     { type: "separator" },
                     {
@@ -3759,6 +3867,14 @@ export function FileTree() {
                     contextTargetNotes.length > 1
                         ? "Move Selected Notes to…"
                         : "Move Note to…";
+                const addToChatLabel =
+                    contextTargetNotes.length > 1
+                        ? "Add Selected to Chat"
+                        : "Add to Chat";
+                const addToNewChatLabel =
+                    contextTargetNotes.length > 1
+                        ? "Add Selected to New Chat"
+                        : "Add to New Chat";
 
                 return [
                     {
@@ -3789,6 +3905,18 @@ export function FileTree() {
                                     getParentPath(note.id),
                                 )),
                     },
+                    {
+                        label: addToChatLabel,
+                        action: () => handleAddNotesToChat(contextTargetNotes),
+                    },
+                    {
+                        label: addToNewChatLabel,
+                        action: () =>
+                            handleAddNotesToChat(
+                                contextTargetNotes,
+                                "new-chat",
+                            ),
+                    },
                     { type: "separator" },
                     {
                         label: "Rename",
@@ -3809,9 +3937,14 @@ export function FileTree() {
                         action: () => handleRevealNoteInFinder(note),
                     },
                     {
-                        label: "Copy Note Path",
+                        label: "Copy Full Path",
                         action: () =>
-                            void navigator.clipboard.writeText(note.id),
+                            handleCopyFullPath(
+                                getAbsoluteVaultPath(
+                                    vaultPath,
+                                    note.path || note.id,
+                                ),
+                            ),
                     },
                     { type: "separator" },
                     {
@@ -3843,6 +3976,15 @@ export function FileTree() {
             }
             case "pdf": {
                 const { entry } = contextMenu.payload;
+                const contextTargetEntries = getContextTargetEntries(entry);
+                const addToChatLabel =
+                    contextTargetEntries.length > 1
+                        ? "Add Selected to Chat"
+                        : "Add to Chat";
+                const addToNewChatLabel =
+                    contextTargetEntries.length > 1
+                        ? "Add Selected to New Chat"
+                        : "Add to New Chat";
                 return [
                     {
                         label: "Open",
@@ -3862,13 +4004,25 @@ export function FileTree() {
                         action: () => void openPath(entry.path),
                     },
                     {
+                        label: addToChatLabel,
+                        action: () =>
+                            handleAddEntriesToChat(contextTargetEntries),
+                    },
+                    {
+                        label: addToNewChatLabel,
+                        action: () =>
+                            handleAddEntriesToChat(
+                                contextTargetEntries,
+                                "new-chat",
+                            ),
+                    },
+                    {
                         label: "Reveal in Finder",
                         action: () => void revealItemInDir(entry.path),
                     },
                     {
-                        label: "Copy Path",
-                        action: () =>
-                            void navigator.clipboard.writeText(entry.path),
+                        label: "Copy Full Path",
+                        action: () => handleCopyFullPath(entry.path),
                     },
                     { type: "separator" },
                     {
@@ -3898,16 +4052,20 @@ export function FileTree() {
                         action: () => void handleMoveEntryToTrash(entry),
                         danger: true,
                     },
-                    { type: "separator" },
-                    {
-                        label: "Add to Chat",
-                        action: () => handleAddPdfToChat(entry),
-                    },
                 ];
             }
             case "file": {
                 const { entry } = contextMenu.payload;
                 const canOpenInApp = canOpenVaultFileEntryInApp(entry);
+                const contextTargetEntries = getContextTargetEntries(entry);
+                const addToChatLabel =
+                    contextTargetEntries.length > 1
+                        ? "Add Selected to Chat"
+                        : "Add to Chat";
+                const addToNewChatLabel =
+                    contextTargetEntries.length > 1
+                        ? "Add Selected to New Chat"
+                        : "Add to New Chat";
                 return [
                     {
                         label: "Open",
@@ -3929,15 +4087,25 @@ export function FileTree() {
                         action: () => handleEntryRenameStart(entry),
                     },
                     {
+                        label: addToChatLabel,
+                        action: () =>
+                            handleAddEntriesToChat(contextTargetEntries),
+                    },
+                    {
+                        label: addToNewChatLabel,
+                        action: () =>
+                            handleAddEntriesToChat(
+                                contextTargetEntries,
+                                "new-chat",
+                            ),
+                    },
+                    {
                         label: "Reveal in Finder",
                         action: () => void revealItemInDir(entry.path),
                     },
                     {
-                        label: "Copy Path",
-                        action: () =>
-                            void navigator.clipboard.writeText(
-                                entry.relative_path,
-                            ),
+                        label: "Copy Full Path",
+                        action: () => handleCopyFullPath(entry.path),
                     },
                     { type: "separator" },
                     {
@@ -3966,11 +4134,6 @@ export function FileTree() {
                         label: "Move File to Trash",
                         action: () => void handleMoveEntryToTrash(entry),
                         danger: true,
-                    },
-                    { type: "separator" },
-                    {
-                        label: "Add to Chat",
-                        action: () => handleAddFileToChat(entry),
                     },
                 ];
             }
@@ -4025,16 +4188,19 @@ export function FileTree() {
         applyMove,
         contextMenu,
         expandedFolders.size,
+        getContextTargetEntries,
         getContextTargetNotes,
+        handleAddEntriesToChat,
+        handleAddFolderToChat,
+        handleAddNotesToChat,
         handleCopyFolder,
+        handleCopyFullPath,
         handleCopyNotes,
         handleDelete,
         handleDeleteFolder,
         handleDuplicateNote,
         handleEntryRenameStart,
         handleFolderRenameStart,
-        handleAddFileToChat,
-        handleAddPdfToChat,
         handleMoveEntryToTrash,
         handlePdfClick,
         handleOpenPdfInNewTab,
@@ -4047,6 +4213,7 @@ export function FileTree() {
         startCreating,
         treeClipboard,
         bookmarkItems,
+        vaultPath,
     ]);
 
     // Ref-backed stable callbacks so memo'd FlatTreeRowView stays fresh
