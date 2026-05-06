@@ -1,18 +1,15 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const isWindows = process.platform === "win32";
-const isMac = process.platform === "darwin";
-const isLinux = process.platform === "linux";
+import { isWindows } from "./common.mjs";
+import {
+    signalExitCode,
+    terminateChild,
+    FORCED_EXIT_TIMEOUT_MS,
+} from "./graceful-shutdown.mjs";
 
-function signalExitCode(signal) {
-    if (isWindows) return 1;
-    const num = os.constants.signals[signal];
-    return typeof num === "number" ? 128 + num : 1;
-}
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
 const rendererUrl = "http://127.0.0.1:5174";
@@ -20,7 +17,6 @@ const rendererUrl = "http://127.0.0.1:5174";
 let vite = null;
 let electron = null;
 let shuttingDown = false;
-let forcedExitTimer = null;
 
 function run(command, args, options = {}) {
     const child = spawn(command, args, {
@@ -34,39 +30,19 @@ function run(command, args, options = {}) {
     return child;
 }
 
-function terminateChild(child, { graceful = false } = {}) {
-    if (!child) return;
-    if (child.exitCode != null || child.signalCode != null) return;
+function shutdown(exitCode = 0) {
+    if (shuttingDown) {
+        return;
+    }
 
-    const pid = child.pid;
-    if (typeof pid !== "number") return;
-
-    const groupPid =
-        !isWindows && child.__neverwriteDetached === true ? -pid : pid;
-
-    try {
-        process.kill(graceful ? pid : groupPid, "SIGTERM");
-    } catch {}
+    shuttingDown = true;
+    process.exitCode = exitCode;
+    terminateChild(electron, { pidOnly: true });
+    terminateChild(vite, { pidOnly: false });
 
     setTimeout(() => {
-        if (child.exitCode == null && child.signalCode == null) {
-            try {
-                process.kill(groupPid, "SIGKILL");
-            } catch {}
-        }
-    }, 1500).unref();
-}
-
-function shutdown(exitCode = 0) {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    terminateChild(electron, { graceful: true });
-    terminateChild(vite, { graceful: false });
-
-    forcedExitTimer = setTimeout(() => {
         process.exit(exitCode);
-    }, 50);
-    forcedExitTimer.unref();
+    }, FORCED_EXIT_TIMEOUT_MS).unref();
 }
 
 function runOnce(command, args, env = {}) {
@@ -106,8 +82,8 @@ function waitForRenderer() {
 process.on("SIGINT", () => shutdown(signalExitCode("SIGINT")));
 process.on("SIGTERM", () => shutdown(signalExitCode("SIGTERM")));
 process.once("exit", () => {
-    terminateChild(electron, { graceful: true });
-    terminateChild(vite, { graceful: false });
+    terminateChild(electron, { pidOnly: true });
+    terminateChild(vite, { pidOnly: false });
 });
 process.on("uncaughtException", (error) => {
     console.error(error);
