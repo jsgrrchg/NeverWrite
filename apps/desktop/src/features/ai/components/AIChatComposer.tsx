@@ -24,6 +24,7 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
+import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
