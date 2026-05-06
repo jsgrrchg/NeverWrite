@@ -50,6 +50,10 @@ import {
 } from "../ai/dragEvents";
 import { useChatStore } from "../ai/store/chatStore";
 import {
+    findActiveSessionsAffectedByClose,
+    getCloseTabsConfirmationMessage,
+} from "./tabClosePolicy";
+import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
@@ -441,6 +445,19 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
+            const affected = findActiveSessionsAffectedByClose(
+                [targetTab],
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
+                return;
+            }
+
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
                 await appWindow.close().catch((error) => {
@@ -460,23 +477,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                         new Event(REQUEST_CLOSE_ACTIVE_TAB_EVENT),
                     );
                     return;
-                }
-            }
-
-            if (isChatTab(targetTab)) {
-                const session = useChatStore.getState().sessionsById[targetTab.sessionId];
-                if (
-                    session &&
-                    (session.status === "streaming" ||
-                        session.status === "waiting_permission" ||
-                        session.status === "waiting_user_input")
-                ) {
-                    const confirmed = await confirm(
-                        "The AI agent is still running. Are you sure you want to close this tab?",
-                    );
-                    if (!confirmed) {
-                        return;
-                    }
                 }
             }
 
@@ -506,25 +506,17 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return false;
             }
 
-            const sessionsById = useChatStore.getState().sessionsById;
-            const hasActiveAgent = tabsToClose.some((tab) => {
-                if (!isChatTab(tab)) return false;
-                const session = sessionsById[tab.sessionId];
-                return (
-                    session &&
-                    (session.status === "streaming" ||
-                        session.status === "waiting_permission" ||
-                        session.status === "waiting_user_input")
-                );
-            });
-
-            if (hasActiveAgent) {
-                const confirmed = await confirm(
-                    "An AI agent is still running. Are you sure you want to close these tabs?",
-                );
-                if (!confirmed) {
-                    return false;
-                }
+            const affected = findActiveSessionsAffectedByClose(
+                tabsToClose,
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
+                return false;
             }
 
             for (const id of tabIds) {

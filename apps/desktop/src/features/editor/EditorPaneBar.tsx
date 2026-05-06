@@ -42,6 +42,10 @@ import { useActiveTabStripReveal } from "./tabStrip";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
 import {
+    findActiveSessionsAffectedByClose,
+    getCloseTabsConfirmationMessage,
+} from "./tabClosePolicy";
+import {
     chromeControlsGroupStyle,
     getChromeIconButtonStyle,
     getChromeNavigationButtonStyle,
@@ -380,21 +384,17 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 return;
             }
 
-            if (isChatTab(tab)) {
-                const session = useChatStore.getState().sessionsById[tab.sessionId];
-                if (
-                    session &&
-                    (session.status === "streaming" ||
-                        session.status === "waiting_permission" ||
-                        session.status === "waiting_user_input")
-                ) {
-                    const confirmed = await confirm(
-                        "The AI agent is still running. Are you sure you want to close this tab?",
-                    );
-                    if (!confirmed) {
-                        return;
-                    }
-                }
+            const affected = findActiveSessionsAffectedByClose(
+                [tab],
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
+                return;
             }
 
             closeTab(tab.id);

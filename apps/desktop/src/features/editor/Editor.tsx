@@ -41,7 +41,6 @@ import {
     selectEditorWorkspaceTabs,
     useEditorStore,
     isNoteTab,
-    isChatTab,
     selectFocusedPaneId,
     selectEditorPaneState,
     type Tab,
@@ -155,6 +154,10 @@ import {
 } from "./WikilinkSuggester";
 import { isSearchTab } from "../search/searchTab";
 import { useChatStore } from "../ai/store/chatStore";
+import {
+    findActiveSessionsAffectedByClose,
+    getCloseTabsConfirmationMessage,
+} from "./tabClosePolicy";
 import { aiRegisterFileBaseline } from "../ai/api";
 import {
     changeAuthorAnnotation,
@@ -789,26 +792,21 @@ export function Editor({
         if (!tab) return;
 
         if (!isNoteTab(tab)) {
-            if (isChatTab(tab)) {
-                const session = useChatStore.getState().sessionsById[tab.sessionId];
+            const affected = findActiveSessionsAffectedByClose(
+                [tab],
+                useChatStore.getState().sessionsById,
+            );
+            void (async () => {
+                const confirmationMessage =
+                    getCloseTabsConfirmationMessage(affected);
                 if (
-                    session &&
-                    (session.status === "streaming" ||
-                        session.status === "waiting_permission" ||
-                        session.status === "waiting_user_input")
+                    confirmationMessage !== null &&
+                    !(await confirm(confirmationMessage))
                 ) {
-                    void (async () => {
-                        const confirmed = await confirm(
-                            "The AI agent is still running. Are you sure you want to close this tab?",
-                        );
-                        if (confirmed) {
-                            closeTab(activeTabId, { reason: "user" });
-                        }
-                    })();
                     return;
                 }
-            }
-            closeTab(activeTabId, { reason: "user" });
+                closeTab(activeTabId, { reason: "user" });
+            })();
             return;
         }
 

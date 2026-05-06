@@ -11,6 +11,7 @@ import {
     getTrackedFileReviewState,
     getTrackedFilesForSession,
 } from "../ai/store/actionLogModel";
+import { isAgentSessionActive } from "../ai/agentSessionActivity";
 import type { AIChatSession } from "../ai/types";
 
 const WINDOW_OPERATIONAL_STATE_PREFIX = "neverwrite:window-operational-state:";
@@ -69,18 +70,6 @@ function hasPendingReview(session: AIChatSession) {
 
     return Object.values(getTrackedFilesForSession(session.actionLog)).some(
         (file) => getTrackedFileReviewState(file) === "pending",
-    );
-}
-
-function isAgentSessionActive(session: AIChatSession) {
-    if (session.runtimeState != null && session.runtimeState !== "live") {
-        return false;
-    }
-
-    return (
-        session.status === "streaming" ||
-        session.status === "waiting_permission" ||
-        session.status === "waiting_user_input"
     );
 }
 
