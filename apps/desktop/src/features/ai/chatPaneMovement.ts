@@ -8,7 +8,11 @@ import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import { getPreferredWorkspaceChatSessionIdForSession } from "./chatWorkspaceSelectors";
-import type { AIChatSession, AIRuntimeDescriptor } from "./types";
+import type {
+    AIChatSession,
+    AIRuntimeDescriptor,
+    AIRuntimeSetupStatus,
+} from "./types";
 
 interface OpenChatInWorkspaceOptions {
     paneId?: string;
@@ -30,18 +34,43 @@ function getConfigDefaultValue(
         ?.value;
 }
 
+function isRuntimeSetupReady(setupStatus?: AIRuntimeSetupStatus | null) {
+    return setupStatus?.authReady === true && !setupStatus.onboardingRequired;
+}
+
 function resolvePendingRuntime(runtimeId?: string) {
     const state = useChatStore.getState();
+    const getRuntime = (candidateRuntimeId?: string | null) =>
+        candidateRuntimeId
+            ? (state.runtimes.find(
+                  (descriptor) =>
+                      descriptor.runtime.id === candidateRuntimeId,
+              ) ?? null)
+            : null;
+    const firstReadyRuntime = state.runtimes.find((descriptor) =>
+        isRuntimeSetupReady(
+            state.setupStatusByRuntimeId[descriptor.runtime.id],
+        ),
+    );
+    const selectedRuntime = getRuntime(state.selectedRuntimeId);
+    const readySelectedRuntimeId =
+        selectedRuntime &&
+        isRuntimeSetupReady(
+            state.setupStatusByRuntimeId[selectedRuntime.runtime.id],
+        )
+            ? selectedRuntime.runtime.id
+            : null;
     const resolvedRuntimeId =
-        runtimeId ?? state.selectedRuntimeId ?? state.runtimes[0]?.runtime.id;
+        runtimeId ??
+        readySelectedRuntimeId ??
+        firstReadyRuntime?.runtime.id ??
+        state.selectedRuntimeId ??
+        state.runtimes[0]?.runtime.id;
     if (!resolvedRuntimeId) {
         return null;
     }
 
-    const runtime =
-        state.runtimes.find(
-            (descriptor) => descriptor.runtime.id === resolvedRuntimeId,
-        ) ?? null;
+    const runtime = getRuntime(resolvedRuntimeId);
     if (!runtime) {
         return null;
     }

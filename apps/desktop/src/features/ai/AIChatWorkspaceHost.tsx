@@ -8,11 +8,15 @@ import {
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
+    FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
     FILE_TREE_NOTE_DRAG_EVENT,
     emitFileTreeNoteDrag,
     type FileTreeNoteDragDetail,
 } from "./dragEvents";
-import { ensureWorkspaceChatSession } from "./chatPaneMovement";
+import {
+    createNewChatInWorkspace,
+    ensureWorkspaceChatSession,
+} from "./chatPaneMovement";
 import { useChatStore } from "./store/chatStore";
 import { useAiChatEventBridge } from "./useAiChatEventBridge";
 
@@ -25,6 +29,16 @@ function hasVisibleAiComposerDropZone() {
 function getActiveEditorChatSessionId() {
     const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
+}
+
+function replayAttachAfterComposerMount(detail: FileTreeNoteDragDetail) {
+    // Let the newly opened chat tab mount its composer before we replay the
+    // attach event into the real in-workspace target.
+    window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+            emitFileTreeNoteDrag(detail);
+        });
+    });
 }
 
 interface AIChatWorkspaceHostProps {
@@ -190,14 +204,18 @@ export function AIChatWorkspaceHost({
 
             void ensureWorkspaceChatSession().then((sessionId) => {
                 if (!sessionId) return;
+                replayAttachAfterComposerMount(detail);
+            });
+        };
 
-                // Let the newly opened chat tab mount its composer before we
-                // replay the attach event into the real in-workspace target.
-                window.requestAnimationFrame(() => {
-                    window.requestAnimationFrame(() => {
-                        emitFileTreeNoteDrag(detail);
-                    });
-                });
+        const handleAttachToNewChat = (event: Event) => {
+            const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
+                .detail;
+            if (detail.phase !== "attach") return;
+
+            void createNewChatInWorkspace().then((sessionId) => {
+                if (!sessionId) return;
+                replayAttachAfterComposerMount(detail);
             });
         };
 
@@ -205,11 +223,20 @@ export function AIChatWorkspaceHost({
             FILE_TREE_NOTE_DRAG_EVENT,
             handleAttachWithoutVisibleComposer,
         );
-        return () =>
+        window.addEventListener(
+            FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+            handleAttachToNewChat,
+        );
+        return () => {
             window.removeEventListener(
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleAttachWithoutVisibleComposer,
             );
+            window.removeEventListener(
+                FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+                handleAttachToNewChat,
+            );
+        };
     }, []);
 
     return null;

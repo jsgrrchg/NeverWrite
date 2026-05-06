@@ -789,6 +789,77 @@ describe("chatStore", () => {
         );
     });
 
+    it("selects the first configured runtime on fresh boot", async () => {
+        const claudeRuntimePayload = {
+            runtime: {
+                ...runtimePayload[0].runtime,
+                id: "claude-acp",
+                name: "Claude ACP",
+                description: "Claude runtime embedded as an ACP sidecar.",
+            },
+            models: [],
+            modes: [],
+            config_options: [],
+        };
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return [runtimePayload[0], claudeRuntimePayload];
+            }
+
+            if (command === "ai_get_setup_status") {
+                const runtimeId =
+                    typeof args === "object" &&
+                    args !== null &&
+                    "runtimeId" in args
+                        ? (args.runtimeId as string)
+                        : null;
+
+                if (runtimeId === "claude-acp") {
+                    return {
+                        ...readySetupStatus,
+                        runtime_id: "claude-acp",
+                        auth_method: "claude-login",
+                    };
+                }
+
+                return {
+                    ...readySetupStatus,
+                    auth_ready: false,
+                    onboarding_required: true,
+                    message: "Connect Codex to continue.",
+                };
+            }
+
+            if (command === "ai_create_session") {
+                const runtimeId =
+                    typeof args === "object" &&
+                    args !== null &&
+                    "input" in args
+                        ? (args.input as { runtime_id?: string }).runtime_id
+                        : null;
+
+                expect(runtimeId).toBe("claude-acp");
+                return {
+                    ...sessionPayload,
+                    session_id: "claude-session-1",
+                    runtime_id: "claude-acp",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        const state = useChatStore.getState();
+        expect(state.selectedRuntimeId).toBe("claude-acp");
+        expect(state.activeSessionId).toBe("claude-session-1");
+        expect(state.sessionsById["claude-session-1"]?.runtimeId).toBe(
+            "claude-acp",
+        );
+    });
+
     it("reports session inventory load failures without pretending restoration succeeded", async () => {
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_list_sessions") {

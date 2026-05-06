@@ -34,6 +34,20 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.4] - Unreleased
+
+### Added
+
+- Added file-tree context menu actions to add notes, folders, PDFs, and sidebar files directly to the current chat composer as context pills.
+- Added "Add to New Chat" and "Add Selected to New Chat" actions from the file tree, opening a fresh agent chat with the currently selected/last active provider before attaching the chosen context.
+- Added multi-selection-aware chat context actions for selected notes and sidebar files in the file tree.
+
+### Changed
+
+- Changed file-tree path copy actions to consistently use "Copy Full Path" and copy absolute paths for notes, folders, PDFs, and sidebar files.
+
+### Fixed
+
 ## [0.2.3] - 2026-05-05
 
 ### Added
