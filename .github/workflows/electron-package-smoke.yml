@@ -54,6 +54,12 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
+            - name: Build target-specific Codex sidecar
+              shell: bash
+              run: |
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin
+
             - name: Download embedded Node runtimes
               shell: bash
               run: |
@@ -70,6 +76,12 @@ jobs:
                   echo "NEVERWRITE_EMBEDDED_NODE_BIN_ARM64=$DEST/node-v${NODE_VERSION}-darwin-arm64/bin/node" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_EMBEDDED_NODE_BIN_X64=$DEST/node-v${NODE_VERSION}-darwin-x64/bin/node" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
+
+            - name: Export Codex sidecar environment
+              shell: bash
+              run: |
+                  echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
 
             - name: Package unsigned Electron app
               working-directory: apps/desktop
@@ -148,6 +160,10 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
+            - name: Build target-specific Codex sidecar
+              shell: bash
+              run: cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-pc-windows-msvc
+
             - name: Download embedded Node runtime
               shell: bash
               run: |
@@ -159,6 +175,12 @@ jobs:
                   powershell -NoProfile -Command "Expand-Archive -Path (Join-Path \$env:RUNNER_TEMP 'node.zip') -DestinationPath (Join-Path \$env:RUNNER_TEMP 'node-dist') -Force"
                   echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
+
+            - name: Export Codex sidecar environment
+              shell: bash
+              run: |
+                  CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-pc-windows-msvc/release/codex-acp.exe"
+                  echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
 
             - name: Package unsigned Electron app
               working-directory: apps/desktop
