@@ -1210,6 +1210,7 @@ interface ChatStore {
         anthropicApiKey?: AISecretPatch;
     }) => Promise<void>;
     upsertSession: (session: AIChatSession, activate?: boolean) => void;
+    dismissMessage: (sessionId: string, messageId: string) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
     applyRuntimeConnection: (payload: AIRuntimeConnectionPayload) => void;
     applyTokenUsage: (payload: AITokenUsagePayload) => void;
@@ -1572,6 +1573,57 @@ function replaceSessionMessage(
                       messagesById: nextMessagesById,
                   })
                 : (normalized.activePlanMessageId ?? null),
+    };
+}
+
+function removeSessionMessage(session: AIChatSession, messageId: string) {
+    const normalized = normalizeSessionTranscript(session);
+    const index = normalized.messageIndexById![messageId];
+    if (index == null) {
+        return normalized;
+    }
+
+    const nextMessages = normalized.messages.filter(
+        (message) => message.id !== messageId,
+    );
+    const nextMessagesById = { ...normalized.messagesById! };
+    delete nextMessagesById[messageId];
+    const nextMessageOrder = normalized.messageOrder!.filter(
+        (id) => id !== messageId,
+    );
+    const nextMessageIndexById = Object.fromEntries(
+        nextMessages.map((message, messageIndex) => [
+            message.id,
+            messageIndex,
+        ]),
+    );
+
+    const lastAssistantMessageId =
+        normalized.lastAssistantMessageId === messageId
+            ? [...nextMessages]
+                  .reverse()
+                  .find(isAssistantTextMessage)?.id ?? null
+            : (normalized.lastAssistantMessageId ?? null);
+    const lastTurnStartedMessageId =
+        normalized.lastTurnStartedMessageId === messageId
+            ? [...nextMessages]
+                  .reverse()
+                  .find(isTurnStartedStatusMessage)?.id ?? null
+            : (normalized.lastTurnStartedMessageId ?? null);
+
+    const nextSession = {
+        ...normalized,
+        messages: nextMessages,
+        messageOrder: nextMessageOrder,
+        messagesById: nextMessagesById,
+        messageIndexById: nextMessageIndexById,
+        lastAssistantMessageId,
+        lastTurnStartedMessageId,
+    };
+
+    return {
+        ...nextSession,
+        activePlanMessageId: recomputeActivePlanMessageId(nextSession),
     };
 }
 
@@ -6968,6 +7020,39 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldDrainQueue) {
                 void get().tryDrainQueue(session.sessionId);
             }
+            if (sessionToPersist) {
+                void persistSession(sessionToPersist);
+            }
+        },
+
+        dismissMessage: (sessionId, messageId) => {
+            let sessionToPersist: AIChatSession | null = null;
+            set((state) => {
+                const session = state.sessionsById[sessionId];
+                if (!session) return state;
+                const message = normalizeSessionTranscript(session).messagesById?.[
+                    messageId
+                ];
+                if (!message) return state;
+
+                const nextSession = {
+                    ...removeSessionMessage(session, messageId),
+                    resumeReconnectFailed:
+                        message.kind === "error" &&
+                        message.content === SAVED_CHAT_RECONNECT_FAILED_MESSAGE
+                            ? false
+                            : session.resumeReconnectFailed,
+                };
+                sessionToPersist = nextSession;
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [sessionId]: nextSession,
+                    },
+                };
+            });
+
             if (sessionToPersist) {
                 void persistSession(sessionToPersist);
             }

@@ -29,6 +29,7 @@ import {
     resolveChatRowUiSessionId,
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
+import { useChatStore } from "../store/chatStore";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -275,6 +276,7 @@ function renderTimelineRow(
             requestId: string,
             answers: Record<string, string[]>,
         ) => void;
+        onDismissMessage?: (messageId: string) => void;
     },
 ) {
     if (row.kind === "run-indicator") {
@@ -301,6 +303,9 @@ function renderTimelineRow(
             }
             onUserInputResponse={
                 options.readOnly ? undefined : options.onUserInputResponse
+            }
+            onDismissMessage={
+                options.readOnly ? undefined : options.onDismissMessage
             }
         />
     );
@@ -340,6 +345,14 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         readPersistedChatMessageListViewState(viewStateScope),
     );
     const rowUiSessionId = resolveChatRowUiSessionId(sessionId);
+    const dismissMessage = useChatStore((state) => state.dismissMessage);
+    const handleDismissMessage = useCallback(
+        (messageId: string) => {
+            if (!sessionId) return;
+            dismissMessage(sessionId, messageId);
+        },
+        [dismissMessage, sessionId],
+    );
 
     const scrollToBottom = useCallback(() => {
         const container = containerRef.current;
@@ -481,9 +494,11 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             recentDiffWorkCycleIds,
             onPermissionResponse,
             onUserInputResponse,
+            onDismissMessage: handleDismissMessage,
         }),
         [
             chatFontSize,
+            handleDismissMessage,
             onPermissionResponse,
             onUserInputResponse,
             pillMetrics,

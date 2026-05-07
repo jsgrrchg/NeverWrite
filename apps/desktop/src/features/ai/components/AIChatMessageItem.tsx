@@ -338,6 +338,7 @@ interface AIChatMessageItemProps {
         requestId: string,
         answers: Record<string, string[]>,
     ) => void;
+    onDismissMessage?: (messageId: string) => void;
 }
 
 function stripMarkdownBold(text: string) {
@@ -2660,10 +2661,16 @@ function ChangeReviewPanel({
     );
 }
 
-function ErrorMessage({ message }: { message: AIChatMessage }) {
+function ErrorMessage({
+    message,
+    onDismiss,
+}: {
+    message: AIChatMessage;
+    onDismiss?: (messageId: string) => void;
+}) {
     return (
         <div
-            className="flex min-w-0 max-w-full items-start gap-2 rounded-lg px-2.5 py-2"
+            className="group flex min-w-0 max-w-full items-start gap-2 rounded-lg px-2.5 py-2 pr-1.5"
             style={{
                 color: "#fca5a5",
                 backgroundColor: "color-mix(in srgb, #dc2626 8%, transparent)",
@@ -2694,6 +2701,39 @@ function ErrorMessage({ message }: { message: AIChatMessage }) {
             >
                 {message.content}
             </span>
+            {onDismiss ? (
+                <button
+                    type="button"
+                    aria-label="Dismiss error"
+                    title="Dismiss"
+                    onClick={() => onDismiss(message.id)}
+                    className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-md opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100"
+                    style={{
+                        color: "#fecaca",
+                        backgroundColor: "transparent",
+                    }}
+                    onMouseEnter={(event) => {
+                        event.currentTarget.style.backgroundColor =
+                            "color-mix(in srgb, #fecaca 12%, transparent)";
+                    }}
+                    onMouseLeave={(event) => {
+                        event.currentTarget.style.backgroundColor =
+                            "transparent";
+                    }}
+                >
+                    <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinecap="round"
+                    >
+                        <path d="M3 3l6 6M9 3L3 9" />
+                    </svg>
+                </button>
+            ) : null}
         </div>
     );
 }
@@ -3270,6 +3310,7 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     recentDiffWorkCycleIds = [],
     onPermissionResponse,
     onUserInputResponse,
+    onDismissMessage,
 }: AIChatMessageItemProps) {
     const diffPresentationMode = readOnly
         ? ("recent" as DiffPresentationMode)
@@ -3326,7 +3367,12 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
 
     // Error — inline with icon
     if (message.kind === "error") {
-        return <ErrorMessage message={message} />;
+        return (
+            <ErrorMessage
+                message={message}
+                onDismiss={readOnly ? undefined : onDismissMessage}
+            />
+        );
     }
 
     // Permission — minimal card

@@ -30,6 +30,7 @@ function renderMessage(
         sessionId?: string | null;
         visibleWorkCycleId?: string | null;
         recentDiffWorkCycleIds?: string[];
+        onDismissMessage?: (messageId: string) => void;
     } = {},
 ) {
     return renderComponent(
@@ -39,6 +40,7 @@ function renderMessage(
             pillMetrics={pillMetrics}
             visibleWorkCycleId={options.visibleWorkCycleId}
             recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
+            onDismissMessage={options.onDismissMessage}
         />,
     );
 }
@@ -67,6 +69,27 @@ beforeEach(() => {
     localStorage.clear();
     resetChatStore();
     useSettingsStore.setState({ lineWrapping: true });
+});
+
+describe("AIChatMessageItem errors", () => {
+    it("renders a dismiss action for non-readonly error messages", () => {
+        const onDismissMessage = vi.fn();
+
+        renderMessage(
+            {
+                id: "error:1",
+                role: "assistant",
+                kind: "error",
+                content: "Could not reconnect this chat.",
+                timestamp: Date.now(),
+            },
+            { onDismissMessage },
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
+
+        expect(onDismissMessage).toHaveBeenCalledWith("error:1");
+    });
 });
 
 describe("AIChatMessageItem generated images", () => {

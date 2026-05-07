@@ -9181,6 +9181,48 @@ describe("chatStore", () => {
         expect(failedMessages).toHaveLength(1);
     });
 
+    it("dismisses persisted reconnect errors and allows manual retry", () => {
+        const session = createSessionWithTrackedFiles("persisted:history-1", []);
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "persisted:history-1": {
+                    ...session,
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    resumeReconnectFailed: true,
+                    messages: [
+                        {
+                            id: "error:reconnect",
+                            role: "assistant",
+                            kind: "error",
+                            content:
+                                "Could not reconnect this chat. Start a new session with saved transcript context?",
+                            timestamp: 10,
+                        },
+                    ],
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+        }));
+
+        useChatStore
+            .getState()
+            .dismissMessage("persisted:history-1", "error:reconnect");
+
+        expect(
+            useChatStore.getState().sessionsById["persisted:history-1"]
+                ?.messages,
+        ).toEqual([]);
+        expect(
+            useChatStore.getState().sessionsById["persisted:history-1"]
+                ?.resumeReconnectFailed,
+        ).toBe(false);
+    });
+
     it("falls back to transcript context when native saved-chat resume fails", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
