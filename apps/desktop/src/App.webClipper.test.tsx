@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import {
     getCurrentWindow,
+    confirm,
     invoke,
     listen,
     type UnlistenFn,
@@ -21,7 +22,7 @@ import {
 } from "./features/ai/store/chatTabsStore";
 import { useChatStore } from "./features/ai/store/chatStore";
 import { useClipImportStore } from "./features/clip/clipImportStore";
-import { flushPromises, renderComponent } from "./test/test-utils";
+import { flushPromises, renderComponent, setEditorTabs } from "./test/test-utils";
 
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
@@ -417,6 +418,72 @@ describe("App web clipper routing", () => {
         });
 
         expect(useCommandStore.getState().activeModal).toBe("command-palette");
+    });
+
+    it("confirms before the global close-tab command closes an active agent tab", async () => {
+        vi.mocked(confirm).mockResolvedValue(false);
+        renderComponent(<App />);
+        await flushPromises();
+        await waitFor(() => {
+            expect(
+                useCommandStore.getState().commands.has("editor:close-tab"),
+            ).toBe(true);
+        });
+        setEditorTabs(
+            [
+                {
+                    id: "tab-chat",
+                    kind: "ai-chat",
+                    sessionId: "session-busy",
+                    title: "Busy chat",
+                },
+                {
+                    id: "tab-note",
+                    kind: "note",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                },
+            ],
+            "tab-chat",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": {
+                    sessionId: "session-busy",
+                    historySessionId: "session-busy",
+                    status: "streaming",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                },
+            },
+            activeSessionId: "session-busy",
+        });
+        expect(
+            useCommandStore
+                .getState()
+                .commands.get("editor:close-tab")
+                ?.when?.(),
+        ).toBe(true);
+
+        act(() => {
+            useCommandStore.getState().execute("editor:close-tab");
+        });
+        await flushPromises();
+
+        expect(confirm).toHaveBeenCalledWith(
+            "The AI agent is still running. Are you sure you want to close this tab?",
+        );
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-chat",
+            "tab-note",
+        ]);
     });
 
     it("creates a markdown note from the native New Note command", async () => {

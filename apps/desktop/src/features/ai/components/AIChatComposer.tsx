@@ -25,6 +25,7 @@ import {
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
+import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import type {
     AIAvailableCommand,
@@ -35,7 +36,6 @@ import type {
     AIMentionSuggestion,
 } from "../types";
 import type {
-    CSSProperties,
     MouseEvent as ReactMouseEvent,
     ReactNode,
 } from "react";
@@ -51,16 +51,6 @@ import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
-
-type ComposerPillLayoutStyle = Pick<
-    CSSProperties,
-    | "maxWidth"
-    | "overflow"
-    | "overflowWrap"
-    | "textOverflow"
-    | "whiteSpace"
-    | "wordBreak"
->;
 
 interface AIChatComposerProps {
     parts: AIComposerPart[];
@@ -203,31 +193,6 @@ function getFallbackSlashCommands(runtimeId?: string) {
     }
 
     return COMMON_SLASH_COMMANDS;
-}
-
-export function getComposerPillLayoutStyle(
-    metrics: ChatPillMetrics,
-    options: { compact?: boolean } = {},
-): ComposerPillLayoutStyle {
-    if (options.compact === true) {
-        return {
-            maxWidth: `${metrics.maxWidth}px`,
-            overflow: "hidden",
-            overflowWrap: "normal",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            wordBreak: "normal",
-        };
-    }
-
-    return {
-        maxWidth: "100%",
-        overflow: "visible",
-        overflowWrap: "anywhere",
-        textOverflow: "clip",
-        whiteSpace: "normal",
-        wordBreak: "break-word",
-    };
 }
 
 function applyComposerPillStyles(

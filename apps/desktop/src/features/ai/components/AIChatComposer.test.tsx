@@ -11,10 +11,8 @@ import {
     setVaultNotes,
 } from "../../../test/test-utils";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
-import {
-    AIChatComposer,
-    getComposerPillLayoutStyle,
-} from "./AIChatComposer";
+import { AIChatComposer } from "./AIChatComposer";
+import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { getChatPillMetrics } from "./chatPillMetrics";
 
 afterEach(() => {

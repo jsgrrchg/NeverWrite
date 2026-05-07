@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
+import { confirm } from "@neverwrite/runtime";
 import {
     type Tab,
     type TerminalTab,
@@ -40,6 +41,10 @@ import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
 import { useActiveTabStripReveal } from "./tabStrip";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
+import {
+    findActiveSessionsAffectedByClose,
+    getCloseTabsConfirmationMessage,
+} from "./tabClosePolicy";
 import {
     chromeControlsGroupStyle,
     getChromeIconButtonStyle,
@@ -371,11 +376,24 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         [renameChatSession],
     );
     const requestCloseTab = useCallback(
-        (tabId: string) => {
+        async (tabId: string) => {
             const tab = selectEditorWorkspaceTabs(
                 useEditorStore.getState(),
             ).find((candidate) => candidate.id === tabId);
             if (!tab) {
+                return;
+            }
+
+            const affected = findActiveSessionsAffectedByClose(
+                [tab],
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
                 return;
             }
 
