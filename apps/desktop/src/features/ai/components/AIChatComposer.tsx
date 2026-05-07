@@ -53,6 +53,7 @@ const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
 
 interface AIChatComposerProps {
+    sessionId?: string;
     parts: AIComposerPart[];
     notes: AIChatNoteSummary[];
     files?: AIChatFileSummary[];
@@ -946,6 +947,7 @@ function getMentionSuggestions(
 }
 
 export function AIChatComposer({
+    sessionId,
     parts,
     notes,
     files,
@@ -1352,6 +1354,13 @@ export function AIChatComposer({
             if (detail.phase === "end" || detail.phase === "attach") {
                 setExternalDragActive(false);
                 if (detail.phase === "end" && !isOver) return;
+                if (
+                    detail.phase === "attach" &&
+                    detail.targetSessionId &&
+                    detail.targetSessionId !== sessionId
+                ) {
+                    return;
+                }
 
                 // Folder drop
                 if (detail.folder) {
@@ -1407,7 +1416,7 @@ export function AIChatComposer({
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
         return () =>
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
-    }, [focusComposerAtEnd]);
+    }, [focusComposerAtEnd, sessionId]);
 
     // Native Finder/Explorer file drop
     useEffect(() => {
@@ -1564,6 +1573,7 @@ export function AIChatComposer({
         <div
             ref={shellRef}
             data-ai-composer-drop-zone="true"
+            data-ai-composer-session-id={sessionId}
             className={
                 expanded
                     ? "flex h-full min-h-0 flex-1 flex-col"

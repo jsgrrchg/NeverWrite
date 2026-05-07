@@ -10,6 +10,7 @@ import {
     setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
+import { FILE_TREE_NOTE_DRAG_EVENT } from "../dragEvents";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
 import { AIChatComposer } from "./AIChatComposer";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
@@ -29,6 +30,7 @@ afterEach(() => {
 });
 
 function renderComposer({
+    sessionId = "session-1",
     parts = [],
     status = "idle" as const,
     runtimeId,
@@ -41,6 +43,7 @@ function renderComposer({
     onSubmit = () => {},
     onStop = () => {},
 }: {
+    sessionId?: string;
     parts?: AIComposerPart[];
     status?: "idle" | "streaming";
     runtimeId?: string;
@@ -57,6 +60,7 @@ function renderComposer({
 
     renderComponent(
         <AIChatComposer
+            sessionId={sessionId}
             parts={parts}
             notes={[
                 {
@@ -133,6 +137,86 @@ describe("AIChatComposer mention picker", () => {
         });
 
         expect(screen.getByText("Loading agent")).toBeInTheDocument();
+    });
+
+    it("ignores targeted file-tree attaches for other chat sessions", async () => {
+        const { onChange } = renderComposer({ sessionId: "session-target" });
+
+        window.dispatchEvent(
+            new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                detail: {
+                    phase: "attach",
+                    x: 0,
+                    y: 0,
+                    targetSessionId: "session-other",
+                    notes: [
+                        {
+                            id: "notes/alpha.md",
+                            title: "Alpha",
+                            path: "/vault/notes/alpha.md",
+                        },
+                    ],
+                },
+            }),
+        );
+
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("only applies targeted file-tree attaches to the matching chat session", async () => {
+        const firstOnChange = vi.fn();
+        const secondOnChange = vi.fn();
+
+        renderComponent(
+            <>
+                <AIChatComposer
+                    sessionId="session-a"
+                    parts={[]}
+                    notes={[]}
+                    status="idle"
+                    runtimeName="Assistant"
+                    onChange={firstOnChange}
+                    onMentionAttach={vi.fn()}
+                    onFolderAttach={vi.fn()}
+                    onSubmit={vi.fn()}
+                    onStop={vi.fn()}
+                />
+                <AIChatComposer
+                    sessionId="session-b"
+                    parts={[]}
+                    notes={[]}
+                    status="idle"
+                    runtimeName="Assistant"
+                    onChange={secondOnChange}
+                    onMentionAttach={vi.fn()}
+                    onFolderAttach={vi.fn()}
+                    onSubmit={vi.fn()}
+                    onStop={vi.fn()}
+                />
+            </>,
+        );
+
+        window.dispatchEvent(
+            new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                detail: {
+                    phase: "attach",
+                    x: 0,
+                    y: 0,
+                    targetSessionId: "session-b",
+                    notes: [
+                        {
+                            id: "notes/alpha.md",
+                            title: "Alpha",
+                            path: "/vault/notes/alpha.md",
+                        },
+                    ],
+                },
+            }),
+        );
+
+        await waitFor(() => expect(secondOnChange).toHaveBeenCalledTimes(1));
+        expect(firstOnChange).not.toHaveBeenCalled();
     });
 
     it("opens the @ picker when the caret is inside a text node", async () => {

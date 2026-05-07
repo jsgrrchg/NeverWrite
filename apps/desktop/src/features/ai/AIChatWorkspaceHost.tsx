@@ -31,21 +31,24 @@ function getActiveEditorChatSessionId() {
     return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
 }
 
-function replayAttachAfterComposerMount(detail: FileTreeNoteDragDetail) {
+function replayAttachAfterComposerMount(
+    detail: FileTreeNoteDragDetail,
+    targetSessionId: string,
+) {
     // Let the newly opened chat tab mount its composer before we replay the
     // attach event into the real in-workspace target.
     window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
-            emitFileTreeNoteDrag(detail);
+            emitFileTreeNoteDrag({ ...detail, targetSessionId });
         });
     });
 }
 
-function focusVisibleComposerAtEnd() {
+function focusComposerAtEnd(sessionId: string) {
     window.requestAnimationFrame(() => {
         window.setTimeout(() => {
             const composer = document.querySelector<HTMLElement>(
-                '[data-ai-composer-drop-zone="true"] [role="textbox"][contenteditable="true"]',
+                `[data-ai-composer-drop-zone="true"][data-ai-composer-session-id="${CSS.escape(sessionId)}"] [role="textbox"][contenteditable="true"]`,
             );
             if (!composer) return;
 
@@ -225,7 +228,7 @@ export function AIChatWorkspaceHost({
 
             void ensureWorkspaceChatSession().then((sessionId) => {
                 if (!sessionId) return;
-                replayAttachAfterComposerMount(detail);
+                replayAttachAfterComposerMount(detail, sessionId);
             });
         };
 
@@ -236,8 +239,8 @@ export function AIChatWorkspaceHost({
 
             void createNewChatInWorkspace().then((sessionId) => {
                 if (!sessionId) return;
-                replayAttachAfterComposerMount(detail);
-                focusVisibleComposerAtEnd();
+                replayAttachAfterComposerMount(detail, sessionId);
+                focusComposerAtEnd(sessionId);
             });
         };
 

@@ -22,6 +22,7 @@ export interface FileTreeNoteDragDetail {
     phase: FileTreeNoteDragPhase;
     x: number;
     y: number;
+    targetSessionId?: string;
     notes: AIChatNoteSummary[];
     files?: FileTreeDraggedFile[];
     folder?: { path: string; name: string };

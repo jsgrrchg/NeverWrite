@@ -166,6 +166,7 @@ describe("AIChatDetachedWindowHost", () => {
         };
         const composerShell = document.createElement("div");
         composerShell.dataset.aiComposerDropZone = "true";
+        composerShell.dataset.aiComposerSessionId = "session-new";
         const composer = document.createElement("div");
         composer.setAttribute("role", "textbox");
         composer.setAttribute("contenteditable", "true");
@@ -207,7 +208,10 @@ describe("AIChatDetachedWindowHost", () => {
             ).toHaveBeenCalledWith();
 
             await waitFor(() => expect(replayedEvents).toHaveLength(1));
-            expect(replayedEvents[0].detail).toEqual(detail);
+            expect(replayedEvents[0].detail).toEqual({
+                ...detail,
+                targetSessionId: "session-new",
+            });
             await waitFor(() => expect(document.activeElement).toBe(composer));
         } finally {
             composerShell.remove();
