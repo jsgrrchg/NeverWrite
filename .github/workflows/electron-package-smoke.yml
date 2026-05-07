@@ -29,7 +29,7 @@ jobs:
     macos-universal:
         name: macOS Universal
         runs-on: macos-latest
-        timeout-minutes: 45
+        timeout-minutes: 120
 
         steps:
             - name: Checkout repository
@@ -54,9 +54,11 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
-            - name: Build target-specific Codex sidecar
+            - name: Build target-specific sidecars
               shell: bash
               run: |
+                  cargo build -p neverwrite-native-backend --quiet --release --target aarch64-apple-darwin
+                  cargo build -p neverwrite-native-backend --quiet --release --target x86_64-apple-darwin
                   cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target aarch64-apple-darwin
                   cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-apple-darwin
 
@@ -77,9 +79,11 @@ jobs:
                   echo "NEVERWRITE_EMBEDDED_NODE_BIN_X64=$DEST/node-v${NODE_VERSION}-darwin-x64/bin/node" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
 
-            - name: Export Codex sidecar environment
+            - name: Export sidecar environment
               shell: bash
               run: |
+                  echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/target/aarch64-apple-darwin/release/neverwrite-native-backend" >> "$GITHUB_ENV"
+                  echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/target/x86_64-apple-darwin/release/neverwrite-native-backend" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_ARM64=$GITHUB_WORKSPACE/vendor/codex-acp/target/aarch64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN_X64=$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-apple-darwin/release/codex-acp" >> "$GITHUB_ENV"
 
@@ -135,7 +139,7 @@ jobs:
     windows-x64:
         name: Windows x64
         runs-on: windows-latest
-        timeout-minutes: 45
+        timeout-minutes: 120
 
         steps:
             - name: Checkout repository
@@ -160,9 +164,11 @@ jobs:
               working-directory: apps/desktop
               run: npm ci
 
-            - name: Build target-specific Codex sidecar
+            - name: Build target-specific sidecars
               shell: bash
-              run: cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-pc-windows-msvc
+              run: |
+                  cargo build -p neverwrite-native-backend --quiet --release --target x86_64-pc-windows-msvc
+                  cargo build --quiet --manifest-path vendor/codex-acp/Cargo.toml --release --target x86_64-pc-windows-msvc
 
             - name: Download embedded Node runtime
               shell: bash
@@ -176,10 +182,12 @@ jobs:
                   echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
 
-            - name: Export Codex sidecar environment
+            - name: Export sidecar environment
               shell: bash
               run: |
+                  NATIVE_BACKEND_BIN="$GITHUB_WORKSPACE/target/x86_64-pc-windows-msvc/release/neverwrite-native-backend.exe"
                   CODEX_BIN="$GITHUB_WORKSPACE/vendor/codex-acp/target/x86_64-pc-windows-msvc/release/codex-acp.exe"
+                  echo "NEVERWRITE_NATIVE_BACKEND_BUNDLE_BIN=$NATIVE_BACKEND_BIN" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_CODEX_ACP_BUNDLE_BIN=$CODEX_BIN" >> "$GITHUB_ENV"
 
             - name: Package unsigned Electron app
