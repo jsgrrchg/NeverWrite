@@ -3,13 +3,13 @@ import os from "node:os";
 import { isWindows } from "./common.mjs";
 
 /**
- * Amount of time to wait after SIGTERM escalation to SIGKILL. 
+ * Amount of time to wait after SIGTERM escalation to SIGKILL.
  * A child-process that is still alive after this window is force-killed regardless of its state.
  */
 export const FORCE_KILL_TIMEOUT_MS = 1500;
 
 /**
- * Last-resort deadline for process.exit(). 
+ * Last-resort deadline for process.exit().
  * Must be strictly greater than `FORCE_KILL_TIMEOUT_MS` so the SIGKILL path has time to run first.
  */
 export const FORCED_EXIT_TIMEOUT_MS = FORCE_KILL_TIMEOUT_MS + 500;
@@ -50,7 +50,7 @@ export function terminateChild(child, { pidOnly = false } = {}) {
 
 /**
  * Get the exit code corresponding to a given signal.
- * @param {"SIGTERM"|"SIGINT"} signal 
+ * @param {"SIGTERM"|"SIGINT"} signal
  * @returns {number}
  */
 export function signalExitCode(signal) {
