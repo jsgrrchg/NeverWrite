@@ -1,5 +1,6 @@
 import {
     isChatTab,
+    selectFocusedEditorTab,
     useEditorStore,
 } from "../../app/store/editorStore";
 import { createChatTab } from "../../app/store/editorTabs";
@@ -79,6 +80,35 @@ function resolvePendingRuntime(runtimeId?: string) {
         runtime,
         runtimeId: resolvedRuntimeId,
     };
+}
+
+function getSessionRuntimeId(sessionId?: string | null) {
+    if (!sessionId) {
+        return null;
+    }
+    return useChatStore.getState().sessionsById[sessionId]?.runtimeId ?? null;
+}
+
+function resolveWorkspaceNewChatRuntimeId(runtimeId?: string) {
+    if (runtimeId) {
+        return runtimeId;
+    }
+
+    const focusedTab = selectFocusedEditorTab(useEditorStore.getState());
+    const focusedChatRuntimeId =
+        focusedTab && isChatTab(focusedTab)
+            ? getSessionRuntimeId(focusedTab.sessionId)
+            : null;
+    if (focusedChatRuntimeId) {
+        return focusedChatRuntimeId;
+    }
+
+    const chatState = useChatStore.getState();
+    return (
+        getSessionRuntimeId(chatState.lastFocusedSessionId) ??
+        getSessionRuntimeId(chatState.activeSessionId) ??
+        undefined
+    );
 }
 
 function createPendingWorkspaceSession(
@@ -248,11 +278,12 @@ export async function createNewChatInWorkspace(
     runtimeId?: string,
     options?: OpenChatInWorkspaceOptions,
 ) {
-    const pendingSession = createPendingWorkspaceSession(runtimeId);
+    const resolvedRuntimeId = resolveWorkspaceNewChatRuntimeId(runtimeId);
+    const pendingSession = createPendingWorkspaceSession(resolvedRuntimeId);
     if (!pendingSession) {
         const createdSessionId = await useChatStore
             .getState()
-            .newSession(runtimeId);
+            .newSession(resolvedRuntimeId);
         if (!createdSessionId) {
             return null;
         }

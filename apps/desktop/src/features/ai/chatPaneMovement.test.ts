@@ -156,13 +156,14 @@ const createdSessionPayload = {
 function createStoredSession(
     sessionId: string,
     title: string,
+    runtimeId = "codex-acp",
 ): AIChatSession {
     return {
         sessionId,
         historySessionId: sessionId,
         status: "idle",
-        runtimeId: "codex-acp",
-        modelId: "test-model",
+        runtimeId,
+        modelId: runtimeId === "claude-acp" ? "claude-model" : "test-model",
         modeId: "default",
         models: [],
         modes: [],
@@ -310,6 +311,97 @@ describe("createNewChatInWorkspace", () => {
         await waitFor(() => {
             expect(
                 useChatStore.getState().sessionsById["claude-session-1"],
+            ).toBeDefined();
+        });
+    });
+
+    it("inherits the focused workspace chat runtime before the selected runtime", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            selectedRuntimeId: "codex-acp",
+            setupStatusByRuntimeId: {
+                "codex-acp": readySetupStatusState,
+                "claude-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "claude-acp",
+                    authMethod: "claude-login",
+                },
+            },
+        }));
+        const claudeSession = createStoredSession(
+            "claude-session-existing",
+            "Claude chat",
+            "claude-acp",
+        );
+        seedChatSessions(claudeSession);
+        useEditorStore.getState().openChat(claudeSession.sessionId, {
+            title: "Claude chat",
+            paneId: "primary",
+        });
+
+        invokeMock.mockImplementation((command, args) => {
+            if (command === "ai_get_setup_status") {
+                expect(
+                    (args as { runtimeId?: string } | undefined)?.runtimeId,
+                ).toBe("claude-acp");
+                return Promise.resolve({
+                    ...setupStatusPayload,
+                    runtime_id: "claude-acp",
+                    auth_method: "claude-login",
+                });
+            }
+            if (command === "ai_create_session") {
+                expect(
+                    (
+                        args as
+                            | { input?: { runtime_id?: string } }
+                            | undefined
+                    )?.input?.runtime_id,
+                ).toBe("claude-acp");
+                return Promise.resolve({
+                    ...createdSessionPayload,
+                    session_id: "claude-session-2",
+                    runtime_id: "claude-acp",
+                    model_id: "claude-model",
+                    models: [
+                        {
+                            id: "claude-model",
+                            runtime_id: "claude-acp",
+                            name: "Claude Model",
+                            description: "Model for tests",
+                        },
+                    ],
+                    config_options: [
+                        {
+                            id: "model",
+                            runtime_id: "claude-acp",
+                            category: "model",
+                            label: "Model",
+                            type: "select",
+                            value: "claude-model",
+                            options: [
+                                {
+                                    value: "claude-model",
+                                    label: "Claude Model",
+                                },
+                            ],
+                        },
+                    ],
+                });
+            }
+            return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+        });
+
+        const pendingSessionId = await createNewChatInWorkspace();
+        expect(pendingSessionId).toMatch(/^pending:/);
+        expect(
+            useChatStore.getState().sessionsById[pendingSessionId!]?.runtimeId,
+        ).toBe("claude-acp");
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().sessionsById["claude-session-2"],
             ).toBeDefined();
         });
     });
