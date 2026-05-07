@@ -32,6 +32,17 @@ describe("runtimeMetadata", () => {
         );
     });
 
+    it("only advertises native resume in fallback descriptors for verified runtimes", () => {
+        const descriptors = buildFallbackRuntimeDescriptors();
+        const resumeRuntimeIds = descriptors
+            .filter((descriptor) =>
+                descriptor.runtime.capabilities.includes("resume_session"),
+            )
+            .map((descriptor) => descriptor.runtime.id);
+
+        expect(resumeRuntimeIds).toEqual(["codex-acp"]);
+    });
+
     it("normalizes runtime display names for the UI", () => {
         expect(getRuntimeDisplayName("kilo-acp", "Kilo ACP")).toBe("Kilo");
         expect(getRuntimeDisplayName("kilo-acp")).toBe("Kilo");
