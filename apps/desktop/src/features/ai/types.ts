@@ -362,6 +362,7 @@ export interface AIChatSession {
     isPendingSessionCreation?: boolean;
     pendingSessionError?: string | null;
     resumeContextPending?: boolean;
+    resumeReconnectFailed?: boolean;
     runtimeState?: "live" | "persisted_only" | "detached";
 }
 

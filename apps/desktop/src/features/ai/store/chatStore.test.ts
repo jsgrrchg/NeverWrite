@@ -9111,6 +9111,199 @@ describe("chatStore", () => {
             content:
                 "Could not reconnect this chat. Start a new session with saved transcript context?",
         });
+        expect(
+            useChatStore.getState().sessionsById["persisted:history-1"]
+                ?.resumeReconnectFailed,
+        ).toBe(true);
+    });
+
+    it("deduplicates repeated saved-chat reconnect failures", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 80,
+                    loadedPersistedMessageStart: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_load_session_history_page") {
+                throw new Error("disk read failed");
+            }
+            return defaultInvokeImplementation(command);
+        });
+
+        await useChatStore.getState().resumeSession("persisted:history-1");
+        await useChatStore.getState().resumeSession("persisted:history-1");
+
+        const failedMessages =
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.filter(
+                    (message) =>
+                        message.kind === "error" &&
+                        message.content ===
+                            "Could not reconnect this chat. Start a new session with saved transcript context?",
+                ) ?? [];
+
+        expect(failedMessages).toHaveLength(1);
+    });
+
+    it("falls back to transcript context when native saved-chat resume fails", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const persistedSessionId = "persisted:history-native-fallback";
+        const historySessionId = "history-native-fallback";
+        const fallbackSessionId = "codex-fallback-live";
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        ...runtimePayload[0].runtime,
+                        capabilities: [
+                            ...runtimePayload[0].runtime.capabilities,
+                            "resume_session",
+                        ],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [persistedSessionId]: {
+                    sessionId: persistedSessionId,
+                    historySessionId,
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: [persistedSessionId],
+            activeSessionId: persistedSessionId,
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    sessionId: historySessionId,
+                    vaultPath: "/vault",
+                });
+                return {
+                    session_id: historySessionId,
+                    total_messages: 2,
+                    start_index: 0,
+                    end_index: 2,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Original saved request",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "m2",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Original saved answer",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+            if (command === "ai_resume_runtime_session") {
+                throw new Error("native resume handle missing");
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: fallbackSessionId,
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession(persistedSessionId);
+
+        expect(resumedSessionId).toBe(fallbackSessionId);
+        expect(useChatStore.getState().sessionsById[fallbackSessionId]).toMatchObject(
+            {
+                runtimeState: "live",
+                isPersistedSession: false,
+                resumeContextPending: true,
+                resumeReconnectFailed: false,
+            },
+        );
+        expect(useChatStore.getState().sessionsById[persistedSessionId]).toBe(
+            undefined,
+        );
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[fallbackSessionId]?.messages.some(
+                    (message) =>
+                        message.kind === "error" &&
+                        message.content ===
+                            "Could not reconnect this chat. Start a new session with saved transcript context?",
+                ),
+        ).toBe(false);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(true);
     });
 
     it("does not ask the runtime backend to load an unknown persisted-only session id", async () => {

@@ -158,6 +158,9 @@ export function AIChatWorkspaceHost({
         if (activeChatSession?.isResumingSession) {
             return;
         }
+        if (activeChatSession?.resumeReconnectFailed) {
+            return;
+        }
         const shouldHydrateLiveResumeContext = activeChatSession
             ? needsLiveSessionResumeContextHydration(activeChatSession)
             : false;
@@ -185,6 +188,9 @@ export function AIChatWorkspaceHost({
                 useChatStore.getState().sessionsById[activeChatSessionId] ??
                 null;
             if (latestSession?.isResumingSession) {
+                return;
+            }
+            if (latestSession?.resumeReconnectFailed) {
                 return;
             }
             const latestNeedsLiveResumeContextHydration = latestSession
@@ -216,6 +222,7 @@ export function AIChatWorkspaceHost({
         activeChatSession?.loadedPersistedMessageStart,
         activeChatSession?.messages?.length,
         activeChatSession?.persistedMessageCount,
+        activeChatSession?.resumeReconnectFailed,
         activeChatSession?.resumeContextPending,
         activeChatSession?.runtimeState,
         activeChatSessionId,
