@@ -1444,6 +1444,11 @@ function isContextTooLargeErrorMessage(message: string) {
     );
 }
 
+function isRuntimeSessionDisconnectedErrorMessage(message: string) {
+    const normalized = message.trim().toLowerCase();
+    return normalized.includes("runtime session is not connected");
+}
+
 function normalizeAiErrorMessage(message: string) {
     if (message.includes("No hay vault abierto")) {
         return "Open a vault before starting a chat.";
@@ -6992,6 +6997,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...markPendingInteractionMessagesIdle(session),
                     isResumingSession: false,
                 });
+                const shouldDetachRuntimeSession =
+                    isLiveRuntimeSession(revertedSession) &&
+                    isRuntimeSessionDisconnectedErrorMessage(message);
                 return {
                     setupStatusByRuntimeId: nextSetupStatusByRuntimeId,
                     runtimeConnectionByRuntimeId:
@@ -7003,8 +7011,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 {
                                     ...revertedSession,
                                     status: "error",
-                                    runtimeState:
-                                        revertedSession.runtimeState ?? "live",
+                                    isPersistedSession:
+                                        shouldDetachRuntimeSession
+                                            ? true
+                                            : revertedSession.isPersistedSession,
+                                    resumeContextPending:
+                                        shouldDetachRuntimeSession
+                                            ? getSessionTranscriptLength(
+                                                  revertedSession,
+                                              ) > 0
+                                            : revertedSession.resumeContextPending,
+                                    runtimeState: shouldDetachRuntimeSession
+                                        ? "detached"
+                                        : (revertedSession.runtimeState ??
+                                          "live"),
                                 },
                                 message,
                             ),

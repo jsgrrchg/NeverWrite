@@ -8642,6 +8642,233 @@ describe("chatStore", () => {
         });
     });
 
+    it("sends saved transcript context after recreating a detached Codex session", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        const detachedSessionId = "persisted:history-codex-detached";
+        const historySessionId = "history-codex-detached";
+        const resumedSessionId = "codex-session-recovered";
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: runtimePayload[0].runtime,
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [detachedSessionId]: {
+                    ...createSessionWithTrackedFiles(detachedSessionId, []),
+                    historySessionId,
+                    runtimeId: "codex-acp",
+                    runtimeState: "detached",
+                    isPersistedSession: true,
+                    status: "idle",
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: null,
+                    messages: [],
+                },
+            },
+            sessionOrder: [detachedSessionId],
+            activeSessionId: detachedSessionId,
+            selectedRuntimeId: "codex-acp",
+            composerPartsBySessionId: {
+                [detachedSessionId]: [],
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    sessionId: historySessionId,
+                    vaultPath: "/vault",
+                    startIndex: 0,
+                    limit: 2,
+                });
+                return {
+                    session_id: historySessionId,
+                    total_messages: 2,
+                    start_index: 0,
+                    end_index: 2,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Remember the prior requirement",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "m2",
+                            role: "assistant",
+                            kind: "text",
+                            content: "I will keep that constraint in mind.",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: resumedSessionId,
+                };
+            }
+
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: resumedSessionId,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const nextSessionId = await useChatStore
+            .getState()
+            .resumeSession(detachedSessionId);
+
+        expect(nextSessionId).toBe(resumedSessionId);
+        expect(
+            useChatStore.getState().sessionsById[resumedSessionId],
+        ).toMatchObject({
+            runtimeState: "live",
+            isPersistedSession: false,
+            resumeContextPending: true,
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(
+                createTextParts("Continue from there"),
+                resumedSessionId,
+            );
+
+        await useChatStore.getState().sendMessage(resumedSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Remember the prior requirement");
+        expect(sentContent).toContain("New user message: Continue from there");
+    });
+
+    it("includes saved transcript context for live Codex sessions with pending recovery", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "The saved context matters",
+                            timestamp: 10,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+        invokeMock.mockClear();
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Keep going"), activeSessionId);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: The saved context matters");
+        expect(sentContent).toContain("New user message: Keep going");
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
+    });
+
+    it("detaches live Codex sessions when the backend has no connected runtime handle", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: false,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Recovered answer",
+                            timestamp: 10,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                throw new Error("AI runtime session is not connected.");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue"), activeSessionId);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId],
+        ).toMatchObject({
+            status: "error",
+            runtimeState: "detached",
+            isPersistedSession: true,
+            resumeContextPending: true,
+        });
+    });
+
     it("aborts resume when the required persisted transcript page cannot be loaded", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
