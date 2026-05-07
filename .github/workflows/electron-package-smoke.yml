@@ -156,7 +156,7 @@ jobs:
                   DEST="$RUNNER_TEMP/node-dist"
                   mkdir -p "$DEST"
                   curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${DIST}.zip" -o "$RUNNER_TEMP/node.zip"
-                  powershell -NoProfile -Command "Expand-Archive -Path '$env:RUNNER_TEMP/node.zip' -DestinationPath '$env:RUNNER_TEMP/node-dist'"
+                  powershell -NoProfile -Command "Expand-Archive -Path (Join-Path \$env:RUNNER_TEMP 'node.zip') -DestinationPath (Join-Path \$env:RUNNER_TEMP 'node-dist') -Force"
                   echo "NEVERWRITE_EMBEDDED_NODE_BIN=$DEST/${DIST}/node.exe" >> "$GITHUB_ENV"
                   echo "NEVERWRITE_ELECTRON_OUTPUT_DIR=$RUNNER_TEMP/electron-dist" >> "$GITHUB_ENV"
 
