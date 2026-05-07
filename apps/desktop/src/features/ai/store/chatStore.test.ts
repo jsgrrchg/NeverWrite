@@ -9024,6 +9024,16 @@ describe("chatStore", () => {
             isPersistedSession: true,
             resumeContextPending: true,
         });
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[activeSessionId]?.messages.some(
+                    (message) =>
+                        message.kind === "status" &&
+                        message.content ===
+                            "The AI runtime lost its connection. Reconnecting with saved context...",
+                ),
+        ).toBe(true);
     });
 
     it("aborts resume when the required persisted transcript page cannot be loaded", async () => {
@@ -9099,7 +9109,7 @@ describe("chatStore", () => {
         ).toMatchObject({
             kind: "error",
             content:
-                "Failed to load the full saved transcript before resuming.",
+                "Could not reconnect this chat. Start a new session with saved transcript context?",
         });
     });
 
@@ -10209,6 +10219,15 @@ describe("chatStore", () => {
             useChatStore.getState().sessionsById["persisted:history-1"]
                 ?.isResumingSession,
         ).toBe(true);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["persisted:history-1"]?.messages.some(
+                    (message) =>
+                        message.kind === "status" &&
+                        message.content === "Reconnecting saved chat...",
+                ),
+        ).toBe(true);
 
         if (!resolveCreateSession) {
             throw new Error("Missing create-session resolver");
@@ -10783,6 +10802,16 @@ describe("chatStore", () => {
                     (message) =>
                         message.kind === "error" &&
                         message.content === "The ACP process exited.",
+                ),
+        ).toBe(true);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById[parent.sessionId]?.messages.some(
+                    (message) =>
+                        message.kind === "status" &&
+                        message.content ===
+                            "The AI runtime lost its connection. Reconnecting with saved context...",
                 ),
         ).toBe(true);
         expect(

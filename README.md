@@ -34,6 +34,9 @@ The current product already includes:
 - AI chat sessions with attachments from the vault, slash commands, transcript persistence, and runtime-specific capabilities
 - A real AI review pipeline so generated edits are not silently committed
 
+Saved AI conversations are stored locally under each vault's hidden `.neverwrite/sessions/` directory.
+See [AI session history and crash recovery](docs/ai-session-history.md) for the disk layout and recovery flow.
+
 ## Why It Is Different
 
 - AI edits stay reviewable through an accumulated action log, inline controls, and a dedicated review tab. It is much more than a chat.
@@ -78,6 +81,7 @@ The current product already includes:
 - ACP runtime integration for Codex, Claude, Gemini, and Kilo
 - Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
 - Session history, transcript viewing, session export, fork, resume, and rename flows
+- Crash recovery for saved chats through `Chat History` and local `.neverwrite/sessions/` transcripts
 - Inline review inside the editor when the tracked file has a reliable base
 - A dedicated `Review` tab plus an `Edits` surface for keep/reject workflows
 - Rust/WASM-backed diffing and change tracking
