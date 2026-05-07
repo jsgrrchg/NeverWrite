@@ -11,9 +11,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
     AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    FileSystemCapabilities, Implementation, InitializeRequest, LogoutRequest, Meta,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    FileSystemCapabilities, Implementation, InitializeRequest, LoadSessionRequest, LogoutRequest,
+    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
+    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
@@ -638,6 +638,7 @@ impl NativeAi {
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
         let created = start_acp_session(
             spec,
+            AcpSessionStartMode::New,
             self.event_tx.clone(),
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
@@ -700,7 +701,62 @@ impl NativeAi {
         args: &Value,
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
-        self.load_runtime_session(args, vault_root)
+        let input: AiRuntimeSessionInput = input_from_args(args)?;
+        if !runtime_supports_native_resume(&input.runtime_id) {
+            return Err(format!(
+                "AI runtime '{}' does not support native session resume.",
+                input.runtime_id
+            ));
+        }
+
+        let vault_root_for_spec = vault_root.clone().ok_or_else(|| {
+            "An open vault is required to resume an AI runtime session.".to_string()
+        })?;
+        let setup = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            state
+                .setup
+                .get(&input.runtime_id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
+        let created = start_acp_session(
+            spec,
+            AcpSessionStartMode::Load {
+                session_id: input.session_id,
+            },
+            self.event_tx.clone(),
+            Arc::clone(&self.inner),
+            self.tool_diffs.clone(),
+            self.agent_writes.clone(),
+        )?;
+        let mut session = created.session;
+        let handle = created.handle;
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        session.status = AiSessionStatus::Idle;
+        state.sessions.insert(
+            session.session_id.clone(),
+            ManagedAiSession {
+                session: session.clone(),
+                vault_root,
+                additional_roots: vec![],
+                runtime_handle: Some(handle),
+                active_turn_id: None,
+            },
+        );
+        touch_session(&mut state, &session.session_id);
+        drop(state);
+
+        self.emit_session("ai://session-created", &session);
+        Ok(json!(session))
     }
 
     pub(crate) fn fork_runtime_session(
@@ -1260,6 +1316,19 @@ impl NativeAi {
 struct CreatedAcpSession {
     session: AiSession,
     handle: AcpSessionHandle,
+}
+
+#[derive(Debug, Clone)]
+enum AcpSessionStartMode {
+    New,
+    Load { session_id: String },
+}
+
+struct AcpSessionStartResponse {
+    session_id: String,
+    models: Option<SessionModelState>,
+    modes: Option<SessionModeState>,
+    config_options: Option<Vec<SessionConfigOption>>,
 }
 
 impl AcpSessionHandle {
@@ -2081,6 +2150,7 @@ impl NativeAcpClient {
 
 fn start_acp_session(
     spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
@@ -2102,6 +2172,7 @@ fn start_acp_session(
         runtime.block_on(async move {
             run_acp_actor(
                 spec,
+                start_mode,
                 event_tx,
                 session_state,
                 tool_diffs,
@@ -2244,6 +2315,7 @@ async fn run_acp_auth_inner(
 
 async fn run_acp_actor(
     spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
@@ -2253,6 +2325,7 @@ async fn run_acp_actor(
 ) {
     let result = run_acp_actor_inner(
         spec,
+        start_mode,
         event_tx,
         session_state,
         tool_diffs,
@@ -2268,6 +2341,7 @@ async fn run_acp_actor(
 
 async fn run_acp_actor_inner(
     spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
@@ -2369,13 +2443,7 @@ async fn run_acp_actor_inner(
                             message: None,
                         }),
                     );
-                    connection
-                        .send_request(NewSessionRequest::new(acp_session_wire_cwd(
-                            &spec.runtime_id,
-                            &spec.cwd,
-                        )))
-                        .block_task()
-                        .await
+                    start_acp_runtime_session(&connection, &spec, &start_mode).await
                 } => response?,
                 wait_result = child.wait() => {
                     let message = wait_result
@@ -2388,7 +2456,7 @@ async fn run_acp_actor_inner(
             };
             let session = session_from_acp_response(
                 &spec.runtime_id,
-                response.session_id.0.to_string(),
+                response.session_id,
                 response.models,
                 response.modes,
                 response.config_options,
@@ -2436,6 +2504,43 @@ async fn run_acp_actor_inner(
             Ok(())
         }
         Err(error) => Err(error.to_string()),
+    }
+}
+
+async fn start_acp_runtime_session(
+    connection: &ConnectionTo<Agent>,
+    spec: &AcpProcessSpec,
+    start_mode: &AcpSessionStartMode,
+) -> Result<AcpSessionStartResponse, agent_client_protocol::Error> {
+    let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
+    match start_mode {
+        AcpSessionStartMode::New => {
+            let response = connection
+                .send_request(NewSessionRequest::new(cwd))
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: response.session_id.0.to_string(),
+                models: response.models,
+                modes: response.modes,
+                config_options: response.config_options,
+            })
+        }
+        AcpSessionStartMode::Load { session_id } => {
+            let response = connection
+                .send_request(LoadSessionRequest::new(
+                    SessionId::new(session_id.clone()),
+                    cwd,
+                ))
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: session_id.clone(),
+                models: response.models,
+                modes: response.modes,
+                config_options: response.config_options,
+            })
+        }
     }
 }
 
@@ -3364,16 +3469,20 @@ fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
     .map(|(runtime_id, name, description, auth_methods)| {
         let models = default_models(runtime_id);
         let modes = default_modes(runtime_id);
+        let mut capabilities = vec![
+            "create_session".to_string(),
+            "prompt_queueing".to_string(),
+            "user_input".to_string(),
+        ];
+        if runtime_supports_native_resume(runtime_id) {
+            capabilities.push("resume_session".to_string());
+        }
         AiRuntimeDescriptor {
             runtime: AiRuntimeOption {
                 id: runtime_id.to_string(),
                 name: name.to_string(),
                 description: description.to_string(),
-                capabilities: vec![
-                    "create_session".to_string(),
-                    "prompt_queueing".to_string(),
-                    "user_input".to_string(),
-                ],
+                capabilities,
             },
             config_options: default_config_options(runtime_id, &models, &modes),
             models,
@@ -3382,6 +3491,10 @@ fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
         .with_auth_capabilities(auth_methods)
     })
     .collect()
+}
+
+fn runtime_supports_native_resume(runtime_id: &str) -> bool {
+    matches!(runtime_id, CODEX_RUNTIME_ID)
 }
 
 trait RuntimeDescriptorAuthTags {
@@ -5220,6 +5333,53 @@ mod tests {
             .expect("child session should exist");
         child.session.parent_session_id = Some(PARENT_RUNTIME_SESSION_ID.to_string());
         child.session.runtime_session_id = Some(runtime_session_id.to_string());
+    }
+
+    #[test]
+    fn runtime_descriptors_only_advertise_native_resume_for_verified_runtimes() {
+        let descriptors = runtime_descriptors();
+
+        for descriptor in descriptors {
+            let supports_resume = descriptor
+                .runtime
+                .capabilities
+                .iter()
+                .any(|capability| capability == "resume_session");
+
+            assert_eq!(
+                supports_resume,
+                runtime_supports_native_resume(&descriptor.runtime.id),
+                "{} advertised an inconsistent native resume capability",
+                descriptor.runtime.id
+            );
+        }
+    }
+
+    #[test]
+    fn native_resume_is_currently_limited_to_codex() {
+        assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(GEMINI_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
+    }
+
+    #[test]
+    fn unsupported_native_resume_fails_before_creating_placeholder_session() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let native_ai = NativeAi::new(event_tx);
+
+        let result = native_ai.resume_runtime_session(
+            &json!({
+                "runtime_id": CLAUDE_RUNTIME_ID,
+                "session_id": "session-1",
+            }),
+            None,
+        );
+
+        assert!(result
+            .unwrap_err()
+            .contains("does not support native session resume"));
+        assert!(native_ai.inner.lock().unwrap().sessions.is_empty());
     }
 
     #[test]
