@@ -41,6 +41,27 @@ function replayAttachAfterComposerMount(detail: FileTreeNoteDragDetail) {
     });
 }
 
+function focusVisibleComposerAtEnd() {
+    window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+            const composer = document.querySelector<HTMLElement>(
+                '[data-ai-composer-drop-zone="true"] [role="textbox"][contenteditable="true"]',
+            );
+            if (!composer) return;
+
+            composer.focus();
+            const selection = window.getSelection();
+            if (!selection) return;
+
+            const range = document.createRange();
+            range.selectNodeContents(composer);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }, 0);
+    });
+}
+
 interface AIChatWorkspaceHostProps {
     startupReady?: boolean;
     listenWithoutChatTabs?: boolean;
@@ -216,6 +237,7 @@ export function AIChatWorkspaceHost({
             void createNewChatInWorkspace().then((sessionId) => {
                 if (!sessionId) return;
                 replayAttachAfterComposerMount(detail);
+                focusVisibleComposerAtEnd();
             });
         };
 

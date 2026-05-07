@@ -164,6 +164,14 @@ describe("AIChatDetachedWindowHost", () => {
         const handleReplay = (event: Event) => {
             replayedEvents.push(event as CustomEvent);
         };
+        const composerShell = document.createElement("div");
+        composerShell.dataset.aiComposerDropZone = "true";
+        const composer = document.createElement("div");
+        composer.setAttribute("role", "textbox");
+        composer.setAttribute("contenteditable", "true");
+        composer.textContent = "Existing context";
+        composerShell.appendChild(composer);
+        document.body.appendChild(composerShell);
         const detail = {
             phase: "attach" as const,
             x: 0,
@@ -200,7 +208,9 @@ describe("AIChatDetachedWindowHost", () => {
 
             await waitFor(() => expect(replayedEvents).toHaveLength(1));
             expect(replayedEvents[0].detail).toEqual(detail);
+            await waitFor(() => expect(document.activeElement).toBe(composer));
         } finally {
+            composerShell.remove();
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
         }
     });
