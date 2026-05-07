@@ -153,6 +153,61 @@ describe("AIChatDetachedWindowHost", () => {
         expect(loadSession).not.toHaveBeenCalled();
     });
 
+    it("hydrates full transcript context for live chats with pending recovery", async () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "session-1",
+                    title: "Chat",
+                },
+            ],
+            "chat-tab-1",
+        );
+
+        const initialize = vi.fn().mockResolvedValue(undefined);
+        const loadSession = vi.fn().mockResolvedValue(undefined);
+        const ensureSessionTranscriptLoaded = vi
+            .fn()
+            .mockResolvedValue(true);
+        useChatStore.setState({
+            initialize,
+            loadSession,
+            ensureSessionTranscriptLoaded,
+            sessionsById: {
+                "session-1": {
+                    sessionId: "session-1",
+                    historySessionId: "history-1",
+                    runtimeState: "live",
+                    isResumingSession: false,
+                    resumeContextPending: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: 1,
+                    messages: [
+                        {
+                            id: "m2",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Tail only",
+                            timestamp: 20,
+                        },
+                    ],
+                } as never,
+            },
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        renderComponent(<AIChatWorkspaceHost />);
+        await flushPromises();
+        await flushPromises();
+
+        expect(loadSession).not.toHaveBeenCalled();
+        expect(ensureSessionTranscriptLoaded).toHaveBeenCalledWith(
+            "session-1",
+            "full",
+        );
+    });
+
     it("keeps the main-window event bridge active before any chat tab mounts", () => {
         renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
 

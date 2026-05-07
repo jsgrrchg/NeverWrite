@@ -8642,7 +8642,7 @@ describe("chatStore", () => {
         });
     });
 
-    it("sends saved transcript context after recreating a detached Codex session", async () => {
+    it("sends saved transcript context when sending from a detached Codex session", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [],
@@ -8735,27 +8735,22 @@ describe("chatStore", () => {
             return defaultInvokeImplementation(command, args);
         });
 
-        const nextSessionId = await useChatStore
+        useChatStore
             .getState()
-            .resumeSession(detachedSessionId);
+            .setComposerParts(
+                createTextParts("Continue from there"),
+                detachedSessionId,
+            );
 
-        expect(nextSessionId).toBe(resumedSessionId);
+        await useChatStore.getState().sendMessage(detachedSessionId);
+
         expect(
             useChatStore.getState().sessionsById[resumedSessionId],
         ).toMatchObject({
             runtimeState: "live",
             isPersistedSession: false,
-            resumeContextPending: true,
+            resumeContextPending: false,
         });
-
-        useChatStore
-            .getState()
-            .setComposerParts(
-                createTextParts("Continue from there"),
-                resumedSessionId,
-            );
-
-        await useChatStore.getState().sendMessage(resumedSessionId);
 
         expect(sentContent).toContain("Saved transcript:");
         expect(sentContent).toContain("User: Remember the prior requirement");
@@ -8816,6 +8811,168 @@ describe("chatStore", () => {
             invokeMock.mock.calls.some(
                 ([command]) => command === "ai_create_session",
             ),
+        ).toBe(false);
+    });
+
+    it("loads the full saved transcript before sending live Codex recovery prompts", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    historySessionId: "history-live-pending",
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    persistedMessageCount: 2,
+                    loadedPersistedMessageStart: 1,
+                    messages: [
+                        {
+                            id: "m2",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Tail context only",
+                            timestamp: 20,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    sessionId: "history-live-pending",
+                    vaultPath: "/vault",
+                    startIndex: 0,
+                    limit: 2,
+                });
+                return {
+                    session_id: "history-live-pending",
+                    total_messages: 2,
+                    start_index: 0,
+                    end_index: 2,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Older recovered context",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "m2",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Tail context only",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Continue"), activeSessionId);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Older recovered context");
+        expect(sentContent).toContain("Assistant: Tail context only");
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]
+                ?.resumeContextPending,
+        ).toBe(false);
+    });
+
+    it("keeps pending resume context across backend upserts until a prompt sends", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Do not drop me on config refresh",
+                            timestamp: 10,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        const pendingSession =
+            useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.getState().upsertSession({
+            ...pendingSession,
+            resumeContextPending: false,
+            messages: [],
+            attachments: [],
+            status: "idle",
+        });
+
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]
+                ?.resumeContextPending,
+        ).toBe(true);
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Now continue"), activeSessionId);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain("User: Do not drop me on config refresh");
+        expect(
+            useChatStore.getState().sessionsById[activeSessionId]
+                ?.resumeContextPending,
         ).toBe(false);
     });
 

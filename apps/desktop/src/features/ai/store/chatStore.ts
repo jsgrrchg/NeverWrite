@@ -4310,6 +4310,13 @@ function hasFullPersistedTranscriptLoaded(session: AIChatSession) {
     );
 }
 
+function needsFullResumeContextTranscript(session: AIChatSession) {
+    return (
+        session.resumeContextPending === true &&
+        !hasFullPersistedTranscriptLoaded(session)
+    );
+}
+
 function hasPersistedHistoryContent(history: PersistedSessionHistory) {
     return getPersistedHistoryMessageCount(history) > 0;
 }
@@ -4714,8 +4721,8 @@ function mergeSession(
             incoming.isPersistedSession ??
             normalizedExisting.isPersistedSession,
         resumeContextPending:
-            incoming.resumeContextPending ??
-            normalizedExisting.resumeContextPending,
+            incoming.resumeContextPending === true ||
+            normalizedExisting.resumeContextPending === true,
         activeWorkCycleId:
             incoming.activeWorkCycleId ??
             normalizedExisting.activeWorkCycleId ??
@@ -5465,6 +5472,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
     }
 
+    async function prepareSessionForPromptBuild(
+        sessionId: string,
+    ): Promise<string | null> {
+        let activeSessionId = sessionId;
+        let session = get().sessionsById[activeSessionId];
+        if (!session || session.isResumingSession) {
+            return null;
+        }
+
+        if (!isLiveRuntimeSession(session)) {
+            const resumedSessionId = await get().resumeSession(activeSessionId);
+            if (!resumedSessionId) {
+                return null;
+            }
+
+            activeSessionId = resumedSessionId;
+            session = get().sessionsById[activeSessionId];
+            if (!session || session.isResumingSession) {
+                return null;
+            }
+        }
+
+        if (needsFullResumeContextTranscript(session)) {
+            const loaded = await loadPersistedTranscript(
+                activeSessionId,
+                "full",
+            );
+            if (!loaded) {
+                get().applySessionError({
+                    session_id: activeSessionId,
+                    message:
+                        "Failed to load the full saved transcript before sending.",
+                });
+                return null;
+            }
+        }
+
+        return activeSessionId;
+    }
+
     function patchQueuedMessage(
         sessionId: string,
         messageId: string,
@@ -5950,6 +5997,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 currentItem.prompt,
                 currentItem.attachments,
             );
+            set((state) => ({
+                sessionsById: updateSessionById(
+                    state,
+                    activeSessionId,
+                    (current) => ({
+                        ...current,
+                        resumeContextPending: false,
+                    }),
+                ),
+            }));
             get().upsertSession({
                 ...nextSession,
                 historySessionId: session.historySessionId,
@@ -8405,12 +8462,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         sendMessage: async (sessionId) => {
-            const resolvedSessionId = sessionId ?? get().activeSessionId;
+            let resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
-            const { sessionsById, composerPartsBySessionId } = get();
-            const session = sessionsById[resolvedSessionId];
+
+            let { sessionsById, composerPartsBySessionId } = get();
+            let session = sessionsById[resolvedSessionId];
             if (!session || session.isResumingSession) {
                 return;
+            }
+
+            if (
+                !isLiveRuntimeSession(session) ||
+                needsFullResumeContextTranscript(session)
+            ) {
+                const preparedSessionId =
+                    await prepareSessionForPromptBuild(resolvedSessionId);
+                if (!preparedSessionId) {
+                    return;
+                }
+                resolvedSessionId = preparedSessionId;
+                ({ sessionsById, composerPartsBySessionId } = get());
+                session = sessionsById[resolvedSessionId];
+                if (!session || session.isResumingSession) {
+                    return;
+                }
             }
 
             const composerParts =

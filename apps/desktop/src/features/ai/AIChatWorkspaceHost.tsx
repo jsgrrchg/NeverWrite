@@ -13,6 +13,7 @@ import {
     emitFileTreeNoteDrag,
     type FileTreeNoteDragDetail,
 } from "./dragEvents";
+import type { AIChatSession } from "./types";
 import {
     createNewChatInWorkspace,
     ensureWorkspaceChatSession,
@@ -29,6 +30,24 @@ function hasVisibleAiComposerDropZone() {
 function getActiveEditorChatSessionId() {
     const activeTab = selectFocusedEditorTab(useEditorStore.getState());
     return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
+}
+
+function needsLiveSessionResumeContextHydration(
+    session: AIChatSession,
+) {
+    if (
+        session.runtimeState !== "live" ||
+        session.resumeContextPending !== true
+    ) {
+        return false;
+    }
+
+    const persistedCount = session.persistedMessageCount ?? 0;
+    return (
+        persistedCount > 0 &&
+        (session.loadedPersistedMessageStart !== 0 ||
+            (session.messages?.length ?? 0) < persistedCount)
+    );
 }
 
 function replayAttachAfterComposerMount(detail: FileTreeNoteDragDetail) {
@@ -136,9 +155,15 @@ export function AIChatWorkspaceHost({
         ) {
             return;
         }
+        if (activeChatSession?.isResumingSession) {
+            return;
+        }
+        const shouldHydrateLiveResumeContext = activeChatSession
+            ? needsLiveSessionResumeContextHydration(activeChatSession)
+            : false;
         if (
-            activeChatSession?.runtimeState === "live" ||
-            activeChatSession?.isResumingSession
+            activeChatSession?.runtimeState === "live" &&
+            !shouldHydrateLiveResumeContext
         ) {
             return;
         }
@@ -159,21 +184,39 @@ export function AIChatWorkspaceHost({
             const latestSession =
                 useChatStore.getState().sessionsById[activeChatSessionId] ??
                 null;
+            if (latestSession?.isResumingSession) {
+                return;
+            }
+            const latestNeedsLiveResumeContextHydration = latestSession
+                ? needsLiveSessionResumeContextHydration(latestSession)
+                : false;
             if (
-                latestSession?.runtimeState === "live" ||
-                latestSession?.isResumingSession
+                latestSession?.runtimeState === "live" &&
+                !latestNeedsLiveResumeContextHydration
             ) {
                 return;
             }
 
-            await chatActions.loadSession(activeChatSessionId);
+            if (latestNeedsLiveResumeContextHydration) {
+                await chatActions.ensureSessionTranscriptLoaded(
+                    activeChatSessionId,
+                    "full",
+                );
+            } else {
+                await chatActions.loadSession(activeChatSessionId);
+            }
         })().finally(() => {
             if (recoveringSessionIdRef.current === activeChatSessionId) {
                 recoveringSessionIdRef.current = null;
             }
         });
     }, [
+        activeChatSession,
         activeChatSession?.isResumingSession,
+        activeChatSession?.loadedPersistedMessageStart,
+        activeChatSession?.messages?.length,
+        activeChatSession?.persistedMessageCount,
+        activeChatSession?.resumeContextPending,
         activeChatSession?.runtimeState,
         activeChatSessionId,
         chatActions,
