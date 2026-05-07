@@ -9,6 +9,12 @@ import {
     registerIpcHandlers,
     registerPreviewProtocolHandler,
 } from "./ipc";
+import {
+    initializeAppLogger,
+    installConsoleLogCapture,
+    installProcessDiagnostics,
+    writeAppLog,
+} from "./appLogger";
 
 const WINDOWS_APP_USER_MODEL_ID =
     process.env.NEVERWRITE_ELECTRON_APP_ID?.trim() || "com.neverwrite";
@@ -39,7 +45,23 @@ function configureAppIdentity() {
 }
 
 configureAppIdentity();
+initializeAppLogger(app.getPath("userData"));
+installConsoleLogCapture();
+installProcessDiagnostics();
+writeAppLog("main", "info", "NeverWrite main process starting", {
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+});
 app.setAsDefaultProtocolClient("neverwrite");
+
+app.on("child-process-gone", (_event, details) => {
+    writeAppLog("main", "error", "Electron child process gone", details);
+});
 
 app.on("open-url", (event, url) => {
     event.preventDefault();
@@ -76,6 +98,7 @@ if (!hasLock) {
     });
 
     void app.whenReady().then(() => {
+        writeAppLog("main", "info", "Electron app ready");
         protocol.handle("neverwrite-file", registerPreviewProtocolHandler());
         registerIpcHandlers();
         void installNativeMenus();

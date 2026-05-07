@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, nativeTheme } from "electron";
 import { ELECTRON_IPC } from "../shared/ipc";
+import { writeAppLog } from "./appLogger";
 import { removeWindowVaultRoute } from "./shellState";
 
 const DEFAULT_WIDTH = 1480;
@@ -193,6 +194,27 @@ function bindWindowLifecycle(label: string, window: BrowserWindow) {
             `window.neverwriteWindowLabel = ${JSON.stringify(label)}`,
             true,
         ).catch(() => {});
+    });
+    window.webContents.on("did-fail-load", (
+        _event,
+        errorCode,
+        errorDescription,
+        validatedURL,
+        isMainFrame,
+    ) => {
+        writeAppLog("main", "error", "Renderer failed to load", {
+            label,
+            errorCode,
+            errorDescription,
+            validatedURL,
+            isMainFrame,
+        });
+    });
+    window.webContents.on("render-process-gone", (_event, details) => {
+        writeAppLog("main", "error", "Renderer process gone", {
+            label,
+            ...details,
+        });
     });
     window.on("closed", () => {
         windowsByLabel.delete(label);

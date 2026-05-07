@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
     ELECTRON_IPC,
+    type IpcAppLogEnvelope,
     type IpcInvokeEnvelope,
     type IpcRuntimeEventEnvelope,
     type IpcWindowCommandEnvelope,
 } from "../shared/ipc";
+import { writeRendererLog } from "./appLogger";
 import {
     createAppWindow,
     emitToWindow,
@@ -163,6 +165,39 @@ function registerRuntimeEventHandlers() {
             String(envelope.eventName ?? ""),
             envelope.payload,
         );
+    });
+}
+
+function isAppLogLevel(value: unknown): value is IpcAppLogEnvelope["level"] {
+    return (
+        value === "debug" ||
+        value === "info" ||
+        value === "warn" ||
+        value === "error"
+    );
+}
+
+function registerAppLogHandlers() {
+    ipcMain.handle(ELECTRON_IPC.appLog, (_event, rawEnvelope) => {
+        const envelope = asRecord(rawEnvelope) as Partial<IpcAppLogEnvelope>;
+        if (
+            !isAppLogLevel(envelope.level) ||
+            typeof envelope.scope !== "string" ||
+            typeof envelope.message !== "string"
+        ) {
+            return false;
+        }
+        writeRendererLog({
+            level: envelope.level,
+            scope: envelope.scope,
+            message: envelope.message,
+            detail: envelope.detail,
+            windowLabel:
+                typeof envelope.windowLabel === "string"
+                    ? envelope.windowLabel
+                    : null,
+        });
+        return true;
     });
 }
 
@@ -338,4 +373,5 @@ export function registerIpcHandlers() {
     registerOpenerHandlers();
     registerWindowHandlers();
     registerRuntimeEventHandlers();
+    registerAppLogHandlers();
 }

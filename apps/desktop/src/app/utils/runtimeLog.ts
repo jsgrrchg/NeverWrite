@@ -18,6 +18,17 @@ type RuntimeLogApi = {
     enabled: (scope: string) => boolean;
 };
 
+type RendererLogLevel = "debug" | "warn" | "error";
+
+type RendererLogBridge = {
+    log?: (
+        level: RendererLogLevel,
+        scope: string,
+        message: string,
+        detail?: unknown,
+    ) => Promise<void>;
+};
+
 function normalizeScope(scope: string) {
     return scope.trim().toLowerCase();
 }
@@ -82,6 +93,25 @@ function formatScopedMessage(scope: string, message: string) {
     return `[${scope}] ${message}`;
 }
 
+function sendRendererLog(
+    level: RendererLogLevel,
+    scope: string,
+    message: string,
+    detail?: unknown,
+) {
+    if (typeof window === "undefined") {
+        return;
+    }
+    const bridge = (window as Window & { neverwriteElectron?: RendererLogBridge })
+        .neverwriteElectron;
+    if (!bridge?.log) {
+        return;
+    }
+    void bridge.log(level, scope, message, detail).catch(() => {
+        // Logging must never affect app behavior.
+    });
+}
+
 export function isDebugLogEnabled(scope: string) {
     const normalizedScope = normalizeScope(scope);
     if (!normalizedScope) {
@@ -110,9 +140,11 @@ export function logDebug(
     const scopedMessage = formatScopedMessage(normalizedScope, message);
     if (detail === undefined) {
         console.debug(scopedMessage);
+        sendRendererLog("debug", normalizedScope, message);
         return;
     }
     console.debug(scopedMessage, detail);
+    sendRendererLog("debug", normalizedScope, message, detail);
 }
 
 export function logWarn(
@@ -132,9 +164,11 @@ export function logWarn(
     const scopedMessage = formatScopedMessage(normalizedScope, message);
     if (detail === undefined) {
         console.warn(scopedMessage);
+        sendRendererLog("warn", normalizedScope, message);
         return;
     }
     console.warn(scopedMessage, detail);
+    sendRendererLog("warn", normalizedScope, message, detail);
 }
 
 export function logError(
@@ -154,9 +188,11 @@ export function logError(
     const scopedMessage = formatScopedMessage(normalizedScope, message);
     if (detail === undefined) {
         console.error(scopedMessage);
+        sendRendererLog("error", normalizedScope, message);
         return;
     }
     console.error(scopedMessage, detail);
+    sendRendererLog("error", normalizedScope, message, detail);
 }
 
 function createRuntimeLogApi(): RuntimeLogApi {

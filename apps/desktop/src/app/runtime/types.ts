@@ -182,4 +182,10 @@ export interface ElectronPreloadApi {
         args?: Record<string, unknown>,
     ): Promise<unknown>;
     onWindowEvent(eventName: string, handler: () => void): Promise<UnlistenFn>;
+    log(
+        level: "debug" | "info" | "warn" | "error",
+        scope: string,
+        message: string,
+        detail?: unknown,
+    ): Promise<void>;
 }

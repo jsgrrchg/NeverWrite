@@ -12,6 +12,7 @@ export const ELECTRON_IPC = {
     createWindow: "neverwrite:window:create",
     windowCommand: "neverwrite:window:command",
     windowEvent: "neverwrite:window:event",
+    appLog: "neverwrite:app:log",
 } as const;
 
 export interface IpcInvokeEnvelope {
@@ -28,4 +29,12 @@ export interface IpcWindowCommandEnvelope {
     label: string | null;
     command: string;
     args?: Record<string, unknown>;
+}
+
+export interface IpcAppLogEnvelope {
+    level: "debug" | "info" | "warn" | "error";
+    scope: string;
+    message: string;
+    detail?: unknown;
+    windowLabel?: string | null;
 }

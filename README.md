@@ -36,6 +36,7 @@ The current product already includes:
 
 Saved AI conversations are stored locally under each vault's hidden `.neverwrite/sessions/` directory.
 See [AI session history and crash recovery](docs/ai-session-history.md) for the disk layout and recovery flow.
+NeverWrite also writes local diagnostic logs under the app data `logs/` directory; see [App logs](docs/app-logs.md) for platform-specific paths and privacy notes.
 
 ## Why It Is Different
 
@@ -82,6 +83,7 @@ See [AI session history and crash recovery](docs/ai-session-history.md) for the 
 - Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
 - Session history, transcript viewing, session export, fork, resume, and rename flows
 - Crash recovery for saved chats through `Chat History` and local `.neverwrite/sessions/` transcripts
+- File-based app diagnostics for Electron, renderer, and native backend logs
 - Inline review inside the editor when the tracked file has a reliable base
 - A dedicated `Review` tab plus an `Edits` surface for keep/reject workflows
 - Rust/WASM-backed diffing and change tracking

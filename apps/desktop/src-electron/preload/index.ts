@@ -3,6 +3,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import {
     ELECTRON_IPC,
+    type IpcAppLogEnvelope,
     type IpcInvokeEnvelope,
     type IpcRuntimeEventEnvelope,
     type IpcWindowCommandEnvelope,
@@ -204,6 +205,16 @@ const api: ElectronPreloadApi = {
         return ipcRenderer.invoke(ELECTRON_IPC.windowCommand, envelope);
     },
     onWindowEvent: listenToWindowEvent,
+    async log(level, scope, message, detail) {
+        const envelope: IpcAppLogEnvelope = {
+            level,
+            scope,
+            message,
+            detail,
+            windowLabel: window.neverwriteWindowLabel ?? null,
+        };
+        await ipcRenderer.invoke(ELECTRON_IPC.appLog, envelope);
+    },
 };
 
 void api.getCurrentWindowLabel();
