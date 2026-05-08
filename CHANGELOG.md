@@ -34,19 +34,34 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [0.2.4] - Unreleased
+## [0.2.4] - 2026-05-08
 
 ### Added
 
 - Added file-tree context menu actions to add notes, folders, PDFs, and sidebar files directly to the current chat composer as context pills.
 - Added "Add to New Chat" and "Add Selected to New Chat" actions from the file tree, opening a fresh agent chat with the currently selected/last active provider before attaching the chosen context.
 - Added multi-selection-aware chat context actions for selected notes and sidebar files in the file tree.
+- Added local app diagnostics logs for Electron main, renderer, and native backend events, with documented log locations and privacy notes.
+- Added saved-chat crash recovery docs and recovery flow for AI conversations stored locally under each vault's `.neverwrite/sessions/` directory.
+- Added native saved-session resume support for Codex when available, with a saved-transcript fallback path when direct runtime resume is unavailable or fails.
 
 ### Changed
 
 - Changed file-tree path copy actions to consistently use "Copy Full Path" and copy absolute paths for notes, folders, PDFs, and sidebar files.
 
 ### Fixed
+
+- Fixed external vault refresh handling so ambiguous external deletes, including folders that look like Markdown notes, refresh the vault structure instead of leaving the file tree stale.
+- Fixed closing active AI agent tabs so NeverWrite asks for confirmation consistently, including Cmd/Ctrl+W and multi-tab close paths. Thanks to @wtasg for the first contribution!
+- Fixed Codex saved chats so restored, detached, resumed, or crash-recovered sessions keep enough transcript context to continue without losing the prior conversation.
+- Fixed Codex subagent breadcrumb `Open` actions so they continue working after restore or resume even when the live `sessionId` differs from the saved history or runtime session id.
+- Fixed detached windows and tab reattachment for AI chats so related parent, child, and sibling subagent sessions transfer and hydrate together instead of losing the agent tree.
+- Fixed file-tree chat context targeting so context menu actions and drops attach to the intended chat, including newly opened chats whose composer is still mounting.
+- Fixed normal native backend shutdown so expected sidecar exits no longer appear as app errors.
+
+### Security
+
+- Hardened diagnostic log redaction for prompt, transcript, message, content, token, secret, authorization, and API key fields, including `apiKey`, `api_key`, `api-key`, and `x-api-key` variants.
 
 ## [0.2.3] - 2026-05-05
 
