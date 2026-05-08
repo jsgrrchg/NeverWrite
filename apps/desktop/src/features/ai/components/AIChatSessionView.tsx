@@ -511,6 +511,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 />
                 <AIChatComposer
                     key={sessionId}
+                    sessionId={sessionId}
                     parts={composerParts}
                     notes={noteOptions}
                     files={fileOptions}

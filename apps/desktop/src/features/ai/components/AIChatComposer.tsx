@@ -24,8 +24,8 @@ import {
     type AIChatSlashCommand,
 } from "./AIChatCommandPicker";
 import { AIChatMentionPicker } from "./AIChatMentionPicker";
-import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
+import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import type {
     AIAvailableCommand,
@@ -53,6 +53,7 @@ const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
 
 interface AIChatComposerProps {
+    sessionId?: string;
     parts: AIComposerPart[];
     notes: AIChatNoteSummary[];
     files?: AIChatFileSummary[];
@@ -946,6 +947,7 @@ function getMentionSuggestions(
 }
 
 export function AIChatComposer({
+    sessionId,
     parts,
     notes,
     files,
@@ -1352,27 +1354,33 @@ export function AIChatComposer({
             if (detail.phase === "end" || detail.phase === "attach") {
                 setExternalDragActive(false);
                 if (detail.phase === "end" && !isOver) return;
+                if (
+                    detail.phase === "attach" &&
+                    detail.targetSessionId &&
+                    detail.targetSessionId !== sessionId
+                ) {
+                    return;
+                }
+
+                let current = partsRef.current;
+                let didAttach = false;
+                const folders =
+                    detail.folders ??
+                    (detail.folder ? [detail.folder] : []);
 
                 // Folder drop
-                if (detail.folder) {
-                    onChangeRef.current(
-                        appendFolderMentionPart(
-                            partsRef.current,
-                            detail.folder.path,
-                            detail.folder.name,
-                        ),
+                for (const folder of folders) {
+                    current = appendFolderMentionPart(
+                        current,
+                        folder.path,
+                        folder.name,
                     );
-                    onFolderAttachRef.current(
-                        detail.folder.path,
-                        detail.folder.name,
-                    );
-                    focusComposerAtEnd();
-                    return;
+                    onFolderAttachRef.current(folder.path, folder.name);
+                    didAttach = true;
                 }
 
                 // File drop (PDFs, etc.) — inline pills
                 if (detail.files && detail.files.length > 0) {
-                    let current = partsRef.current;
                     for (const file of detail.files) {
                         current = appendFileAttachmentPart(current, {
                             filePath: file.filePath,
@@ -1380,26 +1388,27 @@ export function AIChatComposer({
                             label: file.fileName,
                         });
                     }
-                    onChangeRef.current(current);
-                    focusComposerAtEnd();
-                    return;
+                    didAttach = true;
                 }
 
                 // Notes drop
-                if (detail.notes.length === 0) return;
-                onChangeRef.current(
-                    appendMentionParts(
-                        partsRef.current,
+                if (detail.notes.length > 0) {
+                    current = appendMentionParts(
+                        current,
                         detail.notes.map((note) => ({
                             noteId: note.id,
                             label: note.title,
                             path: note.path,
                         })),
-                    ),
-                );
-                detail.notes.forEach((note) =>
-                    onMentionAttachRef.current(note),
-                );
+                    );
+                    detail.notes.forEach((note) =>
+                        onMentionAttachRef.current(note),
+                    );
+                    didAttach = true;
+                }
+
+                if (!didAttach) return;
+                onChangeRef.current(current);
                 focusComposerAtEnd();
             }
         };
@@ -1407,7 +1416,7 @@ export function AIChatComposer({
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
         return () =>
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
-    }, [focusComposerAtEnd]);
+    }, [focusComposerAtEnd, sessionId]);
 
     // Native Finder/Explorer file drop
     useEffect(() => {
@@ -1564,6 +1573,7 @@ export function AIChatComposer({
         <div
             ref={shellRef}
             data-ai-composer-drop-zone="true"
+            data-ai-composer-session-id={sessionId}
             className={
                 expanded
                     ? "flex h-full min-h-0 flex-1 flex-col"
