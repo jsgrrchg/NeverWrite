@@ -285,6 +285,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
     private nextId = 1;
     private closed = false;
     private exited = false;
+    private shutdownRequested = false;
 
     constructor(
         executablePath: string,
@@ -326,6 +327,15 @@ class NativeBackendSidecar implements NativeBackendBridge {
 
         this.child.on("error", (error) => {
             this.closed = true;
+            if (this.shutdownRequested) {
+                writeAppLog(
+                    "native-backend",
+                    "info",
+                    "Native backend sidecar closed during shutdown",
+                    error,
+                );
+                return;
+            }
             this.failure = new Error(`Native backend failed to start: ${error.message}`);
             writeAppLog("native-backend", "error", this.failure.message, error);
             console.error(`[native-backend] ${this.failure.message}`);
@@ -338,6 +348,15 @@ class NativeBackendSidecar implements NativeBackendBridge {
             if (this.forceKillTimer) {
                 clearTimeout(this.forceKillTimer);
                 this.forceKillTimer = null;
+            }
+            if (this.shutdownRequested) {
+                writeAppLog(
+                    "native-backend",
+                    "info",
+                    "Native backend sidecar stopped during shutdown",
+                    { code, signal },
+                );
+                return;
             }
             this.failure = new Error(
                 `Native backend exited with ${code ?? signal ?? "unknown status"}`,
@@ -368,7 +387,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
             this.pending.set(id, { resolve, reject });
             this.child.stdin.write(`${payload}\n`, (error) => {
                 if (!error) return;
-                this.pending.delete(id);
+                if (!this.pending.delete(id)) return;
                 reject(error);
             });
         });
@@ -376,6 +395,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
 
     dispose() {
         if (this.closed && this.exited) return;
+        this.shutdownRequested = true;
         this.closed = true;
         this.rejectPending(new Error("Native backend was closed."));
 

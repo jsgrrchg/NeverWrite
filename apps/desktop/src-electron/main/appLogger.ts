@@ -221,16 +221,42 @@ export function installConsoleLogCapture() {
     };
 }
 
+type ProcessCrashHandler = (error: Error) => never;
+
+function defaultProcessCrashHandler(error: Error): never {
+    throw error;
+}
+
+function normalizeUnhandledRejectionReason(reason: unknown) {
+    if (reason instanceof Error) {
+        return reason;
+    }
+    return new Error("Unhandled promise rejection", { cause: reason });
+}
+
+export function createProcessDiagnosticsHandlers(
+    crash: ProcessCrashHandler = defaultProcessCrashHandler,
+) {
+    return {
+        uncaughtException(error: Error): never {
+            writeAppLog("main", "error", "Uncaught exception", error);
+            return crash(error);
+        },
+        unhandledRejection(reason: unknown): never {
+            const error = normalizeUnhandledRejectionReason(reason);
+            writeAppLog("main", "error", "Unhandled promise rejection", reason);
+            return crash(error);
+        },
+    };
+}
+
 export function installProcessDiagnostics() {
     if (processDiagnosticsInstalled) return;
     processDiagnosticsInstalled = true;
 
-    process.on("uncaughtException", (error) => {
-        writeAppLog("main", "error", "Uncaught exception", error);
-    });
-    process.on("unhandledRejection", (reason) => {
-        writeAppLog("main", "error", "Unhandled promise rejection", reason);
-    });
+    const handlers = createProcessDiagnosticsHandlers();
+    process.on("uncaughtException", handlers.uncaughtException);
+    process.on("unhandledRejection", handlers.unhandledRejection);
 }
 
 export function writeRendererLog(envelope: RendererLogEnvelope) {

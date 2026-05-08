@@ -332,6 +332,61 @@ describe("AIChatDetachedWindowHost", () => {
         }
     });
 
+    it("caps attach replays even when each replay carries a new detail object", async () => {
+        const replayedEvents: CustomEvent[] = [];
+        const handleReplay = (event: Event) => {
+            replayedEvents.push(event as CustomEvent);
+        };
+        const detail = {
+            phase: "attach" as const,
+            x: 0,
+            y: 0,
+            notes: [
+                {
+                    id: "docs/alpha",
+                    title: "Alpha",
+                    path: "/vault/docs/alpha.md",
+                },
+            ],
+        };
+        chatPaneMovementMock.ensureWorkspaceChatSession.mockResolvedValue(
+            "session-created",
+        );
+        chatPaneMovementMock.openChatSessionInWorkspace.mockReturnValue(
+            "session-created",
+        );
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
+        try {
+            renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail,
+                }),
+            );
+
+            await waitFor(() => expect(replayedEvents).toHaveLength(4));
+            await new Promise((resolve) => window.setTimeout(resolve, 20));
+
+            expect(replayedEvents).toHaveLength(4);
+            expect(
+                chatPaneMovementMock.ensureWorkspaceChatSession,
+            ).toHaveBeenCalledTimes(1);
+            expect(
+                chatPaneMovementMock.openChatSessionInWorkspace,
+            ).toHaveBeenCalledTimes(2);
+            expect(replayedEvents.map((event) => event.detail)).toEqual([
+                detail,
+                { ...detail, targetSessionId: "session-created" },
+                { ...detail, targetSessionId: "session-created" },
+                { ...detail, targetSessionId: "session-created" },
+            ]);
+        } finally {
+            window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
+        }
+    });
+
     it("initializes detached chat support before any chat tab mounts", async () => {
         const initialize = vi.fn().mockResolvedValue(undefined);
         useChatStore.setState({

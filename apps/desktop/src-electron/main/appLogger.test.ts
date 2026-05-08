@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+    createProcessDiagnosticsHandlers,
     initializeAppLogger,
     resetAppLoggerForTests,
     sanitizeLogDetail,
@@ -95,5 +96,55 @@ describe("appLogger", () => {
         expect(fs.existsSync(path.join(logDir, "main.old.log"))).toBe(true);
         const entries = readJsonLines(path.join(logDir, "main.log"));
         expect(entries.at(-1)).toMatchObject({ message: "second" });
+    });
+
+    it("logs uncaught exceptions before preserving the fatal crash path", () => {
+        tempDir = makeTempUserDataDir();
+        const logDir = initializeAppLogger(tempDir);
+        const crash = (error: Error): never => {
+            throw error;
+        };
+        const handlers = createProcessDiagnosticsHandlers(crash);
+        const error = new Error("boom");
+
+        expect(() => handlers.uncaughtException(error)).toThrow(error);
+
+        const entries = readJsonLines(path.join(logDir, "main.log"));
+        expect(entries.at(-1)).toMatchObject({
+            source: "main",
+            level: "error",
+            message: "Uncaught exception",
+            detail: {
+                name: "Error",
+                message: "boom",
+            },
+        });
+    });
+
+    it("logs unhandled rejections and crashes with a real Error", () => {
+        tempDir = makeTempUserDataDir();
+        const logDir = initializeAppLogger(tempDir);
+        const reason = { code: "bad-rejection" };
+        const crashErrors: Error[] = [];
+        const crash = (error: Error): never => {
+            crashErrors.push(error);
+            throw error;
+        };
+        const handlers = createProcessDiagnosticsHandlers(crash);
+
+        expect(() => handlers.unhandledRejection(reason)).toThrow(
+            "Unhandled promise rejection",
+        );
+
+        expect(crashErrors[0]?.cause).toBe(reason);
+        const entries = readJsonLines(path.join(logDir, "main.log"));
+        expect(entries.at(-1)).toMatchObject({
+            source: "main",
+            level: "error",
+            message: "Unhandled promise rejection",
+            detail: {
+                code: "bad-rejection",
+            },
+        });
     });
 });

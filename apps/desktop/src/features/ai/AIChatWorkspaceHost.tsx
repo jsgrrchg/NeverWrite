@@ -50,15 +50,31 @@ function needsLiveSessionResumeContextHydration(session: AIChatSession) {
     );
 }
 
+const attachReplayKeyByDetail = new WeakMap<FileTreeNoteDragDetail, string>();
+let nextAttachReplayKey = 1;
+
+function getAttachReplayKey(detail: FileTreeNoteDragDetail) {
+    const existingKey = attachReplayKeyByDetail.get(detail);
+    if (existingKey) return existingKey;
+
+    const key = `attach-replay-${nextAttachReplayKey}`;
+    nextAttachReplayKey += 1;
+    attachReplayKeyByDetail.set(detail, key);
+    return key;
+}
+
 function replayAttachAfterComposerMount(
     detail: FileTreeNoteDragDetail,
     targetSessionId: string,
 ) {
+    const replayKey = getAttachReplayKey(detail);
     // Let the newly opened chat tab mount its composer before we replay the
     // attach event into the real in-workspace target.
     window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
-            emitFileTreeNoteDrag({ ...detail, targetSessionId });
+            const replayDetail = { ...detail, targetSessionId };
+            attachReplayKeyByDetail.set(replayDetail, replayKey);
+            emitFileTreeNoteDrag(replayDetail);
         });
     });
 }
@@ -118,7 +134,7 @@ export function AIChatWorkspaceHost({
     const chatActions = useRef(useChatStore.getState()).current;
     const initializationPromiseRef = useRef<Promise<unknown> | null>(null);
     const recoveringSessionIdRef = useRef<string | null>(null);
-    const attachReplayCountsRef = useRef(new WeakMap<object, number>());
+    const attachReplayCountsRef = useRef(new Map<string, number>());
 
     useAiChatEventBridge(
         Boolean(vaultPath) &&
@@ -261,7 +277,7 @@ export function AIChatWorkspaceHost({
         const handleAttachWithoutVisibleComposer = (event: Event) => {
             const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
                 .detail;
-            const replayKey = detail as object;
+            const replayKey = getAttachReplayKey(detail);
             if (detail.phase !== "attach") return;
             if (hasVisibleAiComposerDropZone(detail.targetSessionId)) {
                 attachReplayCountsRef.current.delete(replayKey);

@@ -9,6 +9,16 @@ import {
     logWarn,
     resetRuntimeLogStateForTests,
 } from "./runtimeLog";
+import type { ElectronPreloadApi } from "../runtime/types";
+
+type TestElectronLogBridge = Pick<ElectronPreloadApi, "log">;
+type TestWindowWithLogBridge = Omit<Window, "neverwriteElectron"> & {
+    neverwriteElectron?: TestElectronLogBridge;
+};
+
+function installElectronLogBridge(log: TestElectronLogBridge["log"]) {
+    (window as unknown as TestWindowWithLogBridge).neverwriteElectron = { log };
+}
 
 describe("runtimeLog", () => {
     afterEach(() => {
@@ -63,9 +73,7 @@ describe("runtimeLog", () => {
 
     it("forwards warn and error logs to the Electron log bridge", () => {
         const log = vi.fn().mockResolvedValue(undefined);
-        window.neverwriteElectron = {
-            log,
-        } as typeof window.neverwriteElectron;
+        installElectronLogBridge(log);
         vi.spyOn(console, "warn").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -92,9 +100,7 @@ describe("runtimeLog", () => {
 
     it("forwards enabled debug logs to the Electron log bridge", () => {
         const log = vi.fn().mockResolvedValue(undefined);
-        window.neverwriteElectron = {
-            log,
-        } as typeof window.neverwriteElectron;
+        installElectronLogBridge(log);
         vi.spyOn(console, "debug").mockImplementation(() => {});
 
         logDebug("review", "hidden debug log");
