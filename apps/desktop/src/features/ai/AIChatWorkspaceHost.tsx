@@ -17,14 +17,16 @@ import type { AIChatSession } from "./types";
 import {
     createNewChatInWorkspace,
     ensureWorkspaceChatSession,
+    openChatSessionInWorkspace,
 } from "./chatPaneMovement";
 import { useChatStore } from "./store/chatStore";
 import { useAiChatEventBridge } from "./useAiChatEventBridge";
 
-function hasVisibleAiComposerDropZone() {
-    return (
-        document.querySelector('[data-ai-composer-drop-zone="true"]') !== null
-    );
+function hasVisibleAiComposerDropZone(targetSessionId?: string) {
+    const selector = targetSessionId
+        ? `[data-ai-composer-drop-zone="true"][data-ai-composer-session-id="${CSS.escape(targetSessionId)}"]`
+        : '[data-ai-composer-drop-zone="true"]';
+    return document.querySelector(selector) !== null;
 }
 
 function getActiveEditorChatSessionId() {
@@ -32,9 +34,7 @@ function getActiveEditorChatSessionId() {
     return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
 }
 
-function needsLiveSessionResumeContextHydration(
-    session: AIChatSession,
-) {
+function needsLiveSessionResumeContextHydration(session: AIChatSession) {
     if (
         session.runtimeState !== "live" ||
         session.resumeContextPending !== true
@@ -50,13 +50,37 @@ function needsLiveSessionResumeContextHydration(
     );
 }
 
-function replayAttachAfterComposerMount(detail: FileTreeNoteDragDetail) {
+function replayAttachAfterComposerMount(
+    detail: FileTreeNoteDragDetail,
+    targetSessionId: string,
+) {
     // Let the newly opened chat tab mount its composer before we replay the
     // attach event into the real in-workspace target.
     window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
-            emitFileTreeNoteDrag(detail);
+            emitFileTreeNoteDrag({ ...detail, targetSessionId });
         });
+    });
+}
+
+function focusComposerAtEnd(sessionId: string) {
+    window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+            const composer = document.querySelector<HTMLElement>(
+                `[data-ai-composer-drop-zone="true"][data-ai-composer-session-id="${CSS.escape(sessionId)}"] [role="textbox"][contenteditable="true"]`,
+            );
+            if (!composer) return;
+
+            composer.focus();
+            const selection = window.getSelection();
+            if (!selection) return;
+
+            const range = document.createRange();
+            range.selectNodeContents(composer);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }, 0);
     });
 }
 
@@ -239,7 +263,7 @@ export function AIChatWorkspaceHost({
                 .detail;
             const replayKey = detail as object;
             if (detail.phase !== "attach") return;
-            if (hasVisibleAiComposerDropZone()) {
+            if (hasVisibleAiComposerDropZone(detail.targetSessionId)) {
                 attachReplayCountsRef.current.delete(replayKey);
                 return;
             }
@@ -252,9 +276,15 @@ export function AIChatWorkspaceHost({
             }
             attachReplayCountsRef.current.set(replayKey, replayCount + 1);
 
-            void ensureWorkspaceChatSession().then((sessionId) => {
+            const ensureTargetSession = detail.targetSessionId
+                ? Promise.resolve(
+                      openChatSessionInWorkspace(detail.targetSessionId),
+                  )
+                : ensureWorkspaceChatSession();
+
+            void ensureTargetSession.then((sessionId) => {
                 if (!sessionId) return;
-                replayAttachAfterComposerMount(detail);
+                replayAttachAfterComposerMount(detail, sessionId);
             });
         };
 
@@ -265,7 +295,8 @@ export function AIChatWorkspaceHost({
 
             void createNewChatInWorkspace().then((sessionId) => {
                 if (!sessionId) return;
-                replayAttachAfterComposerMount(detail);
+                replayAttachAfterComposerMount(detail, sessionId);
+                focusComposerAtEnd(sessionId);
             });
         };
 

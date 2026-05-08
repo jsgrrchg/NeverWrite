@@ -50,6 +50,10 @@ import {
 } from "../ai/dragEvents";
 import { useChatStore } from "../ai/store/chatStore";
 import {
+    findActiveSessionsAffectedByClose,
+    getCloseTabsConfirmationMessage,
+} from "./tabClosePolicy";
+import {
     buildTabFileDragDetail,
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
@@ -441,6 +445,19 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 return;
             }
 
+            const affected = findActiveSessionsAffectedByClose(
+                [targetTab],
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
+                return;
+            }
+
             if (windowMode === "note" && currentTabs.length === 1) {
                 const appWindow = getAppWindow();
                 await appWindow.close().catch((error) => {
@@ -486,6 +503,19 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                 .filter((tab): tab is (typeof currentTabs)[number] => tab !== null);
 
             if (tabsToClose.length === 0) {
+                return false;
+            }
+
+            const affected = findActiveSessionsAffectedByClose(
+                tabsToClose,
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
                 return false;
             }
 

@@ -1,6 +1,7 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import {
     getCurrentWindow,
+    confirm,
     invoke,
     listen,
     type UnlistenFn,
@@ -21,7 +22,7 @@ import {
 } from "./features/ai/store/chatTabsStore";
 import { useChatStore } from "./features/ai/store/chatStore";
 import { useClipImportStore } from "./features/clip/clipImportStore";
-import { flushPromises, renderComponent } from "./test/test-utils";
+import { flushPromises, renderComponent, setEditorTabs } from "./test/test-utils";
 
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
@@ -419,6 +420,72 @@ describe("App web clipper routing", () => {
         expect(useCommandStore.getState().activeModal).toBe("command-palette");
     });
 
+    it("confirms before the global close-tab command closes an active agent tab", async () => {
+        vi.mocked(confirm).mockResolvedValue(false);
+        renderComponent(<App />);
+        await flushPromises();
+        await waitFor(() => {
+            expect(
+                useCommandStore.getState().commands.has("editor:close-tab"),
+            ).toBe(true);
+        });
+        setEditorTabs(
+            [
+                {
+                    id: "tab-chat",
+                    kind: "ai-chat",
+                    sessionId: "session-busy",
+                    title: "Busy chat",
+                },
+                {
+                    id: "tab-note",
+                    kind: "note",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                },
+            ],
+            "tab-chat",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": {
+                    sessionId: "session-busy",
+                    historySessionId: "session-busy",
+                    status: "streaming",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                },
+            },
+            activeSessionId: "session-busy",
+        });
+        expect(
+            useCommandStore
+                .getState()
+                .commands.get("editor:close-tab")
+                ?.when?.(),
+        ).toBe(true);
+
+        act(() => {
+            useCommandStore.getState().execute("editor:close-tab");
+        });
+        await flushPromises();
+
+        expect(confirm).toHaveBeenCalledWith(
+            "The AI agent is still running. Are you sure you want to close this tab?",
+        );
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-chat",
+            "tab-note",
+        ]);
+    });
+
     it("creates a markdown note from the native New Note command", async () => {
         const createNote = vi.fn(async () => ({
             id: "Untitled",
@@ -584,6 +651,43 @@ describe("App web clipper routing", () => {
             .mock.calls.filter(([command]) => command === "read_vault_file");
         expect(readCalls).toHaveLength(0);
         vi.useRealTimers();
+    });
+
+    it("refreshes the full vault structure for external note-looking delete events", async () => {
+        const applyVaultNoteChange = vi.fn();
+        const refreshEntries = vi.fn(async () => {});
+        const refreshStructure = vi.fn(async () => {});
+        useVaultStore.setState({
+            applyVaultNoteChange,
+            refreshEntries,
+            refreshStructure,
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            eventHandlers.get("vault://note-changed")?.({
+                payload: {
+                    vault_path: "/vaults/a",
+                    kind: "delete",
+                    note: null,
+                    note_id: "Archive",
+                    entry: null,
+                    relative_path: "Archive.md",
+                    origin: "external",
+                    op_id: null,
+                    revision: 1,
+                    content_hash: null,
+                    graph_revision: 1,
+                },
+            });
+            await Promise.resolve();
+        });
+
+        expect(applyVaultNoteChange).not.toHaveBeenCalled();
+        expect(refreshEntries).not.toHaveBeenCalled();
+        expect(refreshStructure).toHaveBeenCalledTimes(1);
     });
 
     it("does not open a vault window for routed clip saves", async () => {

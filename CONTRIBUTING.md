@@ -3,8 +3,9 @@
 Thanks for your interest in contributing to NeverWrite. This guide covers everything you need to get started.
 
 ## Prerequisites
+
 | Tool | Version | Notes |
-|------|---------|-------|
+| ------ | --------- | ------- |
 | **Node.js** | 22+ | Required for desktop app and CI |
 | **npm** | 11+ | Package manager for `apps/desktop` |
 | **pnpm** | 10.33+ | Package manager for `apps/web-clipper` |
@@ -18,7 +19,7 @@ Thanks for your interest in contributing to NeverWrite. This guide covers everyt
 
 ## Repository structure
 
-```
+```text
 apps/
   desktop/            Electron + React desktop app (npm)
   web-clipper/        WXT browser extension (pnpm)
@@ -113,7 +114,7 @@ Open a PR against `main`. Describe what changed and why. Link related issues if 
 
 We use a lightweight conventional format:
 
-```
+```text
 type(scope): short description
 ```
 
@@ -123,7 +124,7 @@ type(scope): short description
 
 **Examples**:
 
-```
+```text
 fix(editor): resolve cursor jump on live preview toggle
 feat(clipper): add selection-only clipping mode
 refactor: simplify change rail review projection
@@ -182,10 +183,10 @@ pnpm test:run         # Run once
 - Use Testing Library for component tests (`@testing-library/react`)
 - Mock desktop runtime APIs through `@neverwrite/runtime` helpers and `vi.mocked()`
 
-### Rust
+### Rust (cargo)
 
 ```bash
-cargo test                        # All workspace tests
+cargo test                          # All workspace tests
 cargo test -p neverwrite-vault      # Single crate
 ```
 
@@ -215,8 +216,9 @@ cargo test -p neverwrite-vault      # Single crate
 ## Environment variables
 
 For development, these optional variables can override default runtime paths:
+
 | Variable | Purpose |
-|----------|---------|
+| ---------- | --------- |
 | `NEVERWRITE_CODEX_ACP_BIN` | Override Codex ACP runtime binary |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Override Claude ACP runtime binary |
 | `NEVERWRITE_GEMINI_ACP_BIN` | Override Gemini ACP runtime binary |
@@ -228,6 +230,7 @@ For development, these optional variables can override default runtime paths:
 We follow [Semantic Versioning](https://semver.org/). During the `0.x` phase, minor bumps may include breaking changes.
 
 Versions are kept in sync across:
+
 - `apps/desktop/package.json`
 - `apps/desktop/package-lock.json`
 - `apps/desktop/native-backend/Cargo.toml`

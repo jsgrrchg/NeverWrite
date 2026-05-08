@@ -15,6 +15,27 @@ const WORKING_ACTIVITY_INDICATOR: AgentSessionActivityIndicator = {
     tone: "working",
 };
 
+export function isAgentSessionActive(
+    session:
+        | Pick<AIChatSession, "runtimeState" | "status">
+        | null
+        | undefined,
+): boolean {
+    if (!session) {
+        return false;
+    }
+
+    if (session.runtimeState != null && session.runtimeState !== "live") {
+        return false;
+    }
+
+    return (
+        session.status === "streaming" ||
+        session.status === "waiting_permission" ||
+        session.status === "waiting_user_input"
+    );
+}
+
 export function resolveAgentSessionActivity(
     session:
         | Pick<AIChatSession, "runtimeState" | "status">

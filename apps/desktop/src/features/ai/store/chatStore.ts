@@ -4939,8 +4939,23 @@ function mergeSession(
     );
 }
 
-function getDefaultRuntimeId(runtimes: AIRuntimeDescriptor[]) {
-    return runtimes[0]?.runtime.id ?? null;
+function isRuntimeSetupReady(setupStatus?: AIRuntimeSetupStatus | null) {
+    return setupStatus?.authReady === true && !setupStatus.onboardingRequired;
+}
+
+function getDefaultRuntimeId(
+    runtimes: AIRuntimeDescriptor[],
+    setupStatusByRuntimeId?: Record<string, AIRuntimeSetupStatus>,
+) {
+    const readyRuntime = setupStatusByRuntimeId
+        ? runtimes.find((runtime) =>
+              isRuntimeSetupReady(
+                  setupStatusByRuntimeId[runtime.runtime.id],
+              ),
+          )
+        : null;
+
+    return readyRuntime?.runtime.id ?? runtimes[0]?.runtime.id ?? null;
 }
 
 function runtimeSupportsCapability(
@@ -5022,13 +5037,17 @@ function getSessionRuntimeId(
 function getEffectiveRuntimeId(
     state: Pick<
         ChatStore,
-        "activeSessionId" | "sessionsById" | "selectedRuntimeId" | "runtimes"
+        | "activeSessionId"
+        | "sessionsById"
+        | "selectedRuntimeId"
+        | "runtimes"
+        | "setupStatusByRuntimeId"
     >,
 ) {
     return (
         getSessionRuntimeId(state) ??
         state.selectedRuntimeId ??
-        getDefaultRuntimeId(state.runtimes)
+        getDefaultRuntimeId(state.runtimes, state.setupStatusByRuntimeId)
     );
 }
 
@@ -6331,7 +6350,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const setupStatusByRuntimeId =
                     buildSetupStatusMap(setupStatuses);
                 const defaultRuntimeId =
-                    get().selectedRuntimeId ?? getDefaultRuntimeId(runtimes);
+                    get().selectedRuntimeId ??
+                    getDefaultRuntimeId(runtimes, setupStatusByRuntimeId);
 
                 set({
                     runtimes,
@@ -6455,7 +6475,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                       ?.runtimeId
                                 : null) ??
                             state.selectedRuntimeId ??
-                            getDefaultRuntimeId(hydratedRuntimes);
+                            getDefaultRuntimeId(
+                                hydratedRuntimes,
+                                state.setupStatusByRuntimeId,
+                            );
 
                         return {
                             runtimes: hydratedRuntimes,
@@ -6519,7 +6542,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             } catch (error) {
                 const runtimeId =
                     get().selectedRuntimeId ??
-                    getDefaultRuntimeId(get().runtimes);
+                    getDefaultRuntimeId(
+                        get().runtimes,
+                        get().setupStatusByRuntimeId,
+                    );
                 if (runtimeId) {
                     set((state) => ({
                         runtimeConnectionByRuntimeId: setRuntimeConnectionState(
@@ -10050,7 +10076,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const nextRuntimeId =
                 runtimeId ??
                 get().selectedRuntimeId ??
-                getDefaultRuntimeId(runtimes);
+                getDefaultRuntimeId(runtimes, get().setupStatusByRuntimeId);
             if (!nextRuntimeId) return null;
 
             const markPendingSessionError = (message: string) => {
@@ -10372,7 +10398,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 sessionOrder: [],
                 activeSessionId: null,
                 lastFocusedSessionId: null,
-                selectedRuntimeId: getDefaultRuntimeId(get().runtimes),
+                selectedRuntimeId: getDefaultRuntimeId(
+                    get().runtimes,
+                    get().setupStatusByRuntimeId,
+                ),
                 composerPartsBySessionId: {},
                 queuedMessagesBySessionId: {},
                 queuedMessageEditBySessionId: {},
