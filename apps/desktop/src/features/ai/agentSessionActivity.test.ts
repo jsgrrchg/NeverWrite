@@ -1,5 +1,60 @@
 import { describe, expect, it } from "vitest";
-import { resolveAgentSessionActivity } from "./agentSessionActivity";
+import {
+    isAgentSessionActive,
+    resolveAgentSessionActivity,
+} from "./agentSessionActivity";
+
+describe("isAgentSessionActive", () => {
+    it("returns true for active live sessions", () => {
+        expect(
+            isAgentSessionActive({ runtimeState: "live", status: "streaming" }),
+        ).toBe(true);
+
+        expect(
+            isAgentSessionActive({
+                runtimeState: "live",
+                status: "waiting_permission",
+            }),
+        ).toBe(true);
+
+        expect(
+            isAgentSessionActive({
+                runtimeState: "live",
+                status: "waiting_user_input",
+            }),
+        ).toBe(true);
+    });
+
+    it("returns true when runtimeState is missing", () => {
+        expect(
+            isAgentSessionActive({ runtimeState: undefined, status: "streaming" }),
+        ).toBe(true);
+    });
+
+    it("returns false for idle or error live sessions", () => {
+        expect(
+            isAgentSessionActive({ runtimeState: "live", status: "idle" }),
+        ).toBe(false);
+
+        expect(
+            isAgentSessionActive({ runtimeState: "live", status: "error" }),
+        ).toBe(false);
+    });
+
+    it("returns false when runtime is not live", () => {
+        expect(
+            isAgentSessionActive({
+                runtimeState: "persisted_only",
+                status: "streaming",
+            }),
+        ).toBe(false);
+    });
+
+    it("returns false for null or undefined session", () => {
+        expect(isAgentSessionActive(null)).toBe(false);
+        expect(isAgentSessionActive(undefined)).toBe(false);
+    });
+});
 
 describe("resolveAgentSessionActivity", () => {
     it("returns a working indicator for active live sessions", () => {

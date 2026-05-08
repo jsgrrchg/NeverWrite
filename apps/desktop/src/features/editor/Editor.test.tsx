@@ -99,6 +99,9 @@ function seedTrackedDiff(
 describe("Editor", () => {
     it("renders app-owned spellcheck decorations for misspelled words", async () => {
         vi.useFakeTimers();
+        useSettingsStore
+            .getState()
+            .setSetting("editorSpellcheck", true);
         mockInvoke().mockImplementation(async (command) => {
             if (command === "spellcheck_check_text") {
                 return {
@@ -133,6 +136,9 @@ describe("Editor", () => {
 
     it("does not underline words that are valid only in the secondary language", async () => {
         vi.useFakeTimers();
+        useSettingsStore
+            .getState()
+            .setSetting("editorSpellcheck", true);
         mockInvoke().mockImplementation(async (command) => {
             if (command === "spellcheck_check_text") {
                 return {
