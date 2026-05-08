@@ -16,14 +16,16 @@ import {
 import {
     createNewChatInWorkspace,
     ensureWorkspaceChatSession,
+    openChatSessionInWorkspace,
 } from "./chatPaneMovement";
 import { useChatStore } from "./store/chatStore";
 import { useAiChatEventBridge } from "./useAiChatEventBridge";
 
-function hasVisibleAiComposerDropZone() {
-    return (
-        document.querySelector('[data-ai-composer-drop-zone="true"]') !== null
-    );
+function hasVisibleAiComposerDropZone(targetSessionId?: string) {
+    const selector = targetSessionId
+        ? `[data-ai-composer-drop-zone="true"][data-ai-composer-session-id="${CSS.escape(targetSessionId)}"]`
+        : '[data-ai-composer-drop-zone="true"]';
+    return document.querySelector(selector) !== null;
 }
 
 function getActiveEditorChatSessionId() {
@@ -213,7 +215,7 @@ export function AIChatWorkspaceHost({
                 .detail;
             const replayKey = detail as object;
             if (detail.phase !== "attach") return;
-            if (hasVisibleAiComposerDropZone()) {
+            if (hasVisibleAiComposerDropZone(detail.targetSessionId)) {
                 attachReplayCountsRef.current.delete(replayKey);
                 return;
             }
@@ -226,7 +228,13 @@ export function AIChatWorkspaceHost({
             }
             attachReplayCountsRef.current.set(replayKey, replayCount + 1);
 
-            void ensureWorkspaceChatSession().then((sessionId) => {
+            const ensureTargetSession = detail.targetSessionId
+                ? Promise.resolve(
+                      openChatSessionInWorkspace(detail.targetSessionId),
+                  )
+                : ensureWorkspaceChatSession();
+
+            void ensureTargetSession.then((sessionId) => {
                 if (!sessionId) return;
                 replayAttachAfterComposerMount(detail, sessionId);
             });

@@ -708,6 +708,10 @@ describe("FileTree", () => {
         expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
             "keep-tab",
         ]);
+        expect(getFolderRow("assets")).toHaveAttribute(
+            "data-selected",
+            "false",
+        );
     });
 
     it("renames a folder from the context menu using the inline input", async () => {
@@ -785,6 +789,10 @@ describe("FileTree", () => {
             });
         });
         await screen.findByText("roadmap");
+        expect(getFolderRow("roadmap")).toHaveAttribute(
+            "data-selected",
+            "true",
+        );
         expect(useEditorStore.getState().tabs).toEqual([
             expect.objectContaining({
                 id: "tab-alpha",

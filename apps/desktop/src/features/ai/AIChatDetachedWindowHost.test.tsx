@@ -15,6 +15,7 @@ const eventBridgeMock = vi.hoisted(() => vi.fn());
 const chatPaneMovementMock = vi.hoisted(() => ({
     createNewChatInWorkspace: vi.fn(),
     ensureWorkspaceChatSession: vi.fn(),
+    openChatSessionInWorkspace: vi.fn(),
 }));
 
 vi.mock("./useAiChatEventBridge", () => ({
@@ -47,6 +48,7 @@ describe("AIChatDetachedWindowHost", () => {
         chatPaneMovementMock.ensureWorkspaceChatSession
             .mockReset()
             .mockResolvedValue(null);
+        chatPaneMovementMock.openChatSessionInWorkspace.mockReset();
     });
 
     it("initializes detached chat support without auto-creating a default session and loads the active chat", async () => {
@@ -214,6 +216,64 @@ describe("AIChatDetachedWindowHost", () => {
             });
             await waitFor(() => expect(document.activeElement).toBe(composer));
         } finally {
+            composerShell.remove();
+            window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
+        }
+    });
+
+    it("replays targeted attaches when only another chat composer is visible", async () => {
+        const replayedEvents: CustomEvent[] = [];
+        const handleReplay = (event: Event) => {
+            replayedEvents.push(event as CustomEvent);
+        };
+        const composerShell = document.createElement("div");
+        composerShell.dataset.aiComposerDropZone = "true";
+        composerShell.dataset.aiComposerSessionId = "session-visible";
+        document.body.appendChild(composerShell);
+        let targetComposerShell: HTMLDivElement | null = null;
+        const detail = {
+            phase: "attach" as const,
+            x: 0,
+            y: 0,
+            targetSessionId: "session-hidden",
+            notes: [
+                {
+                    id: "docs/alpha",
+                    title: "Alpha",
+                    path: "/vault/docs/alpha.md",
+                },
+            ],
+        };
+        chatPaneMovementMock.openChatSessionInWorkspace.mockReturnValue(
+            "session-hidden",
+        );
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
+        try {
+            renderComponent(<AIChatWorkspaceHost listenWithoutChatTabs />);
+
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail,
+                }),
+            );
+            targetComposerShell = document.createElement("div");
+            targetComposerShell.dataset.aiComposerDropZone = "true";
+            targetComposerShell.dataset.aiComposerSessionId = "session-hidden";
+            document.body.appendChild(targetComposerShell);
+
+            await flushPromises();
+            expect(
+                chatPaneMovementMock.openChatSessionInWorkspace,
+            ).toHaveBeenCalledWith("session-hidden");
+            expect(
+                chatPaneMovementMock.ensureWorkspaceChatSession,
+            ).not.toHaveBeenCalled();
+
+            await waitFor(() => expect(replayedEvents).toHaveLength(2));
+            expect(replayedEvents[1].detail).toEqual(detail);
+        } finally {
+            targetComposerShell?.remove();
             composerShell.remove();
             window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleReplay);
         }

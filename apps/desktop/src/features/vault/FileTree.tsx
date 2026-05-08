@@ -2400,6 +2400,15 @@ export function FileTree() {
                     }
                     return next;
                 });
+                setSelectedFolderPaths((prev) => {
+                    const next = new Set<string>();
+                    for (const path of prev) {
+                        next.add(
+                            movePathPrefix(path, folderPath, nextFolderPath),
+                        );
+                    }
+                    return next;
+                });
                 setFocusedFolderPath(nextFolderPath);
 
                 setExpandedFolders((prev) => {
@@ -3783,6 +3792,18 @@ export function FileTree() {
                             entryPath.startsWith(`${sourceAbsolutePath}/`)
                         ) {
                             next.delete(entryPath);
+                        }
+                    });
+                    return next;
+                });
+                setSelectedFolderPaths((prev) => {
+                    const next = new Set(prev);
+                    next.forEach((path) => {
+                        if (
+                            path === relativePath ||
+                            path.startsWith(`${relativePath}/`)
+                        ) {
+                            next.delete(path);
                         }
                     });
                     return next;
