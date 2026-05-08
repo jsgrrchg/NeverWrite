@@ -61,6 +61,7 @@ import {
     emitFileTreeNoteDrag,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
+import { getPreferredWorkspaceChatSessionId } from "../ai/chatWorkspaceSelectors";
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { perfMeasure, perfNow } from "../../app/utils/perfInstrumentation";
@@ -169,9 +170,19 @@ type FlatTreeRow =
 type TreeSelectionState = {
     noteIds: Set<string>;
     entryPaths: Set<string>;
+    folderPaths: Set<string>;
+};
+
+type ChatContextTargets = {
+    notes: NoteDto[];
+    entries: VaultEntryDto[];
+    folderPaths: string[];
 };
 
 function getSelectableRowKey(row: FlatTreeRow): string | null {
+    if (row.kind === "folder") {
+        return `folder:${row.path}`;
+    }
     if (row.kind === "note") {
         return `note:${row.note.id}`;
     }
@@ -184,8 +195,13 @@ function getSelectableRowKey(row: FlatTreeRow): string | null {
 function buildSelectionFromRows(rows: FlatTreeRow[]): TreeSelectionState {
     const noteIds = new Set<string>();
     const entryPaths = new Set<string>();
+    const folderPaths = new Set<string>();
 
     for (const row of rows) {
+        if (row.kind === "folder") {
+            folderPaths.add(row.path);
+            continue;
+        }
         if (row.kind === "note") {
             noteIds.add(row.note.id);
             continue;
@@ -195,7 +211,7 @@ function buildSelectionFromRows(rows: FlatTreeRow[]): TreeSelectionState {
         }
     }
 
-    return { noteIds, entryPaths };
+    return { noteIds, entryPaths, folderPaths };
 }
 
 function buildTree(
@@ -467,6 +483,17 @@ function getDraggedVaultFile(entry: VaultEntryDto) {
     };
 }
 
+function getDraggedVaultFolder(path: string) {
+    return {
+        path,
+        name: getBaseName(path),
+    };
+}
+
+function isChatAttachableEntry(entry: VaultEntryDto) {
+    return entry.kind === "pdf" || entry.kind === "file";
+}
+
 function emitFileTreeAttachment(
     detail: FileTreeNoteDragDetail,
     target: "current-chat" | "new-chat",
@@ -475,7 +502,11 @@ function emitFileTreeAttachment(
         emitFileTreeAttachToNewChat(detail);
         return;
     }
-    emitFileTreeNoteDrag(detail);
+
+    const targetSessionId = getPreferredWorkspaceChatSessionId();
+    emitFileTreeNoteDrag(
+        targetSessionId ? { ...detail, targetSessionId } : detail,
+    );
 }
 
 // --- Icons ---
@@ -732,11 +763,15 @@ interface FlatTreeRowViewProps {
     expandedFolders: Set<string>;
     selectedNoteIds: Set<string>;
     selectedEntryPaths: Set<string>;
+    selectedFolderPaths: Set<string>;
     contextMenuFolderPath: string | null;
     draggingNoteIds: Set<string>;
     draggingFolderPath: string | null;
     dragOverPath: string | null;
-    onFolderClick: (path: string) => void;
+    onFolderClick: (
+        path: string,
+        modifiers: { cmd: boolean; shift: boolean },
+    ) => void;
     onFolderMouseDown: (path: string, e: React.MouseEvent) => void;
     onFolderContextMenu: (e: React.MouseEvent, path: string) => void;
     onNoteClick: (
@@ -785,6 +820,7 @@ const FlatTreeRowView = memo(
         expandedFolders,
         selectedNoteIds,
         selectedEntryPaths,
+        selectedFolderPaths,
         contextMenuFolderPath,
         draggingNoteIds,
         draggingFolderPath,
@@ -828,6 +864,8 @@ const FlatTreeRowView = memo(
         const noteOffset = Math.round(14 * metrics.scale);
 
         const isFolder = row.kind === "folder";
+        const isSelectedFolder =
+            row.kind === "folder" && selectedFolderPaths.has(row.path);
         const isDragOver = dragOverPath === row.path;
         const isDraggingFolder =
             row.kind === "folder" && draggingFolderPath === row.path;
@@ -928,8 +966,15 @@ const FlatTreeRowView = memo(
 
             return (
                 <button
-                    onMouseDown={(event) => onFolderMouseDown(row.path, event)}
-                    onClick={() => onFolderClick(row.path)}
+                    onMouseDown={(event) =>
+                        onFolderMouseDown(row.path, event)
+                    }
+                    onClick={(event) =>
+                        onFolderClick(row.path, {
+                            cmd: event.metaKey || event.ctrlKey,
+                            shift: event.shiftKey,
+                        })
+                    }
                     onContextMenu={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -938,7 +983,9 @@ const FlatTreeRowView = memo(
                     data-folder-path={row.path}
                     data-drag-over={isDragOver ? "true" : "false"}
                     data-selected={
-                        contextMenuFolderPath === row.path ? "true" : "false"
+                        isSelectedFolder || contextMenuFolderPath === row.path
+                            ? "true"
+                            : "false"
                     }
                     className="file-tree-row flex items-center gap-1.5 text-left text-xs rounded"
                     style={{
@@ -953,7 +1000,8 @@ const FlatTreeRowView = memo(
                                   backgroundColor:
                                       "color-mix(in srgb, var(--accent) 18%, var(--bg-secondary))",
                               }
-                            : contextMenuFolderPath === row.path
+                            : isSelectedFolder ||
+                                contextMenuFolderPath === row.path
                               ? {
                                     backgroundColor:
                                         "color-mix(in srgb, var(--accent) 22%, transparent)",
@@ -1383,6 +1431,11 @@ const FlatTreeRowView = memo(
             )
                 return false;
             if (
+                prev.selectedFolderPaths.has(path) !==
+                next.selectedFolderPaths.has(path)
+            )
+                return false;
+            if (
                 (prev.draggingFolderPath === path) !==
                 (next.draggingFolderPath === path)
             )
@@ -1513,10 +1566,72 @@ interface DragState {
         | { kind: "notes"; notes: NoteDto[] }
         | { kind: "folder"; path: string }
         | { kind: "pdf"; entry: VaultEntryDto }
-        | { kind: "file"; entry: VaultEntryDto };
+        | { kind: "file"; entry: VaultEntryDto }
+        | { kind: "selection"; targets: ChatContextTargets };
     startX: number;
     startY: number;
     active: boolean;
+}
+
+function getDraggedVaultNote(note: NoteDto) {
+    return {
+        id: note.id,
+        title: note.title,
+        path: note.path,
+    };
+}
+
+function buildFileTreeDragDetail(
+    item: DragState["item"],
+    phase: FileTreeNoteDragDetail["phase"],
+    x: number,
+    y: number,
+): FileTreeNoteDragDetail {
+    if (item.kind === "selection") {
+        const notes = item.targets.notes.map(getDraggedVaultNote);
+        const files = item.targets.entries
+            .filter(isChatAttachableEntry)
+            .map(getDraggedVaultFile);
+        const folders = item.targets.folderPaths.map(getDraggedVaultFolder);
+        return {
+            phase,
+            x,
+            y,
+            notes,
+            ...(files.length > 0 ? { files } : {}),
+            ...(folders.length === 1 ? { folder: folders[0] } : {}),
+            ...(folders.length > 0 ? { folders } : {}),
+        };
+    }
+
+    if (item.kind === "folder") {
+        const folder = getDraggedVaultFolder(item.path);
+        return {
+            phase,
+            x,
+            y,
+            notes: [],
+            folder,
+            folders: [folder],
+        };
+    }
+
+    if (item.kind === "pdf" || item.kind === "file") {
+        return {
+            phase,
+            x,
+            y,
+            notes: [],
+            files: [getDraggedVaultFile(item.entry)],
+        };
+    }
+
+    return {
+        phase,
+        x,
+        y,
+        notes: item.notes.map(getDraggedVaultNote),
+    };
 }
 
 // --- Main FileTree ---
@@ -1589,6 +1704,13 @@ export function FileTree() {
     const [selectedEntryPaths, setSelectedEntryPaths] = useState<Set<string>>(
         new Set(),
     );
+    const [selectedFolderPaths, setSelectedFolderPaths] = useState<
+        Set<string>
+    >(new Set());
+    const selectedRowCount =
+        selectedNoteIds.size +
+        selectedEntryPaths.size +
+        selectedFolderPaths.size;
     const [draggingNoteIds, setDraggingNoteIds] = useState<Set<string>>(
         new Set(),
     );
@@ -1660,6 +1782,7 @@ export function FileTree() {
         if (!activeEntryPath) return new Set<string>();
         return new Set([activeEntryPath]);
     }, [activeEntryPath, selectedEntryPaths]);
+    const visibleSelectedFolderPaths = selectedFolderPaths;
     const treeRevision =
         sortMode === "modified_desc" || sortMode === "modified_asc"
             ? `${structureRevision}:${contentRevision}`
@@ -2164,7 +2287,7 @@ export function FileTree() {
 
     // Handle REVEAL_NOTE_IN_TREE_EVENT: expand folders + defer scroll
     useEffect(() => {
-        const handleReveal = (event: Event) => {
+    const handleReveal = (event: Event) => {
             const noteId = (event as CustomEvent<{ noteId?: string }>).detail
                 ?.noteId;
             if (!noteId) return;
@@ -2176,6 +2299,8 @@ export function FileTree() {
 
             setExpandedFolders((prev) => new Set([...prev, ...folders]));
             setSelectedNoteIds(new Set([noteId]));
+            setSelectedEntryPaths(new Set());
+            setSelectedFolderPaths(new Set());
             lastClickedRowKeyRef.current = `note:${noteId}`;
             pendingRevealRef.current = noteId;
         };
@@ -2358,6 +2483,7 @@ export function FileTree() {
                 }));
 
                 setSelectedEntryPaths(new Set([updated.path]));
+                setSelectedFolderPaths(new Set());
                 setFocusedFolderPath(getParentPath(updated.relative_path));
                 await useVaultStore.getState().refreshEntries();
                 return updated;
@@ -2381,6 +2507,25 @@ export function FileTree() {
     const getDragTargetFolder = useCallback(
         (item: DragState["item"], hoveredFolder: string | null) => {
             if (hoveredFolder === null) return null;
+
+            if (item.kind === "selection") {
+                const foldersMovable = item.targets.folderPaths.every((path) =>
+                    canMoveFolderToTarget(path, hoveredFolder),
+                );
+                const entriesMovable = item.targets.entries.every(
+                    (entry) => buildEntryMovePath(entry, hoveredFolder) !== null,
+                );
+                const noteOperations = buildNoteMoveOperations(
+                    item.targets.notes,
+                    hoveredFolder,
+                );
+                const notesMovable =
+                    item.targets.notes.length === 0 ||
+                    noteOperations.length > 0;
+                return foldersMovable && entriesMovable && notesMovable
+                    ? hoveredFolder
+                    : null;
+            }
 
             if (item.kind === "folder") {
                 return canMoveFolderToTarget(item.path, hoveredFolder)
@@ -2425,51 +2570,27 @@ export function FileTree() {
                 const dy = e.clientY - s.startY;
                 if (Math.sqrt(dx * dx + dy * dy) < 5) return;
                 s.active = true;
-                if (s.item.kind === "folder") {
+                if (s.item.kind === "selection") {
+                    setDraggingNoteIds(
+                        new Set(
+                            s.item.targets.notes.map((note) => note.id),
+                        ),
+                    );
+                    setDraggingFolderPath(
+                        s.item.targets.folderPaths[0] ?? null,
+                    );
+                    const itemCount =
+                        s.item.targets.notes.length +
+                        s.item.targets.entries.length +
+                        s.item.targets.folderPaths.length;
+                    setDragLabel(`${itemCount} items`);
+                } else if (s.item.kind === "folder") {
                     setDraggingFolderPath(s.item.path);
                     setDragLabel(getBaseName(s.item.path));
-                    emitFileTreeNoteDrag({
-                        phase: "start",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: [],
-                        folder: {
-                            path: s.item.path,
-                            name: getBaseName(s.item.path),
-                        },
-                    });
                 } else if (s.item.kind === "pdf") {
                     setDragLabel(s.item.entry.file_name);
-                    emitFileTreeNoteDrag({
-                        phase: "start",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: [],
-                        files: [
-                            {
-                                filePath: s.item.entry.path,
-                                fileName: s.item.entry.file_name,
-                                mimeType: "application/pdf",
-                            },
-                        ],
-                    });
                 } else if (s.item.kind === "file") {
                     setDragLabel(s.item.entry.file_name);
-                    emitFileTreeNoteDrag({
-                        phase: "start",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: [],
-                        files: [
-                            {
-                                filePath: s.item.entry.path,
-                                fileName: s.item.entry.file_name,
-                                mimeType:
-                                    s.item.entry.mime_type ??
-                                    "application/octet-stream",
-                            },
-                        ],
-                    });
                 } else {
                     setDraggingNoteIds(
                         new Set(s.item.notes.map((note) => note.id)),
@@ -2479,74 +2600,27 @@ export function FileTree() {
                             ? `${s.item.notes.length} notes`
                             : (s.item.notes[0]?.title ?? null),
                     );
-                    emitFileTreeNoteDrag({
-                        phase: "start",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: s.item.notes.map((note) => ({
-                            id: note.id,
-                            title: note.title,
-                            path: note.path,
-                        })),
-                    });
                 }
+                emitFileTreeNoteDrag(
+                    buildFileTreeDragDetail(
+                        s.item,
+                        "start",
+                        e.clientX,
+                        e.clientY,
+                    ),
+                );
             }
 
             setDragPos({ x: e.clientX, y: e.clientY });
             if (s.active) {
-                if (s.item.kind === "notes") {
-                    emitFileTreeNoteDrag({
-                        phase: "move",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: s.item.notes.map((note) => ({
-                            id: note.id,
-                            title: note.title,
-                            path: note.path,
-                        })),
-                    });
-                } else if (s.item.kind === "folder") {
-                    emitFileTreeNoteDrag({
-                        phase: "move",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: [],
-                        folder: {
-                            path: s.item.path,
-                            name: getBaseName(s.item.path),
-                        },
-                    });
-                } else if (s.item.kind === "pdf") {
-                    emitFileTreeNoteDrag({
-                        phase: "move",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: [],
-                        files: [
-                            {
-                                filePath: s.item.entry.path,
-                                fileName: s.item.entry.file_name,
-                                mimeType: "application/pdf",
-                            },
-                        ],
-                    });
-                } else if (s.item.kind === "file") {
-                    emitFileTreeNoteDrag({
-                        phase: "move",
-                        x: e.clientX,
-                        y: e.clientY,
-                        notes: [],
-                        files: [
-                            {
-                                filePath: s.item.entry.path,
-                                fileName: s.item.entry.file_name,
-                                mimeType:
-                                    s.item.entry.mime_type ??
-                                    "application/octet-stream",
-                            },
-                        ],
-                    });
-                }
+                emitFileTreeNoteDrag(
+                    buildFileTreeDragDetail(
+                        s.item,
+                        "move",
+                        e.clientX,
+                        e.clientY,
+                    ),
+                );
             }
 
             const els = document.elementsFromPoint(e.clientX, e.clientY);
@@ -2566,59 +2640,9 @@ export function FileTree() {
 
             if (!s?.active) return;
 
-            if (s.item.kind === "notes") {
-                emitFileTreeNoteDrag({
-                    phase: "end",
-                    x: e.clientX,
-                    y: e.clientY,
-                    notes: s.item.notes.map((note) => ({
-                        id: note.id,
-                        title: note.title,
-                        path: note.path,
-                    })),
-                });
-            } else if (s.item.kind === "folder") {
-                emitFileTreeNoteDrag({
-                    phase: "end",
-                    x: e.clientX,
-                    y: e.clientY,
-                    notes: [],
-                    folder: {
-                        path: s.item.path,
-                        name: getBaseName(s.item.path),
-                    },
-                });
-            } else if (s.item.kind === "pdf") {
-                emitFileTreeNoteDrag({
-                    phase: "end",
-                    x: e.clientX,
-                    y: e.clientY,
-                    notes: [],
-                    files: [
-                        {
-                            filePath: s.item.entry.path,
-                            fileName: s.item.entry.file_name,
-                            mimeType: "application/pdf",
-                        },
-                    ],
-                });
-            } else if (s.item.kind === "file") {
-                emitFileTreeNoteDrag({
-                    phase: "end",
-                    x: e.clientX,
-                    y: e.clientY,
-                    notes: [],
-                    files: [
-                        {
-                            filePath: s.item.entry.path,
-                            fileName: s.item.entry.file_name,
-                            mimeType:
-                                s.item.entry.mime_type ??
-                                "application/octet-stream",
-                        },
-                    ],
-                });
-            }
+            emitFileTreeNoteDrag(
+                buildFileTreeDragDetail(s.item, "end", e.clientX, e.clientY),
+            );
 
             wasJustDraggingRef.current = true;
             requestAnimationFrame(() => {
@@ -2632,6 +2656,41 @@ export function FileTree() {
             setDragOverPath(null);
 
             if (folder === null) return;
+
+            if (s.item.kind === "selection") {
+                const selectedFolderPaths = s.item.targets.folderPaths;
+                const isInsideSelectedFolder = (path: string) =>
+                    selectedFolderPaths.some((folderPath) =>
+                        path.startsWith(`${folderPath}/`),
+                    );
+                const folderPathsToMove = selectedFolderPaths.filter(
+                    (path) =>
+                        !selectedFolderPaths.some(
+                            (candidate) =>
+                                candidate !== path &&
+                                path.startsWith(`${candidate}/`),
+                        ),
+                );
+                const notesToMove = s.item.targets.notes.filter(
+                    (note) => !isInsideSelectedFolder(note.id),
+                );
+                const entriesToMove = s.item.targets.entries.filter(
+                    (entry) => !isInsideSelectedFolder(entry.relative_path),
+                );
+
+                for (const folderPath of folderPathsToMove) {
+                    await moveFolder(folderPath, folder);
+                }
+                if (notesToMove.length > 0) {
+                    await applyMoveOperations(
+                        buildNoteMoveOperations(notesToMove, folder),
+                    );
+                }
+                for (const entry of entriesToMove) {
+                    await moveVaultEntry(entry, folder);
+                }
+                return;
+            }
 
             if (s.item.kind === "folder") {
                 await moveFolder(s.item.path, folder);
@@ -2673,14 +2732,6 @@ export function FileTree() {
         });
     };
 
-    const handleFolderClick = useCallback((path: string) => {
-        if (wasJustDraggingRef.current) return;
-        setFocusedFolderPath(path);
-        setSelectedEntryPaths(new Set());
-        setSelectedNoteIds(new Set());
-        handleToggleFolder(path);
-    }, []);
-
     const handleSortSelect = (mode: SortMode) => {
         setSortMode(mode);
         safeStorageSetItem(SORT_KEY, mode);
@@ -2690,6 +2741,7 @@ export function FileTree() {
     const applySelectionState = useCallback((selection: TreeSelectionState) => {
         setSelectedNoteIds(selection.noteIds);
         setSelectedEntryPaths(selection.entryPaths);
+        setSelectedFolderPaths(selection.folderPaths);
     }, []);
 
     const extendSelectionState = useCallback(
@@ -2703,6 +2755,13 @@ export function FileTree() {
                 const next = new Set(prev);
                 selection.entryPaths.forEach((entryPath) =>
                     next.add(entryPath),
+                );
+                return next;
+            });
+            setSelectedFolderPaths((prev) => {
+                const next = new Set(prev);
+                selection.folderPaths.forEach((folderPath) =>
+                    next.add(folderPath),
                 );
                 return next;
             });
@@ -2743,6 +2802,36 @@ export function FileTree() {
         [applySelectionState, extendSelectionState],
     );
 
+    const handleFolderClick = useCallback(
+        (path: string, modifiers: { cmd: boolean; shift: boolean }) => {
+            if (wasJustDraggingRef.current) return;
+            setFocusedFolderPath(path);
+            const rowKey = `folder:${path}`;
+
+            if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
+                return;
+            }
+
+            if (modifiers.cmd) {
+                setSelectedFolderPaths((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(path)) next.delete(path);
+                    else next.add(path);
+                    return next;
+                });
+                lastClickedRowKeyRef.current = rowKey;
+                return;
+            }
+
+            setSelectedEntryPaths(new Set());
+            setSelectedNoteIds(new Set());
+            setSelectedFolderPaths(new Set());
+            lastClickedRowKeyRef.current = rowKey;
+            handleToggleFolder(path);
+        },
+        [selectRowRange],
+    );
+
     const handleRevealToggle = () => {
         const next = !revealActive;
         if (!next) {
@@ -2761,10 +2850,44 @@ export function FileTree() {
         }
     };
 
+    const getSelectedChatContextTargets = useCallback(
+        (): ChatContextTargets => ({
+            notes: notes.filter((item) => selectedNoteIds.has(item.id)),
+            entries: entries.filter(
+                (item) =>
+                    selectedEntryPaths.has(item.path) &&
+                    isChatAttachableEntry(item),
+            ),
+            folderPaths: allFolderPaths.filter((path) =>
+                selectedFolderPaths.has(path),
+            ),
+        }),
+        [
+            allFolderPaths,
+            entries,
+            notes,
+            selectedEntryPaths,
+            selectedFolderPaths,
+            selectedNoteIds,
+        ],
+    );
+
     const handleNoteMouseDown = useCallback(
         (note: NoteDto, e: React.MouseEvent) => {
             if (e.button !== 0) return;
             e.preventDefault(); // prevent text selection during drag
+            if (selectedRowCount > 1 && selectedNoteIds.has(note.id)) {
+                dragStateRef.current = {
+                    item: {
+                        kind: "selection",
+                        targets: getSelectedChatContextTargets(),
+                    },
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    active: false,
+                };
+                return;
+            }
             const dragNotes =
                 selectedNoteIds.size > 1 && selectedNoteIds.has(note.id)
                     ? notes.filter((item) => selectedNoteIds.has(item.id))
@@ -2776,13 +2899,30 @@ export function FileTree() {
                 active: false,
             };
         },
-        [notes, selectedNoteIds],
+        [
+            getSelectedChatContextTargets,
+            notes,
+            selectedNoteIds,
+            selectedRowCount,
+        ],
     );
 
     const handleFolderMouseDown = useCallback(
         (path: string, e: React.MouseEvent) => {
             if (e.button !== 0) return;
             e.preventDefault();
+            if (selectedRowCount > 1 && selectedFolderPaths.has(path)) {
+                dragStateRef.current = {
+                    item: {
+                        kind: "selection",
+                        targets: getSelectedChatContextTargets(),
+                    },
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    active: false,
+                };
+                return;
+            }
             dragStateRef.current = {
                 item: { kind: "folder", path },
                 startX: e.clientX,
@@ -2790,7 +2930,11 @@ export function FileTree() {
                 active: false,
             };
         },
-        [],
+        [
+            getSelectedChatContextTargets,
+            selectedFolderPaths,
+            selectedRowCount,
+        ],
     );
 
     const openPdf = useEditorStore((s) => s.openPdf);
@@ -2820,6 +2964,7 @@ export function FileTree() {
             }
             setSelectedNoteIds(new Set());
             setSelectedEntryPaths(new Set([entry.path]));
+            setSelectedFolderPaths(new Set());
             lastClickedEntryPathRef.current = entry.path;
             lastClickedRowKeyRef.current = rowKey;
             openPdf(entry.id, entry.title, entry.path);
@@ -2831,6 +2976,18 @@ export function FileTree() {
         (entry: VaultEntryDto, e: React.MouseEvent) => {
             if (e.button !== 0) return;
             e.preventDefault();
+            if (selectedRowCount > 1 && selectedEntryPaths.has(entry.path)) {
+                dragStateRef.current = {
+                    item: {
+                        kind: "selection",
+                        targets: getSelectedChatContextTargets(),
+                    },
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    active: false,
+                };
+                return;
+            }
             dragStateRef.current = {
                 item: { kind: "pdf", entry },
                 startX: e.clientX,
@@ -2838,7 +2995,11 @@ export function FileTree() {
                 active: false,
             };
         },
-        [],
+        [
+            getSelectedChatContextTargets,
+            selectedEntryPaths,
+            selectedRowCount,
+        ],
     );
 
     const handlePdfContextMenu = useCallback(
@@ -2846,11 +3007,12 @@ export function FileTree() {
             e.preventDefault();
             setFocusedFolderPath(getParentPath(entry.relative_path));
             const preserveSelection =
-                selectedEntryPaths.size > 1 &&
+                selectedRowCount > 1 &&
                 selectedEntryPaths.has(entry.path);
             if (!preserveSelection) {
                 setSelectedNoteIds(new Set());
                 setSelectedEntryPaths(new Set([entry.path]));
+                setSelectedFolderPaths(new Set());
             }
             setContextMenu({
                 x: e.clientX,
@@ -2858,7 +3020,7 @@ export function FileTree() {
                 payload: { kind: "pdf", entry },
             });
         },
-        [selectedEntryPaths],
+        [selectedEntryPaths, selectedRowCount],
     );
 
     const handleOpenPdfInNewTab = useCallback(
@@ -2887,6 +3049,7 @@ export function FileTree() {
             setFocusedFolderPath(getParentPath(entry.relative_path));
             setSelectedNoteIds(new Set());
             setSelectedEntryPaths(new Set([entry.path]));
+            setSelectedFolderPaths(new Set());
             lastClickedEntryPathRef.current = entry.path;
             handleOpenPdfInNewTab(entry);
         },
@@ -2918,6 +3081,7 @@ export function FileTree() {
             }
             setSelectedNoteIds(new Set());
             setSelectedEntryPaths(new Set([entry.path]));
+            setSelectedFolderPaths(new Set());
             lastClickedEntryPathRef.current = entry.path;
             lastClickedRowKeyRef.current = rowKey;
             void openVaultFileEntry(entry);
@@ -2929,6 +3093,18 @@ export function FileTree() {
         (entry: VaultEntryDto, e: React.MouseEvent) => {
             if (e.button !== 0) return;
             e.preventDefault();
+            if (selectedRowCount > 1 && selectedEntryPaths.has(entry.path)) {
+                dragStateRef.current = {
+                    item: {
+                        kind: "selection",
+                        targets: getSelectedChatContextTargets(),
+                    },
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    active: false,
+                };
+                return;
+            }
             dragStateRef.current = {
                 item: { kind: "file", entry },
                 startX: e.clientX,
@@ -2936,7 +3112,11 @@ export function FileTree() {
                 active: false,
             };
         },
-        [],
+        [
+            getSelectedChatContextTargets,
+            selectedEntryPaths,
+            selectedRowCount,
+        ],
     );
 
     const handleFileContextMenu = useCallback(
@@ -2944,11 +3124,12 @@ export function FileTree() {
             e.preventDefault();
             setFocusedFolderPath(getParentPath(entry.relative_path));
             const preserveSelection =
-                selectedEntryPaths.size > 1 &&
+                selectedRowCount > 1 &&
                 selectedEntryPaths.has(entry.path);
             if (!preserveSelection) {
                 setSelectedNoteIds(new Set());
                 setSelectedEntryPaths(new Set([entry.path]));
+                setSelectedFolderPaths(new Set());
             }
             setContextMenu({
                 x: e.clientX,
@@ -2956,7 +3137,7 @@ export function FileTree() {
                 payload: { kind: "file", entry },
             });
         },
-        [selectedEntryPaths],
+        [selectedEntryPaths, selectedRowCount],
     );
 
     const handleOpenFileInNewTab = useCallback(async (entry: VaultEntryDto) => {
@@ -2977,6 +3158,7 @@ export function FileTree() {
             setFocusedFolderPath(getParentPath(entry.relative_path));
             setSelectedNoteIds(new Set());
             setSelectedEntryPaths(new Set([entry.path]));
+            setSelectedFolderPaths(new Set());
             lastClickedEntryPathRef.current = entry.path;
             void handleOpenFileInNewTab(entry);
         },
@@ -3001,6 +3183,7 @@ export function FileTree() {
 
     const clearEntrySelection = useCallback(() => {
         setSelectedEntryPaths(new Set());
+        setSelectedFolderPaths(new Set());
     }, []);
 
     const handleCopyFullPath = useCallback((path: string) => {
@@ -3008,67 +3191,37 @@ export function FileTree() {
         void navigator.clipboard.writeText(path);
     }, []);
 
-    const handleAddFolderToChat = useCallback(
-        (path: string, target: "current-chat" | "new-chat" = "current-chat") => {
-            emitFileTreeAttachment(
-                {
-                    phase: "attach",
-                    x: 0,
-                    y: 0,
-                    notes: [],
-                    folder: {
-                        path,
-                        name: getBaseName(path),
-                    },
-                },
-                target,
-            );
-        },
-        [],
-    );
-
-    const handleAddNotesToChat = useCallback(
+    const handleAddChatTargetsToChat = useCallback(
         (
-            notesToAdd: NoteDto[],
+            targets: ChatContextTargets,
             target: "current-chat" | "new-chat" = "current-chat",
         ) => {
-            if (notesToAdd.length === 0) return;
-            emitFileTreeAttachment(
-                {
-                    phase: "attach",
-                    x: 0,
-                    y: 0,
-                    notes: notesToAdd.map((note) => ({
-                        id: note.id,
-                        title: note.title,
-                        path: note.path,
-                    })),
-                },
-                target,
-            );
-        },
-        [],
-    );
-
-    const handleAddEntriesToChat = useCallback(
-        (
-            entriesToAdd: VaultEntryDto[],
-            target: "current-chat" | "new-chat" = "current-chat",
-        ) => {
-            const files = entriesToAdd
-                .filter(
-                    (entry) => entry.kind === "pdf" || entry.kind === "file",
-                )
+            const notesToAdd = targets.notes.map((note) => ({
+                id: note.id,
+                title: note.title,
+                path: note.path,
+            }));
+            const files = targets.entries
+                .filter(isChatAttachableEntry)
                 .map(getDraggedVaultFile);
-            if (files.length === 0) return;
+            const folders = targets.folderPaths.map(getDraggedVaultFolder);
+            if (
+                notesToAdd.length === 0 &&
+                files.length === 0 &&
+                folders.length === 0
+            ) {
+                return;
+            }
 
             emitFileTreeAttachment(
                 {
                     phase: "attach",
                     x: 0,
                     y: 0,
-                    notes: [],
-                    files,
+                    notes: notesToAdd,
+                    ...(folders.length === 1 ? { folder: folders[0] } : {}),
+                    ...(folders.length > 0 ? { folders } : {}),
+                    ...(files.length > 0 ? { files } : {}),
                 },
                 target,
             );
@@ -3170,11 +3323,12 @@ export function FileTree() {
 
             event.preventDefault();
             event.stopPropagation();
+            clearEntrySelection();
             setSelectedNoteIds(new Set([note.id]));
             lastClickedRowKeyRef.current = `note:${note.id}`;
             void handleOpenNoteInNewTab(note);
         },
-        [handleOpenNoteInNewTab],
+        [clearEntrySelection, handleOpenNoteInNewTab],
     );
 
     const handleNoteContextMenu = (e: React.MouseEvent, note: NoteDto) => {
@@ -3182,7 +3336,7 @@ export function FileTree() {
         setFocusedFolderPath(getParentPath(note.id));
 
         const preserveSelection =
-            selectedNoteIds.size > 1 && selectedNoteIds.has(note.id);
+            selectedRowCount > 1 && selectedNoteIds.has(note.id);
 
         if (!preserveSelection) {
             clearEntrySelection();
@@ -3200,8 +3354,16 @@ export function FileTree() {
     const handleFolderContextMenu = (e: React.MouseEvent, path: string) => {
         e.preventDefault();
         setFocusedFolderPath(path);
-        clearEntrySelection();
-        setSelectedNoteIds(new Set());
+        const preserveSelection =
+            selectedRowCount > 1 && selectedFolderPaths.has(path);
+
+        if (!preserveSelection) {
+            clearEntrySelection();
+            setSelectedNoteIds(new Set());
+            setSelectedFolderPaths(new Set([path]));
+            lastClickedRowKeyRef.current = `folder:${path}`;
+        }
+
         setContextMenu({
             x: e.clientX,
             y: e.clientY,
@@ -3235,21 +3397,38 @@ export function FileTree() {
         [notes, selectedNoteIds],
     );
 
-    const getContextTargetEntries = useCallback(
-        (entry: VaultEntryDto) => {
-            if (
-                selectedEntryPaths.size > 1 &&
-                selectedEntryPaths.has(entry.path)
-            ) {
-                return entries.filter(
-                    (item) =>
-                        selectedEntryPaths.has(item.path) &&
-                        (item.kind === "pdf" || item.kind === "file"),
-                );
+    const getContextChatTargetsForNote = useCallback(
+        (note: NoteDto): ChatContextTargets => {
+            if (selectedRowCount > 1 && selectedNoteIds.has(note.id)) {
+                return getSelectedChatContextTargets();
             }
-            return [entry];
+            return { notes: [note], entries: [], folderPaths: [] };
         },
-        [entries, selectedEntryPaths],
+        [getSelectedChatContextTargets, selectedNoteIds, selectedRowCount],
+    );
+
+    const getContextChatTargetsForEntry = useCallback(
+        (entry: VaultEntryDto): ChatContextTargets => {
+            if (selectedRowCount > 1 && selectedEntryPaths.has(entry.path)) {
+                return getSelectedChatContextTargets();
+            }
+            return {
+                notes: [],
+                entries: isChatAttachableEntry(entry) ? [entry] : [],
+                folderPaths: [],
+            };
+        },
+        [getSelectedChatContextTargets, selectedEntryPaths, selectedRowCount],
+    );
+
+    const getContextChatTargetsForFolder = useCallback(
+        (path: string): ChatContextTargets => {
+            if (selectedRowCount > 1 && selectedFolderPaths.has(path)) {
+                return getSelectedChatContextTargets();
+            }
+            return { notes: [], entries: [], folderPaths: [path] };
+        },
+        [getSelectedChatContextTargets, selectedFolderPaths, selectedRowCount],
     );
 
     const applyMove = useCallback(
@@ -3408,6 +3587,8 @@ export function FileTree() {
         setCreatingParentPath("");
         setNewItemName("");
         setSelectedNoteIds(new Set());
+        setSelectedEntryPaths(new Set());
+        setSelectedFolderPaths(new Set());
         if (!name || !mode) return;
 
         if (mode === "folder") {
@@ -3800,6 +3981,19 @@ export function FileTree() {
                 const { path, expanded } = contextMenu.payload;
                 const folderName = path.split("/").pop() ?? path;
                 const absolutePath = getAbsoluteVaultPath(vaultPath, path);
+                const chatTargets = getContextChatTargetsForFolder(path);
+                const chatTargetCount =
+                    chatTargets.notes.length +
+                    chatTargets.entries.length +
+                    chatTargets.folderPaths.length;
+                const addToChatLabel =
+                    chatTargetCount > 1
+                        ? "Add Selected to Chat"
+                        : "Add to Chat";
+                const addToNewChatLabel =
+                    chatTargetCount > 1
+                        ? "Add Selected to New Chat"
+                        : "Add to New Chat";
                 return [
                     {
                         label: "New Note Here",
@@ -3823,12 +4017,13 @@ export function FileTree() {
                                 !canPasteFolderClipboard(treeClipboard, path)),
                     },
                     {
-                        label: "Add to Chat",
-                        action: () => handleAddFolderToChat(path),
+                        label: addToChatLabel,
+                        action: () => handleAddChatTargetsToChat(chatTargets),
                     },
                     {
-                        label: "Add to New Chat",
-                        action: () => handleAddFolderToChat(path, "new-chat"),
+                        label: addToNewChatLabel,
+                        action: () =>
+                            handleAddChatTargetsToChat(chatTargets, "new-chat"),
                     },
                     { type: "separator" },
                     {
@@ -3858,6 +4053,11 @@ export function FileTree() {
             case "note": {
                 const { note } = contextMenu.payload;
                 const contextTargetNotes = getContextTargetNotes(note);
+                const chatTargets = getContextChatTargetsForNote(note);
+                const chatTargetCount =
+                    chatTargets.notes.length +
+                    chatTargets.entries.length +
+                    chatTargets.folderPaths.length;
                 const deleteTargets = contextTargetNotes;
                 const deleteLabel =
                     deleteTargets.length > 1
@@ -3868,11 +4068,11 @@ export function FileTree() {
                         ? "Move Selected Notes to…"
                         : "Move Note to…";
                 const addToChatLabel =
-                    contextTargetNotes.length > 1
+                    chatTargetCount > 1
                         ? "Add Selected to Chat"
                         : "Add to Chat";
                 const addToNewChatLabel =
-                    contextTargetNotes.length > 1
+                    chatTargetCount > 1
                         ? "Add Selected to New Chat"
                         : "Add to New Chat";
 
@@ -3907,15 +4107,12 @@ export function FileTree() {
                     },
                     {
                         label: addToChatLabel,
-                        action: () => handleAddNotesToChat(contextTargetNotes),
+                        action: () => handleAddChatTargetsToChat(chatTargets),
                     },
                     {
                         label: addToNewChatLabel,
                         action: () =>
-                            handleAddNotesToChat(
-                                contextTargetNotes,
-                                "new-chat",
-                            ),
+                            handleAddChatTargetsToChat(chatTargets, "new-chat"),
                     },
                     { type: "separator" },
                     {
@@ -3976,13 +4173,17 @@ export function FileTree() {
             }
             case "pdf": {
                 const { entry } = contextMenu.payload;
-                const contextTargetEntries = getContextTargetEntries(entry);
+                const chatTargets = getContextChatTargetsForEntry(entry);
+                const chatTargetCount =
+                    chatTargets.notes.length +
+                    chatTargets.entries.length +
+                    chatTargets.folderPaths.length;
                 const addToChatLabel =
-                    contextTargetEntries.length > 1
+                    chatTargetCount > 1
                         ? "Add Selected to Chat"
                         : "Add to Chat";
                 const addToNewChatLabel =
-                    contextTargetEntries.length > 1
+                    chatTargetCount > 1
                         ? "Add Selected to New Chat"
                         : "Add to New Chat";
                 return [
@@ -4005,16 +4206,12 @@ export function FileTree() {
                     },
                     {
                         label: addToChatLabel,
-                        action: () =>
-                            handleAddEntriesToChat(contextTargetEntries),
+                        action: () => handleAddChatTargetsToChat(chatTargets),
                     },
                     {
                         label: addToNewChatLabel,
                         action: () =>
-                            handleAddEntriesToChat(
-                                contextTargetEntries,
-                                "new-chat",
-                            ),
+                            handleAddChatTargetsToChat(chatTargets, "new-chat"),
                     },
                     {
                         label: "Reveal in Finder",
@@ -4057,13 +4254,17 @@ export function FileTree() {
             case "file": {
                 const { entry } = contextMenu.payload;
                 const canOpenInApp = canOpenVaultFileEntryInApp(entry);
-                const contextTargetEntries = getContextTargetEntries(entry);
+                const chatTargets = getContextChatTargetsForEntry(entry);
+                const chatTargetCount =
+                    chatTargets.notes.length +
+                    chatTargets.entries.length +
+                    chatTargets.folderPaths.length;
                 const addToChatLabel =
-                    contextTargetEntries.length > 1
+                    chatTargetCount > 1
                         ? "Add Selected to Chat"
                         : "Add to Chat";
                 const addToNewChatLabel =
-                    contextTargetEntries.length > 1
+                    chatTargetCount > 1
                         ? "Add Selected to New Chat"
                         : "Add to New Chat";
                 return [
@@ -4088,16 +4289,12 @@ export function FileTree() {
                     },
                     {
                         label: addToChatLabel,
-                        action: () =>
-                            handleAddEntriesToChat(contextTargetEntries),
+                        action: () => handleAddChatTargetsToChat(chatTargets),
                     },
                     {
                         label: addToNewChatLabel,
                         action: () =>
-                            handleAddEntriesToChat(
-                                contextTargetEntries,
-                                "new-chat",
-                            ),
+                            handleAddChatTargetsToChat(chatTargets, "new-chat"),
                     },
                     {
                         label: "Reveal in Finder",
@@ -4188,11 +4385,11 @@ export function FileTree() {
         applyMove,
         contextMenu,
         expandedFolders.size,
-        getContextTargetEntries,
+        getContextChatTargetsForEntry,
+        getContextChatTargetsForFolder,
+        getContextChatTargetsForNote,
         getContextTargetNotes,
-        handleAddEntriesToChat,
-        handleAddFolderToChat,
-        handleAddNotesToChat,
+        handleAddChatTargetsToChat,
         handleCopyFolder,
         handleCopyFullPath,
         handleCopyNotes,
@@ -4238,6 +4435,22 @@ export function FileTree() {
     const stableNoteContextMenu = useCallback(
         (e: React.MouseEvent, note: NoteDto) =>
             noteContextMenuRef.current(e, note),
+        [],
+    );
+
+    const folderClickRef = useRef(handleFolderClick);
+    folderClickRef.current = handleFolderClick;
+    const stableFolderClick = useCallback(
+        (path: string, modifiers: { cmd: boolean; shift: boolean }) =>
+            folderClickRef.current(path, modifiers),
+        [],
+    );
+
+    const folderMouseDownRef = useRef(handleFolderMouseDown);
+    folderMouseDownRef.current = handleFolderMouseDown;
+    const stableFolderMouseDown = useCallback(
+        (path: string, e: React.MouseEvent) =>
+            folderMouseDownRef.current(path, e),
         [],
     );
 
@@ -4688,6 +4901,9 @@ export function FileTree() {
                                             selectedEntryPaths={
                                                 visibleSelectedEntryPaths
                                             }
+                                            selectedFolderPaths={
+                                                visibleSelectedFolderPaths
+                                            }
                                             contextMenuFolderPath={
                                                 contextMenuFolderPath
                                             }
@@ -4696,9 +4912,9 @@ export function FileTree() {
                                                 draggingFolderPath
                                             }
                                             dragOverPath={dragOverPath}
-                                            onFolderClick={handleFolderClick}
+                                            onFolderClick={stableFolderClick}
                                             onFolderMouseDown={
-                                                handleFolderMouseDown
+                                                stableFolderMouseDown
                                             }
                                             onFolderContextMenu={
                                                 stableFolderContextMenu
@@ -4815,6 +5031,9 @@ export function FileTree() {
                                             selectedEntryPaths={
                                                 visibleSelectedEntryPaths
                                             }
+                                            selectedFolderPaths={
+                                                visibleSelectedFolderPaths
+                                            }
                                             contextMenuFolderPath={
                                                 contextMenuFolderPath
                                             }
@@ -4823,9 +5042,9 @@ export function FileTree() {
                                                 draggingFolderPath
                                             }
                                             dragOverPath={dragOverPath}
-                                            onFolderClick={handleFolderClick}
+                                            onFolderClick={stableFolderClick}
                                             onFolderMouseDown={
-                                                handleFolderMouseDown
+                                                stableFolderMouseDown
                                             }
                                             onFolderContextMenu={
                                                 stableFolderContextMenu

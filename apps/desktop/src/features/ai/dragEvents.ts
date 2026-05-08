@@ -18,6 +18,11 @@ export interface FileTreeDraggedFile {
     mimeType: string;
 }
 
+export interface FileTreeDraggedFolder {
+    path: string;
+    name: string;
+}
+
 export interface FileTreeNoteDragDetail {
     phase: FileTreeNoteDragPhase;
     x: number;
@@ -25,7 +30,8 @@ export interface FileTreeNoteDragDetail {
     targetSessionId?: string;
     notes: AIChatNoteSummary[];
     files?: FileTreeDraggedFile[];
-    folder?: { path: string; name: string };
+    folder?: FileTreeDraggedFolder;
+    folders?: FileTreeDraggedFolder[];
     origin?: {
         kind: "workspace-tab";
         tabId: string;

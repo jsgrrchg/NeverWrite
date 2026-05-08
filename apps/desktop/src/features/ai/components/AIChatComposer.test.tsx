@@ -40,6 +40,8 @@ function renderComposer({
     availableCommands = [],
     isStopping = false,
     hasPendingSubmitAfterStop = false,
+    onMentionAttach = vi.fn(),
+    onFolderAttach = vi.fn(),
     onSubmit = () => {},
     onStop = () => {},
 }: {
@@ -53,6 +55,12 @@ function renderComposer({
     availableCommands?: AIAvailableCommand[];
     isStopping?: boolean;
     hasPendingSubmitAfterStop?: boolean;
+    onMentionAttach?: (note: {
+        id: string;
+        title: string;
+        path: string;
+    }) => void;
+    onFolderAttach?: (folderPath: string, name: string) => void;
     onSubmit?: () => void;
     onStop?: () => void;
 } = {}) {
@@ -79,8 +87,8 @@ function renderComposer({
             isStopping={isStopping}
             hasPendingSubmitAfterStop={hasPendingSubmitAfterStop}
             onChange={onChange}
-            onMentionAttach={vi.fn()}
-            onFolderAttach={vi.fn()}
+            onMentionAttach={onMentionAttach}
+            onFolderAttach={onFolderAttach}
             onSubmit={onSubmit}
             onStop={onStop}
         />,
@@ -89,7 +97,7 @@ function renderComposer({
     const composer = screen.getByRole("textbox", {
         name: "Message NeverWrite",
     });
-    return { composer, onChange, onSubmit, onStop };
+    return { composer, onChange, onFolderAttach, onMentionAttach, onSubmit, onStop };
 }
 
 function setCaret(node: Node, offset: number) {
@@ -217,6 +225,66 @@ describe("AIChatComposer mention picker", () => {
 
         await waitFor(() => expect(secondOnChange).toHaveBeenCalledTimes(1));
         expect(firstOnChange).not.toHaveBeenCalled();
+    });
+
+    it("applies mixed file-tree folders, files, and notes in one attach", async () => {
+        const onFolderAttach = vi.fn();
+        const onMentionAttach = vi.fn();
+        const { onChange } = renderComposer({
+            onFolderAttach,
+            onMentionAttach,
+        });
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "attach",
+                        x: 0,
+                        y: 0,
+                        notes: [
+                            {
+                                id: "notes/alpha.md",
+                                title: "Alpha",
+                                path: "/vault/notes/alpha.md",
+                            },
+                        ],
+                        folders: [
+                            { path: "docs", name: "docs" },
+                            { path: "research", name: "research" },
+                        ],
+                        files: [
+                            {
+                                filePath: "/vault/docs/config.toml",
+                                fileName: "config.toml",
+                                mimeType: "application/toml",
+                            },
+                        ],
+                    },
+                }),
+            );
+        });
+
+        await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+        const parts = onChange.mock.calls[0]?.[0] as AIComposerPart[];
+        expect(
+            parts
+                .filter((part) => part.type !== "text")
+                .map((part) => part.type),
+        ).toEqual([
+            "folder_mention",
+            "folder_mention",
+            "file_attachment",
+            "mention",
+        ]);
+        expect(onFolderAttach).toHaveBeenCalledTimes(2);
+        expect(onFolderAttach).toHaveBeenNthCalledWith(1, "docs", "docs");
+        expect(onFolderAttach).toHaveBeenNthCalledWith(
+            2,
+            "research",
+            "research",
+        );
+        expect(onMentionAttach).toHaveBeenCalledTimes(1);
     });
 
     it("opens the @ picker when the caret is inside a text node", async () => {

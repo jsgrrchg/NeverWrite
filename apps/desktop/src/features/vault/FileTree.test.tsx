@@ -1933,6 +1933,38 @@ describe("FileTree", () => {
         expect(getFileRow("Config")).toHaveAttribute("data-selected", "true");
     });
 
+    it("allows folders to participate in mixed cmd-click selections", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getFolderRow("docs"), { metaKey: true });
+        fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+        fireEvent.click(getFileRow("config"), { metaKey: true });
+
+        expect(getFolderRow("docs")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("config")).toHaveAttribute("data-selected", "true");
+    });
+
     it("keeps mixed selections with cmd-option click", async () => {
         const user = userEvent.setup();
 
@@ -2048,6 +2080,53 @@ describe("FileTree", () => {
         expect(getFileRow("Config")).toHaveAttribute("data-selected", "true");
         expect(getNoteRow("Guide")).toHaveAttribute("data-selected", "true");
         expect(getFileRow("Reference")).toHaveAttribute(
+            "data-selected",
+            "true",
+        );
+    });
+
+    it("includes folders in contiguous mixed row selections", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "docs/guide",
+                path: "/vault/docs/guide.md",
+                title: "Guide",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                ...buildFileEntry("docs/reference.pdf", "application/pdf"),
+                kind: "pdf" as const,
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getFolderRow("docs"), { metaKey: true });
+        fireEvent.click(getFileRow("reference"), { shiftKey: true });
+
+        expect(getFolderRow("docs")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("config")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Guide")).toHaveAttribute("data-selected", "true");
+        expect(getFileRow("reference")).toHaveAttribute(
             "data-selected",
             "true",
         );
@@ -2190,6 +2269,141 @@ describe("FileTree", () => {
         }
     });
 
+    it("adds mixed folder, note, and file selections to chat from any selected row", async () => {
+        const user = userEvent.setup();
+        const events: CustomEvent[] = [];
+        const handleAttach = (event: Event) => {
+            events.push(event as CustomEvent);
+        };
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                ...buildFileEntry("docs/reference.pdf", "application/pdf"),
+                kind: "pdf" as const,
+            },
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleAttach);
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "docs");
+
+            fireEvent.click(getFolderRow("docs"), { metaKey: true });
+            fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+            fireEvent.click(getFileRow("config"), { metaKey: true });
+            fireEvent.click(getFileRow("reference"), { metaKey: true });
+
+            fireEvent.contextMenu(getNoteRow("Alpha"));
+            await user.click(
+                await screen.findByRole("button", {
+                    name: "Add Selected to Chat",
+                }),
+            );
+
+            await waitFor(() => expect(events).toHaveLength(1));
+            expect(events[0].detail).toMatchObject({
+                phase: "attach",
+                folders: [{ path: "docs", name: "docs" }],
+                notes: [
+                    {
+                        id: "docs/alpha",
+                        title: "Alpha",
+                        path: "/vault/docs/alpha.md",
+                    },
+                ],
+                files: [
+                    {
+                        filePath: "/vault/docs/config.toml",
+                        fileName: "config.toml",
+                        mimeType: "application/toml",
+                    },
+                    {
+                        filePath: "/vault/docs/reference.pdf",
+                        fileName: "reference.pdf",
+                        mimeType: "application/pdf",
+                    },
+                ],
+            });
+        } finally {
+            window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleAttach);
+        }
+    });
+
+    it("targets add-to-chat actions at the active workspace chat", async () => {
+        const user = userEvent.setup();
+        const events: CustomEvent[] = [];
+        const handleAttach = (event: Event) => {
+            events.push(event as CustomEvent);
+        };
+
+        setVaultNotes([
+            {
+                id: "Alpha",
+                path: "/vault/Alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleAttach);
+        try {
+            renderComponent(<FileTree />);
+
+            await screen.findByText("Alpha");
+            setEditorTabs(
+                [
+                    {
+                        id: "chat-a",
+                        kind: "ai-chat",
+                        sessionId: "session-a",
+                        title: "Chat A",
+                    },
+                    {
+                        id: "chat-b",
+                        kind: "ai-chat",
+                        sessionId: "session-b",
+                        title: "Chat B",
+                    },
+                ],
+                "chat-b",
+            );
+            fireEvent.contextMenu(getNoteRow("Alpha"));
+            await user.click(
+                await screen.findByRole("button", { name: "Add to Chat" }),
+            );
+
+            await waitFor(() => expect(events).toHaveLength(1));
+            expect(events[0].detail).toMatchObject({
+                phase: "attach",
+                targetSessionId: "session-b",
+                notes: [
+                    {
+                        id: "Alpha",
+                        title: "Alpha",
+                        path: "/vault/Alpha.md",
+                    },
+                ],
+            });
+        } finally {
+            window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleAttach);
+        }
+    });
+
     it("adds folders, notes, and sidebar files to a new chat from the context menu", async () => {
         const user = userEvent.setup();
         const events: CustomEvent[] = [];
@@ -2299,6 +2513,154 @@ describe("FileTree", () => {
                 FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
                 handleAttachToNewChat,
             );
+        }
+    });
+
+    it("adds mixed folder, note, and file selections to a new chat from any selected row", async () => {
+        const user = userEvent.setup();
+        const events: CustomEvent[] = [];
+        const handleAttachToNewChat = (event: Event) => {
+            events.push(event as CustomEvent);
+        };
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        window.addEventListener(
+            FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+            handleAttachToNewChat,
+        );
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "docs");
+
+            fireEvent.click(getFolderRow("docs"), { metaKey: true });
+            fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+            fireEvent.click(getFileRow("config"), { metaKey: true });
+
+            fireEvent.contextMenu(getFileRow("config"));
+            await user.click(
+                await screen.findByRole("button", {
+                    name: "Add Selected to New Chat",
+                }),
+            );
+
+            await waitFor(() => expect(events).toHaveLength(1));
+            expect(events[0].detail).toMatchObject({
+                phase: "attach",
+                folders: [{ path: "docs", name: "docs" }],
+                notes: [
+                    {
+                        id: "docs/alpha",
+                        title: "Alpha",
+                        path: "/vault/docs/alpha.md",
+                    },
+                ],
+                files: [
+                    {
+                        filePath: "/vault/docs/config.toml",
+                        fileName: "config.toml",
+                        mimeType: "application/toml",
+                    },
+                ],
+            });
+        } finally {
+            window.removeEventListener(
+                FILE_TREE_ATTACH_TO_NEW_CHAT_EVENT,
+                handleAttachToNewChat,
+            );
+        }
+    });
+
+    it("drags mixed folder, note, and file selections with the full chat context contract", async () => {
+        const user = userEvent.setup();
+        const events: CustomEvent[] = [];
+        const handleDrag = (event: Event) => {
+            events.push(event as CustomEvent);
+        };
+
+        setVaultNotes([
+            {
+                id: "docs/alpha",
+                path: "/vault/docs/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        const elementsFromPoint = vi.fn(() => []);
+        Object.defineProperty(document, "elementsFromPoint", {
+            configurable: true,
+            value: elementsFromPoint,
+        });
+
+        window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "docs");
+
+            fireEvent.click(getFolderRow("docs"), { metaKey: true });
+            fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+            fireEvent.click(getFileRow("config"), { metaKey: true });
+
+            fireEvent.mouseDown(getFolderRow("docs"), {
+                button: 0,
+                clientX: 10,
+                clientY: 10,
+            });
+            fireEvent.mouseMove(window, { clientX: 30, clientY: 30 });
+            fireEvent.mouseUp(window, { clientX: 30, clientY: 30 });
+
+            await waitFor(() => expect(events).toHaveLength(4));
+            expect(events.map((event) => event.detail.phase)).toEqual([
+                "start",
+                "move",
+                "end",
+                "cancel",
+            ]);
+            expect(events.at(-2)?.detail).toMatchObject({
+                phase: "end",
+                folders: [{ path: "docs", name: "docs" }],
+                notes: [
+                    {
+                        id: "docs/alpha",
+                        title: "Alpha",
+                        path: "/vault/docs/alpha.md",
+                    },
+                ],
+                files: [
+                    {
+                        filePath: "/vault/docs/config.toml",
+                        fileName: "config.toml",
+                        mimeType: "application/toml",
+                    },
+                ],
+            });
+            expect(elementsFromPoint).toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleDrag);
         }
     });
 

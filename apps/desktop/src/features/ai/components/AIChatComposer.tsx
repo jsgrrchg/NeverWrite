@@ -1362,26 +1362,25 @@ export function AIChatComposer({
                     return;
                 }
 
+                let current = partsRef.current;
+                let didAttach = false;
+                const folders =
+                    detail.folders ??
+                    (detail.folder ? [detail.folder] : []);
+
                 // Folder drop
-                if (detail.folder) {
-                    onChangeRef.current(
-                        appendFolderMentionPart(
-                            partsRef.current,
-                            detail.folder.path,
-                            detail.folder.name,
-                        ),
+                for (const folder of folders) {
+                    current = appendFolderMentionPart(
+                        current,
+                        folder.path,
+                        folder.name,
                     );
-                    onFolderAttachRef.current(
-                        detail.folder.path,
-                        detail.folder.name,
-                    );
-                    focusComposerAtEnd();
-                    return;
+                    onFolderAttachRef.current(folder.path, folder.name);
+                    didAttach = true;
                 }
 
                 // File drop (PDFs, etc.) — inline pills
                 if (detail.files && detail.files.length > 0) {
-                    let current = partsRef.current;
                     for (const file of detail.files) {
                         current = appendFileAttachmentPart(current, {
                             filePath: file.filePath,
@@ -1389,26 +1388,27 @@ export function AIChatComposer({
                             label: file.fileName,
                         });
                     }
-                    onChangeRef.current(current);
-                    focusComposerAtEnd();
-                    return;
+                    didAttach = true;
                 }
 
                 // Notes drop
-                if (detail.notes.length === 0) return;
-                onChangeRef.current(
-                    appendMentionParts(
-                        partsRef.current,
+                if (detail.notes.length > 0) {
+                    current = appendMentionParts(
+                        current,
                         detail.notes.map((note) => ({
                             noteId: note.id,
                             label: note.title,
                             path: note.path,
                         })),
-                    ),
-                );
-                detail.notes.forEach((note) =>
-                    onMentionAttachRef.current(note),
-                );
+                    );
+                    detail.notes.forEach((note) =>
+                        onMentionAttachRef.current(note),
+                    );
+                    didAttach = true;
+                }
+
+                if (!didAttach) return;
+                onChangeRef.current(current);
                 focusComposerAtEnd();
             }
         };
