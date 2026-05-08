@@ -263,6 +263,10 @@ interface InterruptedTurnState {
     pendingManualSend?: PendingInterruptedSend;
 }
 
+interface UpsertSessionOptions {
+    allowUnknownSession?: boolean;
+}
+
 function aiPrefsEqual(
     left: Pick<
         ChatStore,
@@ -1209,7 +1213,11 @@ interface ChatStore {
         anthropicAuthToken: AISecretPatch;
         anthropicApiKey?: AISecretPatch;
     }) => Promise<void>;
-    upsertSession: (session: AIChatSession, activate?: boolean) => void;
+    upsertSession: (
+        session: AIChatSession,
+        activate?: boolean,
+        options?: UpsertSessionOptions,
+    ) => void;
     dismissMessage: (sessionId: string, messageId: string) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
     applyRuntimeConnection: (payload: AIRuntimeConnectionPayload) => void;
@@ -6914,10 +6922,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        upsertSession: (session, activate = false) => {
+        upsertSession: (session, activate = false, options = {}) => {
             let shouldDrainQueue = false;
             let sessionToPersist: AIChatSession | null = null;
             set((state) => {
+                const allowUnknownSession =
+                    options.allowUnknownSession === true;
                 const currentVaultPath = useVaultStore.getState().vaultPath;
                 const existing = state.sessionsById[session.sessionId];
                 const sessionVaultPath =
@@ -6969,8 +6979,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 // Ignore unexpected sessions unless explicitly activated by
-                // this vault/window lifecycle.
-                if (!isKnown && !activate && !isKnownChildSession) {
+                // this vault/window lifecycle or imported from a trusted
+                // detached-window transfer payload.
+                if (
+                    !isKnown &&
+                    !activate &&
+                    !isKnownChildSession &&
+                    !allowUnknownSession
+                ) {
                     return state;
                 }
 
@@ -7014,7 +7030,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                               state.sessionOrder,
                               scopedSession.sessionId,
                           )
-                        : !isKnown && isKnownChildSession
+                        : !isKnown &&
+                            (isKnownChildSession || allowUnknownSession)
                           ? insertSessionAfterParent(
                                 state.sessionOrder,
                                 scopedSession.sessionId,

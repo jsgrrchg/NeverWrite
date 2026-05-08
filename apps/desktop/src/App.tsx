@@ -1586,6 +1586,7 @@ export default function App() {
                             .upsertSession(
                                 session,
                                 session.sessionId === activeChatSessionId,
+                                { allowUnknownSession: true },
                             );
                     }
                 },
@@ -2018,6 +2019,7 @@ export default function App() {
                                 isChatTab(event.payload.tab) &&
                                     session.sessionId ===
                                         event.payload.tab.sessionId,
+                                { allowUnknownSession: true },
                             );
                     }
                     const editor = useEditorStore.getState();

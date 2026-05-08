@@ -603,6 +603,51 @@ describe("chatStore", () => {
         ).toBe("streaming");
     });
 
+    it("continues rejecting unexpected non-active root session upserts", () => {
+        useChatStore
+            .getState()
+            .upsertSession(createSessionWithTrackedFiles("unexpected-root", []));
+
+        expect(
+            useChatStore.getState().sessionsById["unexpected-root"],
+        ).toBeUndefined();
+    });
+
+    it("hydrates trusted detached-window session groups without dropping relatives", () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("parent-session", []),
+            historySessionId: "parent-history",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("child-session", []),
+            historySessionId: "child-history",
+            parentSessionId: "parent-history",
+            runtimeSessionId: "child-runtime",
+        };
+        const sibling = {
+            ...createSessionWithTrackedFiles("sibling-session", []),
+            historySessionId: "sibling-history",
+            parentSessionId: "parent-history",
+            runtimeSessionId: "sibling-runtime",
+        };
+
+        useChatStore
+            .getState()
+            .upsertSession(child, true, { allowUnknownSession: true });
+        useChatStore
+            .getState()
+            .upsertSession(parent, false, { allowUnknownSession: true });
+        useChatStore
+            .getState()
+            .upsertSession(sibling, false, { allowUnknownSession: true });
+
+        const state = useChatStore.getState();
+        expect(state.activeSessionId).toBe("child-session");
+        expect(state.sessionsById["child-session"]).toBeDefined();
+        expect(state.sessionsById["parent-session"]).toBeDefined();
+        expect(state.sessionsById["sibling-session"]).toBeDefined();
+    });
+
     it("persists auto context per vault path", () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();

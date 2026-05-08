@@ -20,7 +20,7 @@ const MAX_OBJECT_KEYS = 40;
 const MAX_DEPTH = 4;
 const REDACTED_VALUE = "[redacted]";
 const SENSITIVE_KEY_PATTERN =
-    /(?:content|transcript|prompt|body|raw|password|token|secret|apiKey|authorization)/i;
+    /(?:content|transcript|prompt|body|raw|password|token|secret|api[_-]?key|authorization)/i;
 const SENSITIVE_MESSAGE_KEY_PATTERN = /message/i;
 // Recovery diagnostics need their failure reason to stay searchable, but callers
 // must keep transcript/prompt content out of these structured diagnostic fields.

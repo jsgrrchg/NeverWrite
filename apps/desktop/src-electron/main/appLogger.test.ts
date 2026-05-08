@@ -70,6 +70,8 @@ describe("appLogger", () => {
                 privateMessage: "private camelCase message",
                 error_message: "runtime session is not connected",
                 failureMessage: "sidecar exited",
+                api_key: "private snake key",
+                "x-api-key": "private kebab key",
                 prompt: "private prompt",
                 transcript: ["private transcript"],
                 nested: {
@@ -85,6 +87,8 @@ describe("appLogger", () => {
             privateMessage: "[redacted]",
             error_message: "runtime session is not connected",
             failureMessage: "sidecar exited",
+            api_key: "[redacted]",
+            "x-api-key": "[redacted]",
             prompt: "[redacted]",
             transcript: "[redacted]",
             nested: {
