@@ -35,7 +35,10 @@ function isSpecificNoteChange(change: VaultNoteChange) {
         return Boolean(change.note?.id);
     }
 
-    return Boolean(change.note_id);
+    // Delete events can be ambiguous because the backend infers note_id from
+    // the removed path suffix; a deleted folder named "Archive.md" looks like a
+    // note delete after the filesystem entry is gone.
+    return false;
 }
 
 function isNonFolderEntryUpsert(change: VaultNoteChange) {

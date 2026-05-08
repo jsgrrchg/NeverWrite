@@ -653,6 +653,43 @@ describe("App web clipper routing", () => {
         vi.useRealTimers();
     });
 
+    it("refreshes the full vault structure for external note-looking delete events", async () => {
+        const applyVaultNoteChange = vi.fn();
+        const refreshEntries = vi.fn(async () => {});
+        const refreshStructure = vi.fn(async () => {});
+        useVaultStore.setState({
+            applyVaultNoteChange,
+            refreshEntries,
+            refreshStructure,
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        await act(async () => {
+            eventHandlers.get("vault://note-changed")?.({
+                payload: {
+                    vault_path: "/vaults/a",
+                    kind: "delete",
+                    note: null,
+                    note_id: "Archive",
+                    entry: null,
+                    relative_path: "Archive.md",
+                    origin: "external",
+                    op_id: null,
+                    revision: 1,
+                    content_hash: null,
+                    graph_revision: 1,
+                },
+            });
+            await Promise.resolve();
+        });
+
+        expect(applyVaultNoteChange).not.toHaveBeenCalled();
+        expect(refreshEntries).not.toHaveBeenCalled();
+        expect(refreshStructure).toHaveBeenCalledTimes(1);
+    });
+
     it("does not open a vault window for routed clip saves", async () => {
         renderComponent(<App />);
         await flushPromises();

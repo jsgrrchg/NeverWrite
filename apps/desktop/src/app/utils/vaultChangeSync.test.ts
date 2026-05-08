@@ -55,9 +55,8 @@ function change(overrides: Partial<VaultNoteChange>): VaultNoteChange {
 describe("getVaultChangeSyncStrategy", () => {
     it.each([
         ["upsert", { kind: "upsert", note: note("plans/alpha") }],
-        ["delete", { kind: "delete", note_id: "plans/alpha" }],
     ] satisfies Array<[string, Partial<VaultNoteChange>]>)(
-        "keeps a light sync path for specific note %s events",
+        "keeps a light sync path for specific note %s events with note metadata",
         (_label, overrides) => {
             expect(getVaultChangeSyncStrategy(change(overrides))).toBe(
                 "apply-note-change-and-refresh-entries",
@@ -73,6 +72,14 @@ describe("getVaultChangeSyncStrategy", () => {
         [
             "external delete without note_id",
             { kind: "delete", relative_path: "plans" },
+        ],
+        [
+            "external note-looking delete",
+            {
+                kind: "delete",
+                note_id: "Archive",
+                relative_path: "Archive.md",
+            },
         ],
         [
             "external ambiguous upsert",
