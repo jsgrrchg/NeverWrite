@@ -111,6 +111,18 @@ jobs:
                       target: x86_64-pc-windows-msvc
                       rust_targets: x86_64-pc-windows-msvc
                       node_dist: win-x64
+                    - runner: ubuntu-22.04
+                      platform: linux
+                      arch: x64
+                      target: x86_64-unknown-linux-gnu
+                      rust_targets: x86_64-unknown-linux-gnu
+                      node_dist: linux-x64
+                    - runner: ubuntu-22.04
+                      platform: linux
+                      arch: arm64
+                      target: aarch64-unknown-linux-gnu
+                      rust_targets: aarch64-unknown-linux-gnu
+                      node_dist: linux-arm64
 
         steps:
             - uses: actions/checkout@v4

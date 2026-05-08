@@ -222,6 +222,12 @@ function resolveHostRustTarget() {
     if (process.platform === "win32" && process.arch === "x64") {
         return "x86_64-pc-windows-msvc";
     }
+    if (process.platform === "linux" && process.arch === "x64") {
+        return "x86_64-unknown-linux-gnu";
+    }
+    if (process.platform === "linux" && process.arch === "arm64") {
+        return "aarch64-unknown-linux-gnu";
+    }
 
     throw new Error(
         `Unsupported host platform for Electron sidecar staging: ${process.platform}/${process.arch}`,

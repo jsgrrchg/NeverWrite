@@ -104,5 +104,8 @@ export function describeUpdaterArtifactKind(buildTarget) {
     if (buildTarget.endsWith("-pc-windows-msvc")) {
         return "Windows installer (.exe)";
     }
+    if (buildTarget.endsWith("-unknown-linux-gnu")) {
+        return "Linux AppImage (.AppImage)";
+    }
     throw new Error(`Unsupported build target "${buildTarget}".`);
 }

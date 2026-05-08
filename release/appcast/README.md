@@ -49,6 +49,8 @@ Public naming remains stable per target:
 | `universal-apple-darwin` | `NeverWrite_<version>_macOS_Universal.dmg` | `NeverWrite_<version>_macOS_Universal.zip` |
 | `aarch64-pc-windows-msvc` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` |
 | `x86_64-pc-windows-msvc` | `NeverWrite_<version>_Windows_x64_Setup.exe` | `NeverWrite_<version>_Windows_x64_Setup.exe` |
+| `x86_64-unknown-linux-gnu` | `NeverWrite-<version>-x64.AppImage` | `NeverWrite-<version>-x64.AppImage` |
+| `aarch64-unknown-linux-gnu` | `NeverWrite-<version>-arm64.AppImage` | `NeverWrite-<version>-arm64.AppImage` |
 
 The architecture suffix is mandatory for Windows. macOS publishes a universal package and a single universal updater feed. We do not publish shared Windows `latest.yml` metadata for multiple architectures in the same directory because `electron-builder` would otherwise collide on Windows metadata names.
 
