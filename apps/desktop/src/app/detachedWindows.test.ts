@@ -150,6 +150,114 @@ describe("detachedWindows", () => {
         });
     });
 
+    it("includes subagent child sessions when detaching a parent chat", () => {
+        const parent = createChatSession({
+            sessionId: "parent-live",
+            historySessionId: "parent-history",
+        });
+        const child = createChatSession({
+            sessionId: "child-live",
+            historySessionId: "child-history",
+            parentSessionId: "parent-history",
+            messages: [],
+        });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        const payload = createDetachedWindowPayload(
+            {
+                id: "chat-tab-1",
+                kind: "ai-chat",
+                sessionId: "parent-live",
+                title: "Agent",
+            },
+            "/vaults/main",
+        );
+
+        expect(payload.aiSessions?.map((session) => session.sessionId)).toEqual([
+            "parent-live",
+            "child-live",
+        ]);
+    });
+
+    it("includes parent and sibling sessions when detaching a subagent chat", () => {
+        const parent = createChatSession({
+            sessionId: "parent-live",
+            historySessionId: "parent-history",
+        });
+        const child = createChatSession({
+            sessionId: "child-live",
+            historySessionId: "child-history",
+            parentSessionId: "parent-live",
+            messages: [],
+        });
+        const sibling = createChatSession({
+            sessionId: "sibling-live",
+            historySessionId: "sibling-history",
+            parentSessionId: "parent-history",
+            messages: [],
+        });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+                [sibling.sessionId]: sibling,
+            },
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        const payload = createDetachedWindowPayload(
+            {
+                id: "chat-tab-1",
+                kind: "ai-chat",
+                sessionId: "child-live",
+                title: "Worker",
+            },
+            "/vaults/main",
+        );
+
+        expect(payload.aiSessions?.map((session) => session.sessionId)).toEqual([
+            "child-live",
+            "parent-live",
+            "sibling-live",
+        ]);
+    });
+
+    it("does not connect unrelated detached chat sessions through empty history ids", () => {
+        const selected = createChatSession({
+            sessionId: "selected-live",
+            historySessionId: "",
+        });
+        const unrelated = createChatSession({
+            sessionId: "unrelated-live",
+            historySessionId: "",
+            messages: [],
+        });
+        useChatStore.setState({
+            sessionsById: {
+                [selected.sessionId]: selected,
+                [unrelated.sessionId]: unrelated,
+            },
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        const payload = createDetachedWindowPayload(
+            {
+                id: "chat-tab-1",
+                kind: "ai-chat",
+                sessionId: "selected-live",
+                title: "Agent",
+            },
+            "/vaults/main",
+        );
+
+        expect(payload.aiSessions?.map((session) => session.sessionId)).toEqual([
+            "selected-live",
+        ]);
+    });
+
     it("normalizes terminal tabs for detached payloads", () => {
         expect(
             createDetachedWindowPayload(

@@ -1113,6 +1113,164 @@ describe("AIChatMessageItem read tool targets", () => {
         });
     });
 
+    it("opens restored subagent sessions by history id from persisted breadcrumbs", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "persisted:child-history": {
+                    sessionId: "persisted:child-history",
+                    historySessionId: "child-history",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-history",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:child-history"],
+        }));
+
+        renderMessage({
+            id: "tool:subagent-restored",
+            role: "assistant",
+            kind: "tool",
+            title: "Spawned Worker",
+            content: "Spawned Worker",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "child-history",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.some(
+                        (tab) =>
+                            tab.kind === "ai-chat" &&
+                            tab.sessionId === "persisted:child-history",
+                    ),
+            ).toBe(true);
+        });
+    });
+
+    it("prefers the live resumed subagent when a breadcrumb matches history id", async () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [],
+                    activeTabId: null,
+                },
+            ],
+            "primary",
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "persisted:child-history": {
+                    sessionId: "persisted:child-history",
+                    historySessionId: "child-history",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-history",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+                "live-child": {
+                    sessionId: "live-child",
+                    historySessionId: "child-history",
+                    runtimeSessionId: "runtime-child",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    parentSessionId: "parent-history",
+                    runtimeState: "live",
+                    isPersistedSession: false,
+                    activeWorkCycleId: null,
+                    visibleWorkCycleId: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:child-history", "live-child"],
+        }));
+
+        renderMessage({
+            id: "tool:subagent-resumed",
+            role: "assistant",
+            kind: "tool",
+            title: "Spawned Worker",
+            content: "Spawned Worker",
+            timestamp: Date.now(),
+            toolAction: {
+                kind: "open_session",
+                session_id: "child-history",
+            },
+            meta: {
+                tool: "other",
+                status: "completed",
+            },
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Open Worker" }));
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .tabs.some(
+                        (tab) =>
+                            tab.kind === "ai-chat" &&
+                            tab.sessionId === "live-child",
+                    ),
+            ).toBe(true);
+        });
+    });
+
     it("shows unavailable subagent actions as non-interactive", () => {
         renderMessage({
             id: "tool:subagent-missing",

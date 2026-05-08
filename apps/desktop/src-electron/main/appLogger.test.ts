@@ -67,20 +67,30 @@ describe("appLogger", () => {
             sanitizeLogDetail({
                 runtimeId: "codex",
                 message: "private chat message",
+                privateMessage: "private camelCase message",
+                error_message: "runtime session is not connected",
+                failureMessage: "sidecar exited",
                 prompt: "private prompt",
                 transcript: ["private transcript"],
                 nested: {
                     content: "private note body",
+                    message: "private nested message",
+                    errorMessage: "resume failed",
                     safe: true,
                 },
             }),
         ).toEqual({
             runtimeId: "codex",
             message: "[redacted]",
+            privateMessage: "[redacted]",
+            error_message: "runtime session is not connected",
+            failureMessage: "sidecar exited",
             prompt: "[redacted]",
             transcript: "[redacted]",
             nested: {
                 content: "[redacted]",
+                message: "[redacted]",
+                errorMessage: "resume failed",
                 safe: true,
             },
         });

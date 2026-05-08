@@ -20,7 +20,12 @@ const MAX_OBJECT_KEYS = 40;
 const MAX_DEPTH = 4;
 const REDACTED_VALUE = "[redacted]";
 const SENSITIVE_KEY_PATTERN =
-    /(?:content|transcript|prompt|message|body|raw|password|token|secret|apiKey|authorization)/i;
+    /(?:content|transcript|prompt|body|raw|password|token|secret|apiKey|authorization)/i;
+const SENSITIVE_MESSAGE_KEY_PATTERN = /message/i;
+// Recovery diagnostics need their failure reason to stay searchable, but callers
+// must keep transcript/prompt content out of these structured diagnostic fields.
+const SAFE_DIAGNOSTIC_MESSAGE_KEY_PATTERN =
+    /^(?:error[_-]?message|failure[_-]?message)$/i;
 
 let configuredLogDir: string | null = null;
 let maxLogBytes = DEFAULT_MAX_LOG_BYTES;
@@ -46,6 +51,16 @@ function serializeError(error: Error) {
         message: truncateString(error.message),
         stack: error.stack ? truncateString(error.stack) : undefined,
     };
+}
+
+function isSensitiveLogKey(key: string) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+        return true;
+    }
+    return (
+        SENSITIVE_MESSAGE_KEY_PATTERN.test(key) &&
+        !SAFE_DIAGNOSTIC_MESSAGE_KEY_PATTERN.test(key)
+    );
 }
 
 export function sanitizeLogDetail(value: unknown, depth = 0): unknown {
@@ -86,7 +101,7 @@ export function sanitizeLogDetail(value: unknown, depth = 0): unknown {
         const result: Record<string, unknown> = {};
         const entries = Object.entries(record).slice(0, MAX_OBJECT_KEYS);
         for (const [key, item] of entries) {
-            result[key] = SENSITIVE_KEY_PATTERN.test(key)
+            result[key] = isSensitiveLogKey(key)
                 ? REDACTED_VALUE
                 : sanitizeLogDetail(item, depth + 1);
         }
