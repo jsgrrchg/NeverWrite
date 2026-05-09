@@ -40,7 +40,7 @@ function parseArgs(argv) {
         }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --platform <mac|win>, --arch <universal|x64|arm64>, --publish <mode>, --dir, --unsigned.`,
+            `Unknown argument "${arg}". Supported args: --platform <mac|win|linux>, --arch <universal|x64|arm64>, --publish <mode>, --dir, --unsigned.`,
         );
     }
 
@@ -57,6 +57,9 @@ function normalizePlatform(platform) {
     }
     if (process.platform === "win32") {
         return "win";
+    }
+    if (process.platform === "linux") {
+        return "linux";
     }
 
     throw new Error(
@@ -97,6 +100,12 @@ function resolveRustTarget(platform, arch) {
     }
     if (platform === "win" && arch === "x64") {
         return "x86_64-pc-windows-msvc";
+    }
+    if (platform === "linux" && arch === "arm64") {
+        return "aarch64-unknown-linux-gnu";
+    }
+    if (platform === "linux" && arch === "x64") {
+        return "x86_64-unknown-linux-gnu";
     }
 
     throw new Error(
@@ -141,6 +150,8 @@ function buildElectronBuilderArgs(args) {
         result.push("--mac");
     } else if (args.platform === "win") {
         result.push("--win");
+    } else if (args.platform === "linux") {
+        result.push("--linux");
     }
     if (args.arch === "x64") {
         result.push("--x64");

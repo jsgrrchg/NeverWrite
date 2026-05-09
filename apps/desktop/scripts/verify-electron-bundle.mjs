@@ -24,6 +24,16 @@ const REQUIRED_RESOURCE_PATHS = {
         "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
         "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
     ],
+    linux: [
+        "icons/icon.png",
+        "native-backend/neverwrite-native-backend",
+        "native-backend/binaries/codex-acp",
+        "native-backend/embedded/node/bin/node",
+        "native-backend/embedded/claude-agent-acp/dist/index.js",
+        "native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json",
+        "native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+        "native-backend/embedded/claude-agent-acp/node_modules/zod/package.json",
+    ],
 };
 const DEFAULT_PRODUCT_NAME = "NeverWrite";
 const PROJECT_DIR = path.dirname(import.meta.dirname);
@@ -67,6 +77,9 @@ function resolveResourcesDir(packContext) {
     }
 
     if (packContext.electronPlatformName === "win32") {
+        return path.join(packContext.appOutDir, "resources");
+    }
+    if (packContext.electronPlatformName === "linux") {
         return path.join(packContext.appOutDir, "resources");
     }
 

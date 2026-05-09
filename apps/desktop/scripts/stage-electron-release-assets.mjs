@@ -152,6 +152,26 @@ function collectArtifacts(distDir, buildTarget) {
             ),
         };
     }
+    if (buildTarget.endsWith("-unknown-linux-gnu")) {
+        const blockmapPath = findSingleFile(
+            distDir,
+            (filePath) => filePath.endsWith(".AppImage.blockmap"),
+            "Linux AppImage blockmap",
+        );
+        const appImagePath = stripSuffix(blockmapPath, ".blockmap");
+        if (!fs.existsSync(appImagePath)) {
+            throw new Error(
+                `Expected Linux AppImage next to blockmap at ${appImagePath}.`,
+            );
+        }
+
+        return {
+            feedPath,
+            manualAssetPath: appImagePath,
+            updaterAssetPath: appImagePath,
+            blockmapPath,
+        };
+    }
 
     const blockmapPath = findSingleFile(
         distDir,

@@ -36,6 +36,10 @@ test("runtimeBinaryFileName follows target platform conventions", () => {
         runtimeBinaryFileName("x86_64-pc-windows-msvc", "codex-acp"),
         "codex-acp.exe",
     );
+    assert.equal(
+        runtimeBinaryFileName("x86_64-unknown-linux-gnu", "codex-acp"),
+        "codex-acp",
+    );
 });
 
 test("validateStagedRuntimeResources checks bundled runtime staging inputs", () => {
@@ -84,6 +88,18 @@ test("buildManualDownloadRows exposes the public installer set for humans", () =
             architectureLabel: "x64",
             assetName: "NeverWrite_0.2.0_Windows_x64_Setup.exe",
         },
+        {
+            buildTarget: "aarch64-unknown-linux-gnu",
+            platformLabel: "Linux",
+            architectureLabel: "ARM64",
+            assetName: "NeverWrite-0.2.0-arm64.AppImage",
+        },
+        {
+            buildTarget: "x86_64-unknown-linux-gnu",
+            platformLabel: "Linux",
+            architectureLabel: "x64",
+            assetName: "NeverWrite-0.2.0-x64.AppImage",
+        },
     ]);
 });
 
@@ -95,6 +111,7 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
     assert.match(body, /## Manual installers/);
     assert.match(body, /NeverWrite_0.2.0_macOS_Universal\.dmg/);
     assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
+    assert.match(body, /NeverWrite-0.2.0-x64\.AppImage/);
     assert.match(body, /internal updater assets/i);
     assert.match(body, /## Browser extensions/);
     assert.match(

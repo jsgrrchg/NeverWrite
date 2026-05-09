@@ -120,6 +120,9 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
             win: {
                 target: [{ target: "nsis" }],
             },
+            linux: {
+                target: [{ target: "AppImage" }],
+            },
         }),
         [],
     );
@@ -145,6 +148,7 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
             "electron-builder.config.mjs must configure afterPack bundle verification.",
             'electron-builder.config.mjs mac.target must include "zip".',
             'electron-builder.config.mjs win.target must include "nsis".',
+            'electron-builder.config.mjs linux.target must include "AppImage".',
         ],
     );
 });

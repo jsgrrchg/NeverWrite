@@ -17,16 +17,22 @@ export const V1_BUILD_TARGETS = [
     "universal-apple-darwin",
     "aarch64-pc-windows-msvc",
     "x86_64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
 ];
 export const V1_APPCAST_KEYS = [
     "darwin-universal",
     "windows-aarch64",
     "windows-x86_64",
+    "linux-aarch64",
+    "linux-x86_64",
 ];
 export const BUILD_TARGET_TO_APPCAST_KEY = {
     "universal-apple-darwin": "darwin-universal",
     "aarch64-pc-windows-msvc": "windows-aarch64",
     "x86_64-pc-windows-msvc": "windows-x86_64",
+    "aarch64-unknown-linux-gnu": "linux-aarch64",
+    "x86_64-unknown-linux-gnu": "linux-x86_64",
 };
 export const APPCAST_OUTPUT_ROOT = path.join(REPO_ROOT, "dist", "appcast");
 
@@ -110,6 +116,10 @@ export function buildPublicReleaseAssetName(version, buildTarget) {
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64_Setup.exe`;
         case "x86_64-pc-windows-msvc":
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_x64_Setup.exe`;
+        case "aarch64-unknown-linux-gnu":
+            return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-arm64.AppImage`;
+        case "x86_64-unknown-linux-gnu":
+            return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-x64.AppImage`;
         default:
             throw new Error(`Unsupported build target "${buildTarget}".`);
     }
@@ -126,6 +136,10 @@ export function getBundledUpdaterArtifactName(buildTarget) {
         case "aarch64-pc-windows-msvc":
         case "x86_64-pc-windows-msvc":
             return `${PUBLIC_PRODUCT_NAME}-setup.nsis.zip`;
+        case "aarch64-unknown-linux-gnu":
+            return `${PUBLIC_PRODUCT_NAME}-arm64.AppImage`;
+        case "x86_64-unknown-linux-gnu":
+            return `${PUBLIC_PRODUCT_NAME}-x64.AppImage`;
         default:
             throw new Error(`Unsupported build target "${buildTarget}".`);
     }
@@ -141,6 +155,10 @@ export function buildUpdaterReleaseAssetName(version, buildTarget) {
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_ARM64.nsis.zip`;
         case "x86_64-pc-windows-msvc":
             return `${PUBLIC_PRODUCT_NAME}_${normalizedVersion}_Windows_x64.nsis.zip`;
+        case "aarch64-unknown-linux-gnu":
+            return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-arm64.AppImage`;
+        case "x86_64-unknown-linux-gnu":
+            return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-x64.AppImage`;
         default:
             throw new Error(`Unsupported build target "${buildTarget}".`);
     }
@@ -153,6 +171,9 @@ export function describeUpdaterArtifactKind(buildTarget) {
         case "aarch64-pc-windows-msvc":
         case "x86_64-pc-windows-msvc":
             return "Windows updater archive (.nsis.zip)";
+        case "aarch64-unknown-linux-gnu":
+        case "x86_64-unknown-linux-gnu":
+            return "Linux AppImage (.AppImage)";
         default:
             throw new Error(`Unsupported build target "${buildTarget}".`);
     }
