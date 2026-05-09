@@ -1,4 +1,4 @@
-export type DesktopPlatform = "macos" | "windows";
+export type DesktopPlatform = "macos" | "windows" | "linux";
 
 export interface WindowChromeLayout {
     platform: DesktopPlatform;
@@ -14,11 +14,6 @@ export interface ManagedWindowChromeOptions {
     trafficLightPosition?: { x: number; y: number };
 }
 
-/**
- * The desktop app currently has two supported shells. Treat everything that is
- * not explicitly Windows as macOS so existing chrome stays stable in tests and
- * non-Windows developer environments.
- */
 export function getDesktopPlatform(): DesktopPlatform {
     if (typeof navigator === "undefined") return "macos";
 
@@ -32,7 +27,9 @@ export function getDesktopPlatform(): DesktopPlatform {
         .filter((value): value is string => typeof value === "string")
         .join(" ");
 
-    return /windows/i.test(platformHints) ? "windows" : "macos";
+    if (/windows/i.test(platformHints)) return "windows";
+    if (/linux|x11|wayland/i.test(platformHints)) return "linux";
+    return "macos";
 }
 
 /**

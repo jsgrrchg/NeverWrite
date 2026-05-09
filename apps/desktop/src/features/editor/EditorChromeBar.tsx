@@ -10,8 +10,9 @@ import {
 } from "../../app/utils/platform";
 
 // Thin top strip above the editor. It exists only to reserve the trailing
-// 140px that Windows' `titleBarOverlay` paints native caption controls on
-// top of — without the spacer, the tab strip would slide under min/max/close.
+// 140px that the Windows / Linux `titleBarOverlay` paints native caption
+// controls on top of — without the spacer, the tab strip would slide under
+// min/max/close.
 //
 // On macOS the component collapses to `null`: the traffic lights are handled
 // entirely by the window adapter (`setTrafficLightsVisible`) and the sidebar
@@ -20,7 +21,9 @@ import {
 
 const PLATFORM = getDesktopPlatform();
 const IS_WINDOWS = PLATFORM === "windows";
-const WINDOWS_CONTROLS_RESERVED = IS_WINDOWS ? 140 : 0;
+const IS_LINUX = PLATFORM === "linux";
+const USES_NATIVE_TITLEBAR_OVERLAY = IS_WINDOWS || IS_LINUX;
+const NATIVE_CONTROLS_RESERVED = USES_NATIVE_TITLEBAR_OVERLAY ? 140 : 0;
 
 function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0) return;
@@ -31,7 +34,7 @@ function startWindowDrag(event: ReactMouseEvent<HTMLElement>) {
 }
 
 function toggleWindowMaximize() {
-    if (!IS_WINDOWS) return;
+    if (!USES_NATIVE_TITLEBAR_OVERLAY) return;
     const appWindow = getCurrentWindow();
     if (typeof appWindow.toggleMaximize !== "function") return;
     void appWindow.toggleMaximize().catch(() => {});
@@ -47,7 +50,7 @@ export function EditorChromeBar() {
 
     // macOS no longer needs this strip — the sidebar owns the traffic-light
     // inset and the pane bars sit flush against the top of the window.
-    if (!IS_WINDOWS) return null;
+    if (!USES_NATIVE_TITLEBAR_OVERLAY) return null;
 
     const layout = getWindowChromeLayout();
 
@@ -61,8 +64,8 @@ export function EditorChromeBar() {
                 paddingTop: layout.titlebarPaddingTop,
                 flexShrink: 0,
                 WebkitAppRegion: "drag",
-                // Match the sidebar's frosted tint so the strip reads as a
-                // continuation of the Windows acrylic surface.
+                // Match the sidebar's theme tint so the strip reads as a
+                // continuation of the native titlebar overlay surface.
                 backgroundColor: "var(--sidebar-vibrancy-tint)",
             } as CSSProperties}
         >
@@ -81,7 +84,7 @@ export function EditorChromeBar() {
                 <div
                     aria-hidden="true"
                     style={{
-                        width: WINDOWS_CONTROLS_RESERVED,
+                        width: NATIVE_CONTROLS_RESERVED,
                         flexShrink: 0,
                     }}
                 />

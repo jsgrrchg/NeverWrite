@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("platform helpers", () => {
-    it("keeps macOS chrome defaults outside Windows", () => {
+    it("keeps macOS chrome defaults on macOS", () => {
         setNavigatorIdentity(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_0) AppleWebKit/605.1.15",
             "MacIntel",
@@ -61,6 +61,22 @@ describe("platform helpers", () => {
         // No chrome overrides on Windows: satellite windows use the same
         // main-process path as the main window so DWM paints native acrylic
         // and caption buttons.
+        expect(getManagedWindowChromeOptions()).toEqual({});
+    });
+
+    it("uses right-side overlay chrome on Linux", () => {
+        setNavigatorIdentity(
+            "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36",
+            "Linux aarch64",
+        );
+
+        expect(getDesktopPlatform()).toBe("linux");
+        expect(getWindowChromeLayout()).toEqual({
+            platform: "linux",
+            leadingInsetWidth: 0,
+            titlebarPaddingTop: 0,
+            windowControlsSide: "right",
+        });
         expect(getManagedWindowChromeOptions()).toEqual({});
     });
 });

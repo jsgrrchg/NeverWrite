@@ -4046,7 +4046,9 @@ export function SettingsPanel({
               : "general";
     const desktopPlatform = getDesktopPlatform();
     const standaloneWindow = standalone ? getCurrentWebviewWindow() : null;
-    const isStandaloneWindows = standalone && desktopPlatform === "windows";
+    const isStandaloneNativeTitlebarOverlay =
+        standalone &&
+        (desktopPlatform === "windows" || desktopPlatform === "linux");
     // Standalone Settings uses the native window material (macOS vibrancy,
     // Windows 11 acrylic) on the top bar and left sidebar. The outer shell
     // stays transparent so the material shows through; the content pane
@@ -4177,7 +4179,7 @@ export function SettingsPanel({
                 onBackgroundDoubleClick={(e) => {
                     if (
                         !standalone ||
-                        desktopPlatform !== "windows" ||
+                        !isStandaloneNativeTitlebarOverlay ||
                         (e.target as HTMLElement).closest("button")
                     ) {
                         return;
@@ -4201,11 +4203,11 @@ export function SettingsPanel({
                     alignItems: "center",
                     position: "relative",
                     padding: "0 20px",
-                    // Standalone settings on Windows now gets native
+                    // Standalone settings on Windows and Linux get native
                     // caption buttons via `titleBarOverlay` in the top-right
                     // 140px — reserve that space so the header content never
                     // slides under them.
-                    paddingRight: isStandaloneWindows ? 140 : 20,
+                    paddingRight: isStandaloneNativeTitlebarOverlay ? 140 : 20,
                     borderBottom: "1px solid var(--border)",
                     flexShrink: 0,
                     backgroundColor: chromeBackground,
