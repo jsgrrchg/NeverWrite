@@ -1,5 +1,6 @@
 import { act, fireEvent, screen } from "@testing-library/react";
 import { confirm } from "@neverwrite/runtime";
+import { getDesktopPlatform } from "../../app/utils/platform";
 import { getChunks, getOriginalDoc } from "@codemirror/merge";
 import { EditorSelection } from "@codemirror/state";
 import { undo } from "@codemirror/commands";
@@ -2644,7 +2645,8 @@ describe("Editor", () => {
             window.dispatchEvent(
                 new KeyboardEvent("keydown", {
                     key: "w",
-                    metaKey: true,
+                    metaKey: getDesktopPlatform() === "macos",
+                    ctrlKey: getDesktopPlatform() !== "macos",
                     bubbles: true,
                 }),
             );
@@ -2701,7 +2703,8 @@ describe("Editor", () => {
             window.dispatchEvent(
                 new KeyboardEvent("keydown", {
                     key: "w",
-                    metaKey: true,
+                    metaKey: getDesktopPlatform() === "macos",
+                    ctrlKey: getDesktopPlatform() !== "macos",
                     bubbles: true,
                 }),
             );
