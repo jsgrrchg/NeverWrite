@@ -45,12 +45,13 @@ export declare function planEntries(input: {
 } | undefined): PlanEntry[];
 export declare function markdownEscape(text: string): string;
 /**
- * Builds diff ToolUpdate content from the structured Edit toolResponse provided
- * by the PostToolUse hook. Unlike parsing the plain unified diff string, this uses
- * the pre-parsed structuredPatch which supports multiple replacement sites (replaceAll)
- * and always includes context lines for better readability.
+ * Builds diff ToolUpdate content from the structured toolResponse provided by
+ * the PostToolUse hook for diff-producing tools (Edit, Write). Unlike parsing
+ * the plain unified diff string, this uses the pre-parsed structuredPatch
+ * which supports multiple replacement sites (replaceAll) and always includes
+ * context lines for better readability.
  */
-export declare function toolUpdateFromEditToolResponse(toolResponse: unknown): {
+export declare function toolUpdateFromDiffToolResponse(toolResponse: unknown): {
     content?: ToolCallContent[];
     locations?: ToolCallLocation[];
 };

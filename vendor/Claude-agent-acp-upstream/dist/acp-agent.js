@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 import { SettingsManager } from "./settings.js";
-import { createPostToolUseHook, planEntries, registerHookCallback, toolInfoFromToolUse, toolUpdateFromEditToolResponse, toolUpdateFromToolResult, } from "./tools.js";
+import { createPostToolUseHook, planEntries, registerHookCallback, toolInfoFromToolUse, toolUpdateFromDiffToolResponse, toolUpdateFromToolResult, } from "./tools.js";
 import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
 export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 const MAX_TITLE_LENGTH = 256;
@@ -558,6 +558,11 @@ export class ClaudeAcpAgent {
                         if (matchingModelUsage) {
                             session.contextWindowSize = matchingModelUsage.contextWindow;
                         }
+                        // Task-notification followups are autonomous work triggered by a
+                        // task-notification system message, not by the user's prompt.
+                        // They should not influence the user-turn lifecycle (stop reason,
+                        // slash-command output forwarding) but their cost is real.
+                        const isTaskNotification = message.origin?.kind === "task-notification";
                         // Send usage_update notification
                         if (lastAssistantTotalUsage !== null) {
                             await this.client.sessionUpdate({
@@ -570,11 +575,16 @@ export class ClaudeAcpAgent {
                                         amount: message.total_cost_usd,
                                         currency: "USD",
                                     },
+                                    ...(message.origin && {
+                                        _meta: { "_claude/origin": message.origin },
+                                    }),
                                 },
                             });
                         }
                         if (session.cancelled) {
-                            stopReason = "cancelled";
+                            if (!isTaskNotification) {
+                                stopReason = "cancelled";
+                            }
                             break;
                         }
                         switch (message.subtype) {
@@ -583,7 +593,9 @@ export class ClaudeAcpAgent {
                                     throw RequestError.authRequired();
                                 }
                                 if (message.stop_reason === "max_tokens") {
-                                    stopReason = "max_tokens";
+                                    if (!isTaskNotification) {
+                                        stopReason = "max_tokens";
+                                    }
                                     break;
                                 }
                                 if (message.is_error) {
@@ -591,7 +603,9 @@ export class ClaudeAcpAgent {
                                 }
                                 // For local-only commands (no model invocation), the result
                                 // text is the command output — forward it to the client.
-                                if (isLocalOnlyCommand) {
+                                // Task-notification followups never originate from a user
+                                // slash command, so skip the forwarding for them.
+                                if (isLocalOnlyCommand && !isTaskNotification) {
                                     for (const notification of toAcpNotifications(message.result, "assistant", params.sessionId, this.toolUseCache, this.client, this.logger)) {
                                         await this.client.sessionUpdate(notification);
                                     }
@@ -600,13 +614,17 @@ export class ClaudeAcpAgent {
                             }
                             case "error_during_execution": {
                                 if (message.stop_reason === "max_tokens") {
-                                    stopReason = "max_tokens";
+                                    if (!isTaskNotification) {
+                                        stopReason = "max_tokens";
+                                    }
                                     break;
                                 }
                                 if (message.is_error) {
                                     throw RequestError.internalError(errorKindData(lastAssistantError), message.errors.join(", ") || message.subtype);
                                 }
-                                stopReason = "end_turn";
+                                if (!isTaskNotification) {
+                                    stopReason = "end_turn";
+                                }
                                 break;
                             }
                             case "error_max_budget_usd":
@@ -615,7 +633,9 @@ export class ClaudeAcpAgent {
                                 if (message.is_error) {
                                     throw RequestError.internalError(errorKindData(lastAssistantError), message.errors.join(", ") || message.subtype);
                                 }
-                                stopReason = "max_turn_requests";
+                                if (!isTaskNotification) {
+                                    stopReason = "max_turn_requests";
+                                }
                                 break;
                             default:
                                 unreachable(message, this.logger);
@@ -1437,10 +1457,19 @@ export class ClaudeAcpAgent {
             !this.gatewayAuthMeta) {
             throw RequestError.authRequired(undefined, "This integration does not support using claude.ai subscriptions.");
         }
-        const models = await getAvailableModels(q, initializationResult.models, settingsManager, this.logger);
+        // Apply user's `availableModels` allowlist from settings.json before any
+        // downstream model handling. The SDK only enforces this allowlist in its
+        // own UI, not in `initializationResult.models`, so we filter here to keep
+        // configOptions, the current-model resolver, and the stored modelInfos
+        // consistent with what the user configured.
+        const settingsAvailableModels = settingsManager.getSettings().availableModels;
+        const allowedModels = Array.isArray(settingsAvailableModels)
+            ? applyAvailableModelsAllowlist(initializationResult.models, settingsAvailableModels)
+            : initializationResult.models;
+        const models = await getAvailableModels(q, allowedModels, settingsManager, this.logger);
         // Gate `auto` (and future model-specific modes) on the resolved model's
         // `ModelInfo`. See `buildAvailableModes` for the canonical SDK signal.
-        const currentModelInfo = initializationResult.models.find((m) => m.value === models.currentModelId);
+        const currentModelInfo = allowedModels.find((m) => m.value === models.currentModelId);
         const availableModes = buildAvailableModes(currentModelInfo);
         // Clamp `permissionMode` if the resolved session does not offer it. The
         // common case is `permissions.defaultMode: "auto"` resolving to a model
@@ -1473,7 +1502,7 @@ export class ClaudeAcpAgent {
             currentModeId: effectiveMode,
             availableModes,
         };
-        const configOptions = buildConfigOptions(modes, models, initializationResult.models, settingsManager.getSettings().effortLevel);
+        const configOptions = buildConfigOptions(modes, models, allowedModels, settingsManager.getSettings().effortLevel);
         // Apply the initial effort level to the SDK so it matches the UI default
         const initialEffort = configOptions.find((o) => o.id === "effort");
         if (initialEffort && typeof initialEffort.currentValue === "string") {
@@ -1496,7 +1525,7 @@ export class ClaudeAcpAgent {
             },
             modes,
             models,
-            modelInfos: initializationResult.models,
+            modelInfos: allowedModels,
             configOptions,
             promptRunning: false,
             pendingMessages: new Map(),
@@ -1518,7 +1547,9 @@ function shouldEmitRawMessage(config, message) {
         return true;
     if (config === false)
         return false;
-    return config.some((f) => f.type === message.type && (f.subtype === undefined || f.subtype === message.subtype));
+    return config.some((f) => f.type === message.type &&
+        (f.subtype === undefined || f.subtype === message.subtype) &&
+        (f.origin === undefined || f.origin === message.origin?.kind));
 }
 function sessionUsage(session) {
     return {
@@ -1764,6 +1795,49 @@ function resolveSettingsModel(models, settingsModel, logger) {
     }
     return resolveModelPreference(models, settingsModel);
 }
+/**
+ * Restrict the SDK's model list to the user's `availableModels` allowlist
+ * (already merged-and-deduped across settings sources by `SettingsManager`).
+ * The user's exact entries become the model IDs surfaced via configOptions
+ * and passed to `setModel`, which prevents Claude Code from silently
+ * substituting a date-pinned variant (e.g. `haiku` →
+ * `claude-haiku-4-5-20251001`) that the user may not have access to.
+ *
+ * Display info and capability flags are copied from the closest SDK match so
+ * the UI still renders sensible names and effort levels.
+ *
+ * Semantics from https://code.claude.com/docs/en/model-config#restrict-model-selection:
+ * - `undefined` is handled by the caller (no allowlist applied).
+ * - The Default option is unaffected by `availableModels` — it always remains
+ *   available, even when the allowlist is `[]`.
+ */
+function applyAvailableModelsAllowlist(sdkModels, allowlist) {
+    // Default is always preserved per the docs. Synthesize one if the SDK
+    // didn't surface it so downstream code (e.g. `getAvailableModels` picking
+    // `models[0]` as a fallback) still has something to work with.
+    const defaultModel = sdkModels.find((m) => m.value === "default") ?? {
+        value: "default",
+        displayName: "Default",
+        description: "",
+    };
+    const result = [defaultModel];
+    const seen = new Set([defaultModel.value]);
+    const sdkModelsWithoutDefault = sdkModels.filter((m) => m.value !== "default");
+    for (const entry of allowlist) {
+        const trimmed = entry.trim();
+        if (!trimmed || seen.has(trimmed))
+            continue;
+        const sdkMatch = resolveModelPreference(sdkModelsWithoutDefault, trimmed);
+        if (sdkMatch) {
+            result.push({ ...sdkMatch, value: trimmed });
+        }
+        else {
+            result.push({ value: trimmed, displayName: trimmed, description: "" });
+        }
+        seen.add(trimmed);
+    }
+    return result;
+}
 async function getAvailableModels(query, models, settingsManager, logger) {
     const settings = settingsManager.getSettings();
     let currentModel = models[0];
@@ -2001,7 +2075,17 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                             onPostToolUseHook: async (toolUseId, toolInput, toolResponse) => {
                                 const toolUse = toolUseCache[toolUseId];
                                 if (toolUse) {
-                                    const editDiff = toolUse.name === "Edit" ? toolUpdateFromEditToolResponse(toolResponse) : {};
+                                    // Both `Edit` and `Write` produce a structuredPatch in their
+                                    // PostToolUse tool_response. For Edit the diff replaces the
+                                    // optimistic content built at tool_use time. For Write the
+                                    // optimistic content (built from `input.content` alone with
+                                    // `oldText: null`) shows "creation" semantics regardless of
+                                    // whether the file existed; the structuredPatch from the
+                                    // hook lets us emit the real diff for `type: "update"`. The
+                                    // helper returns `{}` if the response shape isn't usable.
+                                    const editDiff = toolUse.name === "Edit" || toolUse.name === "Write"
+                                        ? toolUpdateFromDiffToolResponse(toolResponse)
+                                        : {};
                                     const update = {
                                         _meta: {
                                             claudeCode: {

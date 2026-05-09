@@ -17,6 +17,7 @@ export interface ClaudeCodeSettings {
     env?: Record<string, string>;
     model?: string;
     effortLevel?: string;
+    availableModels?: string[];
 }
 /**
  * Gets the enterprise settings path based on the current platform

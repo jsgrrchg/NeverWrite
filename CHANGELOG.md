@@ -47,6 +47,7 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ### Changed
 
+- Updated the embedded Claude ACP runtime to upstream `0.33.1`, keeping the vendored Claude agent adapter aligned with the latest available upstream release.
 - Changed file-tree path copy actions to consistently use "Copy Full Path" and copy absolute paths for notes, folders, PDFs, and sidebar files.
 
 ### Fixed

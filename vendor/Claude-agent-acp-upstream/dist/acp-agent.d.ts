@@ -1,5 +1,5 @@
 import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModelState, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModelRequest, SetSessionModelResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, TerminalHandle, TerminalOutputResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -58,6 +58,7 @@ type BackgroundTerminal = {
 export type SDKMessageFilter = {
     type: string;
     subtype?: string;
+    origin?: SDKMessageOrigin["kind"];
 };
 /**
  * Extra metadata that can be given when creating a new session.
