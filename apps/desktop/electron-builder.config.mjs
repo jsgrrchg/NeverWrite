@@ -207,14 +207,13 @@ export default {
         deleteAppDataOnUninstall: false,
     },
     linux: {
-        target: [
-            { target: "AppImage", arch: ["x64", "arm64"] }
-        ],
+        icon: path.join("build", "icons", "icon.png"),
+        target: [{ target: "AppImage", arch: ["x64", "arm64"] }],
         category: "Utility",
         executableName: "neverwrite",
-        artifactName: "${productName}-${version}-${arch}.AppImage"
+        artifactName: "${productName}-${version}-${arch}.AppImage",
     },
     appImage: {
-        artifactName: "${productName}-${version}-${arch}.AppImage"
-    }
+        artifactName: "${productName}-${version}-${arch}.AppImage",
+    },
 };
