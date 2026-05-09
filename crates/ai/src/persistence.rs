@@ -326,15 +326,25 @@ fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSession
     read_json_file(&session_meta_path(session_dir))
 }
 
-fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
-    recover_incomplete_compaction(session_dir)?;
-    read_json_file(&session_index_path(session_dir))
+fn indexed_transcript_bytes(index: &PersistedTranscriptIndex) -> u64 {
+    index.message_lengths.iter().copied().sum()
 }
 
 fn validate_index(index: &PersistedTranscriptIndex) -> Result<(), String> {
     let count = index.message_offsets.len();
     if index.message_lengths.len() != count || index.message_hashes.len() != count {
         return Err("Persisted transcript index is inconsistent.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_lazy_session_files(
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+) -> Result<(), String> {
+    validate_index(index)?;
+    if index.message_offsets.len() != metadata.message_count {
+        return Err("Persisted transcript metadata and index are inconsistent.".to_string());
     }
     Ok(())
 }
@@ -622,10 +632,17 @@ fn load_lazy_history_page_from_dir(
     start_index: usize,
     limit: usize,
 ) -> Result<PersistedSessionHistoryPage, String> {
-    let metadata = load_session_metadata_from_dir(session_dir)?;
-    let index = load_session_index_from_dir(session_dir)?;
-    validate_index(&index)?;
+    let (metadata, index) = load_repaired_lazy_session_files(session_dir)?;
+    read_lazy_history_page_from_files(session_dir, &metadata, &index, start_index, limit)
+}
 
+fn read_lazy_history_page_from_files(
+    session_dir: &Path,
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+    start_index: usize,
+    limit: usize,
+) -> Result<PersistedSessionHistoryPage, String> {
     let total_messages = metadata.message_count;
     let start = start_index.min(total_messages);
     let end = start.saturating_add(limit).min(total_messages);
@@ -644,7 +661,7 @@ fn load_lazy_history_page_from_dir(
     }
 
     Ok(PersistedSessionHistoryPage {
-        session_id: metadata.session_id,
+        session_id: metadata.session_id.clone(),
         total_messages,
         start_index: start,
         end_index: end,
@@ -718,6 +735,45 @@ fn should_compact_transcript(
     }
 
     physical_bytes >= indexed_bytes.saturating_mul(policy.max_physical_to_indexed_ratio.max(1))
+}
+
+fn compact_transcript_if_needed(
+    session_dir: &Path,
+    metadata: &PersistedSessionMetadata,
+    index: &PersistedTranscriptIndex,
+    policy: TranscriptCompactionPolicy,
+) -> Result<PersistedTranscriptIndex, String> {
+    validate_lazy_session_files(metadata, index)?;
+
+    let transcript_path = session_transcript_path(session_dir);
+    let physical_bytes = fs::metadata(&transcript_path)
+        .map_err(|error| error.to_string())?
+        .len();
+    let indexed_bytes = indexed_transcript_bytes(index);
+
+    if should_compact_transcript(physical_bytes, indexed_bytes, policy) {
+        persist_compacted_lazy_history(session_dir, metadata, index)
+    } else {
+        Ok(index.clone())
+    }
+}
+
+fn load_repaired_lazy_session_files(
+    session_dir: &Path,
+) -> Result<(PersistedSessionMetadata, PersistedTranscriptIndex), String> {
+    recover_incomplete_compaction(session_dir)?;
+
+    let metadata = read_json_file(&session_meta_path(session_dir))?;
+    let index = read_json_file(&session_index_path(session_dir))?;
+    let index = compact_transcript_if_needed(
+        session_dir,
+        &metadata,
+        &index,
+        DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
+    )?;
+    validate_lazy_session_files(&metadata, &index)?;
+
+    Ok((metadata, index))
 }
 
 fn unique_session_sidecar_path(path: &Path, label: &str, suffix: u128) -> Result<PathBuf, String> {
@@ -853,7 +909,7 @@ fn persist_compacted_lazy_history(
     session_dir: &Path,
     metadata: &PersistedSessionMetadata,
     source_index: &PersistedTranscriptIndex,
-) -> Result<(), String> {
+) -> Result<PersistedTranscriptIndex, String> {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -942,16 +998,23 @@ fn persist_compacted_lazy_history(
     let _ = fs::remove_file(&marker_path);
     cleanup_session_sidecars(&[&metadata_backup, &index_backup, &transcript_backup]);
 
-    Ok(())
+    Ok(compacted_index)
 }
 
 fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMessage>, String> {
-    let metadata = load_session_metadata_from_dir(session_dir)?;
+    let (metadata, index) = load_repaired_lazy_session_files(session_dir)?;
     if metadata.message_count == 0 {
         return Ok(vec![]);
     }
 
-    Ok(load_lazy_history_page_from_dir(session_dir, 0, metadata.message_count)?.messages)
+    Ok(read_lazy_history_page_from_files(
+        session_dir,
+        &metadata,
+        &index,
+        0,
+        metadata.message_count,
+    )?
+    .messages)
 }
 
 pub fn save_session_history(
@@ -1064,7 +1127,7 @@ fn save_session_history_with_compaction_policy(
     let physical_bytes = fs::metadata(&transcript_path)
         .map_err(|error| error.to_string())?
         .len();
-    let indexed_bytes = next_index.message_lengths.iter().copied().sum::<u64>();
+    let indexed_bytes = indexed_transcript_bytes(&next_index);
 
     if should_compact_transcript(physical_bytes, indexed_bytes, compaction_policy) {
         persist_compacted_lazy_history(&session_dir, &next_metadata, &next_index)?;
@@ -1682,6 +1745,53 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("transcript lines should read")
             .len()
+    }
+
+    fn disabled_compaction_policy() -> TranscriptCompactionPolicy {
+        TranscriptCompactionPolicy {
+            min_obsolete_bytes: u64::MAX,
+            max_physical_to_indexed_ratio: u64::MAX,
+            force_physical_bytes: u64::MAX,
+        }
+    }
+
+    fn persist_default_compaction_candidate(vault_root: &Path) -> (usize, u64, String) {
+        let history = sample_history();
+        save_session_history_with_compaction_policy(
+            vault_root,
+            &history,
+            disabled_compaction_policy(),
+        )
+        .expect("base history should persist");
+
+        let mut final_content = String::new();
+        for version in 0..6 {
+            final_content = format!(
+                "Assistant reply load repair version {version}: {}",
+                "obsolete transcript bytes ".repeat(45_000)
+            );
+            save_session_history_with_compaction_policy(
+                vault_root,
+                &assistant_update_patch(final_content.clone(), 30 + version),
+                disabled_compaction_policy(),
+            )
+            .expect("inflating update should persist");
+        }
+
+        let inflated_lines = transcript_line_count(vault_root, "session-1");
+        let inflated_bytes = fs::metadata(storage_session_transcript_file(vault_root, "session-1"))
+            .expect("inflated transcript metadata should load")
+            .len();
+        let index = load_session_index(vault_root, "session-1").expect("index should load");
+
+        assert!(inflated_lines > history.messages.len());
+        assert!(should_compact_transcript(
+            inflated_bytes,
+            indexed_transcript_bytes(&index),
+            DEFAULT_TRANSCRIPT_COMPACTION_POLICY
+        ));
+
+        (inflated_lines, inflated_bytes, final_content)
     }
 
     #[test]
@@ -2400,6 +2510,74 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&histories[0].messages).expect("messages should serialize"),
             serde_json::to_value(&expected_messages).expect("messages should serialize"),
+        );
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compacts_inflated_transcript_when_loading_history_page() {
+        let dir = make_temp_dir();
+        let (_inflated_lines, inflated_bytes, final_content) =
+            persist_default_compaction_candidate(&dir);
+
+        let page =
+            load_session_history_page(&dir, "session-1", 0, 2).expect("history page should load");
+
+        let compacted_lines = transcript_line_count(&dir, "session-1");
+        let compacted_bytes = fs::metadata(storage_session_transcript_file(&dir, "session-1"))
+            .expect("compacted transcript metadata should load")
+            .len();
+
+        assert_eq!(compacted_lines, page.total_messages);
+        assert_eq!(page.total_messages, 2);
+        assert_eq!(page.messages[0].id, "user:1");
+        assert_eq!(page.messages[1].content, final_content);
+        assert!(compacted_bytes < inflated_bytes);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compacts_inflated_transcript_when_loading_all_messages() {
+        let dir = make_temp_dir();
+        let (_inflated_lines, inflated_bytes, final_content) =
+            persist_default_compaction_candidate(&dir);
+
+        let histories = load_all_session_histories(&dir, true).expect("full history should load");
+
+        let compacted_lines = transcript_line_count(&dir, "session-1");
+        let compacted_bytes = fs::metadata(storage_session_transcript_file(&dir, "session-1"))
+            .expect("compacted transcript metadata should load")
+            .len();
+
+        assert_eq!(histories.len(), 1);
+        assert_eq!(histories[0].messages.len(), 2);
+        assert_eq!(histories[0].messages[0].id, "user:1");
+        assert_eq!(histories[0].messages[1].content, final_content);
+        assert_eq!(compacted_lines, histories[0].message_count.unwrap());
+        assert!(compacted_bytes < inflated_bytes);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn does_not_compact_inflated_transcript_when_loading_summaries_only() {
+        let dir = make_temp_dir();
+        let (inflated_lines, inflated_bytes, _final_content) =
+            persist_default_compaction_candidate(&dir);
+
+        let summaries =
+            load_all_session_histories(&dir, false).expect("history summaries should load");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].messages.len(), 0);
+        assert_eq!(transcript_line_count(&dir, "session-1"), inflated_lines);
+        assert_eq!(
+            fs::metadata(storage_session_transcript_file(&dir, "session-1"))
+                .expect("inflated transcript metadata should load")
+                .len(),
+            inflated_bytes
         );
 
         fs::remove_dir_all(dir).ok();
