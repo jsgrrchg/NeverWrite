@@ -332,6 +332,7 @@ export function createAppWindow(
         resizable: getBooleanOption(options, "resizable", true),
         skipTaskbar: getBooleanOption(options, "skipTaskbar", false),
         alwaysOnTop: getBooleanOption(options, "alwaysOnTop", false),
+        autoHideMenuBar: !isMac,
         ...(chromeless
             ? {
                   frame: false,

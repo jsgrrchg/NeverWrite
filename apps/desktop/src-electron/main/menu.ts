@@ -323,6 +323,11 @@ export async function syncRecentVaultsForElectron(rawVaults: unknown) {
 }
 
 export async function installNativeMenus() {
+    if (process.platform !== "darwin") {
+        Menu.setApplicationMenu(null);
+        return;
+    }
+
     Menu.setApplicationMenu(buildApplicationMenu());
     await refreshDockMenu();
 }
