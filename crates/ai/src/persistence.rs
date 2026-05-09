@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,15 @@ const PRODUCT_STATE_DIR_NAME: &str = ".neverwrite";
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
+const SESSION_COMPACTION_MARKER_FILE: &str = "compact-state.json";
 const FORMAT_VERSION: u32 = 1;
+const MB: u64 = 1024 * 1024;
+const DEFAULT_TRANSCRIPT_COMPACTION_POLICY: TranscriptCompactionPolicy =
+    TranscriptCompactionPolicy {
+        min_obsolete_bytes: 4 * MB,
+        max_physical_to_indexed_ratio: 2,
+        force_physical_bytes: 64 * MB,
+    };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedMessage {
@@ -136,6 +144,24 @@ struct PersistedTranscriptIndex {
     message_hashes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TranscriptCompactionPolicy {
+    min_obsolete_bytes: u64,
+    max_physical_to_indexed_ratio: u64,
+    force_physical_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TranscriptCompactionState {
+    version: u32,
+    metadata_tmp: String,
+    index_tmp: String,
+    transcript_tmp: String,
+    metadata_backup: String,
+    index_backup: String,
+    transcript_backup: String,
+}
+
 #[derive(Debug, Default)]
 struct LegacySessionArtifacts {
     file_path: Option<PathBuf>,
@@ -177,6 +203,10 @@ fn session_index_path(session_dir: &Path) -> PathBuf {
 
 fn session_transcript_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_TRANSCRIPT_FILE)
+}
+
+fn session_compaction_marker_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(SESSION_COMPACTION_MARKER_FILE)
 }
 
 fn storage_session_meta_file(vault_root: &Path, session_id: &str) -> PathBuf {
@@ -272,6 +302,11 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
     Ok(())
 }
 
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
 fn load_session_metadata(
     vault_root: &Path,
     session_id: &str,
@@ -287,10 +322,12 @@ fn load_session_index(
 }
 
 fn load_session_metadata_from_dir(session_dir: &Path) -> Result<PersistedSessionMetadata, String> {
+    recover_incomplete_compaction(session_dir)?;
     read_json_file(&session_meta_path(session_dir))
 }
 
 fn load_session_index_from_dir(session_dir: &Path) -> Result<PersistedTranscriptIndex, String> {
+    recover_incomplete_compaction(session_dir)?;
     read_json_file(&session_index_path(session_dir))
 }
 
@@ -558,6 +595,7 @@ fn write_full_lazy_history(
 }
 
 fn ensure_lazy_session_from_legacy(vault_root: &Path, session_id: &str) -> Result<(), String> {
+    recover_incomplete_compaction(&storage_session_dir(vault_root, session_id))?;
     if storage_session_is_complete(vault_root, session_id) {
         return Ok(());
     }
@@ -661,6 +699,252 @@ fn read_indexed_transcript_message(
     }
 }
 
+fn should_compact_transcript(
+    physical_bytes: u64,
+    indexed_bytes: u64,
+    policy: TranscriptCompactionPolicy,
+) -> bool {
+    if physical_bytes <= indexed_bytes {
+        return false;
+    }
+
+    let obsolete_bytes = physical_bytes - indexed_bytes;
+    if physical_bytes >= policy.force_physical_bytes {
+        return true;
+    }
+
+    if obsolete_bytes < policy.min_obsolete_bytes {
+        return false;
+    }
+
+    physical_bytes >= indexed_bytes.saturating_mul(policy.max_physical_to_indexed_ratio.max(1))
+}
+
+fn unique_session_sidecar_path(path: &Path, label: &str, suffix: u128) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| "AI history path has no file name.".to_string())?;
+    let mut sidecar_name = file_name.to_os_string();
+    sidecar_name.push(format!(".{label}.{pid}.{suffix}", pid = std::process::id()));
+    Ok(path.with_file_name(sidecar_name))
+}
+
+fn session_sidecar_file_name(path: &Path) -> Result<String, String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToString::to_string)
+        .ok_or_else(|| "AI history sidecar path has no valid file name.".to_string())
+}
+
+fn session_sidecar_from_marker(session_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let path = Path::new(file_name);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err("AI history compaction marker contains an invalid sidecar path.".to_string());
+    }
+    Ok(session_dir.join(path))
+}
+
+fn write_compacted_transcript_tmp(
+    session_dir: &Path,
+    source_index: &PersistedTranscriptIndex,
+    transcript_tmp: &Path,
+) -> Result<PersistedTranscriptIndex, String> {
+    validate_index(source_index)?;
+
+    let mut source =
+        File::open(session_transcript_path(session_dir)).map_err(|error| error.to_string())?;
+    let mut target = File::create(transcript_tmp).map_err(|error| error.to_string())?;
+    let mut offsets = Vec::with_capacity(source_index.message_offsets.len());
+    let mut lengths = Vec::with_capacity(source_index.message_lengths.len());
+    let mut hashes = Vec::with_capacity(source_index.message_hashes.len());
+    let mut cursor = 0_u64;
+
+    for idx in 0..source_index.message_offsets.len() {
+        let message = read_indexed_transcript_message(
+            &mut source,
+            source_index.message_offsets[idx],
+            source_index.message_lengths[idx] as usize,
+        )?;
+        let bytes = serialize_message_bytes(&message)?;
+        let hash = hash_message(&message)?;
+
+        target
+            .write_all(&bytes)
+            .map_err(|error| error.to_string())?;
+        offsets.push(cursor);
+        lengths.push(bytes.len() as u64);
+        hashes.push(hash);
+        cursor += bytes.len() as u64;
+    }
+
+    target.flush().map_err(|error| error.to_string())?;
+
+    Ok(PersistedTranscriptIndex {
+        version: FORMAT_VERSION,
+        message_offsets: offsets,
+        message_lengths: lengths,
+        message_hashes: hashes,
+    })
+}
+
+fn restore_session_file_backups(replacements: &[(&Path, &Path)]) {
+    for (final_path, backup_path) in replacements.iter().rev() {
+        if backup_path.exists() {
+            let _ = fs::remove_file(final_path);
+            let _ = fs::rename(backup_path, final_path);
+        }
+    }
+}
+
+fn cleanup_session_sidecars(paths: &[&Path]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn recover_incomplete_compaction(session_dir: &Path) -> Result<(), String> {
+    let marker_path = session_compaction_marker_path(session_dir);
+    if !marker_path.exists() {
+        return Ok(());
+    }
+
+    let state: TranscriptCompactionState = read_json_file(&marker_path)?;
+    let metadata_tmp = session_sidecar_from_marker(session_dir, &state.metadata_tmp)?;
+    let index_tmp = session_sidecar_from_marker(session_dir, &state.index_tmp)?;
+    let transcript_tmp = session_sidecar_from_marker(session_dir, &state.transcript_tmp)?;
+    let metadata_backup = session_sidecar_from_marker(session_dir, &state.metadata_backup)?;
+    let index_backup = session_sidecar_from_marker(session_dir, &state.index_backup)?;
+    let transcript_backup = session_sidecar_from_marker(session_dir, &state.transcript_backup)?;
+    let metadata_path = session_meta_path(session_dir);
+    let index_path = session_index_path(session_dir);
+    let transcript_path = session_transcript_path(session_dir);
+
+    let backup_pairs = [
+        (transcript_path.as_path(), transcript_backup.as_path()),
+        (index_path.as_path(), index_backup.as_path()),
+        (metadata_path.as_path(), metadata_backup.as_path()),
+    ];
+    restore_session_file_backups(&backup_pairs);
+    cleanup_session_sidecars(&[
+        &metadata_tmp,
+        &index_tmp,
+        &transcript_tmp,
+        &metadata_backup,
+        &index_backup,
+        &transcript_backup,
+        &marker_path,
+    ]);
+
+    Ok(())
+}
+
+fn abort_compacted_lazy_history(
+    marker_path: &Path,
+    backup_pairs: &[(&Path, &Path)],
+    sidecars: &[&Path],
+) {
+    restore_session_file_backups(backup_pairs);
+    cleanup_session_sidecars(sidecars);
+    let _ = fs::remove_file(marker_path);
+}
+
+fn persist_compacted_lazy_history(
+    session_dir: &Path,
+    metadata: &PersistedSessionMetadata,
+    source_index: &PersistedTranscriptIndex,
+) -> Result<(), String> {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let metadata_path = session_meta_path(session_dir);
+    let index_path = session_index_path(session_dir);
+    let transcript_path = session_transcript_path(session_dir);
+    let metadata_tmp = unique_session_sidecar_path(&metadata_path, "compact-tmp", suffix)?;
+    let index_tmp = unique_session_sidecar_path(&index_path, "compact-tmp", suffix)?;
+    let transcript_tmp = unique_session_sidecar_path(&transcript_path, "compact-tmp", suffix)?;
+    let metadata_backup = unique_session_sidecar_path(&metadata_path, "compact-bak", suffix)?;
+    let index_backup = unique_session_sidecar_path(&index_path, "compact-bak", suffix)?;
+    let transcript_backup = unique_session_sidecar_path(&transcript_path, "compact-bak", suffix)?;
+    let marker_path = session_compaction_marker_path(session_dir);
+
+    let compacted_index =
+        match write_compacted_transcript_tmp(session_dir, source_index, &transcript_tmp) {
+            Ok(index) => index,
+            Err(error) => {
+                cleanup_session_sidecars(&[&metadata_tmp, &index_tmp, &transcript_tmp]);
+                return Err(error);
+            }
+        };
+    if let Err(error) = write_json_file(&index_tmp, &compacted_index) {
+        cleanup_session_sidecars(&[&metadata_tmp, &index_tmp, &transcript_tmp]);
+        return Err(error);
+    }
+    if let Err(error) = write_json_file(&metadata_tmp, metadata) {
+        cleanup_session_sidecars(&[&metadata_tmp, &index_tmp, &transcript_tmp]);
+        return Err(error);
+    }
+
+    let backup_pairs = [
+        (transcript_path.as_path(), transcript_backup.as_path()),
+        (index_path.as_path(), index_backup.as_path()),
+        (metadata_path.as_path(), metadata_backup.as_path()),
+    ];
+    let sidecars = [
+        metadata_tmp.as_path(),
+        index_tmp.as_path(),
+        transcript_tmp.as_path(),
+        metadata_backup.as_path(),
+        index_backup.as_path(),
+        transcript_backup.as_path(),
+    ];
+    let marker = TranscriptCompactionState {
+        version: FORMAT_VERSION,
+        metadata_tmp: session_sidecar_file_name(&metadata_tmp)?,
+        index_tmp: session_sidecar_file_name(&index_tmp)?,
+        transcript_tmp: session_sidecar_file_name(&transcript_tmp)?,
+        metadata_backup: session_sidecar_file_name(&metadata_backup)?,
+        index_backup: session_sidecar_file_name(&index_backup)?,
+        transcript_backup: session_sidecar_file_name(&transcript_backup)?,
+    };
+    write_json_atomic(&marker_path, &marker)?;
+
+    // The marker lets the next load/save roll back if the app exits between
+    // these renames. Without it, a crash could leave index offsets and the
+    // transcript file from different generations.
+    if let Err(error) = fs::rename(&transcript_path, &transcript_backup) {
+        abort_compacted_lazy_history(&marker_path, &[], &sidecars);
+        return Err(error.to_string());
+    }
+    if let Err(error) = fs::rename(&index_path, &index_backup) {
+        abort_compacted_lazy_history(&marker_path, &backup_pairs[..1], &sidecars);
+        return Err(error.to_string());
+    }
+    if let Err(error) = fs::rename(&metadata_path, &metadata_backup) {
+        abort_compacted_lazy_history(&marker_path, &backup_pairs[..2], &sidecars);
+        return Err(error.to_string());
+    }
+
+    if let Err(error) = fs::rename(&transcript_tmp, &transcript_path) {
+        abort_compacted_lazy_history(&marker_path, &backup_pairs, &sidecars);
+        return Err(error.to_string());
+    }
+    if let Err(error) = fs::rename(&index_tmp, &index_path) {
+        abort_compacted_lazy_history(&marker_path, &backup_pairs, &sidecars);
+        return Err(error.to_string());
+    }
+    if let Err(error) = fs::rename(&metadata_tmp, &metadata_path) {
+        abort_compacted_lazy_history(&marker_path, &backup_pairs, &sidecars);
+        return Err(error.to_string());
+    }
+
+    let _ = fs::remove_file(&marker_path);
+    cleanup_session_sidecars(&[&metadata_backup, &index_backup, &transcript_backup]);
+
+    Ok(())
+}
+
 fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMessage>, String> {
     let metadata = load_session_metadata_from_dir(session_dir)?;
     if metadata.message_count == 0 {
@@ -673,6 +957,18 @@ fn load_all_lazy_messages_from_dir(session_dir: &Path) -> Result<Vec<PersistedMe
 pub fn save_session_history(
     vault_root: &Path,
     history: &PersistedSessionHistory,
+) -> Result<(), String> {
+    save_session_history_with_compaction_policy(
+        vault_root,
+        history,
+        DEFAULT_TRANSCRIPT_COMPACTION_POLICY,
+    )
+}
+
+fn save_session_history_with_compaction_policy(
+    vault_root: &Path,
+    history: &PersistedSessionHistory,
+    compaction_policy: TranscriptCompactionPolicy,
 ) -> Result<(), String> {
     ensure_lazy_session_from_legacy(vault_root, &history.session_id)?;
     let (start_index, total_count) = history_window_bounds(history)?;
@@ -763,8 +1059,20 @@ pub fn save_session_history(
         message_hashes: next_hashes,
     };
 
-    write_json_atomic(&metadata_path, &next_metadata)?;
-    write_json_atomic(&index_path, &next_index)?;
+    let session_dir = storage_session_dir(vault_root, &history.session_id);
+    let transcript_path = session_transcript_path(&session_dir);
+    let physical_bytes = fs::metadata(&transcript_path)
+        .map_err(|error| error.to_string())?
+        .len();
+    let indexed_bytes = next_index.message_lengths.iter().copied().sum::<u64>();
+
+    if should_compact_transcript(physical_bytes, indexed_bytes, compaction_policy) {
+        persist_compacted_lazy_history(&session_dir, &next_metadata, &next_index)?;
+    } else {
+        write_json_atomic(&metadata_path, &next_metadata)?;
+        write_json_atomic(&index_path, &next_index)?;
+    }
+
     remove_legacy_history_artifacts(vault_root, &history.session_id)?;
 
     Ok(())
@@ -1340,6 +1648,69 @@ mod tests {
         history
     }
 
+    fn assistant_update_patch(content: String, updated_at: u64) -> PersistedSessionHistory {
+        let mut message = sample_history().messages[1].clone();
+        message.content = content;
+        message.timestamp = updated_at;
+
+        PersistedSessionHistory {
+            version: 1,
+            session_id: "session-1".to_string(),
+            parent_session_id: None,
+            runtime_id: Some("codex-acp".to_string()),
+            model_id: "test-model".to_string(),
+            mode_id: "default".to_string(),
+            models: None,
+            modes: None,
+            config_options: None,
+            created_at: 10,
+            updated_at,
+            start_index: Some(1),
+            message_count: Some(2),
+            title: Some("Hello".to_string()),
+            custom_title: None,
+            preview: Some(message.content.clone()),
+            messages: vec![message],
+        }
+    }
+
+    fn transcript_line_count(vault_root: &Path, session_id: &str) -> usize {
+        let file = File::open(storage_session_transcript_file(vault_root, session_id))
+            .expect("transcript should open");
+        BufReader::new(file)
+            .lines()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("transcript lines should read")
+            .len()
+    }
+
+    #[test]
+    fn default_compaction_policy_compacts_real_world_obsolete_overhead() {
+        assert!(should_compact_transcript(
+            6 * MB + 600 * 1024,
+            MB,
+            DEFAULT_TRANSCRIPT_COMPACTION_POLICY
+        ));
+    }
+
+    #[test]
+    fn default_compaction_policy_ignores_small_ratio_only_overhead() {
+        assert!(!should_compact_transcript(
+            100 * 1024,
+            40 * 1024,
+            DEFAULT_TRANSCRIPT_COMPACTION_POLICY
+        ));
+    }
+
+    #[test]
+    fn default_compaction_policy_forces_huge_transcripts_with_any_obsolete_bytes() {
+        assert!(should_compact_transcript(
+            64 * MB,
+            64 * MB - 1,
+            DEFAULT_TRANSCRIPT_COMPACTION_POLICY
+        ));
+    }
+
     #[test]
     fn session_storage_key_is_stable_and_deterministic() {
         let first = session_storage_key("session-1");
@@ -1695,6 +2066,172 @@ mod tests {
         assert_eq!(histories[0].messages[0].id, "user:1");
         assert_eq!(histories[0].messages[1].content, "Assistant reply (edited)");
         assert_eq!(histories[0].messages[2].id, "plan:1");
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compacts_obsolete_transcript_versions_after_repeated_suffix_updates() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        let disabled_compaction = TranscriptCompactionPolicy {
+            min_obsolete_bytes: u64::MAX,
+            max_physical_to_indexed_ratio: u64::MAX,
+            force_physical_bytes: u64::MAX,
+        };
+        let aggressive_compaction = TranscriptCompactionPolicy {
+            min_obsolete_bytes: 1,
+            max_physical_to_indexed_ratio: 2,
+            force_physical_bytes: u64::MAX,
+        };
+
+        save_session_history_with_compaction_policy(&dir, &history, disabled_compaction)
+            .expect("base history should persist");
+
+        for version in 0..12 {
+            let patch = assistant_update_patch(
+                format!(
+                    "Assistant reply update {version}: {}",
+                    "tool output ".repeat(20)
+                ),
+                30 + version,
+            );
+            save_session_history_with_compaction_policy(&dir, &patch, disabled_compaction)
+                .expect("inflating update should persist");
+        }
+
+        let inflated_lines = transcript_line_count(&dir, "session-1");
+        let inflated_bytes = fs::metadata(storage_session_transcript_file(&dir, "session-1"))
+            .expect("inflated transcript metadata should load")
+            .len();
+        assert!(inflated_lines > history.messages.len());
+
+        let final_content = "Assistant reply compacted final state".to_string();
+        let final_patch = assistant_update_patch(final_content.clone(), 100);
+        save_session_history_with_compaction_policy(&dir, &final_patch, aggressive_compaction)
+            .expect("compacting update should persist");
+
+        let compacted_lines = transcript_line_count(&dir, "session-1");
+        let compacted_bytes = fs::metadata(storage_session_transcript_file(&dir, "session-1"))
+            .expect("compacted transcript metadata should load")
+            .len();
+        assert_eq!(compacted_lines, history.messages.len());
+        assert!(compacted_bytes < inflated_bytes);
+
+        let histories = load_all_session_histories(&dir, true).expect("full history should load");
+        assert_eq!(histories.len(), 1);
+        assert_eq!(histories[0].messages.len(), 2);
+        assert_eq!(histories[0].messages[0].id, "user:1");
+        assert_eq!(histories[0].messages[1].id, "assistant:1");
+        assert_eq!(histories[0].messages[1].content, final_content);
+
+        let index = load_session_index(&dir, "session-1").expect("index should load");
+        validate_index(&index).expect("index should be valid");
+        assert_eq!(index.message_offsets.len(), histories[0].messages.len());
+
+        let mut expected_offset = 0_u64;
+        let mut transcript = File::open(storage_session_transcript_file(&dir, "session-1"))
+            .expect("open transcript");
+        for (idx, message) in histories[0].messages.iter().enumerate() {
+            assert_eq!(index.message_offsets[idx], expected_offset);
+            let bytes = serialize_message_bytes(message).expect("message should serialize");
+            assert_eq!(index.message_lengths[idx], bytes.len() as u64);
+            assert_eq!(
+                index.message_hashes[idx],
+                hash_message(message).expect("message should hash")
+            );
+            let indexed_message = read_indexed_transcript_message(
+                &mut transcript,
+                index.message_offsets[idx],
+                index.message_lengths[idx] as usize,
+            )
+            .expect("indexed message should read");
+            assert_eq!(indexed_message.id, message.id);
+            assert_eq!(indexed_message.content, message.content);
+            expected_offset += index.message_lengths[idx];
+        }
+        assert_eq!(expected_offset, compacted_bytes);
+
+        let page = load_session_history_page(&dir, "session-1", 0, 2).expect("page should load");
+        assert_eq!(page.total_messages, 2);
+        assert_eq!(page.messages[1].content, final_content);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn recovers_interrupted_transcript_compaction_before_loading_history() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let session_dir = storage_session_dir(&dir, "session-1");
+        let metadata_path = session_meta_path(&session_dir);
+        let index_path = session_index_path(&session_dir);
+        let transcript_path = session_transcript_path(&session_dir);
+        let metadata_backup = metadata_path.with_file_name("session-meta.json.compact-bak.test");
+        let index_backup = index_path.with_file_name("index.json.compact-bak.test");
+        let transcript_backup = transcript_path.with_file_name("transcript.jsonl.compact-bak.test");
+        let metadata_tmp = metadata_path.with_file_name("session-meta.json.compact-tmp.test");
+        let index_tmp = index_path.with_file_name("index.json.compact-tmp.test");
+        let transcript_tmp = transcript_path.with_file_name("transcript.jsonl.compact-tmp.test");
+
+        let original_metadata = fs::read(&metadata_path).expect("metadata should read");
+        let original_index = fs::read(&index_path).expect("index should read");
+        let original_transcript = fs::read(&transcript_path).expect("transcript should read");
+        fs::copy(&metadata_path, &metadata_backup).expect("metadata backup should write");
+        fs::copy(&index_path, &index_backup).expect("index backup should write");
+        fs::copy(&transcript_path, &transcript_backup).expect("transcript backup should write");
+        fs::write(&metadata_tmp, b"{}").expect("metadata tmp should write");
+        fs::write(&index_tmp, b"{}").expect("index tmp should write");
+        fs::write(&transcript_tmp, b"{\"broken\":true}\n").expect("transcript tmp should write");
+        fs::write(&transcript_path, b"{\"broken\":true}\n")
+            .expect("partial transcript replacement should write");
+
+        let marker = TranscriptCompactionState {
+            version: FORMAT_VERSION,
+            metadata_tmp: session_sidecar_file_name(&metadata_tmp).expect("metadata tmp name"),
+            index_tmp: session_sidecar_file_name(&index_tmp).expect("index tmp name"),
+            transcript_tmp: session_sidecar_file_name(&transcript_tmp)
+                .expect("transcript tmp name"),
+            metadata_backup: session_sidecar_file_name(&metadata_backup)
+                .expect("metadata backup name"),
+            index_backup: session_sidecar_file_name(&index_backup).expect("index backup name"),
+            transcript_backup: session_sidecar_file_name(&transcript_backup)
+                .expect("transcript backup name"),
+        };
+        write_json_atomic(&session_compaction_marker_path(&session_dir), &marker)
+            .expect("marker should write");
+
+        let histories = load_all_session_histories(&dir, true).expect("history should recover");
+        assert_eq!(histories.len(), 1);
+        assert_eq!(histories[0].messages.len(), history.messages.len());
+        assert_eq!(histories[0].messages[0].id, history.messages[0].id);
+        assert_eq!(
+            histories[0].messages[0].content,
+            history.messages[0].content
+        );
+        assert_eq!(histories[0].messages[1].id, history.messages[1].id);
+        assert_eq!(
+            histories[0].messages[1].content,
+            history.messages[1].content
+        );
+        assert_eq!(
+            fs::read(&metadata_path).expect("metadata should be restored"),
+            original_metadata
+        );
+        assert_eq!(
+            fs::read(&index_path).expect("index should be restored"),
+            original_index
+        );
+        assert_eq!(
+            fs::read(&transcript_path).expect("transcript should be restored"),
+            original_transcript
+        );
+        assert!(!session_compaction_marker_path(&session_dir).exists());
+        assert!(!metadata_tmp.exists());
+        assert!(!index_tmp.exists());
+        assert!(!transcript_tmp.exists());
 
         fs::remove_dir_all(dir).ok();
     }
