@@ -16,6 +16,10 @@ import {
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
 } from "../../features/ai/dragEvents";
+import {
+    AGENT_SIDEBAR_DRAG_EVENT,
+    type AgentSidebarDragDetail,
+} from "../../features/ai/agentSidebarDragEvents";
 
 class MockResizeObserver {
     static instances: MockResizeObserver[] = [];
@@ -366,6 +370,69 @@ describe("AppLayout", () => {
                 ),
             );
             vi.advanceTimersByTime(360);
+        });
+
+        expect(
+            screen.queryByTestId("sidebar-peek-overlay"),
+        ).not.toBeInTheDocument();
+    });
+
+    it("keeps the collapsed sidebar peek overlay mounted during agent drags", () => {
+        vi.useFakeTimers();
+        useLayoutStore.setState({ sidebarCollapsed: true });
+
+        render(
+            <AppLayout
+                left={<div>Left</div>}
+                center={<div>Center</div>}
+                right={<div>Right</div>}
+            />,
+        );
+
+        fireEvent.mouseEnter(screen.getByTestId("sidebar-peek-hotspot"));
+        const overlay = screen.getByTestId("sidebar-peek-overlay");
+        expect(overlay).toContainElement(screen.getByText("Left"));
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent<AgentSidebarDragDetail>(
+                    AGENT_SIDEBAR_DRAG_EVENT,
+                    {
+                        detail: {
+                            phase: "start",
+                            x: 40,
+                            y: 40,
+                            sessionId: "session-1",
+                            title: "Dragged agent",
+                        },
+                    },
+                ),
+            );
+        });
+
+        fireEvent.mouseLeave(overlay);
+        act(() => {
+            vi.advanceTimersByTime(400);
+        });
+
+        expect(screen.getByTestId("sidebar-peek-overlay")).toBeInTheDocument();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent<AgentSidebarDragDetail>(
+                    AGENT_SIDEBAR_DRAG_EVENT,
+                    {
+                        detail: {
+                            phase: "end",
+                            x: 600,
+                            y: 400,
+                            sessionId: "session-1",
+                            title: "Dragged agent",
+                        },
+                    },
+                ),
+            );
+            vi.advanceTimersByTime(400);
         });
 
         expect(

@@ -19,6 +19,10 @@ import {
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
 } from "../../features/ai/dragEvents";
+import {
+    AGENT_SIDEBAR_DRAG_EVENT,
+    type AgentSidebarDragDetail,
+} from "../../features/ai/agentSidebarDragEvents";
 
 // Both macOS (native "sidebar" vibrancy) and Windows 11 (native acrylic
 // backgroundMaterial) paint a translucent window material beneath the
@@ -358,9 +362,11 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     ]);
 
     useEffect(() => {
-        const handleFileTreeDrag = (event: Event) => {
-            const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
-                .detail;
+        const handleSidebarOriginDrag = (
+            detail:
+                | FileTreeNoteDragDetail
+                | AgentSidebarDragDetail,
+        ) => {
             if (!detail) return;
             if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
                 sidebarPointerRef.current = {
@@ -376,7 +382,9 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     detail.phase === "start" &&
                     sidebarCollapsed &&
                     sidebarOverlayVisible &&
-                    detail.origin?.kind !== "workspace-tab" &&
+                    ("origin" in detail
+                        ? detail.origin?.kind !== "workspace-tab"
+                        : true) &&
                     detail.x >= overlayLeft &&
                     detail.x <= overlayLeft + sidebarWidth;
 
@@ -407,12 +415,32 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             }
         };
 
+        const handleFileTreeDrag = (event: Event) => {
+            handleSidebarOriginDrag(
+                (event as CustomEvent<FileTreeNoteDragDetail>).detail,
+            );
+        };
+
+        const handleAgentSidebarDrag = (event: Event) => {
+            handleSidebarOriginDrag(
+                (event as CustomEvent<AgentSidebarDragDetail>).detail,
+            );
+        };
+
         window.addEventListener(FILE_TREE_NOTE_DRAG_EVENT, handleFileTreeDrag);
+        window.addEventListener(
+            AGENT_SIDEBAR_DRAG_EVENT,
+            handleAgentSidebarDrag,
+        );
         return () => {
             sidebarDragActiveRef.current = false;
             window.removeEventListener(
                 FILE_TREE_NOTE_DRAG_EVENT,
                 handleFileTreeDrag,
+            );
+            window.removeEventListener(
+                AGENT_SIDEBAR_DRAG_EVENT,
+                handleAgentSidebarDrag,
             );
         };
     }, [
