@@ -1741,6 +1741,70 @@ describe("chatStore", () => {
         });
     });
 
+    it("shows provider quota errors as provider limits", () => {
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "codex-acp",
+                },
+            },
+            sessionsById: {
+                "codex-session-1": {
+                    sessionId: "codex-session-1",
+                    historySessionId: "codex-session-1",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    status: "streaming",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: "codex-acp",
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "codex-session-1",
+            message: "Internal error: Limitation until 12 May 2026.",
+        });
+
+        const expected =
+            "Provider quota reached. Check your plan or wait until it resets.";
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId["codex-acp"],
+        ).toMatchObject({
+            status: "error",
+            message: expected,
+        });
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["codex-session-1"]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content: expected,
+        });
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["codex-acp"],
+        ).toMatchObject({
+            authReady: true,
+            onboardingRequired: false,
+        });
+    });
+
     it("hydrates existing backend sessions before creating a new one", async () => {
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") {

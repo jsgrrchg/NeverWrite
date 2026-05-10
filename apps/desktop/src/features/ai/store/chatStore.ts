@@ -1462,6 +1462,22 @@ function isContextTooLargeErrorMessage(message: string) {
     );
 }
 
+function isProviderQuotaErrorMessage(message: string) {
+    const normalized = message.trim().toLowerCase();
+    return (
+        normalized.includes("insufficient_quota") ||
+        normalized.includes("quota") ||
+        normalized.includes("rate_limit") ||
+        normalized.includes("rate limit") ||
+        normalized.includes("resource_exhausted") ||
+        normalized.includes("usage limit") ||
+        normalized.includes("limitation until") ||
+        normalized.includes("limit resets") ||
+        normalized.includes("billing hard limit") ||
+        normalized.includes("payment required")
+    );
+}
+
 function isRuntimeSessionDisconnectedErrorMessage(message: string) {
     const normalized = message.trim().toLowerCase();
     return normalized.includes("runtime session is not connected");
@@ -1474,6 +1490,10 @@ function normalizeAiErrorMessage(message: string) {
 
     if (isContextTooLargeErrorMessage(message)) {
         return "This chat context grew too large to continue. Start a new chat and resend your last message.";
+    }
+
+    if (isProviderQuotaErrorMessage(message)) {
+        return "Provider quota reached. Check your plan or wait until it resets.";
     }
 
     if (isAuthenticationErrorMessage(message)) {
@@ -7249,7 +7269,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
-        applySessionError: ({ session_id, message }) => {
+        applySessionError: ({ session_id, message: rawMessage }) => {
+            const message = normalizeAiErrorMessage(rawMessage);
             if (session_id) clearStaleStreamingCheck(session_id);
             set((state) => {
                 const sessionRuntimeId = session_id
