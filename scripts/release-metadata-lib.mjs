@@ -260,6 +260,17 @@ export function collectElectronBuildIssues(config) {
         );
     }
 
+    const linuxTargets = new Set(
+        (config.linux?.target ?? []).flatMap((entry) =>
+            typeof entry === "string" ? [entry] : [entry?.target].filter(Boolean),
+        ),
+    );
+    if (!linuxTargets.has("AppImage")) {
+        issues.push(
+            'electron-builder.config.mjs linux.target must include "AppImage".',
+        );
+    }
+
     return issues;
 }
 

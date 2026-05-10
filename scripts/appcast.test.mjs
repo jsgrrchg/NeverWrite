@@ -48,6 +48,10 @@ test("buildPublicReleaseAssetName uses the human-facing naming convention", () =
         buildPublicReleaseAssetName("0.2.0", "x86_64-pc-windows-msvc"),
         "NeverWrite_0.2.0_Windows_x64_Setup.exe",
     );
+    assert.equal(
+        buildPublicReleaseAssetName("0.2.0", "x86_64-unknown-linux-gnu"),
+        "NeverWrite-0.2.0-x64.AppImage",
+    );
 });
 
 test("describeUpdaterArtifactKind documents updater archive families", () => {
@@ -83,6 +87,14 @@ test("canonical bundle and updater artifact names are fixed for v1 release autom
         buildUpdaterReleaseAssetName("0.2.0", "x86_64-pc-windows-msvc"),
         "NeverWrite_0.2.0_Windows_x64.nsis.zip",
     );
+    assert.equal(
+        getBundledUpdaterArtifactName("x86_64-unknown-linux-gnu"),
+        "NeverWrite-x64.AppImage",
+    );
+    assert.equal(
+        buildUpdaterReleaseAssetName("0.2.0", "x86_64-unknown-linux-gnu"),
+        "NeverWrite-0.2.0-x64.AppImage",
+    );
 });
 
 test("normalizePlatformEntries accepts build targets and emits appcast keys", () => {
@@ -96,6 +108,10 @@ test("normalizePlatformEntries accepts build targets and emits appcast keys", ()
                 url: "https://example.com/windows-x64.zip",
                 signature: "sig-b",
             },
+            "x86_64-unknown-linux-gnu": {
+                url: "https://example.com/linux-x64.AppImage",
+                signature: "sig-c",
+            },
         }),
         {
             "darwin-universal": {
@@ -105,6 +121,10 @@ test("normalizePlatformEntries accepts build targets and emits appcast keys", ()
             "windows-x86_64": {
                 url: "https://example.com/windows-x64.zip",
                 signature: "sig-b",
+            },
+            "linux-x86_64": {
+                url: "https://example.com/linux-x64.AppImage",
+                signature: "sig-c",
             },
         },
     );
@@ -128,6 +148,14 @@ test("createStaticAppcastManifest requires all v1 platform keys and preserves or
                 url: "https://example.com/windows-arm64.zip",
                 signature: "sig-warm",
             },
+            "aarch64-unknown-linux-gnu": {
+                url: "https://example.com/linux-arm64.AppImage",
+                signature: "sig-larm",
+            },
+            "x86_64-unknown-linux-gnu": {
+                url: "https://example.com/linux-x64.AppImage",
+                signature: "sig-lx64",
+            },
         },
     });
 
@@ -135,6 +163,8 @@ test("createStaticAppcastManifest requires all v1 platform keys and preserves or
         "darwin-universal",
         "windows-aarch64",
         "windows-x86_64",
+        "linux-aarch64",
+        "linux-x86_64",
     ]);
     assert.equal(manifest.version, "0.2.0");
     assert.equal(manifest.pub_date, "2026-04-04T18:00:00Z");

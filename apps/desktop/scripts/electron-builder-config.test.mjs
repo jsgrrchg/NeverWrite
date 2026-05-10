@@ -45,3 +45,12 @@ test("macOS universal x64ArchFiles covers packaged native binaries", () => {
         false,
     );
 });
+
+test("desktop app icons are wired for all packaged platforms", () => {
+    assert.equal(config.mac.icon, "build/icons/icon.icns");
+    assert.equal(config.win.icon, "build/icons/icon.ico");
+    assert.equal(config.linux.icon, "build/icons/icon.png");
+    assert.equal(config.nsis.installerIcon, "build/icons/icon.ico");
+    assert.equal(config.nsis.uninstallerIcon, "build/icons/icon.ico");
+    assert.equal(config.nsis.installerHeaderIcon, "build/icons/icon.ico");
+});

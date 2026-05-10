@@ -206,4 +206,14 @@ export default {
         installerHeaderIcon: path.join("build", "icons", "icon.ico"),
         deleteAppDataOnUninstall: false,
     },
+    linux: {
+        icon: path.join("build", "icons", "icon.png"),
+        target: [{ target: "AppImage", arch: ["x64", "arm64"] }],
+        category: "Utility",
+        executableName: "neverwrite",
+        artifactName: "${productName}-${version}-${arch}.AppImage",
+    },
+    appImage: {
+        artifactName: "${productName}-${version}-${arch}.AppImage",
+    },
 };

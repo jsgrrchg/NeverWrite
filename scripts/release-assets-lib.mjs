@@ -28,6 +28,16 @@ export const PUBLIC_DOWNLOAD_VARIANTS = [
         platformLabel: "Windows",
         architectureLabel: "x64",
     },
+    {
+        buildTarget: "aarch64-unknown-linux-gnu",
+        platformLabel: "Linux",
+        architectureLabel: "ARM64",
+    },
+    {
+        buildTarget: "x86_64-unknown-linux-gnu",
+        platformLabel: "Linux",
+        architectureLabel: "x64",
+    },
 ];
 
 export const WEB_CLIPPER_RELEASE_BROWSERS = ["chrome", "firefox"];
@@ -38,6 +48,9 @@ export function targetPlatformFamily(buildTarget) {
     }
     if (buildTarget.endsWith("-pc-windows-msvc")) {
         return "windows";
+    }
+    if (buildTarget.endsWith("-unknown-linux-gnu")) {
+        return "linux";
     }
     throw new Error(`Unsupported build target "${buildTarget}".`);
 }
@@ -263,7 +276,7 @@ export function buildReleaseBody(version, releaseNotes) {
         renderManualDownloadTable(version),
         "",
         "Updater artifacts are also attached to the release for in-app updates.",
-        "Files ending in `.app.tar.gz`, `.nsis.zip`, or `.sig` are internal updater assets and are not intended for manual installation.",
+        "Files ending in `.app.tar.gz`, `.nsis.zip`, `.blockmap`, or `.sig` are internal updater assets and are not intended for manual installation.",
         "",
         "## Browser extensions",
         "",

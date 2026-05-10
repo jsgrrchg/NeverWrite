@@ -45,7 +45,7 @@ export interface ShortcutDefinition {
     id: ShortcutActionId;
     label: string;
     category: string;
-    bindings: Record<DesktopPlatform, ShortcutBinding[]>;
+    bindings: Record<"macos" | "windows", ShortcutBinding[]>;
     aliases?: Partial<Record<DesktopPlatform, ShortcutBinding[]>>;
     note?: string;
 }
@@ -381,6 +381,12 @@ const CODEMIRROR_MODIFIER_LABELS: Record<ShortcutModifier, string> = {
     shift: "Shift",
 };
 
+function resolveShortcutPlatform(
+    platform: DesktopPlatform,
+): "macos" | "windows" {
+    return platform === "macos" ? "macos" : "windows";
+}
+
 export const SHORTCUT_REGISTRY = shortcutDefinitions.reduce<
     Record<ShortcutActionId, ShortcutDefinition>
 >(
@@ -460,7 +466,9 @@ export function getShortcutBindings(
     actionId: ShortcutActionId,
     platform: DesktopPlatform = getDesktopPlatform(),
 ): ShortcutBinding[] {
-    return SHORTCUT_REGISTRY[actionId].bindings[platform];
+    return SHORTCUT_REGISTRY[actionId].bindings[
+        resolveShortcutPlatform(platform)
+    ];
 }
 
 export function getShortcutBindingsWithAliases(
@@ -468,9 +476,13 @@ export function getShortcutBindingsWithAliases(
     platform: DesktopPlatform = getDesktopPlatform(),
 ): ShortcutBinding[] {
     const definition = SHORTCUT_REGISTRY[actionId];
+    const shortcutPlatform = resolveShortcutPlatform(platform);
     return [
-        ...definition.bindings[platform],
-        ...(definition.aliases?.[platform] ?? []),
+        ...definition.bindings[shortcutPlatform],
+        ...(definition.aliases?.[shortcutPlatform] ?? []),
+        ...(shortcutPlatform === platform
+            ? []
+            : (definition.aliases?.[platform] ?? [])),
     ];
 }
 
@@ -537,7 +549,10 @@ export function getShortcutDisplayDefinitions(
 ): ShortcutDefinition[] {
     return SHORTCUT_SETTINGS_ORDER.map((actionId) =>
         getShortcutDefinition(actionId),
-    ).filter((definition) => definition.bindings[platform].length > 0);
+    ).filter(
+        (definition) =>
+            definition.bindings[resolveShortcutPlatform(platform)].length > 0,
+    );
 }
 
 export function getShortcutSettingsEntries(

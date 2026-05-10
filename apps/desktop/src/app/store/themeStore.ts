@@ -110,12 +110,13 @@ function applyDark(isDark: boolean) {
     document.documentElement.classList.toggle("dark", isDark);
 }
 
-// Windows only: keep the native titleBarOverlay caption buttons legible by
+// Windows / Linux: keep the native titleBarOverlay caption buttons legible by
 // retinting their symbol color whenever the theme (palette or light/dark
-// mode) changes. Background stays transparent so the acrylic surface shows
-// through — only the symbol color needs to follow the theme.
-function syncWindowsTitleBarOverlay(themeName: ThemeName, isDark: boolean) {
-    if (getDesktopPlatform() !== "windows") return;
+// mode) changes. Background stays transparent so the renderer-painted chrome
+// shows through — only the symbol color needs to follow the theme.
+function syncDesktopTitleBarOverlay(themeName: ThemeName, isDark: boolean) {
+    const platform = getDesktopPlatform();
+    if (platform !== "windows" && platform !== "linux") return;
     const palette = themes[themeName];
     const symbolColor = (isDark ? palette.dark : palette.light).textPrimary;
     const runtimeWindow = getCurrentWindow();
@@ -132,7 +133,7 @@ function resolveTheme(mode: ThemeMode, themeName: ThemeName) {
     const isDark = getIsDark(mode);
     applyDark(isDark);
     applyThemeColors(themeName, isDark);
-    syncWindowsTitleBarOverlay(themeName, isDark);
+    syncDesktopTitleBarOverlay(themeName, isDark);
     return { mode, themeName, isDark };
 }
 
@@ -223,7 +224,7 @@ export function initializeThemeStore() {
     stopThemePersistence = useThemeStore.subscribe((state) => {
         applyDark(state.isDark);
         applyThemeColors(state.themeName, state.isDark);
-        syncWindowsTitleBarOverlay(state.themeName, state.isDark);
+        syncDesktopTitleBarOverlay(state.themeName, state.isDark);
         if (!isApplyingExternal) {
             saveTheme(currentVaultPath, {
                 mode: state.mode,

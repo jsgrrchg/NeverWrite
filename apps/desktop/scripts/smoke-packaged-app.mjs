@@ -30,6 +30,12 @@ function defaultPackagedExecutableCandidates() {
             path.join(outputRoot, "win-unpacked", "NeverWrite.exe"),
         ];
     }
+    if (process.platform === "linux") {
+        return [
+            path.join(outputRoot, `linux-${distArch}-unpacked`, "NeverWrite"),
+            path.join(outputRoot, "linux-unpacked", "NeverWrite"),
+        ];
+    }
 
     throw new Error(
         `Packaged app smoke is not supported on ${process.platform}.`,

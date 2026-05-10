@@ -261,6 +261,7 @@ export function createAppWindow(
 
     const isMac = process.platform === "darwin";
     const isWindows = process.platform === "win32";
+    const isLinux = process.platform === "linux";
     const search = normalizeSearch(
         getSearchFromUrl(options?.url) ||
             (typeof options?.search === "string" ? options.search : ""),
@@ -314,7 +315,8 @@ export function createAppWindow(
     // (sidebars went literally see-through to the desktop) and to swallow
     // the native caption buttons.
     const isWindowsAcrylic = isWindows && !chromeless;
-    const windowsCaptionSymbol = nativeTheme.shouldUseDarkColors
+    const isLinuxTitleBarOverlay = isLinux && !chromeless;
+    const titleBarOverlaySymbol = nativeTheme.shouldUseDarkColors
         ? "#f4f4f5"
         : "#1c1c1c";
 
@@ -332,6 +334,7 @@ export function createAppWindow(
         resizable: getBooleanOption(options, "resizable", true),
         skipTaskbar: getBooleanOption(options, "skipTaskbar", false),
         alwaysOnTop: getBooleanOption(options, "alwaysOnTop", false),
+        autoHideMenuBar: !isMac,
         ...(chromeless
             ? {
                   frame: false,
@@ -342,7 +345,7 @@ export function createAppWindow(
             ? "#00000000"
             : usesVibrancy || isWindowsAcrylic
                 ? "#00000000"
-                : isMac
+                : isMac || isLinuxTitleBarOverlay
                     ? solidChromeFallback
                     : "#ffffff",
         backgroundMaterial: isWindowsAcrylic ? "acrylic" : undefined,
@@ -360,12 +363,14 @@ export function createAppWindow(
                 ? (isMainWindow ? "hiddenInset" : "hidden")
                 : isWindows
                     ? "hidden"
-                    : "default",
-        titleBarOverlay: isWindowsAcrylic
+                    : isLinux
+                      ? "hidden"
+                      : "default",
+        titleBarOverlay: isWindowsAcrylic || isLinuxTitleBarOverlay
             ? {
                   color: "#00000000",
                   height: 34,
-                  symbolColor: windowsCaptionSymbol,
+                  symbolColor: titleBarOverlaySymbol,
               }
             : undefined,
         trafficLightPosition,
@@ -473,11 +478,10 @@ export function windowCommand(
             }
             return null;
         case "setTitleBarOverlay":
-            // Windows only: theme the native titleBarOverlay symbol/background
-            // color so the caption buttons stay legible against the acrylic
-            // surface in both light and dark themes. No-op elsewhere because
-            // the API is only meaningful on Windows titleBarOverlay windows.
-            if (process.platform === "win32") {
+            // Windows and Linux: theme the native titleBarOverlay symbol /
+            // background color so caption buttons stay legible against the
+            // renderer-painted chrome in both light and dark themes.
+            if (process.platform === "win32" || process.platform === "linux") {
                 const overlay: Parameters<
                     BrowserWindow["setTitleBarOverlay"]
                 >[0] = {};

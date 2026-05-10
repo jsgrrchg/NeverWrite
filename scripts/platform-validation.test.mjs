@@ -47,6 +47,30 @@ function buildMetadataEntries() {
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_x64_Setup.exe",
         },
+        {
+            buildTarget: "aarch64-unknown-linux-gnu",
+            feedTarget: "linux-arm64",
+            metadataFileName: "latest-linux.yml",
+            feedRelativePath: "linux-arm64/latest-linux.yml",
+            manualAssetName: "NeverWrite-0.2.0-arm64.AppImage",
+            updaterAssetName: "NeverWrite-0.2.0-arm64.AppImage",
+            updaterBlockmapAssetName:
+                "NeverWrite-0.2.0-arm64.AppImage.blockmap",
+            updaterUrl:
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-arm64.AppImage",
+        },
+        {
+            buildTarget: "x86_64-unknown-linux-gnu",
+            feedTarget: "linux-x64",
+            metadataFileName: "latest-linux.yml",
+            feedRelativePath: "linux-x64/latest-linux.yml",
+            manualAssetName: "NeverWrite-0.2.0-x64.AppImage",
+            updaterAssetName: "NeverWrite-0.2.0-x64.AppImage",
+            updaterBlockmapAssetName:
+                "NeverWrite-0.2.0-x64.AppImage.blockmap",
+            updaterUrl:
+                "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-x64.AppImage",
+        },
     ];
 }
 
@@ -62,6 +86,10 @@ test("resolveValidationTarget accepts build targets and feed targets", () => {
     assert.equal(
         resolveValidationTarget("windows-x64").buildTarget,
         "x86_64-pc-windows-msvc",
+    );
+    assert.equal(
+        resolveValidationTarget("linux-x64").buildTarget,
+        "x86_64-unknown-linux-gnu",
     );
 });
 
@@ -94,7 +122,7 @@ test("buildPlatformValidationMatrix aligns feed URLs with target metadata", () =
         metadataEntries: buildMetadataEntries(),
     });
 
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 5);
     assert.equal(rows[0].buildTarget, "universal-apple-darwin");
     assert.equal(
         rows[0].feedUrl,
@@ -104,6 +132,11 @@ test("buildPlatformValidationMatrix aligns feed URLs with target metadata", () =
     assert.equal(
         rows[2].updaterAssetName,
         "NeverWrite_0.2.0_Windows_x64_Setup.exe",
+    );
+    assert.equal(rows[4].feedTarget, "linux-x64");
+    assert.equal(
+        rows[4].updaterAssetName,
+        "NeverWrite-0.2.0-x64.AppImage",
     );
 });
 

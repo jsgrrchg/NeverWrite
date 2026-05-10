@@ -1,5 +1,6 @@
 import { app } from "electron";
 import {
+    AppImageUpdater,
     MacUpdater,
     NsisUpdater,
     type AppUpdater,
@@ -263,6 +264,12 @@ function resolveFeedTarget() {
     if (process.platform === "win32") {
         return `windows-${process.arch}`;
     }
+    if (process.platform === "linux") {
+        if (process.arch === "x64" || process.arch === "arm64") {
+            return `linux-${process.arch}`;
+        }
+        return null;
+    }
     return null;
 }
 
@@ -272,6 +279,9 @@ function resolveMetadataFileName() {
     }
     if (process.platform === "win32") {
         return "latest.yml";
+    }
+    if (process.platform === "linux") {
+        return "latest-linux.yml";
     }
     return null;
 }
@@ -329,7 +339,8 @@ function loadUpdaterRuntimeConfig(): UpdaterRuntimeConfig {
             runtimeMode,
             endpoint: null,
             endpointDisplay,
-            endpointError: "Updater is only supported on macOS and Windows builds.",
+            endpointError:
+                "Updater is only supported on macOS, Windows, and Linux AppImage x64/ARM64 builds.",
             feedDirectoryUrl: null,
             feedTarget,
             metadataFileName,
@@ -468,10 +479,14 @@ function createPlatformUpdater(feedDirectoryUrl: string) {
         url: feedDirectoryUrl,
     };
 
-    const updater: AppUpdater =
-        process.platform === "darwin"
-            ? new MacUpdater(options)
-            : new NsisUpdater(options);
+    let updater: AppUpdater;
+    if (process.platform === "darwin") {
+        updater = new MacUpdater(options);
+    } else if (process.platform === "linux") {
+        updater = new AppImageUpdater(options);
+    } else {
+        updater = new NsisUpdater(options);
+    }
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
     updater.forceDevUpdateConfig = !app.isPackaged;

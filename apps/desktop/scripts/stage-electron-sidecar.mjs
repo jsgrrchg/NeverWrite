@@ -111,6 +111,12 @@ function requiredClaudePlatformPackages(targetTriple) {
     if (targetTriple === "x86_64-pc-windows-msvc") {
         return ["@anthropic-ai/claude-agent-sdk-win32-x64"];
     }
+    if (targetTriple === "aarch64-unknown-linux-gnu") {
+        return ["@anthropic-ai/claude-agent-sdk-linux-arm64"];
+    }
+    if (targetTriple === "x86_64-unknown-linux-gnu") {
+        return ["@anthropic-ai/claude-agent-sdk-linux-x64"];
+    }
 
     return [];
 }
@@ -222,6 +228,12 @@ function resolveHostRustTarget() {
     if (process.platform === "win32" && process.arch === "x64") {
         return "x86_64-pc-windows-msvc";
     }
+    if (process.platform === "linux" && process.arch === "x64") {
+        return "x86_64-unknown-linux-gnu";
+    }
+    if (process.platform === "linux" && process.arch === "arm64") {
+        return "aarch64-unknown-linux-gnu";
+    }
 
     throw new Error(
         `Unsupported host platform for Electron sidecar staging: ${process.platform}/${process.arch}`,
@@ -241,6 +253,8 @@ function envSuffixForTarget(targetTriple) {
     if (targetTriple === "x86_64-apple-darwin") return "X64";
     if (targetTriple === "aarch64-pc-windows-msvc") return "ARM64";
     if (targetTriple === "x86_64-pc-windows-msvc") return "X64";
+    if (targetTriple === "aarch64-unknown-linux-gnu") return "ARM64";
+    if (targetTriple === "x86_64-unknown-linux-gnu") return "X64";
     throw new Error(
         `Unsupported target for environment suffix: ${targetTriple}`,
     );
@@ -258,6 +272,8 @@ function nodeDistForTarget(targetTriple) {
     if (targetTriple === "x86_64-apple-darwin") return "darwin-x64";
     if (targetTriple === "aarch64-pc-windows-msvc") return "win-arm64";
     if (targetTriple === "x86_64-pc-windows-msvc") return "win-x64";
+    if (targetTriple === "aarch64-unknown-linux-gnu") return "linux-arm64";
+    if (targetTriple === "x86_64-unknown-linux-gnu") return "linux-x64";
     throw new Error(`Unsupported embedded Node target: ${targetTriple}`);
 }
 

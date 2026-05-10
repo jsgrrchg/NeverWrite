@@ -10,6 +10,14 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("electron-updater", () => ({
+    AppImageUpdater: class {
+        autoDownload = false;
+        autoInstallOnAppQuit = false;
+        forceDevUpdateConfig = false;
+        logger: unknown = null;
+
+        constructor(_options: unknown) {}
+    },
     MacUpdater: class {
         autoDownload = false;
         autoInstallOnAppQuit = false;
@@ -108,6 +116,32 @@ describe("ElectronAppUpdater configuration", () => {
         expect(status).toMatchObject({
             enabled: true,
             endpoint: "https://updates.example.com/app/stable/windows-x64/latest.yml",
+            message: null,
+        });
+    });
+
+    it("uses the Linux x64 AppImage feed in packaged Linux builds", () => {
+        setRuntimePlatform("linux", "x64");
+
+        const status = new ElectronAppUpdater().getConfiguration();
+
+        expect(status).toMatchObject({
+            enabled: true,
+            endpoint:
+                "https://jsgrrchg.github.io/NeverWrite/stable/linux-x64/latest-linux.yml",
+            message: null,
+        });
+    });
+
+    it("uses the Linux ARM64 AppImage feed in packaged Linux builds", () => {
+        setRuntimePlatform("linux", "arm64");
+
+        const status = new ElectronAppUpdater().getConfiguration();
+
+        expect(status).toMatchObject({
+            enabled: true,
+            endpoint:
+                "https://jsgrrchg.github.io/NeverWrite/stable/linux-arm64/latest-linux.yml",
             message: null,
         });
     });

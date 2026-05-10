@@ -30,6 +30,26 @@ function defaultPackagedSidecarCandidates() {
         ];
     }
 
+    if (process.platform === "linux") {
+        return [
+            path.join(
+                outputRoot,
+                `linux-${distArch}-unpacked`,
+                "resources",
+                "native-backend",
+                executableName,
+            ),
+            path.join(
+                outputRoot,
+                "linux-unpacked",
+                "resources",
+                "native-backend",
+                executableName,
+            ),
+            path.join(outputRoot, "native-backend", executableName),
+        ];
+    }
+
     return [
         path.join(
             outputRoot,

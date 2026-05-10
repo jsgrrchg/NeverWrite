@@ -5,7 +5,7 @@ import {
 } from "react";
 import { getWindowChromeLayout } from "../../app/utils/platform";
 
-// On Windows, the caption buttons are painted by Electron's native
+// On Windows and Linux, the caption buttons are painted by Electron's native
 // `titleBarOverlay`, not by React — so this component only reserves the
 // drag region and optional macOS leading inset, and never renders custom
 // min/max/close buttons.

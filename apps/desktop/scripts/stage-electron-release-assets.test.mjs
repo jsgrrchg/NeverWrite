@@ -227,3 +227,109 @@ test("stage-electron-release-assets keeps Windows metadata target-specific", () 
         assert.equal(metadata.feedRelativePath, "windows-x64/latest.yml");
     });
 });
+
+test("stage-electron-release-assets stages Linux AppImage feeds", () => {
+    withTempDir((tempDir) => {
+        const distDir = path.join(tempDir, "dist");
+        const outputDir = path.join(tempDir, "staged");
+        const metadataOut = path.join(tempDir, "metadata", "linux-x64.json");
+
+        writeFile(path.join(distDir, "linux-unpacked", "NeverWrite"), "app");
+        writeFile(
+            path.join(
+                distDir,
+                "linux-unpacked",
+                "resources",
+                "native-backend",
+                "neverwrite-native-backend",
+            ),
+            "backend",
+        );
+        writeFile(
+            path.join(
+                distDir,
+                "linux-unpacked",
+                "resources",
+                "native-backend",
+                "binaries",
+                "codex-acp",
+            ),
+            "codex",
+        );
+        writeFile(
+            path.join(
+                distDir,
+                "linux-unpacked",
+                "resources",
+                "native-backend",
+                "embedded",
+                "node",
+                "bin",
+                "node",
+            ),
+            "node",
+        );
+        writeFile(path.join(distDir, "NeverWrite-0.2.0-x64.AppImage"), "appimage");
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x64.AppImage.blockmap"),
+            "blockmap",
+        );
+        writeFile(
+            path.join(distDir, "latest-linux.yml"),
+            [
+                "version: 0.2.0",
+                "path: NeverWrite-0.2.0-x64.AppImage",
+                "sha512: original",
+                "files:",
+                "  - url: NeverWrite-0.2.0-x64.AppImage",
+                "    sha512: original",
+                "",
+            ].join("\n"),
+        );
+
+        execFileSync(
+            process.execPath,
+            [
+                stageScriptPath,
+                "--dist-dir",
+                distDir,
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--version",
+                "0.2.0",
+                "--tag",
+                "v0.2.0",
+                "--repo",
+                "jsgrrchg/NeverWrite",
+                "--output-dir",
+                outputDir,
+                "--metadata-out",
+                metadataOut,
+            ],
+            {
+                cwd: repoRoot,
+                stdio: "pipe",
+            },
+        );
+
+        const metadata = JSON.parse(fs.readFileSync(metadataOut, "utf8"));
+        const rewrittenFeed = fs.readFileSync(
+            path.join(outputDir, "feeds", "linux-x64", "latest-linux.yml"),
+            "utf8",
+        );
+
+        assert.equal(metadata.feedTarget, "linux-x64");
+        assert.equal(metadata.metadataFileName, "latest-linux.yml");
+        assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-x64.AppImage");
+        assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-x64.AppImage");
+        assert.equal(
+            metadata.updaterBlockmapAssetName,
+            "NeverWrite-0.2.0-x64.AppImage.blockmap",
+        );
+        assert.equal(metadata.feedRelativePath, "linux-x64/latest-linux.yml");
+        assert.match(
+            rewrittenFeed,
+            /https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite-0\.2\.0-x64\.AppImage/,
+        );
+    });
+});
