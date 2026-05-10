@@ -598,21 +598,19 @@ fn agent_status_label(status: &AgentStatus) -> String {
 mod tests {
     use super::*;
     use codex_protocol::{
-        config_types::{ApprovalsReviewer, ServiceTier},
-        models::PermissionProfile,
-        openai_models::ReasoningEffort,
-        protocol::{AskForApproval, SandboxPolicy},
+        config_types::ApprovalsReviewer, models::PermissionProfile, openai_models::ReasoningEffort,
+        protocol::AskForApproval,
     };
 
     fn thread_snapshot(parent_thread_id: ThreadId) -> ThreadConfigSnapshot {
         ThreadConfigSnapshot {
             model: "gpt-5.5".to_string(),
             model_provider_id: "openai".to_string(),
-            service_tier: Some(ServiceTier::Fast),
+            service_tier: Some("fast".to_string()),
             approval_policy: AskForApproval::OnFailure,
             approvals_reviewer: ApprovalsReviewer::default(),
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
             permission_profile: PermissionProfile::default(),
+            active_permission_profile: None,
             cwd: std::env::current_dir()
                 .expect("current dir should be available")
                 .try_into()
@@ -627,6 +625,7 @@ mod tests {
                 agent_nickname: Some("Galileo".to_string()),
                 agent_role: Some("explorer".to_string()),
             }),
+            thread_source: None,
         }
     }
 
@@ -705,6 +704,7 @@ mod tests {
                 prompt: "inspect the renderer".to_string(),
                 model: "gpt-5.5".to_string(),
                 reasoning_effort: ReasoningEffort::Medium,
+                started_at_ms: 0,
             },
         ))
         .expect("spawn begin should project");
@@ -740,6 +740,7 @@ mod tests {
                 model: "gpt-5.5".to_string(),
                 reasoning_effort: ReasoningEffort::Medium,
                 status: AgentStatus::Running,
+                completed_at_ms: 0,
             },
         ))
         .expect("spawn end should project");
@@ -773,6 +774,7 @@ mod tests {
                     status: AgentStatus::Completed(Some("done".to_string())),
                 }],
                 statuses: HashMap::new(),
+                completed_at_ms: 0,
             },
         ))
         .expect("waiting end should project");
