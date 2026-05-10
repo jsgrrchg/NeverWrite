@@ -93,6 +93,42 @@ fn parse_discovered_files_reports_progress() {
 }
 
 #[test]
+fn scan_tolerates_non_utf8_markdown_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("good.md"), "# Good\n\nValid UTF-8\n").unwrap();
+    fs::write(
+        dir.path().join("bad.md"),
+        b"# Heading\n\xff\xfe garbled bytes\n",
+    )
+    .unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let notes = vault.scan().unwrap();
+
+    assert_eq!(notes.len(), 2);
+    let bad = notes.iter().find(|note| note.id.0 == "bad").unwrap();
+    assert!(
+        bad.raw_markdown.contains('\u{FFFD}'),
+        "expected lossy decode to insert U+FFFD, got: {:?}",
+        bad.raw_markdown
+    );
+    assert!(bad.raw_markdown.contains("garbled bytes"));
+}
+
+#[test]
+fn read_text_file_tolerates_non_utf8_bytes() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("notes.txt"), b"hello \xff world\n").unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let content = vault.read_text_file("notes.txt").unwrap();
+
+    assert!(content.contains('\u{FFFD}'));
+    assert!(content.contains("hello"));
+    assert!(content.contains("world"));
+}
+
+#[test]
 fn scan_parses_frontmatter() {
     let (_dir, vault) = setup_vault();
     let notes = vault.scan().unwrap();
