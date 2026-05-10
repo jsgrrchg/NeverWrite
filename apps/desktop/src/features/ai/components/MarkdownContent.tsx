@@ -339,7 +339,7 @@ function renderInlineMarkdown(
     const parts: Array<string | ReactElement> = [];
     // Process: wikilinks, inline code, bold, italic, links, and absolute vault file paths.
     const inlineRegex =
-        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|((?:\/)[\w\u00C0-\u024F~.()/-]+(?::\d+|#L\d+)?)/g;
+        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|((?<![\w\u00C0-\u024F])(?:\/)[\w\u00C0-\u024F~.()/-]+(?::\d+|#L\d+)?)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let keyIndex = 0;
@@ -684,32 +684,31 @@ function renderInlineMarkdown(
                 );
             } else {
                 const parsedReference = parseVaultReference(filePath);
-                const fileName =
-                    parsedReference?.path
-                        .split("/")
-                        .pop()
-                        ?.replace(/\.md$/, "") ?? filePath;
-                parts.push(
-                    <ChatInlinePill
-                        key={key}
-                        label={fileName}
-                        metrics={pillMetrics}
-                        interactive
-                        variant="accent"
-                        onClick={() =>
-                            void openChatNoteByReference(
-                                parsedReference?.path ?? filePath,
-                            )
-                        }
-                        onContextMenu={(event) =>
-                            onNoteContextMenu(
-                                event,
-                                parsedReference?.path ?? filePath,
-                            )
-                        }
-                        title={filePath}
-                    />,
-                );
+                if (parsedReference) {
+                    const fileName =
+                        parsedReference.path
+                            .split("/")
+                            .pop()
+                            ?.replace(/\.md$/, "") ?? filePath;
+                    parts.push(
+                        <ChatInlinePill
+                            key={key}
+                            label={fileName}
+                            metrics={pillMetrics}
+                            interactive
+                            variant="accent"
+                            onClick={() =>
+                                void openChatNoteByReference(parsedReference.path)
+                            }
+                            onContextMenu={(event) =>
+                                onNoteContextMenu(event, parsedReference.path)
+                            }
+                            title={filePath}
+                        />,
+                    );
+                } else {
+                    parts.push(full);
+                }
             }
         }
 
