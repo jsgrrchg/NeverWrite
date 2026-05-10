@@ -25,6 +25,14 @@ class SidecarClient {
   constructor(executablePath) {
     this.#child = spawn(executablePath, [], {
       cwd: desktopRoot,
+      env: {
+        ...process.env,
+        // Headless Linux CI does not provide a desktop keyring service. The
+        // smoke test opts into process-memory secrets while production remains
+        // backed by OS secure storage.
+        NEVERWRITE_AI_SECRET_STORE:
+          process.env.NEVERWRITE_AI_SECRET_STORE?.trim() || "memory",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
 

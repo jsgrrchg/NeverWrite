@@ -88,6 +88,7 @@ const AUTH_TERMINAL_OUTPUT_CHUNK_SIZE: usize = 4096;
 const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
+const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
 const RUNTIME_SETUP_LOAD_ERROR_MESSAGE: &str = "Secure credential storage is unavailable. Reconnect this AI provider or configure an environment variable before starting a session.";
 
 #[derive(Debug, Clone)]
@@ -306,13 +307,11 @@ impl RuntimeSecretStore for OsRuntimeSecretStore {
     }
 }
 
-#[cfg(test)]
 #[derive(Default)]
 struct InMemoryRuntimeSecretStore {
     values: Mutex<HashMap<(String, String), String>>,
 }
 
-#[cfg(test)]
 impl RuntimeSecretStore for InMemoryRuntimeSecretStore {
     fn get_secret(&self, runtime_id: &str, env_key: &str) -> Result<Option<String>, String> {
         Ok(self
@@ -349,13 +348,30 @@ struct RuntimeSetupStore {
     secrets: Arc<dyn RuntimeSecretStore>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeSecretStoreMode {
+    OsKeyring,
+    InMemory,
+}
+
 impl RuntimeSetupStore {
     fn new(path: PathBuf) -> Self {
-        Self::with_secret_store(path, Arc::new(OsRuntimeSecretStore))
+        Self::with_secret_store(path, Self::default_secret_store())
     }
 
     fn with_secret_store(path: PathBuf, secrets: Arc<dyn RuntimeSecretStore>) -> Self {
         Self { path, secrets }
+    }
+
+    fn default_secret_store() -> Arc<dyn RuntimeSecretStore> {
+        match runtime_secret_store_mode_from_env(
+            std::env::var(RUNTIME_SECRET_STORE_MODE_ENV).ok().as_deref(),
+        ) {
+            RuntimeSecretStoreMode::OsKeyring => Arc::new(OsRuntimeSecretStore),
+            // This is intentionally opt-in for CI/smoke tests that run without a
+            // desktop keyring service. Production keeps using OS secure storage.
+            RuntimeSecretStoreMode::InMemory => Arc::new(InMemoryRuntimeSecretStore::default()),
+        }
     }
 
     fn load(&self) -> Result<HashMap<String, RuntimeSetupState>, String> {
@@ -500,6 +516,13 @@ impl RuntimeSetupStore {
             let _ = std::fs::remove_file(&temp_path);
             format!("Failed to replace AI runtime setup store: {error}")
         })
+    }
+}
+
+fn runtime_secret_store_mode_from_env(value: Option<&str>) -> RuntimeSecretStoreMode {
+    match value.map(str::trim) {
+        Some("memory") => RuntimeSecretStoreMode::InMemory,
+        _ => RuntimeSecretStoreMode::OsKeyring,
     }
 }
 
@@ -8368,6 +8391,30 @@ mod tests {
             CLAUDE_RUNTIME_ID,
             "Authentication succeeded"
         ));
+    }
+
+    #[test]
+    fn runtime_secret_store_mode_requires_explicit_memory_value() {
+        assert_eq!(
+            runtime_secret_store_mode_from_env(Some("memory")),
+            RuntimeSecretStoreMode::InMemory
+        );
+        assert_eq!(
+            runtime_secret_store_mode_from_env(Some(" memory ")),
+            RuntimeSecretStoreMode::InMemory
+        );
+        assert_eq!(
+            runtime_secret_store_mode_from_env(None),
+            RuntimeSecretStoreMode::OsKeyring
+        );
+        assert_eq!(
+            runtime_secret_store_mode_from_env(Some("")),
+            RuntimeSecretStoreMode::OsKeyring
+        );
+        assert_eq!(
+            runtime_secret_store_mode_from_env(Some("plaintext")),
+            RuntimeSecretStoreMode::OsKeyring
+        );
     }
 
     #[test]
