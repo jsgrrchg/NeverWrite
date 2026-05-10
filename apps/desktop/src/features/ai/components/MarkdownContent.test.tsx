@@ -243,6 +243,43 @@ describe("MarkdownContent", () => {
         ).toBeInTheDocument();
     });
 
+    it("keeps slash tokens in prose as plain text unless they resolve to vault references", () => {
+        renderComponent(
+            <MarkdownContent
+                content={[
+                    "Läuft euer S/4 in der Public Cloud?",
+                    "Viele Schaltanlagenbauer /EVU-Partner gehen in unsere Richtung.",
+                    "TCP/IP ist der Standard.",
+                    "Zielquartal ist 2024/Q1.",
+                    "Kontakt über /LinkedIn.",
+                ].join("\n")}
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.queryByRole("button", { name: "/4" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "/EVU-Partner" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "/IP" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "/Q1" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "/LinkedIn" }),
+        ).not.toBeInTheDocument();
+
+        expect(document.body).toHaveTextContent("S/4");
+        expect(document.body).toHaveTextContent("/EVU-Partner");
+        expect(document.body).toHaveTextContent("TCP/IP");
+        expect(document.body).toHaveTextContent("2024/Q1");
+        expect(document.body).toHaveTextContent("/LinkedIn");
+    });
+
     it("does not crash on markdown links with malformed URI encoding", () => {
         renderComponent(
             <MarkdownContent
