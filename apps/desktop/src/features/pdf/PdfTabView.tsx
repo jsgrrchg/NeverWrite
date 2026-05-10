@@ -709,10 +709,17 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
 
         let frame = 0;
         const scheduleSync = () => {
-            persistScrollPosition({
-                top: scrollContainer.scrollTop,
-                left: scrollContainer.scrollLeft,
-            });
+            // A real scroll event should win over a pending restore. This keeps
+            // user-driven continuous scroll from being dropped in the frame
+            // between mounting the surface and completing scroll restoration.
+            persistScrollPosition(
+                {
+                    top: scrollContainer.scrollTop,
+                    left: scrollContainer.scrollLeft,
+                },
+                false,
+                true,
+            );
             window.cancelAnimationFrame(frame);
             frame = window.requestAnimationFrame(() =>
                 syncScrollStateFromContainer(scrollContainer),
