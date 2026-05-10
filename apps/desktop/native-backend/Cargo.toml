@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 agent-client-protocol = { version = "=0.11.1", features = ["unstable"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }
 neverwrite-diff = { path = "../../../crates/diff" }
 neverwrite-ai = { path = "../../../crates/ai" }
 neverwrite-index = { path = "../../../crates/index" }

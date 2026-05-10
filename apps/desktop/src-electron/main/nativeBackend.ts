@@ -112,6 +112,17 @@ const SUPPORTED_COMMANDS = new Set([
     "web_clipper_save_note",
 ]);
 
+const NATIVE_BACKEND_SECRET_JSON_KEY_PATTERN =
+    /("(?:codex_api_key|openai_api_key|gemini_api_key|google_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
+const NATIVE_BACKEND_SECRET_ENV_PATTERN =
+    /\b((?:CODEX_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_CUSTOM_HEADERS|GEMINI_API_KEY|GOOGLE_API_KEY)\s*=\s*)([^\s"',}]+)/gu;
+
+function redactNativeBackendSecrets(value: string) {
+    return value
+        .replace(NATIVE_BACKEND_SECRET_JSON_KEY_PATTERN, "$1[redacted]$3")
+        .replace(NATIVE_BACKEND_SECRET_ENV_PATTERN, "$1[redacted]");
+}
+
 interface SidecarMessage {
     type?: unknown;
     id?: unknown;
@@ -320,7 +331,7 @@ class NativeBackendSidecar implements NativeBackendBridge {
             .on("line", (line) => this.handleLine(line));
 
         this.child.stderr.on("data", (chunk) => {
-            const message = String(chunk).trimEnd();
+            const message = redactNativeBackendSecrets(String(chunk).trimEnd());
             writeAppLog("native-backend", "warn", message);
             console.warn(`[native-backend] ${message}`);
         });
@@ -421,7 +432,9 @@ class NativeBackendSidecar implements NativeBackendBridge {
         try {
             message = JSON.parse(line) as SidecarMessage;
         } catch {
-            console.warn(`[native-backend] Ignoring malformed message: ${line}`);
+            console.warn(
+                `[native-backend] Ignoring malformed message: ${redactNativeBackendSecrets(line)}`,
+            );
             return;
         }
 
