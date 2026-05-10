@@ -239,6 +239,194 @@ struct RuntimeSetupState {
     env: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedRuntimeSetupFile {
+    version: u32,
+    runtimes: HashMap<String, PersistedRuntimeSetupState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedRuntimeSetupState {
+    custom_binary_path: Option<String>,
+    auth_method: Option<String>,
+    env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeSetupStore {
+    path: PathBuf,
+}
+
+impl RuntimeSetupStore {
+    // Plain-file persistence is isolated here so it can be replaced by keychain storage later.
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn load(&self) -> Result<HashMap<String, RuntimeSetupState>, String> {
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(error) => {
+                return Err(format!("Failed to read AI runtime setup store: {error}"));
+            }
+        };
+        let persisted: PersistedRuntimeSetupFile = serde_json::from_str(&raw)
+            .map_err(|error| format!("Failed to parse AI runtime setup store: {error}"))?;
+        if persisted.version != 1 {
+            return Ok(HashMap::new());
+        }
+
+        let mut setup = HashMap::new();
+        for (runtime_id, persisted_setup) in persisted.runtimes {
+            if validate_runtime_id(&runtime_id).is_err() {
+                continue;
+            }
+            let mut runtime_setup = RuntimeSetupState {
+                custom_binary_path: persisted_setup
+                    .custom_binary_path
+                    .and_then(normalize_optional_string),
+                auth_method: persisted_setup
+                    .auth_method
+                    .and_then(normalize_optional_string),
+                env: persisted_setup
+                    .env
+                    .into_iter()
+                    .filter_map(|(key, value)| {
+                        normalize_optional_string(value).map(|value| (key, value))
+                    })
+                    .collect(),
+                ..RuntimeSetupState::default()
+            };
+            refresh_runtime_setup_flags(&runtime_id, &mut runtime_setup);
+            if !runtime_setup
+                .auth_method
+                .as_deref()
+                .is_some_and(|method| auth_method_has_local_config(&runtime_setup, method))
+            {
+                runtime_setup.auth_method =
+                    local_auth_method_for_runtime(&runtime_id, &runtime_setup);
+            }
+            runtime_setup.auth_ready = has_local_auth_config(&runtime_setup);
+            setup.insert(runtime_id, runtime_setup);
+        }
+        Ok(setup)
+    }
+
+    fn save(&self, setup: &HashMap<String, RuntimeSetupState>) -> Result<(), String> {
+        let runtimes = setup
+            .iter()
+            .filter_map(|(runtime_id, setup)| {
+                PersistedRuntimeSetupState::from_runtime_setup(setup)
+                    .map(|persisted_setup| (runtime_id.clone(), persisted_setup))
+            })
+            .collect::<HashMap<_, _>>();
+
+        if runtimes.is_empty() {
+            match std::fs::remove_file(&self.path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("Failed to remove AI runtime setup store: {error}"));
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Failed to create AI runtime setup directory: {error}"))?;
+        }
+
+        let persisted = PersistedRuntimeSetupFile {
+            version: 1,
+            runtimes,
+        };
+        let encoded = serde_json::to_vec_pretty(&persisted)
+            .map_err(|error| format!("Failed to encode AI runtime setup store: {error}"))?;
+        let temp_path = self.path.with_extension(format!(
+            "json.tmp-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        write_secret_file(&temp_path, &encoded)?;
+        replace_secret_file(&temp_path, &self.path).map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Failed to replace AI runtime setup store: {error}")
+        })
+    }
+}
+
+impl Default for RuntimeSetupStore {
+    fn default() -> Self {
+        Self::new(app_data_dir().join("ai").join("runtime-setup.json"))
+    }
+}
+
+impl PersistedRuntimeSetupState {
+    fn from_runtime_setup(setup: &RuntimeSetupState) -> Option<Self> {
+        let env = setup
+            .env
+            .iter()
+            .filter(|(_, value)| !value.trim().is_empty())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<HashMap<_, _>>();
+        let custom_binary_path = setup
+            .custom_binary_path
+            .clone()
+            .and_then(normalize_optional_string);
+        let auth_method = setup
+            .auth_method
+            .clone()
+            .and_then(normalize_optional_string)
+            .filter(|method| auth_method_has_local_config(setup, method));
+
+        if custom_binary_path.is_none() && auth_method.is_none() && env.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            custom_binary_path,
+            auth_method,
+            env,
+        })
+    }
+}
+
+fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("Failed to open AI runtime setup store: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("Failed to write AI runtime setup store: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("Failed to flush AI runtime setup store: {error}"))
+}
+
+#[cfg(windows)]
+fn replace_secret_file(temp_path: &Path, target_path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(target_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::rename(temp_path, target_path)
+}
+
+#[cfg(not(windows))]
+fn replace_secret_file(temp_path: &Path, target_path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp_path, target_path)
+}
+
 #[derive(Debug, Clone)]
 struct ManagedAiSession {
     session: AiSession,
@@ -379,6 +567,7 @@ enum AcpConfigOptionRemoteCommand {
 pub(crate) struct NativeAi {
     inner: Arc<Mutex<NativeAiInner>>,
     event_tx: Sender<RpcOutput>,
+    setup_store: RuntimeSetupStore,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     auth_terminal_sessions: Arc<Mutex<HashMap<String, AuthTerminalHandle>>>,
@@ -387,9 +576,18 @@ pub(crate) struct NativeAi {
 
 impl NativeAi {
     pub(crate) fn new(event_tx: Sender<RpcOutput>) -> Self {
+        Self::with_setup_store(event_tx, RuntimeSetupStore::default())
+    }
+
+    fn with_setup_store(event_tx: Sender<RpcOutput>, setup_store: RuntimeSetupStore) -> Self {
+        let setup = setup_store.load().unwrap_or_default();
         Self {
-            inner: Arc::new(Mutex::new(NativeAiInner::default())),
+            inner: Arc::new(Mutex::new(NativeAiInner {
+                setup,
+                ..NativeAiInner::default()
+            })),
             event_tx,
+            setup_store,
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -492,7 +690,11 @@ impl NativeAi {
             .clone()
             .and_then(normalize_optional_string);
         update_auth_state(setup, &runtime_id, input)?;
-        Ok(json!(setup_status_for(&runtime_id, setup.clone())?))
+        let status = setup_status_for(&runtime_id, setup.clone())?;
+        let persisted_setup = state.setup.clone();
+        drop(state);
+        self.setup_store.save(&persisted_setup)?;
+        Ok(json!(status))
     }
 
     pub(crate) fn start_auth(&self, args: &Value) -> Result<Value, String> {
@@ -579,7 +781,11 @@ impl NativeAi {
             .map_err(|error| format!("Internal AI state error: {error}"))?;
         let setup = state.setup.entry(runtime_id.clone()).or_default();
         clear_runtime_auth_state(setup);
-        Ok(json!(setup_status_for(&runtime_id, setup.clone())?))
+        let status = setup_status_for(&runtime_id, setup.clone())?;
+        let persisted_setup = state.setup.clone();
+        drop(state);
+        self.setup_store.save(&persisted_setup)?;
+        Ok(json!(status))
     }
 
     pub(crate) fn list_sessions(&self, vault_root: Option<PathBuf>) -> Result<Value, String> {
@@ -3968,6 +4174,47 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
+fn app_data_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("NEVERWRITE_APP_DATA_DIR") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("NeverWrite");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return PathBuf::from(appdata).join("NeverWrite");
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg_data_home).join("NeverWrite");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("NeverWrite");
+        }
+    }
+
+    std::env::temp_dir().join("NeverWrite")
+}
+
 fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> ResolvedAcpCommand {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -4160,6 +4407,45 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
     }
 }
 
+fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) -> Option<String> {
+    match runtime_id {
+        CODEX_RUNTIME_ID => setup
+            .env
+            .get("CODEX_API_KEY")
+            .is_some_and(|value| !value.is_empty())
+            .then(|| "codex-api-key".to_string())
+            .or_else(|| {
+                setup
+                    .env
+                    .get("OPENAI_API_KEY")
+                    .is_some_and(|value| !value.is_empty())
+                    .then(|| "openai-api-key".to_string())
+            }),
+        CLAUDE_RUNTIME_ID => setup
+            .has_gateway_config
+            .then(|| "gateway".to_string())
+            .or_else(|| {
+                setup
+                    .env
+                    .get("ANTHROPIC_API_KEY")
+                    .is_some_and(|value| !value.is_empty())
+                    .then(|| "anthropic-api-key".to_string())
+            })
+            .or_else(|| {
+                setup
+                    .env
+                    .get("ANTHROPIC_AUTH_TOKEN")
+                    .is_some_and(|value| !value.is_empty())
+                    .then(|| "console-login".to_string())
+            }),
+        GEMINI_RUNTIME_ID => ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            .into_iter()
+            .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()))
+            .then(|| "use_gemini".to_string()),
+        _ => None,
+    }
+}
+
 fn has_local_auth_config(setup: &RuntimeSetupState) -> bool {
     setup.has_gateway_config
         || [
@@ -4172,6 +4458,19 @@ fn has_local_auth_config(setup: &RuntimeSetupState) -> bool {
         ]
         .into_iter()
         .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()))
+}
+
+fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) {
+    setup.has_gateway_url = setup
+        .env
+        .get("ANTHROPIC_BASE_URL")
+        .is_some_and(|value| !value.is_empty());
+    setup.has_gateway_config = runtime_id == CLAUDE_RUNTIME_ID
+        && (setup.has_gateway_url
+            || setup
+                .env
+                .get("ANTHROPIC_CUSTOM_HEADERS")
+                .is_some_and(|value| !value.is_empty()));
 }
 
 fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
@@ -4482,22 +4781,21 @@ fn update_auth_state(
         }
     }
 
-    setup.has_gateway_url = setup
-        .env
-        .get("ANTHROPIC_BASE_URL")
-        .is_some_and(|value| !value.is_empty());
-    setup.has_gateway_config = runtime_id == CLAUDE_RUNTIME_ID
-        && (setup.has_gateway_url
-            || setup
-                .env
-                .get("ANTHROPIC_CUSTOM_HEADERS")
-                .is_some_and(|value| !value.is_empty()));
+    refresh_runtime_setup_flags(runtime_id, setup);
     if setup.has_gateway_config && gateway_config_touched {
         setup.auth_method = Some("gateway".to_string());
         touched_auth = true;
     }
     if touched_auth {
         setup.auth_ready = has_local_auth_config(setup);
+        if setup.auth_ready
+            && !setup
+                .auth_method
+                .as_deref()
+                .is_some_and(|method| auth_method_has_local_config(setup, method))
+        {
+            setup.auth_method = local_auth_method_for_runtime(runtime_id, setup);
+        }
         setup.suppress_persisted_auth = false;
         setup.message = None;
     }
@@ -5225,6 +5523,11 @@ mod tests {
     const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
+
+    fn test_native_ai_with_setup_store(path: PathBuf) -> NativeAi {
+        let (event_tx, _event_rx) = mpsc::channel();
+        NativeAi::with_setup_store(event_tx, RuntimeSetupStore::new(path))
+    }
 
     fn subagent_session_created_meta() -> Meta {
         Meta::from_iter([
@@ -7708,6 +8011,74 @@ mod tests {
             CLAUDE_RUNTIME_ID,
             "Authentication succeeded"
         ));
+    }
+
+    #[test]
+    fn gemini_api_key_setup_persists_across_native_ai_instances() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_setup_store(store_path.clone());
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GEMINI_RUNTIME_ID,
+                "input": {
+                    "gemini_api_key": {
+                        "action": "set",
+                        "value": "gemini-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        let rehydrated_native_ai = test_native_ai_with_setup_store(store_path);
+        let status = rehydrated_native_ai
+            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .unwrap();
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("use_gemini")
+        );
+        assert!(!status.to_string().contains("gemini-test-secret"));
+    }
+
+    #[test]
+    fn logout_removes_persisted_gemini_api_key_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_setup_store(store_path.clone());
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GEMINI_RUNTIME_ID,
+                "input": {
+                    "gemini_api_key": {
+                        "action": "set",
+                        "value": "gemini-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+        assert!(store_path.exists());
+
+        native_ai
+            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .unwrap();
+
+        assert!(!store_path.exists());
+        let setup = native_ai.inner.lock().unwrap();
+        let gemini_setup = setup
+            .setup
+            .get(GEMINI_RUNTIME_ID)
+            .expect("Gemini setup entry should remain in memory");
+        assert!(!gemini_setup.env.contains_key("GEMINI_API_KEY"));
+        assert_eq!(gemini_setup.auth_method, None);
+        assert!(!gemini_setup.auth_ready);
     }
 
     #[test]
