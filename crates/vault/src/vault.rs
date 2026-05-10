@@ -262,7 +262,8 @@ impl Vault {
             return Err(VaultError::InvalidVaultPath(relative_path.to_string()));
         }
 
-        Ok(std::fs::read_to_string(path)?)
+        let bytes = std::fs::read(path)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     pub fn save_text_file(
@@ -522,7 +523,8 @@ impl Vault {
     }
 
     pub fn read_note_from_path(&self, path: &Path) -> Result<NoteDocument, VaultError> {
-        let content = std::fs::read_to_string(path)?;
+        let bytes = std::fs::read(path)?;
+        let content = String::from_utf8_lossy(&bytes).into_owned();
         let id = self.path_to_id(path);
         Ok(parser::parse_note(&id, path, &content))
     }

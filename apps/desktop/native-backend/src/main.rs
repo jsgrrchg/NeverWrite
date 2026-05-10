@@ -2383,9 +2383,7 @@ impl NativeBackend {
             else {
                 return Ok(());
             };
-            let content_hash = fs::read_to_string(&path)
-                .ok()
-                .map(|content| note_content_hash(&content));
+            let content_hash = lossy_text_file_content_hash(&path);
             let revision = advance_revision(&mut state.note_revisions, &note_id, None).max(1);
             let change = build_vault_note_change_with_origin(
                 vault_path,
@@ -2410,9 +2408,7 @@ impl NativeBackend {
             .find(|entry| entry.relative_path == relative_path)
             .cloned();
         let revision = advance_revision(&mut state.file_revisions, &relative_path, None).max(1);
-        let content_hash = fs::read_to_string(&path)
-            .ok()
-            .map(|content| note_content_hash(&content));
+        let content_hash = lossy_text_file_content_hash(&path);
         let change = build_vault_note_change_with_origin(
             vault_path,
             "upsert",
@@ -2829,6 +2825,11 @@ fn note_content_hash(content: &str) -> String {
     content_hash_bytes(content.as_bytes())
 }
 
+fn lossy_text_file_content_hash(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    Some(note_content_hash(String::from_utf8_lossy(&bytes).as_ref()))
+}
+
 fn content_hash_bytes(bytes: &[u8]) -> String {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in bytes {
@@ -3155,6 +3156,22 @@ mod tests {
         backend.lock().unwrap().invoke(command, args, backend)
     }
 
+    fn recv_vault_change(event_rx: &std::sync::mpsc::Receiver<RpcOutput>) -> Value {
+        match event_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        {
+            RpcOutput::Event {
+                event_name,
+                payload,
+            } => {
+                assert_eq!(event_name, "vault://note-changed");
+                payload
+            }
+            output => panic!("expected vault change event, got {output:?}"),
+        }
+    }
+
     #[test]
     fn invokes_vault_editor_commands_without_electron() {
         let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
@@ -3328,5 +3345,73 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read_to_string(&note_path).unwrap(), "# Beta\n");
         assert_eq!(change.get("origin").and_then(Value::as_str), Some("agent"));
+    }
+
+    #[test]
+    fn external_upsert_hashes_non_utf8_markdown_and_text_lossily() {
+        let (event_tx, event_rx) = mpsc::channel::<RpcOutput>();
+        let mut backend = NativeBackend::new(event_tx);
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        let root = normalize_vault_path(&vault_path).unwrap();
+        let root_path = PathBuf::from(&root);
+        let vault = Vault::open(PathBuf::from(&root)).unwrap();
+        let notes = vault.scan().unwrap();
+        let entries = vault.discover_vault_entries().unwrap();
+        let index = VaultIndex::build(notes);
+
+        backend.vaults.insert(
+            root.clone(),
+            VaultRuntimeState {
+                vault,
+                index,
+                entries,
+                open_state: VaultOpenStateDto {
+                    path: Some(root.clone()),
+                    stage: "ready".to_string(),
+                    message: "Vault ready".to_string(),
+                    processed: 0,
+                    total: 0,
+                    note_count: 0,
+                    snapshot_used: false,
+                    cancelled: false,
+                    started_at_ms: None,
+                    finished_at_ms: None,
+                    metrics: empty_metrics(),
+                    error: None,
+                },
+                graph_revision: 1,
+                note_revisions: HashMap::new(),
+                file_revisions: HashMap::new(),
+                write_tracker: WriteTracker::new(),
+                _watcher: None,
+            },
+        );
+
+        let note_path = root_path.join("bad.md");
+        let note_bytes = b"# Bad\nhello \xff markdown\n";
+        fs::write(&note_path, note_bytes).unwrap();
+        backend
+            .emit_external_upsert(&root, note_path, VAULT_CHANGE_ORIGIN_EXTERNAL)
+            .unwrap();
+        let note_change = recv_vault_change(&event_rx);
+        let expected_note_hash = note_content_hash(String::from_utf8_lossy(note_bytes).as_ref());
+        assert_eq!(
+            note_change.get("content_hash").and_then(Value::as_str),
+            Some(expected_note_hash.as_str())
+        );
+
+        let text_path = root_path.join("notes.txt");
+        let text_bytes = b"hello \xff text\n";
+        fs::write(&text_path, text_bytes).unwrap();
+        backend
+            .emit_external_upsert(&root, text_path, VAULT_CHANGE_ORIGIN_EXTERNAL)
+            .unwrap();
+        let text_change = recv_vault_change(&event_rx);
+        let expected_text_hash = note_content_hash(String::from_utf8_lossy(text_bytes).as_ref());
+        assert_eq!(
+            text_change.get("content_hash").and_then(Value::as_str),
+            Some(expected_text_hash.as_str())
+        );
     }
 }
