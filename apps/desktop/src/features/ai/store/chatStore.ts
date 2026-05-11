@@ -1186,6 +1186,7 @@ interface ChatStore {
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
         geminiApiKey: AISecretPatch;
+        kiloApiKey?: AISecretPatch;
         googleApiKey: AISecretPatch;
         googleCloudProject?: string;
         googleCloudLocation?: string;
@@ -1203,6 +1204,7 @@ interface ChatStore {
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
         geminiApiKey: AISecretPatch;
+        kiloApiKey?: AISecretPatch;
         googleApiKey: AISecretPatch;
         googleCloudProject?: string;
         googleCloudLocation?: string;
@@ -6849,6 +6851,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     secretPatchChanged(input.codexApiKey) ||
                     secretPatchChanged(input.openaiApiKey) ||
                     secretPatchChanged(input.geminiApiKey) ||
+                    secretPatchChanged(
+                        input.kiloApiKey ?? { action: "unchanged" },
+                    ) ||
                     secretPatchChanged(input.googleApiKey) ||
                     input.googleCloudProject ||
                     input.googleCloudLocation ||
@@ -6867,6 +6872,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
                         geminiApiKey: input.geminiApiKey,
+                        kiloApiKey: input.kiloApiKey,
                         googleApiKey: input.googleApiKey,
                         googleCloudProject: input.googleCloudProject,
                         googleCloudLocation: input.googleCloudLocation,

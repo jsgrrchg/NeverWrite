@@ -141,6 +141,8 @@ struct AiRuntimeSetupPayload {
     #[serde(default)]
     gemini_api_key: Option<AiSecretPatch>,
     #[serde(default)]
+    kilo_api_key: Option<AiSecretPatch>,
+    #[serde(default)]
     google_api_key: Option<AiSecretPatch>,
     google_cloud_project: Option<String>,
     google_cloud_location: Option<String>,
@@ -610,6 +612,7 @@ fn is_secret_runtime_env_key(key: &str) -> bool {
             | "ANTHROPIC_CUSTOM_HEADERS"
             | "GEMINI_API_KEY"
             | "GOOGLE_API_KEY"
+            | "KILO_API_KEY"
     )
 }
 
@@ -622,6 +625,7 @@ fn secret_env_keys_for_runtime(runtime_id: &str) -> &'static [&'static str] {
             "ANTHROPIC_CUSTOM_HEADERS",
         ],
         GEMINI_RUNTIME_ID => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        KILO_RUNTIME_ID => &["KILO_API_KEY"],
         _ => &[],
     }
 }
@@ -4126,6 +4130,15 @@ fn setup_status_for(
     runtime_id: &str,
     setup: RuntimeSetupState,
 ) -> Result<AiRuntimeSetupStatus, String> {
+    let inherited_auth_method = inherited_auth_method(runtime_id, !setup.suppress_persisted_auth);
+    setup_status_for_with_inherited_auth(runtime_id, setup, inherited_auth_method)
+}
+
+fn setup_status_for_with_inherited_auth(
+    runtime_id: &str,
+    setup: RuntimeSetupState,
+    inherited_auth_method: Option<String>,
+) -> Result<AiRuntimeSetupStatus, String> {
     validate_runtime_id(runtime_id)?;
     let custom_path = setup
         .custom_binary_path
@@ -4139,7 +4152,8 @@ fn setup_status_for(
     } else {
         AiRuntimeBinarySource::Missing
     };
-    let inherited_auth_method = inherited_auth_method(runtime_id, !setup.suppress_persisted_auth);
+    let inherited_auth_method = inherited_auth_method
+        .filter(|method| inherited_auth_method_applies_to_setup(&setup, method));
     let auth_ready = setup.auth_ready || inherited_auth_method.is_some();
     let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
@@ -4164,6 +4178,22 @@ fn setup_status_for(
         onboarding_required: !binary_ready || !auth_ready,
         message,
     })
+}
+
+fn inherited_auth_method_applies_to_setup(
+    setup: &RuntimeSetupState,
+    inherited_method: &str,
+) -> bool {
+    match setup.auth_method.as_deref() {
+        Some(selected_method)
+            if is_local_auth_method(selected_method)
+                && selected_method != inherited_method
+                && !auth_method_has_local_config(setup, selected_method) =>
+        {
+            false
+        }
+        _ => true,
+    }
 }
 
 fn runtime_setup_load_error(error: String) -> String {
@@ -4611,7 +4641,9 @@ fn inherited_auth_method(runtime_id: &str, include_persisted: bool) -> Option<St
             .then(|| "use_gemini".to_string())
             .or_else(|| env_secret_present("GOOGLE_API_KEY").then(|| "use_gemini".to_string()))
             .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
-        KILO_RUNTIME_ID => inherited_persisted_auth_method(runtime_id, include_persisted),
+        KILO_RUNTIME_ID => env_secret_present("KILO_API_KEY")
+            .then(|| "kilo-api-key".to_string())
+            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
         _ => None,
     }
 }
@@ -4718,9 +4750,25 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
                     .get("GOOGLE_API_KEY")
                     .is_some_and(|value| !value.is_empty())
         }
+        "kilo-api-key" => setup
+            .env
+            .get("KILO_API_KEY")
+            .is_some_and(|value| !value.is_empty()),
         "gateway" => setup.has_gateway_config,
         _ => false,
     }
+}
+
+fn is_local_auth_method(method_id: &str) -> bool {
+    matches!(
+        method_id,
+        "codex-api-key"
+            | "openai-api-key"
+            | "anthropic-api-key"
+            | "use_gemini"
+            | "kilo-api-key"
+            | "gateway"
+    )
 }
 
 fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) -> Option<String> {
@@ -4758,6 +4806,11 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
             .into_iter()
             .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()))
             .then(|| "use_gemini".to_string()),
+        KILO_RUNTIME_ID => setup
+            .env
+            .get("KILO_API_KEY")
+            .is_some_and(|value| !value.is_empty())
+            .then(|| "kilo-api-key".to_string()),
         _ => None,
     }
 }
@@ -4798,6 +4851,7 @@ fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
         "ANTHROPIC_BASE_URL",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
+        "KILO_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
     ] {
@@ -4870,11 +4924,19 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
                 description: "Use a Gemini Developer API key stored locally.".to_string(),
             },
         ],
-        KILO_RUNTIME_ID => vec![AiAuthMethod {
-            id: "kilo-login".to_string(),
-            name: "Kilo login".to_string(),
-            description: "Open the Kilo CLI sign-in flow in an integrated terminal.".to_string(),
-        }],
+        KILO_RUNTIME_ID => vec![
+            AiAuthMethod {
+                id: "kilo-login".to_string(),
+                name: "Kilo login".to_string(),
+                description: "Open the Kilo CLI sign-in flow in an integrated terminal."
+                    .to_string(),
+            },
+            AiAuthMethod {
+                id: "kilo-api-key".to_string(),
+                name: "Kilo API key".to_string(),
+                description: "Use a Kilo API key stored locally.".to_string(),
+            },
+        ],
         _ => vec![],
     }
 }
@@ -4884,7 +4946,7 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
         CODEX_RUNTIME_ID => vec!["chatgpt", "openai-api-key", "codex-api-key"],
         CLAUDE_RUNTIME_ID => claude_auth_method_ids_for_environment(is_claude_remote_environment()),
         GEMINI_RUNTIME_ID => vec!["login_with_google", "use_gemini"],
-        KILO_RUNTIME_ID => vec!["kilo-login"],
+        KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
         _ => vec![],
     }
 }
@@ -5066,6 +5128,11 @@ fn update_auth_state(
         }
         if let Some(patch) = input.google_api_key.clone() {
             touched_auth |= apply_secret_patch(setup, "GOOGLE_API_KEY", patch, "use_gemini");
+        }
+    }
+    if runtime_id == KILO_RUNTIME_ID {
+        if let Some(patch) = input.kilo_api_key.clone() {
+            touched_auth |= apply_secret_patch(setup, "KILO_API_KEY", patch, "kilo-api-key");
         }
     }
 
@@ -8322,6 +8389,35 @@ mod tests {
     }
 
     #[test]
+    fn inherited_kilo_login_does_not_satisfy_selected_kilo_api_key() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("kilo-api-key".to_string()),
+            auth_ready: false,
+            ..RuntimeSetupState::default()
+        };
+
+        let status = setup_status_for_with_inherited_auth(
+            KILO_RUNTIME_ID,
+            setup,
+            Some("kilo-login".to_string()),
+        )
+        .expect("setup status should resolve");
+
+        assert_eq!(
+            status.auth_method.as_deref(),
+            Some("kilo-api-key"),
+            "status should preserve the selected method"
+        );
+        assert!(
+            !status.auth_ready,
+            "Kilo CLI login must not make Kilo API key auth look ready"
+        );
+        assert!(status.onboarding_required);
+    }
+
+    #[test]
     fn ignores_empty_persisted_kilo_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let kilo_dir = temp.path().join(".local").join("share").join("kilo");
@@ -8457,6 +8553,45 @@ mod tests {
     }
 
     #[test]
+    fn kilo_api_key_setup_persists_across_native_ai_instances() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": KILO_RUNTIME_ID,
+                "input": {
+                    "kilo_api_key": {
+                        "action": "set",
+                        "value": "kilo-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(!encoded.contains("kilo-test-secret"));
+        assert!(encoded.contains("KILO_API_KEY"));
+
+        let rehydrated_native_ai = test_native_ai_with_secret_store(store_path, secrets);
+        let status = rehydrated_native_ai
+            .get_setup_status(&json!({ "runtime_id": KILO_RUNTIME_ID }))
+            .unwrap();
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("kilo-api-key")
+        );
+        assert!(!status.to_string().contains("kilo-test-secret"));
+    }
+
+    #[test]
     fn update_setup_secret_store_failure_does_not_commit_memory() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -8555,7 +8690,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_runtime_setup_redacts_gemini_codex_and_claude_secrets() {
+    fn persisted_runtime_setup_redacts_provider_secrets() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
@@ -8585,15 +8720,25 @@ mod tests {
                 },
             }))
             .unwrap();
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": KILO_RUNTIME_ID,
+                "input": {
+                    "kilo_api_key": { "action": "set", "value": "kilo-secret" },
+                },
+            }))
+            .unwrap();
 
         let encoded = fs::read_to_string(&store_path).unwrap();
         assert!(!encoded.contains("gemini-secret"));
         assert!(!encoded.contains("openai-secret"));
         assert!(!encoded.contains("claude-secret"));
+        assert!(!encoded.contains("kilo-secret"));
         assert!(encoded.contains("\"secret_env_keys\""));
         assert!(encoded.contains("GEMINI_API_KEY"));
         assert!(encoded.contains("OPENAI_API_KEY"));
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
+        assert!(encoded.contains("KILO_API_KEY"));
     }
 
     #[test]
@@ -8742,6 +8887,47 @@ mod tests {
     }
 
     #[test]
+    fn logout_removes_persisted_kilo_api_key_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": KILO_RUNTIME_ID,
+                "input": {
+                    "kilo_api_key": {
+                        "action": "set",
+                        "value": "kilo-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+        assert!(store_path.exists());
+
+        native_ai
+            .logout(&json!({ "runtime_id": KILO_RUNTIME_ID }))
+            .unwrap();
+
+        assert!(!store_path.exists());
+        assert_eq!(
+            secrets
+                .get_secret(KILO_RUNTIME_ID, "KILO_API_KEY")
+                .expect("secret store should remain readable"),
+            None
+        );
+        let setup = native_ai.inner.lock().unwrap();
+        let kilo_setup = setup
+            .setup
+            .get(KILO_RUNTIME_ID)
+            .expect("Kilo setup entry should remain in memory");
+        assert!(!kilo_setup.env.contains_key("KILO_API_KEY"));
+        assert_eq!(kilo_setup.auth_method, None);
+        assert!(!kilo_setup.auth_ready);
+    }
+
+    #[test]
     fn logout_secret_store_failure_does_not_commit_memory() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -8829,6 +9015,27 @@ mod tests {
         assert_eq!(
             spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
             Some("gemini-api-key")
+        );
+    }
+
+    #[test]
+    fn acp_process_spec_injects_kilo_api_key_from_setup_env() {
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("KILO_API_KEY".to_string(), "kilo-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("kilo-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(KILO_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Kilo ACP process spec should resolve");
+
+        assert_eq!(
+            spec.env.get("KILO_API_KEY").map(String::as_str),
+            Some("kilo-test-secret")
         );
     }
 }

@@ -424,6 +424,58 @@ describe("AIProvidersSettings", () => {
         );
     });
 
+    it("submits Kilo API keys without opening terminal auth", async () => {
+        const providers = createDefaultProviders();
+        providers.descriptors.push(
+            createRuntimeDescriptor("kilo-acp", "Kilo ACP"),
+        );
+        providers.statuses["kilo-acp"] = createSetupStatus({
+            runtimeId: "kilo-acp",
+            binarySource: "env",
+            authMethods: [
+                {
+                    id: "kilo-login",
+                    name: "Kilo login",
+                    description: "Open a terminal-based Kilo login flow.",
+                },
+                {
+                    id: "kilo-api-key",
+                    name: "Kilo API key",
+                    description: "Use a Kilo API key stored only for NeverWrite.",
+                },
+            ],
+        });
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Kilo");
+        fireEvent.click(getButtonFromText("Kilo API key"));
+        fireEvent.change(screen.getByPlaceholderText("Kilo API key"), {
+            target: { value: "kilo-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and connect" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "kilo-acp",
+                    kiloApiKey: {
+                        action: "set",
+                        value: "kilo-secret",
+                    },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
+            { methodId: "kilo-api-key", runtimeId: "kilo-acp" },
+            null,
+        );
+        expect(apiMocks.aiStartAuthTerminalSession).not.toHaveBeenCalled();
+    });
+
     it("expands a provider row even when setup status failed to load", async () => {
         const providers = createDefaultProviders();
         apiMocks.aiListRuntimes.mockResolvedValue(providers.descriptors);

@@ -277,6 +277,7 @@ export async function aiUpdateSetup(input: {
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
     geminiApiKey: AISecretPatch;
+    kiloApiKey?: AISecretPatch;
     googleApiKey: AISecretPatch;
     googleCloudProject?: string;
     googleCloudLocation?: string;
@@ -295,6 +296,7 @@ export async function aiUpdateSetup(input: {
                 codex_api_key: input.codexApiKey,
                 openai_api_key: input.openaiApiKey,
                 gemini_api_key: input.geminiApiKey,
+                kilo_api_key: input.kiloApiKey ?? { action: "unchanged" },
                 google_api_key: input.googleApiKey,
                 google_cloud_project: input.googleCloudProject ?? null,
                 google_cloud_location: input.googleCloudLocation ?? null,
