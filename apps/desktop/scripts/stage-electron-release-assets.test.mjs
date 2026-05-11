@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
+import { parseDocument } from "yaml";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
 const stageScriptPath = path.join(
@@ -324,6 +325,7 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         assert.equal(metadata.updaterBlockmapAssetName, null);
         assert.equal(metadata.updaterBlockmapSizeBytes, 0);
         assert.equal(metadata.feedRelativePath, "linux-x64/latest-linux.yml");
+        assert.deepEqual(metadata.feedAliasRelativePaths, []);
         assert.equal(
             fs.existsSync(
                 path.join(outputDir, "NeverWrite-0.2.0-x64.AppImage.blockmap"),
@@ -388,16 +390,73 @@ test("stage-electron-release-assets synthesizes missing Linux AppImage feeds", (
         assert.equal(metadata.updaterBlockmapAssetName, null);
         assert.equal(metadata.updaterBlockmapSizeBytes, 0);
         assert.equal(metadata.feedRelativePath, "linux-arm64/latest-linux.yml");
-        assert.match(rewrittenFeed, /version: "0\.2\.0"/);
-        assert.match(
-            rewrittenFeed,
-            /path: "https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite-0\.2\.0-arm64\.AppImage"/,
+        assert.deepEqual(metadata.feedAliasRelativePaths, [
+            "linux-arm64/latest-linux-arm64.yml",
+        ]);
+
+        const aliasFeed = fs.readFileSync(
+            path.join(outputDir, "feeds", "linux-arm64", "latest-linux-arm64.yml"),
+            "utf8",
         );
-        assert.match(rewrittenFeed, /sha512: "/);
+        assert.equal(aliasFeed, rewrittenFeed);
+
+        const feedDocument = parseDocument(rewrittenFeed);
+        const updaterUrl =
+            "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-arm64.AppImage";
+        assert.equal(feedDocument.get("version"), "0.2.0");
         assert.equal(
-            rewrittenFeed.includes(`sha512: "${appImageSha512}"`),
-            true,
+            Number.isNaN(Date.parse(feedDocument.get("releaseDate"))),
+            false,
         );
-        assert.match(rewrittenFeed, /size: 14/);
+        assert.equal(feedDocument.get("path"), updaterUrl);
+        assert.equal(feedDocument.get("sha512"), appImageSha512);
+
+        const files = feedDocument.get("files", true);
+        assert.equal(files.items.length, 1);
+        assert.equal(files.items[0].get("url"), updaterUrl);
+        assert.equal(files.items[0].get("sha512"), appImageSha512);
+        assert.equal(files.items[0].get("size"), 14);
+    });
+});
+
+test("stage-electron-release-assets requires generated Linux x64 feeds", () => {
+    withTempDir((tempDir) => {
+        const distDir = path.join(tempDir, "dist");
+        const outputDir = path.join(tempDir, "staged");
+        const metadataOut = path.join(tempDir, "metadata", "linux-x64.json");
+
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.AppImage"),
+            "x64 appimage",
+        );
+
+        assert.throws(
+            () =>
+                execFileSync(
+                    process.execPath,
+                    [
+                        stageScriptPath,
+                        "--dist-dir",
+                        distDir,
+                        "--target",
+                        "x86_64-unknown-linux-gnu",
+                        "--version",
+                        "0.2.0",
+                        "--tag",
+                        "v0.2.0",
+                        "--repo",
+                        "jsgrrchg/NeverWrite",
+                        "--output-dir",
+                        outputDir,
+                        "--metadata-out",
+                        metadataOut,
+                    ],
+                    {
+                        cwd: repoRoot,
+                        stdio: "pipe",
+                    },
+                ),
+            /Expected exactly one latest-linux\.yml feed/,
+        );
     });
 });

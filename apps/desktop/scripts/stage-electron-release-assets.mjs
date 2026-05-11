@@ -143,6 +143,13 @@ function electronBuilderLinuxArch(buildTarget) {
     throw new Error(`Unsupported Linux build target "${buildTarget}".`);
 }
 
+function feedAliasFileNamesForBuildTarget(buildTarget) {
+    if (buildTarget === "aarch64-unknown-linux-gnu") {
+        return ["latest-linux-arm64.yml"];
+    }
+    return [];
+}
+
 function collectArtifacts(distDir, buildTarget) {
     const metadataFileName = metadataFileNameForBuildTarget(buildTarget);
     const findFeedPath = () =>
@@ -184,11 +191,14 @@ function collectArtifacts(distDir, buildTarget) {
         const blockmapPath = fs.existsSync(`${appImagePath}.blockmap`)
             ? `${appImagePath}.blockmap`
             : null;
-        const feedPath = findOptionalSingleFile(
-            distDir,
-            (filePath) => path.basename(filePath) === metadataFileName,
-            `${metadataFileName} feed`,
-        );
+        const feedPath =
+            buildTarget === "aarch64-unknown-linux-gnu"
+                ? findOptionalSingleFile(
+                      distDir,
+                      (filePath) => path.basename(filePath) === metadataFileName,
+                      `${metadataFileName} feed`,
+                  )
+                : findFeedPath();
 
         return {
             feedPath,
@@ -250,6 +260,7 @@ function writeSyntheticFeed(destinationFeedPath, version, updaterUrl, metadata) 
         destinationFeedPath,
         [
             `version: ${yamlString(version)}`,
+            `releaseDate: ${yamlString(new Date().toISOString())}`,
             `path: ${yamlString(updaterUrl)}`,
             `sha512: ${yamlString(metadata.sha512)}`,
             "files:",
@@ -260,6 +271,16 @@ function writeSyntheticFeed(destinationFeedPath, version, updaterUrl, metadata) 
         ].join("\n"),
         "utf8",
     );
+}
+
+function copyFeedAliases(destinationFeedPath, outputDir, feedTarget, buildTarget) {
+    const aliasRelativePaths = [];
+    for (const aliasFileName of feedAliasFileNamesForBuildTarget(buildTarget)) {
+        const aliasPath = path.join(outputDir, "feeds", feedTarget, aliasFileName);
+        fs.copyFileSync(destinationFeedPath, aliasPath);
+        aliasRelativePaths.push(toPosixRelativePath(feedTarget, aliasFileName));
+    }
+    return aliasRelativePaths;
 }
 
 function rewriteFeed({
@@ -323,12 +344,19 @@ function rewriteFeed({
             updaterUrl,
             publishedAssetMetadata.updaterUrl,
         );
+        const feedAliasRelativePaths = copyFeedAliases(
+            destinationFeedPath,
+            outputDir,
+            feedTarget,
+            buildTarget,
+        );
 
         return {
             feedTarget,
             metadataFileName,
             destinationFeedPath,
             updaterUrl,
+            feedAliasRelativePaths,
         };
     }
 
@@ -381,12 +409,19 @@ function rewriteFeed({
     }
 
     fs.writeFileSync(destinationFeedPath, document.toString(), "utf8");
+    const feedAliasRelativePaths = copyFeedAliases(
+        destinationFeedPath,
+        outputDir,
+        feedTarget,
+        buildTarget,
+    );
 
     return {
         feedTarget,
         metadataFileName,
         destinationFeedPath,
         updaterUrl,
+        feedAliasRelativePaths,
     };
 }
 
@@ -462,6 +497,7 @@ function main() {
             feed.feedTarget,
             feed.metadataFileName,
         ),
+        feedAliasRelativePaths: feed.feedAliasRelativePaths,
         manualAssetName,
         manualAssetSizeBytes: fileSizeInBytes(
             path.join(args.outputDir, manualAssetName),

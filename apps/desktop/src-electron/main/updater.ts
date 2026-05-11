@@ -281,6 +281,9 @@ function resolveMetadataFileName() {
         return "latest.yml";
     }
     if (process.platform === "linux") {
+        if (process.arch === "arm64") {
+            return "latest-linux-arm64.yml";
+        }
         return "latest-linux.yml";
     }
     return null;
