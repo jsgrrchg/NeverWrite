@@ -34,6 +34,32 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.5] - 2026-05-11
+
+### Added
+
+- Added Linux AppImage releases for x64 and ARM64, including Linux update feed support and AppImage updater integration. Thanks to @seifzellaban.
+- Added Kilo API key setup in AI provider settings, with `KILO_API_KEY` detection, secure local persistence, logout cleanup, and setup-state validation alongside the existing Kilo CLI login flow.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to upstream `0.33.1`, keeping the vendored Claude agent adapter aligned with current upstream behavior.
+- Updated the embedded Codex agent runtime to `0.14.0`, keeping subagents, permissions, history replay, and change-review metadata compatible with NeverWrite.
+- Polished Linux-specific desktop packaging behavior, window chrome, updater handling, and cross-platform shortcut behavior as part of the AppImage release path.
+
+### Fixed
+
+- Fixed chat Markdown rendering so slash-prefixed text is no longer converted into a clickable vault pill unless it resolves to a valid vault reference.
+- Fixed dragging agent chats from the collapsed sidebar so the sidebar overlay stays active while the drag starts.
+- Fixed provider quota, rate-limit, and usage-limit failures so the chat shows a clear provider-limit message instead of treating the error like a setup or authentication failure.
+- Fixed oversized saved AI session transcripts by compacting new saves and repairing previously inflated saved chats on load.
+- Fixed vault scans, text-file reads, and watcher/upsert hashing for Markdown and text files that contain invalid UTF-8 bytes by decoding them lossily instead of failing the vault operation. Thanks to @kwojtaszek.
+
+### Security
+
+- Secured persisted AI provider secrets for Codex/OpenAI, Claude/Anthropic, Gemini/Google, and newly added Kilo API keys through OS credential storage instead of storing secret values in runtime setup JSON.
+- Added migration for legacy plaintext AI provider setup data, transactional setup/logout persistence, fail-closed behavior when secure storage is unavailable, and broader redaction for native backend secret logs.
+
 ## [0.2.4] - 2026-05-08
 
 ### Added
@@ -47,7 +73,6 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ### Changed
 
-- Updated the embedded Claude ACP runtime to upstream `0.33.1`, keeping the vendored Claude agent adapter aligned with the latest available upstream release.
 - Changed file-tree path copy actions to consistently use "Copy Full Path" and copy absolute paths for notes, folders, PDFs, and sidebar files.
 
 ### Fixed
