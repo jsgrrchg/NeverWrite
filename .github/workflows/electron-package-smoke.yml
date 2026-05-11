@@ -280,7 +280,7 @@ jobs:
               env:
                   CSC_IDENTITY_AUTO_DISCOVERY: "false"
                   NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
-              run: npm run electron:package:unsigned -- --platform linux --arch ${{ matrix.arch }}
+              run: npm run electron:release:local -- --platform linux --arch ${{ matrix.arch }} --unsigned
 
             - name: Smoke packaged sidecar
               if: matrix.arch == 'x64'
