@@ -49,11 +49,4 @@ tokens, provider credentials, or personally sensitive paths.
 These currently live next to their implementation/release artifacts because
 they are tightly coupled to package-specific workflows.
 
-## Historical Notes
-
-- [NeverWrite Phase 5](neverwrite-rewrite.md): final notes from the technical rebrand to the canonical NeverWrite identity.
-
-Historical documents are useful context, but they are not the primary contract
-for current development unless another guide links to them directly.
-
 Last updated: May 11, 2026.
