@@ -2,7 +2,7 @@ import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useVaultStore } from "./vaultStore";
 
 export type PdfViewMode = "single" | "continuous";
-export type FileViewerMode = "text" | "image" | "csv";
+export type FileViewerMode = "text" | "image" | "csv" | "html";
 
 const IMAGE_FILE_EXTENSIONS = new Set([
     "png",
@@ -998,7 +998,12 @@ export function ensureFileTabDefaults(tab: FileTabInput): FileTab {
 }
 
 export function isFileViewerMode(value: unknown): value is FileViewerMode {
-    return value === "text" || value === "image" || value === "csv";
+    return (
+        value === "text" ||
+        value === "image" ||
+        value === "csv" ||
+        value === "html"
+    );
 }
 
 export function inferFileViewer(
@@ -1012,6 +1017,9 @@ export function inferFileViewer(
     if (IMAGE_FILE_EXTENSIONS.has(extension)) {
         return "image";
     }
+    if (extension === "html" || extension === "htm") {
+        return "html";
+    }
     return "text";
 }
 
@@ -1024,7 +1032,7 @@ export function normalizeFileViewer(
 }
 
 export function fileViewerNeedsTextContent(viewer: FileViewerMode) {
-    return viewer !== "image";
+    return viewer !== "image" && viewer !== "html";
 }
 
 export function ensureNoteTabHistory(tab: NoteTabInput): NoteTab {

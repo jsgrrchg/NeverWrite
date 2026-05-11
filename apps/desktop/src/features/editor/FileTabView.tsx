@@ -23,6 +23,7 @@ import { buildVaultPreviewUrlFromAbsolutePath } from "../../app/utils/filePrevie
 import { formatZoomPercentage } from "../../app/utils/zoom";
 import { FileTextTabView } from "./FileTextTabView";
 import { CsvFileTabView } from "./CsvFileTabView";
+import { HtmlTabView } from "./HtmlTabView";
 
 const IMG_MIN_ZOOM = 0.1;
 const IMG_MAX_ZOOM = 10;
@@ -60,6 +61,10 @@ export function FileTabView({ paneId }: FileTabViewProps) {
 
     if (tab.viewer === "csv") {
         return <CsvFileTabView key={tab.id} paneId={paneId} />;
+    }
+
+    if (tab.viewer === "html") {
+        return <HtmlTabView key={tab.id} tab={tab} />;
     }
 
     if (fileViewerNeedsTextContent(tab.viewer)) {

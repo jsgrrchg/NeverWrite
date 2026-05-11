@@ -30,7 +30,7 @@ describe("desktop CSP allowlist", () => {
         expect(csp).toContain("worker-src 'self' blob:");
         expect(csp).toContain("style-src 'self' 'unsafe-inline'");
         expect(csp).toContain(
-            "frame-src https://www.youtube.com https://www.youtube-nocookie.com",
+            "frame-src https://www.youtube.com https://www.youtube-nocookie.com neverwrite-file:",
         );
     });
 });

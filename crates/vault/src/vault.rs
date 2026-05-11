@@ -683,6 +683,12 @@ fn is_excalidraw_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("excalidraw"))
 }
 
+fn is_html_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+}
+
 fn is_text_like_mime_type(mime_type: &str) -> bool {
     mime_type.starts_with("text/")
         || matches!(
@@ -712,6 +718,7 @@ fn classify_vault_entry_path(path: &Path, kind: &str) -> VaultEntryClassificatio
         "note" => (true, "markdown"),
         "pdf" => (true, "pdf"),
         _ if is_excalidraw_path(path) => (true, "map"),
+        _ if is_html_path(path) => (true, "html"),
         _ if is_image_like => (true, "image"),
         _ if is_text_like => (true, "text"),
         _ => (false, "external"),

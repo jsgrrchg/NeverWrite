@@ -84,6 +84,8 @@ function findPackagedApp(distDir) {
     const candidates = [
         path.join(distDir, "mac-universal", "NeverWrite.app"),
         path.join(distDir, "mac", "NeverWrite.app"),
+        path.join(distDir, "mac-arm64", "NeverWrite.app"),
+        path.join(distDir, "mac-x64", "NeverWrite.app"),
     ];
 
     for (const candidate of candidates) {

@@ -318,8 +318,8 @@ export function registerPreviewProtocolHandler() {
     return async (request: Request) => {
         try {
             const url = new URL(request.url);
-            const [, scope, encodedVaultPath, encodedRelativePath] =
-                url.pathname.split("/");
+            const segments = url.pathname.split("/");
+            const [, scope, encodedVaultPath, encodedRelativePath] = segments;
             if (scope === "vault" && encodedVaultPath && encodedRelativePath) {
                 const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
                 const relativePath =
@@ -335,6 +335,34 @@ export function registerPreviewProtocolHandler() {
                         "cache-control": "no-store",
                     },
                 });
+            }
+
+            if (scope === "assets" && encodedVaultPath && segments.length > 3) {
+                const vaultPath = decodeBase64UrlSegment(encodedVaultPath);
+                const relativePath = segments
+                    .slice(3)
+                    .map((segment) => decodeURIComponent(segment))
+                    .join("/");
+                const filePath = resolvePreviewFilePath(
+                    vaultPath,
+                    relativePath,
+                );
+                const data = await fs.readFile(filePath);
+                const mimeType = previewMimeType(filePath);
+                const headers: Record<string, string> = {
+                    "content-type": mimeType,
+                    "cache-control": "no-store",
+                };
+                if (mimeType === "text/html") {
+                    headers["content-security-policy"] =
+                        "default-src 'self' 'unsafe-inline' 'unsafe-eval' neverwrite-file: data: blob:; " +
+                        "connect-src 'self' neverwrite-file:; " +
+                        "img-src 'self' neverwrite-file: data: blob:; " +
+                        "media-src 'self' neverwrite-file: data: blob:; " +
+                        "frame-src 'self' neverwrite-file:; " +
+                        "form-action 'none'";
+                }
+                return new Response(new Uint8Array(data), { headers });
             }
 
             if (scope === "codex-image" && encodedVaultPath) {

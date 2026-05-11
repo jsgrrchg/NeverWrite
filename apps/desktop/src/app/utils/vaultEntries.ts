@@ -344,6 +344,21 @@ async function buildVaultEntryTab(
         };
     }
 
+    if (getVaultEntryViewerKind(entry) === "html") {
+        return {
+            id: crypto.randomUUID(),
+            kind: "file",
+            relativePath: entry.relative_path,
+            title: entry.file_name,
+            path: entry.path,
+            mimeType: entry.mime_type,
+            viewer: "html",
+            content: "",
+            sizeBytes: entry.size,
+            contentTruncated: false,
+        };
+    }
+
     if (!canOpenVaultFileEntryInApp(entry)) {
         return null;
     }

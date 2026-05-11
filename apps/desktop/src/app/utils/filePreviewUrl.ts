@@ -50,6 +50,21 @@ export function buildVaultPreviewUrlFromAbsolutePath(
     return previewUrl ? `${previewUrl}${suffix}` : null;
 }
 
+export function buildVaultAssetUrl(
+    vaultPath: string | null,
+    relativePath: string,
+) {
+    if (!vaultPath) {
+        return null;
+    }
+
+    const encodedPath = relativePath
+        .split("/")
+        .map((segment) => encodeURIComponent(segment))
+        .join("/");
+    return `${FILE_PREVIEW_SCHEME}/assets/${encodeBase64Url(vaultPath)}/${encodedPath}`;
+}
+
 export function buildCodexGeneratedImagePreviewUrl(absolutePath: string) {
     const { pathname, suffix } = splitPathSuffix(absolutePath);
     if (!pathname.trim()) {
