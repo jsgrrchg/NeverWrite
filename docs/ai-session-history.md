@@ -63,3 +63,5 @@ send a new message so NeverWrite can continue with the stored transcript.
 - `transcript.jsonl` is stored as local plaintext JSONL while retained.
 - Deleting a conversation from `Chat History` deletes its saved history from `.neverwrite/sessions/`.
 - If a recovered chat is missing, confirm you reopened the same vault and that the retention window did not prune the conversation.
+
+Last updated: May 11, 2026.

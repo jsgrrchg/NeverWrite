@@ -52,3 +52,5 @@ system reports can still help:
 3. Windows Error Reporting files may exist under:
    `%LOCALAPPDATA%\Microsoft\Windows\WER\ReportArchive`
    or `%LOCALAPPDATA%\Microsoft\Windows\WER\ReportQueue`.
+
+Last updated: May 11, 2026.

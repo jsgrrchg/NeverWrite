@@ -3,11 +3,13 @@
 
 <img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
 
-**Note**: To everyone who has starred the repo: thank you. You’ve made me genuinely happy, I published this 3 days ago and I’ll keep improving this app for the long run. If you’re a Linux developer, I’d really appreciate your help getting the app fully up and running on Linux. I’m still a bit lost with the different package formats and how to wire them all into the GitHub Actions release pipeline, so a PR on this front would be amazing. Next, I’ll be focusing on adding Cron jobs — similar in spirit to OpenC--(erased because of Anthropic nonsense) — plus hardening, modularizing some of the larger files, and fixing edge cases in the live Markdown preview. Obsidian, one of my favorite apps, has years of patches behind its editor, and getting CodeMirror to render Markdown, hide source decorations, and stay fast is surprisingly difficult. If you run into rendering bugs or weird editor behavior, please help me find and fix them. 
+Note: Thank you all for the support and contributions. NeverWrite is expanding toward broader ACP provider compatibility, and local LLM support is part of the roadmap before 1.0 is reached. If you use an ACP-compliant provider that is not supported yet, please open an issue so it can be prioritized. If you have experience with local LLM architecture, I would love your help designing how NeverWrite’s review layer should work for local models.
 
-Also, NeverWrite will expand its current provider list to include all ACP compliant providers. This will take time, and API credits, because each provider needs to be extensively tested and adapted where necessary to support NeverWrite’s AI change-control layer. Because of NeverWrite’s ethics, I have to prioritize making every change reviewable by the user: no black boxes, no obfuscation, and no hidden writes of any kind. The most urgent feature right now is to give power users a way to set up a custom ACP implementation themselves. Currently being discussed here https://github.com/jsgrrchg/NeverWrite/discussions/17. 
+AI tooling is moving quickly, and I have to be honest with myself, maintaining this app properly takes real time, testing, and provider subscriptions, something that can only be possible having a full time maintainer and proper funding. If NeverWrite is useful to you, GitHub Sponsors is now available and directly helps fund continued development and broader ACP compatibility work.
 
-Thanks again for your support!
+You can also help by opening issues, sending PRs, testing edge cases, and especially sharing the project. I spend most of my time behind the editor fixing bugs, building new features, and thinking about how to improve and optimize it even more, so I need the kind of power only a community can give: feedback, testing, ideas, and word of mouth.
+
+The mission of NeverWrite is to become the number one alternative for a knowledge workspace prepared to endure this new agentic era that has just begun. Come along for the ride, we’re only getting started.
 
 ----
 

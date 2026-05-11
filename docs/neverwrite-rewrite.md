@@ -27,3 +27,5 @@ This document records the clean-cut completion of the technical rebrand.
 ### Notes
 
 - Historical local development state that still lives under retired hidden directories is intentionally outside the runtime contract and can be discarded manually.
+
+Last updated: May 11, 2026.
