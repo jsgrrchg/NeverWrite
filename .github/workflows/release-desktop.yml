@@ -144,13 +144,21 @@ jobs:
               shell: bash
               run: |
                   if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-                    # GitHub's amd64 Ubuntu runners use the standard Ubuntu
-                    # archives, but arm64 packages live on ubuntu-ports. Limit
-                    # the default sources to amd64 before adding arm64 sources
-                    # so apt does not request arm64 package indexes from
-                    # security.ubuntu.com, where they return 404.
-                    sudo sed -i -E 's#^deb http#deb [arch=amd64] http#' /etc/apt/sources.list
+                    # GitHub's amd64 Ubuntu runners may use mirrorlist or
+                    # deb822 sources. Replace only Ubuntu's default sources so
+                    # apt never requests arm64 indexes from non-ports mirrors.
+                    while IFS= read -r source_file; do
+                      if sudo grep -Eq 'ubuntu\.com|apt-mirrors' "$source_file"; then
+                        sudo mv "$source_file" "${source_file}.disabled"
+                      fi
+                    done < <(sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \))
                     sudo dpkg --add-architecture arm64
+                    sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list >/dev/null <<'EOF'
+                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+                  deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+                  EOF
                     sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.list >/dev/null <<'EOF'
                   deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
                   deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
