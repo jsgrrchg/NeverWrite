@@ -45,7 +45,8 @@ function isApiKeyMethod(id?: string) {
         id === "openai-api-key" ||
         id === "codex-api-key" ||
         id === "anthropic-api-key" ||
-        id === "use_gemini"
+        id === "use_gemini" ||
+        id === "kilo-api-key"
     );
 }
 
@@ -83,6 +84,8 @@ function getShortMethodDesc(id: string): string {
             return "Google sign-in";
         case "use_gemini":
             return "Gemini API key";
+        case "kilo-api-key":
+            return "Kilo API key";
         default:
             return "";
     }
@@ -112,6 +115,8 @@ function getAuthHelpText(id: string): string {
             return "Opens a Gemini sign-in terminal inside the app.";
         case "use_gemini":
             return `Store a Gemini API key locally for ${APP_BRAND_NAME} only.`;
+        case "kilo-api-key":
+            return `Store a Kilo API key locally for ${APP_BRAND_NAME} only.`;
         default:
             return "Complete authentication to connect this provider.";
     }
@@ -122,6 +127,7 @@ function getApiKeyPlaceholder(id?: string): string {
     if (id === "openai-api-key") return "OpenAI API key";
     if (id === "anthropic-api-key") return "Anthropic API key";
     if (id === "use_gemini") return "Gemini API key";
+    if (id === "kilo-api-key") return "Kilo API key";
     return "API key";
 }
 
@@ -411,6 +417,7 @@ function ProviderExpandedPanel({
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
         geminiApiKey: AISecretPatch;
+        kiloApiKey: AISecretPatch;
         anthropicBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
@@ -435,6 +442,7 @@ function ProviderExpandedPanel({
     const isCodex = selectedMethodId === "codex-api-key";
     const isAnthropic = selectedMethodId === "anthropic-api-key";
     const isGemini = selectedMethodId === "use_gemini";
+    const isKilo = selectedMethodId === "kilo-api-key";
     const gatewayUrlError = gatewaySelected
         ? getClaudeGatewayUrlValidationMessage(gatewayUrl)
         : null;
@@ -459,6 +467,7 @@ function ProviderExpandedPanel({
             geminiApiKey: isGemini
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
+            kiloApiKey: isKilo ? setSecretPatch(apiKey) : unchangedSecretPatch,
             anthropicApiKey: isAnthropic
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
@@ -913,6 +922,7 @@ export function AIProvidersSettings({
             codexApiKey: AISecretPatch;
             openaiApiKey: AISecretPatch;
             geminiApiKey: AISecretPatch;
+            kiloApiKey: AISecretPatch;
             anthropicBaseUrl?: string;
             anthropicCustomHeaders: AISecretPatch;
             anthropicAuthToken: AISecretPatch;
@@ -944,6 +954,7 @@ export function AIProvidersSettings({
                     input.codexApiKey.action !== "unchanged" ||
                     input.openaiApiKey.action !== "unchanged" ||
                     input.geminiApiKey.action !== "unchanged" ||
+                    input.kiloApiKey.action !== "unchanged" ||
                     input.anthropicApiKey.action !== "unchanged" ||
                     input.anthropicBaseUrl !== undefined ||
                     input.anthropicCustomHeaders.action !== "unchanged" ||
@@ -955,6 +966,7 @@ export function AIProvidersSettings({
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
                         geminiApiKey: input.geminiApiKey,
+                        kiloApiKey: input.kiloApiKey,
                         googleApiKey: unchangedSecretPatch,
                         googleCloudProject: undefined,
                         googleCloudLocation: undefined,
