@@ -141,7 +141,7 @@ describe("ElectronAppUpdater configuration", () => {
         expect(status).toMatchObject({
             enabled: true,
             endpoint:
-                "https://jsgrrchg.github.io/NeverWrite/stable/linux-arm64/latest-linux.yml",
+                "https://jsgrrchg.github.io/NeverWrite/stable/linux-arm64/latest-linux-arm64.yml",
             message: null,
         });
     });
