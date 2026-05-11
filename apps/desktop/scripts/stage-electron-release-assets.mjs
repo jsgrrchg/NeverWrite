@@ -116,6 +116,16 @@ function findSingleFile(rootDir, matcher, description) {
     return matches[0];
 }
 
+function findOptionalSingleFile(rootDir, matcher, description) {
+    const matches = listFilesRecursively(rootDir).filter(matcher);
+    if (matches.length > 1) {
+        throw new Error(
+            `Expected at most one ${description} in ${rootDir}, found ${matches.length}.`,
+        );
+    }
+    return matches[0] ?? null;
+}
+
 function stripSuffix(value, suffix) {
     if (!value.endsWith(suffix)) {
         throw new Error(`Expected "${value}" to end with "${suffix}".`);
@@ -133,17 +143,25 @@ function electronBuilderLinuxArch(buildTarget) {
     throw new Error(`Unsupported Linux build target "${buildTarget}".`);
 }
 
+function feedAliasFileNamesForBuildTarget(buildTarget) {
+    if (buildTarget === "aarch64-unknown-linux-gnu") {
+        return ["latest-linux-arm64.yml"];
+    }
+    return [];
+}
+
 function collectArtifacts(distDir, buildTarget) {
     const metadataFileName = metadataFileNameForBuildTarget(buildTarget);
-    const feedPath = findSingleFile(
-        distDir,
-        (filePath) => path.basename(filePath) === metadataFileName,
-        `${metadataFileName} feed`,
-    );
+    const findFeedPath = () =>
+        findSingleFile(
+            distDir,
+            (filePath) => path.basename(filePath) === metadataFileName,
+            `${metadataFileName} feed`,
+        );
 
     if (buildTarget.endsWith("-apple-darwin")) {
         return {
-            feedPath,
+            feedPath: findFeedPath(),
             manualAssetPath: findSingleFile(
                 distDir,
                 (filePath) => filePath.endsWith(".dmg"),
@@ -173,6 +191,14 @@ function collectArtifacts(distDir, buildTarget) {
         const blockmapPath = fs.existsSync(`${appImagePath}.blockmap`)
             ? `${appImagePath}.blockmap`
             : null;
+        const feedPath =
+            buildTarget === "aarch64-unknown-linux-gnu"
+                ? findOptionalSingleFile(
+                      distDir,
+                      (filePath) => path.basename(filePath) === metadataFileName,
+                      `${metadataFileName} feed`,
+                  )
+                : findFeedPath();
 
         return {
             feedPath,
@@ -195,7 +221,7 @@ function collectArtifacts(distDir, buildTarget) {
     }
 
     return {
-        feedPath,
+        feedPath: findFeedPath(),
         manualAssetPath: installerPath,
         updaterAssetPath: installerPath,
         blockmapPath,
@@ -223,6 +249,38 @@ function sha512Base64(filePath) {
         .createHash("sha512")
         .update(fs.readFileSync(filePath))
         .digest("base64");
+}
+
+function yamlString(value) {
+    return JSON.stringify(value);
+}
+
+function writeSyntheticFeed(destinationFeedPath, version, updaterUrl, metadata) {
+    fs.writeFileSync(
+        destinationFeedPath,
+        [
+            `version: ${yamlString(version)}`,
+            `releaseDate: ${yamlString(new Date().toISOString())}`,
+            `path: ${yamlString(updaterUrl)}`,
+            `sha512: ${yamlString(metadata.sha512)}`,
+            "files:",
+            `  - url: ${yamlString(updaterUrl)}`,
+            `    sha512: ${yamlString(metadata.sha512)}`,
+            `    size: ${metadata.size}`,
+            "",
+        ].join("\n"),
+        "utf8",
+    );
+}
+
+function copyFeedAliases(destinationFeedPath, outputDir, feedTarget, buildTarget) {
+    const aliasRelativePaths = [];
+    for (const aliasFileName of feedAliasFileNamesForBuildTarget(buildTarget)) {
+        const aliasPath = path.join(outputDir, "feeds", feedTarget, aliasFileName);
+        fs.copyFileSync(destinationFeedPath, aliasPath);
+        aliasRelativePaths.push(toPosixRelativePath(feedTarget, aliasFileName));
+    }
+    return aliasRelativePaths;
 }
 
 function rewriteFeed({
@@ -256,7 +314,6 @@ function rewriteFeed({
         feedTarget,
         metadataFileName,
     );
-    const document = parseDocument(fs.readFileSync(sourceFeedPath, "utf8"));
     const publishedAssetUrls = {
         manualAssetUrl,
         updaterUrl,
@@ -279,6 +336,31 @@ function rewriteFeed({
         }),
     };
 
+    fs.mkdirSync(path.dirname(destinationFeedPath), { recursive: true });
+    if (!sourceFeedPath) {
+        writeSyntheticFeed(
+            destinationFeedPath,
+            version,
+            updaterUrl,
+            publishedAssetMetadata.updaterUrl,
+        );
+        const feedAliasRelativePaths = copyFeedAliases(
+            destinationFeedPath,
+            outputDir,
+            feedTarget,
+            buildTarget,
+        );
+
+        return {
+            feedTarget,
+            metadataFileName,
+            destinationFeedPath,
+            updaterUrl,
+            feedAliasRelativePaths,
+        };
+    }
+
+    const document = parseDocument(fs.readFileSync(sourceFeedPath, "utf8"));
     document.set("path", updaterUrl);
     document.set("sha512", publishedAssetMetadata.updaterUrl.sha512);
     const files = document.get("files");
@@ -326,14 +408,20 @@ function rewriteFeed({
         }
     }
 
-    fs.mkdirSync(path.dirname(destinationFeedPath), { recursive: true });
     fs.writeFileSync(destinationFeedPath, document.toString(), "utf8");
+    const feedAliasRelativePaths = copyFeedAliases(
+        destinationFeedPath,
+        outputDir,
+        feedTarget,
+        buildTarget,
+    );
 
     return {
         feedTarget,
         metadataFileName,
         destinationFeedPath,
         updaterUrl,
+        feedAliasRelativePaths,
     };
 }
 
@@ -409,6 +497,7 @@ function main() {
             feed.feedTarget,
             feed.metadataFileName,
         ),
+        feedAliasRelativePaths: feed.feedAliasRelativePaths,
         manualAssetName,
         manualAssetSizeBytes: fileSizeInBytes(
             path.join(args.outputDir, manualAssetName),

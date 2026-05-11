@@ -702,10 +702,16 @@ jobs:
                     const metadata = JSON.parse(
                       fs.readFileSync(path.join(metadataDir, fileName), "utf8"),
                     );
+                    const feedRelativePaths = [
+                      metadata.feedRelativePath,
+                      ...(metadata.feedAliasRelativePaths ?? []),
+                    ];
                     const source = path.join(feedsDir, metadata.feedRelativePath);
-                    const destination = path.join(pagesDir, channel, metadata.feedRelativePath);
-                    fs.mkdirSync(path.dirname(destination), { recursive: true });
-                    fs.copyFileSync(source, destination);
+                    for (const relativePath of feedRelativePaths) {
+                      const destination = path.join(pagesDir, channel, relativePath);
+                      fs.mkdirSync(path.dirname(destination), { recursive: true });
+                      fs.copyFileSync(source, destination);
+                    }
                   }
                   EOF
 
