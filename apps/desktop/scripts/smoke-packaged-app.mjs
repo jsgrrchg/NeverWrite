@@ -32,6 +32,8 @@ function defaultPackagedExecutableCandidates() {
     }
     if (process.platform === "linux") {
         return [
+            path.join(outputRoot, `linux-${distArch}-unpacked`, "neverwrite"),
+            path.join(outputRoot, "linux-unpacked", "neverwrite"),
             path.join(outputRoot, `linux-${distArch}-unpacked`, "NeverWrite"),
             path.join(outputRoot, "linux-unpacked", "NeverWrite"),
         ];

@@ -208,7 +208,7 @@ export default {
     },
     linux: {
         icon: path.join("build", "icons", "icon.png"),
-        target: [{ target: "AppImage", arch: ["x64", "arm64"] }],
+        target: ["AppImage"],
         category: "Utility",
         executableName: "neverwrite",
         artifactName: "${productName}-${version}-${arch}.AppImage",

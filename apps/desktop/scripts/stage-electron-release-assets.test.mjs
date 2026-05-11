@@ -234,7 +234,7 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         const outputDir = path.join(tempDir, "staged");
         const metadataOut = path.join(tempDir, "metadata", "linux-x64.json");
 
-        writeFile(path.join(distDir, "linux-unpacked", "NeverWrite"), "app");
+        writeFile(path.join(distDir, "linux-unpacked", "neverwrite"), "app");
         writeFile(
             path.join(
                 distDir,
@@ -269,10 +269,9 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
             ),
             "node",
         );
-        writeFile(path.join(distDir, "NeverWrite-0.2.0-x64.AppImage"), "appimage");
         writeFile(
-            path.join(distDir, "NeverWrite-0.2.0-x64.AppImage.blockmap"),
-            "blockmap",
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.AppImage"),
+            "appimage",
         );
         writeFile(
             path.join(distDir, "latest-linux.yml"),
@@ -322,11 +321,15 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         assert.equal(metadata.metadataFileName, "latest-linux.yml");
         assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-x64.AppImage");
         assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-x64.AppImage");
-        assert.equal(
-            metadata.updaterBlockmapAssetName,
-            "NeverWrite-0.2.0-x64.AppImage.blockmap",
-        );
+        assert.equal(metadata.updaterBlockmapAssetName, null);
+        assert.equal(metadata.updaterBlockmapSizeBytes, 0);
         assert.equal(metadata.feedRelativePath, "linux-x64/latest-linux.yml");
+        assert.equal(
+            fs.existsSync(
+                path.join(outputDir, "NeverWrite-0.2.0-x64.AppImage.blockmap"),
+            ),
+            false,
+        );
         assert.match(
             rewrittenFeed,
             /https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite-0\.2\.0-x64\.AppImage/,
