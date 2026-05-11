@@ -144,7 +144,19 @@ jobs:
               shell: bash
               run: |
                   if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+                    # GitHub's amd64 Ubuntu runners use the standard Ubuntu
+                    # archives, but arm64 packages live on ubuntu-ports. Limit
+                    # the default sources to amd64 before adding arm64 sources
+                    # so apt does not request arm64 package indexes from
+                    # security.ubuntu.com, where they return 404.
+                    sudo sed -i -E 's#^deb http#deb [arch=amd64] http#' /etc/apt/sources.list
                     sudo dpkg --add-architecture arm64
+                    sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.list >/dev/null <<'EOF'
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+                  EOF
                   fi
                   sudo apt-get update
                   sudo apt-get install -y pkg-config libcap-dev
