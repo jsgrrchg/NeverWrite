@@ -1793,7 +1793,8 @@ export function FileTree() {
                 if (entry.kind === "note") return false;
                 if (entry.kind === "folder") return true;
                 if (fileTreeContentMode === "all_files") return true;
-                return entry.kind === "pdf";
+                if (entry.kind === "pdf") return true;
+                return entry.extension === "html" || entry.extension === "htm";
             }),
         [entries, fileTreeContentMode],
     );
