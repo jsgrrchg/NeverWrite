@@ -336,3 +336,68 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         );
     });
 });
+
+test("stage-electron-release-assets synthesizes missing Linux AppImage feeds", () => {
+    withTempDir((tempDir) => {
+        const distDir = path.join(tempDir, "dist");
+        const outputDir = path.join(tempDir, "staged");
+        const metadataOut = path.join(tempDir, "metadata", "linux-arm64.json");
+        const appImageContents = "arm64 appimage";
+        const appImageSha512 = sha512Base64(appImageContents);
+
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-arm64.AppImage"),
+            appImageContents,
+        );
+
+        execFileSync(
+            process.execPath,
+            [
+                stageScriptPath,
+                "--dist-dir",
+                distDir,
+                "--target",
+                "aarch64-unknown-linux-gnu",
+                "--version",
+                "0.2.0",
+                "--tag",
+                "v0.2.0",
+                "--repo",
+                "jsgrrchg/NeverWrite",
+                "--output-dir",
+                outputDir,
+                "--metadata-out",
+                metadataOut,
+            ],
+            {
+                cwd: repoRoot,
+                stdio: "pipe",
+            },
+        );
+
+        const metadata = JSON.parse(fs.readFileSync(metadataOut, "utf8"));
+        const rewrittenFeed = fs.readFileSync(
+            path.join(outputDir, "feeds", "linux-arm64", "latest-linux.yml"),
+            "utf8",
+        );
+
+        assert.equal(metadata.feedTarget, "linux-arm64");
+        assert.equal(metadata.metadataFileName, "latest-linux.yml");
+        assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-arm64.AppImage");
+        assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-arm64.AppImage");
+        assert.equal(metadata.updaterBlockmapAssetName, null);
+        assert.equal(metadata.updaterBlockmapSizeBytes, 0);
+        assert.equal(metadata.feedRelativePath, "linux-arm64/latest-linux.yml");
+        assert.match(rewrittenFeed, /version: "0\.2\.0"/);
+        assert.match(
+            rewrittenFeed,
+            /path: "https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite-0\.2\.0-arm64\.AppImage"/,
+        );
+        assert.match(rewrittenFeed, /sha512: "/);
+        assert.equal(
+            rewrittenFeed.includes(`sha512: "${appImageSha512}"`),
+            true,
+        );
+        assert.match(rewrittenFeed, /size: 14/);
+    });
+});
