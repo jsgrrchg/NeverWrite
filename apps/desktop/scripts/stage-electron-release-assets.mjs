@@ -123,6 +123,16 @@ function stripSuffix(value, suffix) {
     return value.slice(0, -suffix.length);
 }
 
+function electronBuilderLinuxArch(buildTarget) {
+    if (buildTarget === "aarch64-unknown-linux-gnu") {
+        return "arm64";
+    }
+    if (buildTarget === "x86_64-unknown-linux-gnu") {
+        return "x86_64";
+    }
+    throw new Error(`Unsupported Linux build target "${buildTarget}".`);
+}
+
 function collectArtifacts(distDir, buildTarget) {
     const metadataFileName = metadataFileNameForBuildTarget(buildTarget);
     const feedPath = findSingleFile(
@@ -153,17 +163,16 @@ function collectArtifacts(distDir, buildTarget) {
         };
     }
     if (buildTarget.endsWith("-unknown-linux-gnu")) {
-        const blockmapPath = findSingleFile(
+        const electronArch = electronBuilderLinuxArch(buildTarget);
+        const appImagePath = findSingleFile(
             distDir,
-            (filePath) => filePath.endsWith(".AppImage.blockmap"),
-            "Linux AppImage blockmap",
+            (filePath) =>
+                path.basename(filePath).endsWith(`-${electronArch}.AppImage`),
+            `${electronArch} Linux AppImage`,
         );
-        const appImagePath = stripSuffix(blockmapPath, ".blockmap");
-        if (!fs.existsSync(appImagePath)) {
-            throw new Error(
-                `Expected Linux AppImage next to blockmap at ${appImagePath}.`,
-            );
-        }
+        const blockmapPath = fs.existsSync(`${appImagePath}.blockmap`)
+            ? `${appImagePath}.blockmap`
+            : null;
 
         return {
             feedPath,
@@ -227,18 +236,18 @@ function rewriteFeed({
 }) {
     const manualAssetName = buildPublicReleaseAssetName(version, buildTarget);
     const updaterAssetName = buildElectronUpdaterAssetName(version, buildTarget);
-    const blockmapAssetName = buildElectronBlockmapAssetName(version, buildTarget);
+    const blockmapAssetName = artifacts.blockmapPath
+        ? buildElectronBlockmapAssetName(version, buildTarget)
+        : null;
     const manualAssetUrl = buildGitHubReleaseAssetUrl(
         repoSlug,
         tag,
         manualAssetName,
     );
     const updaterUrl = buildGitHubReleaseAssetUrl(repoSlug, tag, updaterAssetName);
-    const blockmapUrl = buildGitHubReleaseAssetUrl(
-        repoSlug,
-        tag,
-        blockmapAssetName,
-    );
+    const blockmapUrl = blockmapAssetName
+        ? buildGitHubReleaseAssetUrl(repoSlug, tag, blockmapAssetName)
+        : null;
     const metadataFileName = metadataFileNameForBuildTarget(buildTarget);
     const feedTarget = feedTargetForBuildTarget(buildTarget);
     const destinationFeedPath = path.join(
@@ -262,10 +271,12 @@ function rewriteFeed({
             size: fileSizeInBytes(artifacts.updaterAssetPath),
             sha512: sha512Base64(artifacts.updaterAssetPath),
         },
-        blockmapUrl: {
-            size: fileSizeInBytes(artifacts.blockmapPath),
-            sha512: sha512Base64(artifacts.blockmapPath),
-        },
+        ...(artifacts.blockmapPath && {
+            blockmapUrl: {
+                size: fileSizeInBytes(artifacts.blockmapPath),
+                sha512: sha512Base64(artifacts.blockmapPath),
+            },
+        }),
     };
 
     document.set("path", updaterUrl);
@@ -345,7 +356,7 @@ function resolvePublishedAssetUrl(sourceValue, publishedAssetUrls) {
     if (normalizedValue.endsWith(".dmg")) {
         return publishedAssetUrls.manualAssetUrl;
     }
-    if (normalizedValue.endsWith(".blockmap")) {
+    if (normalizedValue.endsWith(".blockmap") && publishedAssetUrls.blockmapUrl) {
         return publishedAssetUrls.blockmapUrl;
     }
 
@@ -360,10 +371,9 @@ function main() {
 
     const manualAssetName = buildPublicReleaseAssetName(args.version, args.target);
     const updaterAssetName = buildElectronUpdaterAssetName(args.version, args.target);
-    const blockmapAssetName = buildElectronBlockmapAssetName(
-        args.version,
-        args.target,
-    );
+    const blockmapAssetName = artifacts.blockmapPath
+        ? buildElectronBlockmapAssetName(args.version, args.target)
+        : null;
     const feed = rewriteFeed({
         sourceFeedPath: artifacts.feedPath,
         artifacts,
@@ -382,10 +392,12 @@ function main() {
         artifacts.updaterAssetPath,
         path.join(args.outputDir, updaterAssetName),
     );
-    copyIfNeeded(
-        artifacts.blockmapPath,
-        path.join(args.outputDir, blockmapAssetName),
-    );
+    if (artifacts.blockmapPath && blockmapAssetName) {
+        copyIfNeeded(
+            artifacts.blockmapPath,
+            path.join(args.outputDir, blockmapAssetName),
+        );
+    }
 
     const metadata = {
         tag: args.tag,
@@ -406,9 +418,10 @@ function main() {
             path.join(args.outputDir, updaterAssetName),
         ),
         updaterBlockmapAssetName: blockmapAssetName,
-        updaterBlockmapSizeBytes: fileSizeInBytes(
-            path.join(args.outputDir, blockmapAssetName),
-        ),
+        updaterBlockmapSizeBytes:
+            artifacts.blockmapPath && blockmapAssetName
+                ? fileSizeInBytes(path.join(args.outputDir, blockmapAssetName))
+                : 0,
         updaterUrl: feed.updaterUrl,
     };
 

@@ -54,8 +54,7 @@ function buildMetadataEntries() {
             feedRelativePath: "linux-arm64/latest-linux.yml",
             manualAssetName: "NeverWrite-0.2.0-arm64.AppImage",
             updaterAssetName: "NeverWrite-0.2.0-arm64.AppImage",
-            updaterBlockmapAssetName:
-                "NeverWrite-0.2.0-arm64.AppImage.blockmap",
+            updaterBlockmapAssetName: null,
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-arm64.AppImage",
         },
@@ -66,8 +65,7 @@ function buildMetadataEntries() {
             feedRelativePath: "linux-x64/latest-linux.yml",
             manualAssetName: "NeverWrite-0.2.0-x64.AppImage",
             updaterAssetName: "NeverWrite-0.2.0-x64.AppImage",
-            updaterBlockmapAssetName:
-                "NeverWrite-0.2.0-x64.AppImage.blockmap",
+            updaterBlockmapAssetName: null,
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-x64.AppImage",
         },
