@@ -34,12 +34,16 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## [0.2.5] - 2026-05-11
+## [0.2.5] - 2026-05-12
+
+**Security note:** NeverWrite's repository was audited for the May 2026 **Mini Shai-Hulud** npm supply-chain attack and no exposure was found. The repo does not contain the known malware indicators, does not depend on the affected TanStack/Mistral/UiPath/Squawk package sets, and its own GitHub workflows do not use the risky `pull_request_target` plus trusted-publishing/OIDC pattern involved in the attack. **Cloning the repository and updating the app through this channel is safe**.
 
 ### Added
 
 - Added Linux AppImage releases for x64 and ARM64, including Linux update feed support and AppImage updater integration. Thanks to @seifzellaban.
 - Added Kilo API key setup in AI provider settings, with `KILO_API_KEY` detection, secure local persistence, logout cleanup, and setup-state validation alongside the existing Kilo CLI login flow.
+- Added an in-app HTML viewer for vault `.html` and `.htm` files, including sandboxed script execution, relative asset loading, and restrictive network protections. You can now ask agents to create HTML documents or dashboards in your vault and preview them inside the app. Thanks to @spamsch.
+- Added `.html` and `.htm` files to the default file tree so HTML documents appear without enabling the global all-files view. Thanks to @spamsch.
 
 ### Changed
 
@@ -56,6 +60,8 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 - Fixed provider quota, rate-limit, and usage-limit failures so the chat shows a clear provider-limit message instead of treating the error like a setup or authentication failure.
 - Fixed oversized saved AI session transcripts by compacting new saves and repairing previously inflated saved chats on load.
 - Fixed vault scans, text-file reads, and watcher/upsert hashing for Markdown and text files that contain invalid UTF-8 bytes by decoding them lossily instead of failing the vault operation. Thanks to @kwojtaszek.
+- Fixed Linux updater handling when a release feed is missing so the app can continue gracefully across Linux release variants.
+- Fixed macOS single-architecture DMG post-processing so x64 and ARM64 release layouts are found correctly. Thanks to @spamsch.
 
 ### Security
 
