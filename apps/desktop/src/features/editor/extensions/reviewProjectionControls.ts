@@ -651,6 +651,10 @@ function createDecisionButton(
     button.onmousedown = (event) => {
         event.preventDefault();
         event.stopPropagation();
+    };
+    button.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         onClick();
     };
     return button;

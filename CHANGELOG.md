@@ -51,6 +51,8 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 - Fixed chat Markdown rendering so slash-prefixed text is no longer converted into a clickable vault pill unless it resolves to a valid vault reference.
 - Fixed dragging agent chats from the collapsed sidebar so the sidebar overlay stays active while the drag starts.
+- Fixed inline file-review Accept and Reject buttons so decisions run on click release instead of immediately on press.
+- Fixed review tabs for subagents so pending-change reviews show the subagent name instead of the generic runtime label.
 - Fixed provider quota, rate-limit, and usage-limit failures so the chat shows a clear provider-limit message instead of treating the error like a setup or authentication failure.
 - Fixed oversized saved AI session transcripts by compacting new saves and repairing previously inflated saved chats on load.
 - Fixed vault scans, text-file reads, and watcher/upsert hashing for Markdown and text files that contain invalid UTF-8 bytes by decoding them lossily instead of failing the vault operation. Thanks to @kwojtaszek.

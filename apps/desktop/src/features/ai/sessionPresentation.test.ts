@@ -25,6 +25,31 @@ function createSession(
     };
 }
 
+const runtimes: AIRuntimeDescriptor[] = [
+    {
+        runtime: {
+            id: "codex-acp",
+            name: "Codex ACP",
+            description: "Codex runtime",
+            capabilities: [],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
+    {
+        runtime: {
+            id: "kilo-acp",
+            name: "Kilo ACP",
+            description: "Kilo runtime",
+            capabilities: [],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
+];
+
 describe("sessionPresentation history selection", () => {
     it("uses historySessionId as the stable history selection key", () => {
         const session = createSession("live-session-1", "history-1");
@@ -55,25 +80,37 @@ describe("sessionPresentation history selection", () => {
         ).toBe("persisted:history-1");
     });
 
+    it("formats root review tab titles with normalized runtime names for Codex", () => {
+        const session = createSession("live-session-2", "history-2");
+
+        expect(getReviewTabTitle(session, runtimes)).toBe("Review Codex");
+    });
+
     it("formats review tab titles with normalized runtime names for Kilo", () => {
         const session = {
-            ...createSession("live-session-2", "history-2"),
+            ...createSession("live-session-3", "history-3"),
             runtimeId: "kilo-acp",
         };
-        const runtimes: AIRuntimeDescriptor[] = [
-            {
-                runtime: {
-                    id: "kilo-acp",
-                    name: "Kilo ACP",
-                    description: "Kilo runtime",
-                    capabilities: [],
-                },
-                models: [],
-                modes: [],
-                configOptions: [],
-            },
-        ];
 
         expect(getReviewTabTitle(session, runtimes)).toBe("Review Kilo");
+    });
+
+    it("formats subagent review tab titles with the visible session name", () => {
+        const session = {
+            ...createSession("live-session-4", "history-4"),
+            parentSessionId: "parent-session",
+            customTitle: "Descartes",
+        };
+
+        expect(getReviewTabTitle(session, runtimes)).toBe("Review: Descartes");
+    });
+
+    it("uses a subagent fallback when the visible session name is not useful", () => {
+        const session = {
+            ...createSession("live-session-5", "history-5"),
+            parentSessionId: "parent-session",
+        };
+
+        expect(getReviewTabTitle(session, runtimes)).toBe("Review: Subagent");
     });
 });

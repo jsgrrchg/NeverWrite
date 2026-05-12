@@ -15,15 +15,34 @@ function truncateText(value: string, maxLength: number) {
     return `${value.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-export function getSessionTitle(session: AIChatSession) {
+type SessionTitleSession = Pick<
+    AIChatSession,
+    | "customTitle"
+    | "persistedTitle"
+    | "messages"
+    | "messageOrder"
+    | "messagesById"
+    | "messageIndexById"
+    | "lastAssistantMessageId"
+    | "lastTurnStartedMessageId"
+    | "activePlanMessageId"
+>;
+
+type ReviewTabTitleSession = Pick<
+    AIChatSession,
+    "runtimeId" | "parentSessionId"
+> &
+    SessionTitleSession;
+
+export function getSessionTitle(session: SessionTitleSession) {
     return truncateText(getSessionTitleText(session), 42);
 }
 
-export function getSessionTitleText(session: AIChatSession) {
+export function getSessionTitleText(session: SessionTitleSession) {
     const custom = session.customTitle?.trim();
     if (custom) return custom;
 
-    const firstUserText = getFirstUserTextMessage(session);
+    const firstUserText = getFirstUserTextMessage(session as AIChatSession);
     const fallbackTitle = session.persistedTitle?.trim();
 
     if (!firstUserText) {
@@ -166,9 +185,16 @@ function normalizeReviewAgentName(name?: string | null) {
 }
 
 export function getReviewTabTitle(
-    session: Pick<AIChatSession, "runtimeId"> | null | undefined,
+    session: ReviewTabTitleSession | null | undefined,
     runtimes: AIRuntimeDescriptor[],
 ) {
+    if (session?.parentSessionId?.trim()) {
+        const sessionTitle = getSessionTitle(session);
+        const subagentName =
+            sessionTitle === "New chat" ? "Subagent" : sessionTitle;
+        return `Review: ${subagentName}`;
+    }
+
     const runtimeName = runtimes.find(
         (descriptor) => descriptor.runtime.id === session?.runtimeId,
     )?.runtime.name;

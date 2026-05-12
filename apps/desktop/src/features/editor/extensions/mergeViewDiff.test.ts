@@ -254,7 +254,7 @@ describe("mergeViewDiff", () => {
 
     expect(rejectButton).not.toBeNull();
     if (rejectButton) {
-      fireEvent.mouseDown(rejectButton);
+      fireEvent.click(rejectButton);
     }
 
     expect(calls).toHaveLength(1);
@@ -670,7 +670,7 @@ describe("mergeViewDiff", () => {
     ) as HTMLButtonElement | null;
     expect(rejectButton?.dataset.reviewDecisionScope).toBe("chunk");
     if (rejectButton) {
-      fireEvent.mouseDown(rejectButton);
+      fireEvent.click(rejectButton);
     }
 
     expect(calls).toHaveLength(1);
@@ -747,7 +747,7 @@ describe("mergeViewDiff", () => {
 
     expect(acceptButton).not.toBeNull();
     if (acceptButton) {
-      fireEvent.mouseDown(acceptButton);
+      fireEvent.click(acceptButton);
     }
 
     expect(calls).toHaveLength(1);

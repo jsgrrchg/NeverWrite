@@ -467,9 +467,11 @@ describe("mergeViewSync", () => {
 
             if (acceptButton) {
                 fireEvent.mouseDown(acceptButton);
+                expect(resolveReviewHunks).not.toHaveBeenCalled();
+                fireEvent.click(acceptButton);
             }
             if (rejectButton) {
-                fireEvent.mouseDown(rejectButton);
+                fireEvent.click(rejectButton);
             }
 
             expect(resolveReviewHunks).toHaveBeenNthCalledWith(
@@ -525,7 +527,7 @@ describe("mergeViewSync", () => {
             expect(rejectButton).not.toBeNull();
 
             if (rejectButton) {
-                fireEvent.mouseDown(rejectButton);
+                fireEvent.click(rejectButton);
             }
 
             expect(resolveReviewHunks).toHaveBeenCalledWith(
@@ -597,7 +599,7 @@ describe("mergeViewSync", () => {
             ) as HTMLButtonElement | null;
             expect(freshAccept).not.toBeNull();
             if (freshAccept) {
-                fireEvent.mouseDown(freshAccept);
+                fireEvent.click(freshAccept);
             }
             expect(resolveReviewHunks).toHaveBeenCalledTimes(1);
 
@@ -745,7 +747,7 @@ describe("mergeViewSync", () => {
             expect(acceptButton).not.toBeNull();
 
             if (acceptButton) {
-                fireEvent.mouseDown(acceptButton);
+                fireEvent.click(acceptButton);
             }
 
             expect(resolveReviewHunks).toHaveBeenCalledWith(
@@ -898,7 +900,7 @@ describe("mergeViewSync", () => {
 
             expect(memberAcceptButton).not.toBeNull();
             if (memberAcceptButton) {
-                fireEvent.mouseDown(memberAcceptButton);
+                fireEvent.click(memberAcceptButton);
             }
 
             expect(resolveReviewHunks).toHaveBeenCalledWith(
@@ -968,7 +970,7 @@ describe("mergeViewSync", () => {
 
                 expect(acceptButton).not.toBeNull();
                 if (acceptButton) {
-                    fireEvent.mouseDown(acceptButton);
+                    fireEvent.click(acceptButton);
                 }
 
                 expect(resolveReviewHunks).toHaveBeenCalledWith(
