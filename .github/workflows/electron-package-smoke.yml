@@ -201,3 +201,113 @@ jobs:
               env:
                   NEVERWRITE_ELECTRON_DIST_ARCH: x64
               run: npm run electron:sidecar:smoke:packaged
+
+    linux:
+        name: ${{ matrix.name }}
+        runs-on: ubuntu-22.04
+        timeout-minutes: 120
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - name: Linux x64
+                      arch: x64
+                      target: x86_64-unknown-linux-gnu
+                    - name: Linux ARM64
+                      arch: arm64
+                      target: aarch64-unknown-linux-gnu
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: npm
+                  cache-dependency-path: apps/desktop/package-lock.json
+
+            - name: Setup Rust toolchain
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install Linux build dependencies
+              shell: bash
+              run: |
+                  if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+                    # GitHub's amd64 Ubuntu runners may use mirrorlist or
+                    # deb822 sources. Replace only Ubuntu's default sources so
+                    # apt never requests arm64 indexes from non-ports mirrors.
+                    while IFS= read -r source_file; do
+                      if sudo grep -Eq 'ubuntu\.com|apt-mirrors' "$source_file"; then
+                        sudo mv "$source_file" "${source_file}.disabled"
+                      fi
+                    done < <(sudo find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \))
+                    sudo dpkg --add-architecture arm64
+                    sudo tee /etc/apt/sources.list.d/ubuntu-amd64.list >/dev/null <<'EOF'
+                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+                  deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+                  deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+                  EOF
+                    sudo tee /etc/apt/sources.list.d/ubuntu-ports-arm64.list >/dev/null <<'EOF'
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
+                  deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+                  EOF
+                  fi
+                  sudo apt-get update
+                  sudo apt-get install -y pkg-config libcap-dev
+                  if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+                    sudo apt-get install -y gcc-aarch64-linux-gnu libcap-dev:arm64 libssl-dev:arm64
+                    echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+                    echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+                    echo "PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> "$GITHUB_ENV"
+                  fi
+
+            - name: Install desktop dependencies
+              working-directory: apps/desktop
+              run: npm ci
+
+            - name: Package unsigned Electron app
+              working-directory: apps/desktop
+              env:
+                  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+              run: npm run electron:release:local -- --platform linux --arch ${{ matrix.arch }} --unsigned
+
+            - name: Smoke packaged sidecar
+              if: matrix.arch == 'x64'
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+                  NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
+              run: npm run electron:sidecar:smoke:packaged
+
+            - name: Smoke packaged app executable
+              if: matrix.arch == 'x64'
+              working-directory: apps/desktop
+              env:
+                  NEVERWRITE_ELECTRON_OUTPUT_DIR: ${{ runner.temp }}/electron-dist
+                  NEVERWRITE_ELECTRON_DIST_ARCH: ${{ matrix.arch }}
+              run: npm run electron:app:smoke:packaged
+
+            - name: Stage release assets and feed metadata
+              shell: bash
+              run: |
+                  VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+                  mkdir -p "$RUNNER_TEMP/release-assets" "$RUNNER_TEMP/target-metadata"
+                  node apps/desktop/scripts/stage-electron-release-assets.mjs \
+                    --dist-dir "$RUNNER_TEMP/electron-dist" \
+                    --target ${{ matrix.target }} \
+                    --version "$VERSION" \
+                    --tag "v$VERSION" \
+                    --repo "${{ github.repository }}" \
+                    --output-dir "$RUNNER_TEMP/release-assets" \
+                    --metadata-out "$RUNNER_TEMP/target-metadata/${{ matrix.target }}.json"
