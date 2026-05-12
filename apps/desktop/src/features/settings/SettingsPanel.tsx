@@ -3054,11 +3054,11 @@ function DevelopersSettings({
         [
             [
                 "Enable Developer Mode",
-                "Show experimental developer-facing surfaces such as the integrated terminal panel.",
+                "Show experimental developer-facing surfaces such as the integrated terminal.",
             ],
             [
                 "Enable Integrated Terminal",
-                "Show the bottom developer terminal panel and its related commands.",
+                "Enable terminal tabs in the editor workspace and related commands.",
                 "terminal",
             ],
         ],
@@ -3098,7 +3098,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="Developer Mode"
                 label="Enable Developer Mode"
-                description="Show experimental developer-facing surfaces such as the integrated terminal panel."
+                description="Show experimental developer-facing surfaces such as the integrated terminal."
                 control={
                     <Toggle
                         value={developerModeEnabled}
@@ -3112,7 +3112,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="Developer Mode"
                 label="Enable Integrated Terminal"
-                description="Show the bottom developer terminal panel and its related commands."
+                description="Enable terminal tabs in the editor workspace and related commands."
                 disabled={!developerModeEnabled}
                 keywords={["terminal"]}
                 control={
