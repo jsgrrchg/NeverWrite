@@ -3,6 +3,8 @@
 
 <img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
 
+[Important note about Claude subscription usage in NeverWrite starting June 15, 2026](https://github.com/jsgrrchg/NeverWrite/discussions/83)
+
 Note: Thank you all for the support and contributions. NeverWrite is expanding toward broader ACP provider compatibility, and local LLM support is part of the roadmap before 1.0 is reached. If you use an ACP-compliant provider that is not supported yet, please open an issue so it can be prioritized. If you have experience with local LLM architecture, I would love your help designing how NeverWrite’s review layer should work for local models.
 
 AI tooling is moving quickly, and I have to be honest with myself, maintaining this app properly takes real time, testing, and provider subscriptions, something that can only be possible having a full time maintainer and proper funding. If NeverWrite is useful to you, GitHub Sponsors is now available and directly helps fund continued development and broader ACP compatibility work.
