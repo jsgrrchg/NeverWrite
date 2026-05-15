@@ -4194,9 +4194,7 @@ export function FileTree() {
             menu: ContextMenuState<FileTreeContextPayload>,
             targets: MoveTargets,
         ) => {
-            queueMicrotask(() => {
-                setMovePicker({ x: menu.x, y: menu.y, targets });
-            });
+            setMovePicker({ x: menu.x, y: menu.y, targets });
         },
         [],
     );
