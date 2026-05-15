@@ -1754,8 +1754,8 @@ function MoveDestinationPicker({
                 className="text-left rounded"
                 style={{
                     display: "flex",
-                    flexDirection: "column",
-                    gap: 1,
+                    alignItems: "center",
+                    gap: 8,
                     width: "100%",
                     padding: "6px 8px",
                     color: "var(--text-primary)",
@@ -1772,34 +1772,51 @@ function MoveDestinationPicker({
                     event.currentTarget.style.backgroundColor = "transparent";
                 }}
             >
+                <span aria-hidden="true" style={{ flexShrink: 0 }}>
+                    <FolderTypeIcon
+                        folderName={folderPath || "vault"}
+                        open={!folderPath}
+                        size={15}
+                    />
+                </span>
                 <span
                     style={{
-                        fontSize: 12,
-                        lineHeight: "16px",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        maxWidth: "100%",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 1,
+                        minWidth: 0,
+                        flex: 1,
                     }}
                 >
-                    {label}
-                </span>
-                {folderPath ? (
                     <span
-                        aria-hidden="true"
                         style={{
-                            fontSize: 10,
-                            lineHeight: "13px",
-                            color: "var(--text-tertiary)",
+                            fontSize: 12,
+                            lineHeight: "16px",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
                             maxWidth: "100%",
                         }}
                     >
-                        {getParentPath(folderPath) || "/ Root"}
+                        {label}
                     </span>
-                ) : null}
+                    {folderPath ? (
+                        <span
+                            aria-hidden="true"
+                            style={{
+                                fontSize: 10,
+                                lineHeight: "13px",
+                                color: "var(--text-tertiary)",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                maxWidth: "100%",
+                            }}
+                        >
+                            {getParentPath(folderPath) || "/ Root"}
+                        </span>
+                    ) : null}
+                </span>
             </button>
         );
     };
