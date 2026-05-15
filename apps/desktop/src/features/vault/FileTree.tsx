@@ -1880,7 +1880,7 @@ function MoveDestinationPicker({
             >
                 {renderTargetButton("", "/ Root")}
                 {visibleFolderPaths.map((folderPath) =>
-                    renderTargetButton(folderPath, folderPath),
+                    renderTargetButton(folderPath, getBaseName(folderPath)),
                 )}
                 {visibleFolderPaths.length === 0 ? (
                     <div
