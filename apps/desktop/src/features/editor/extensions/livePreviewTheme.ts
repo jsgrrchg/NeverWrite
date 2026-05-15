@@ -32,41 +32,48 @@ export const livePreviewTheme = EditorView.baseTheme({
         overflow: "hidden",
         opacity: "0",
     },
+    // Live preview headings pick up the per-theme `markup` anchor so they
+    // match the source-mode `#` color from `buildSyntaxHighlightStyle`.
     ".cm-lp-h1": {
         fontSize: "1.8em",
         fontWeight: "700",
         lineHeight: "1.3",
+        color: "var(--code-markup)",
         textDecoration: "none",
     },
     ".cm-lp-h2": {
         fontSize: "1.5em",
         fontWeight: "600",
         lineHeight: "1.35",
+        color: "var(--code-markup)",
         textDecoration: "none",
     },
     ".cm-lp-h3": {
         fontSize: "1.25em",
         fontWeight: "600",
         lineHeight: "1.4",
+        color: "var(--code-markup)",
         textDecoration: "none",
     },
     ".cm-lp-h4": {
         fontSize: "1.1em",
         fontWeight: "600",
         lineHeight: "1.45",
+        color: "var(--code-markup)",
         textDecoration: "none",
     },
     ".cm-lp-h5": {
         fontSize: "1.05em",
         fontWeight: "600",
         lineHeight: "1.5",
+        color: "var(--code-markup)",
         textDecoration: "none",
     },
     ".cm-lp-h6": {
         fontSize: "1em",
         fontWeight: "600",
         lineHeight: "1.5",
-        color: "var(--text-secondary)",
+        color: "var(--code-markup)",
         textDecoration: "none",
     },
     ".cm-lp-h1, .cm-lp-h1 *": { textDecoration: "none" },
@@ -81,9 +88,13 @@ export const livePreviewTheme = EditorView.baseTheme({
         fontFamily:
             "ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace",
         fontSize: "0.9em",
+        color: "var(--code-string)",
         backgroundColor: "var(--bg-tertiary)",
         borderRadius: "3px",
         padding: "1px 4px",
+    },
+    ".cm-lp-code *": {
+        color: "inherit",
     },
     ".cm-lp-strikethrough": { textDecoration: "line-through" },
     ".cm-lp-highlight": {
