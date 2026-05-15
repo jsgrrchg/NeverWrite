@@ -27,7 +27,6 @@ import {
 } from "../../components/context-menu/ContextMenu";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import { useThemeStore } from "../../app/store/themeStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     baseTheme,
@@ -108,7 +107,6 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         useState<ContextMenuState<{
             hasSelection: boolean;
         }> | null>(null);
-    const isDark = useThemeStore((s) => s.isDark);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
@@ -404,7 +402,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
                                 );
                         },
                     ),
-                    syntaxCompartmentRef.current.of(getSyntaxExtension(isDark)),
+                    syntaxCompartmentRef.current.of(getSyntaxExtension()),
                     languageCompartmentRef.current.of([]),
                 ],
             }),
@@ -434,7 +432,6 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
     }, [
         handleLocalContentChange,
         handleEditorContextMenu,
-        isDark,
         lineWrapping,
         syncCurrentSelection,
         tab,
@@ -442,18 +439,10 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         trackedFileMatch?.trackedFile.diffBase,
     ]);
 
-    useEffect(() => {
-        const view = viewRef.current;
-        if (!view) {
-            return;
-        }
-
-        view.dispatch({
-            effects: syntaxCompartmentRef.current.reconfigure(
-                getSyntaxExtension(isDark),
-            ),
-        });
-    }, [isDark]);
+    // Syntax highlighting resolves through `--code-*` CSS vars, so no
+    // compartment reconfigure is needed when light/dark or the theme name
+    // changes — `applyThemeColors` updates the root vars and CodeMirror
+    // repaints automatically.
 
     useEffect(() => {
         const view = viewRef.current;

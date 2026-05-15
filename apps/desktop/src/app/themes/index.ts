@@ -20,7 +20,26 @@ import { synthwave84Theme } from "./synthwave84";
 import { claudeTheme } from "./claude";
 import { codexTheme } from "./codex";
 
-export interface ThemeColors {
+// 12 syntax-highlighting anchor colors that drive per-theme code and
+// markdown coloring across CodeMirror and the static highlighter. Each
+// theme curates these once per mode (light/dark) and the runtime publishes
+// them as `--code-*` CSS vars on `:root`.
+export interface CodeColorAnchors {
+    comment: string;
+    constant: string;
+    escape: string;
+    function: string;
+    keyword: string;
+    markup: string;
+    parameter: string;
+    property: string;
+    string: string;
+    type: string;
+    typeParameter: string;
+    variable: string;
+}
+
+export interface ThemeUiColors {
     bgPrimary: string;
     bgSecondary: string;
     bgTertiary: string;
@@ -33,6 +52,10 @@ export interface ThemeColors {
     accent: string;
     iconMuted: string;
     shadowSoft: string;
+}
+
+export interface ThemeColors extends ThemeUiColors {
+    codeAnchors: CodeColorAnchors;
 }
 
 export interface ThemePalette {
@@ -88,7 +111,7 @@ export const themes: Record<ThemeName, ThemePalette> = {
     codex: codexTheme,
 };
 
-const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
+const CSS_VAR_MAP: Record<keyof ThemeUiColors, string> = {
     bgPrimary: "--bg-primary",
     bgSecondary: "--bg-secondary",
     bgTertiary: "--bg-tertiary",
@@ -103,6 +126,21 @@ const CSS_VAR_MAP: Record<keyof ThemeColors, string> = {
     shadowSoft: "--shadow-soft",
 };
 
+const CODE_CSS_VAR_MAP: Record<keyof CodeColorAnchors, string> = {
+    comment: "--code-comment",
+    constant: "--code-constant",
+    escape: "--code-escape",
+    function: "--code-function",
+    keyword: "--code-keyword",
+    markup: "--code-markup",
+    parameter: "--code-parameter",
+    property: "--code-property",
+    string: "--code-string",
+    type: "--code-type",
+    typeParameter: "--code-type-parameter",
+    variable: "--code-variable",
+};
+
 export function applyThemeColors(name: ThemeName, isDark: boolean) {
     if (typeof document === "undefined") return;
     const palette = themes[name];
@@ -110,6 +148,13 @@ export function applyThemeColors(name: ThemeName, isDark: boolean) {
     const el = document.documentElement;
 
     for (const [key, cssVar] of Object.entries(CSS_VAR_MAP)) {
-        el.style.setProperty(cssVar, colors[key as keyof ThemeColors]);
+        el.style.setProperty(cssVar, colors[key as keyof ThemeUiColors]);
+    }
+
+    for (const [key, cssVar] of Object.entries(CODE_CSS_VAR_MAP)) {
+        el.style.setProperty(
+            cssVar,
+            colors.codeAnchors[key as keyof CodeColorAnchors],
+        );
     }
 }

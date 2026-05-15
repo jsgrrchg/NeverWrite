@@ -271,6 +271,21 @@
     --diff-update: #1d4ed8;
     --diff-warn: #92400e;
     --diff-move: #a16207;
+
+    /* Syntax highlight anchors — defaults aligned with `default` theme light.
+       `applyThemeColors` overwrites these at runtime for the active theme. */
+    --code-comment: #737373;
+    --code-constant: #9a3412;
+    --code-escape: #be185d;
+    --code-function: #1d4ed8;
+    --code-keyword: #6d28d9;
+    --code-markup: #b42318;
+    --code-parameter: #b45309;
+    --code-property: #1e3a8a;
+    --code-string: #0b6b3a;
+    --code-type: #8a5a00;
+    --code-type-parameter: #15803d;
+    --code-variable: #1f2937;
     --catppuccin-icon-rosewater: #dc8a78;
     --catppuccin-icon-flamingo: #dd7878;
     --catppuccin-icon-pink: #ea76cb;
@@ -312,6 +327,20 @@
     --diff-update: #60a5fa;
     --diff-warn: #fbbf24;
     --diff-move: #fcd34d;
+
+    /* Syntax highlight anchors — defaults aligned with `default` theme dark. */
+    --code-comment: #8a8a8a;
+    --code-constant: #fdba74;
+    --code-escape: #f472b6;
+    --code-function: #93c5fd;
+    --code-keyword: #c4b5fd;
+    --code-markup: #fca5a5;
+    --code-parameter: #fed7aa;
+    --code-property: #fda4af;
+    --code-string: #a7f3d0;
+    --code-type: #fde68a;
+    --code-type-parameter: #86efac;
+    --code-variable: #e5e7eb;
     --catppuccin-icon-rosewater: #f4dbd6;
     --catppuccin-icon-flamingo: #f0c6c6;
     --catppuccin-icon-pink: #f5bde6;
@@ -511,67 +540,70 @@ html[data-desktop-platform="windows"].dark {
 }
 
 .cm-static-token-comment {
-    color: color-mix(in srgb, var(--text-secondary) 92%, transparent);
+    color: var(--code-comment);
     font-style: italic;
 }
 
 .cm-static-token-keyword {
-    color: color-mix(in srgb, var(--diff-update) 82%, var(--text-primary));
+    color: var(--code-keyword);
 }
 
 .cm-static-token-variable {
-    color: color-mix(in srgb, var(--text-primary) 88%, var(--accent));
+    color: var(--code-variable);
 }
 
 .cm-static-token-definition {
-    color: color-mix(in srgb, var(--text-primary) 65%, var(--accent));
+    color: var(--code-variable);
     font-weight: 600;
 }
 
 .cm-static-token-function {
-    color: color-mix(in srgb, #0f766e 86%, var(--text-primary));
+    color: var(--code-function);
 }
 
 .cm-static-token-type {
-    color: color-mix(in srgb, #b45309 78%, var(--text-primary));
+    color: var(--code-type);
 }
 
 .cm-static-token-property {
-    color: color-mix(in srgb, var(--text-primary) 94%, transparent);
+    color: var(--code-property);
 }
 
 .cm-static-token-tag {
-    color: color-mix(in srgb, var(--accent) 62%, var(--text-primary));
+    color: var(--code-markup);
 }
 
 .cm-static-token-attribute {
-    color: color-mix(in srgb, var(--diff-update) 70%, var(--text-primary));
+    color: var(--code-parameter);
 }
 
 .cm-static-token-attribute-value,
 .cm-static-token-string {
-    color: color-mix(in srgb, var(--diff-add) 76%, var(--text-primary));
+    color: var(--code-string);
 }
 
 .cm-static-token-number,
 .cm-static-token-atom {
-    color: color-mix(in srgb, var(--diff-move) 82%, var(--text-primary));
+    color: var(--code-constant);
 }
 
-.cm-static-token-operator,
+.cm-static-token-operator {
+    color: var(--code-keyword);
+}
+
 .cm-static-token-punctuation {
-    color: color-mix(in srgb, var(--text-primary) 80%, var(--text-secondary));
+    color: var(--code-markup);
 }
 
 .cm-static-token-meta,
 .cm-static-token-escape {
-    color: color-mix(in srgb, var(--diff-update) 66%, var(--text-secondary));
+    color: var(--code-escape);
 }
 
 .cm-static-token-invalid {
-    color: var(--diff-remove);
+    color: var(--code-markup);
     text-decoration: wavy underline
-        color-mix(in srgb, var(--diff-remove) 72%, transparent);
+        color-mix(in srgb, var(--code-markup) 72%, transparent);
 }
 
 body.resizing-sidebar,
