@@ -63,6 +63,7 @@ export type EditorFontFamily =
     | "source-serif"
     | "mono"
     | "jetbrains"
+    | "fliege-mono"
     | "geist-mono"
     | "ibm-plex-mono"
     | "courier"
@@ -92,6 +93,7 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "source-serif",
     "mono",
     "jetbrains",
+    "fliege-mono",
     "geist-mono",
     "ibm-plex-mono",
     "courier",
@@ -142,6 +144,7 @@ export const EDITOR_FONT_FAMILY_OPTIONS: {
     { value: "slab", label: "Rockwell Slab", group: "Serif" },
     { value: "mono", label: "Monospace (JetBrains)", group: "Mono" },
     { value: "jetbrains", label: "JetBrains Mono", group: "Mono" },
+    { value: "fliege-mono", label: "Fliege Mono", group: "Mono" },
     { value: "geist-mono", label: "Geist Mono", group: "Mono" },
     { value: "ibm-plex-mono", label: "IBM Plex Mono", group: "Mono" },
     { value: "courier", label: "Courier New", group: "Mono" },

@@ -511,10 +511,15 @@ describe("SettingsPanel", () => {
         expect(
             screen.getByRole("button", { name: "JetBrains Mono" }),
         ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Fliege Mono" }),
+        ).toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: "Geist Mono" }));
+        fireEvent.click(screen.getByRole("button", { name: "Fliege Mono" }));
 
-        expect(useSettingsStore.getState().editorFontFamily).toBe("geist-mono");
+        expect(useSettingsStore.getState().editorFontFamily).toBe(
+            "fliege-mono",
+        );
     });
 
     it("renders and persists the inline review toggle in AI settings", () => {

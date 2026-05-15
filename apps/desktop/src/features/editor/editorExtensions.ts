@@ -329,6 +329,8 @@ export function getEditorFontFamily(fontFamily: EditorFontFamily) {
             return '"JetBrains Mono", "SFMono-Regular", "Fira Code", Menlo, Monaco, Consolas, monospace';
         case "jetbrains":
             return '"JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace';
+        case "fliege-mono":
+            return '"Fliege Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
         case "geist-mono":
             return '"Geist Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
         case "ibm-plex-mono":
