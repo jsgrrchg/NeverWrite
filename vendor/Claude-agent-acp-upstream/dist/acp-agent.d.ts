@@ -107,6 +107,9 @@ type GatewayAuthMeta = {
         headers: Record<string, string>;
     };
 };
+type GatewayAuthRequest = AuthenticateRequest & {
+    _meta?: GatewayAuthMeta;
+};
 /**
  * Extra metadata that the agent provides for each tool_call / tool_update update.
  */
@@ -164,7 +167,7 @@ export declare class ClaudeAcpAgent implements Agent {
     };
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
-    gatewayAuthMeta?: GatewayAuthMeta;
+    gatewayAuthRequest?: GatewayAuthRequest;
     constructor(client: AgentSideConnection, logger?: Logger);
     initialize(request: InitializeRequest): Promise<InitializeResponse>;
     newSession(params: NewSessionRequest): Promise<NewSessionResponse>;

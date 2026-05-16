@@ -232,6 +232,8 @@ type GatewayAuthMeta = {
   };
 };
 
+type GatewayAuthRequest = AuthenticateRequest & { _meta?: GatewayAuthMeta };
+
 /**
  * Extra metadata that the agent provides for each tool_call / tool_update update.
  */
@@ -476,7 +478,7 @@ export class ClaudeAcpAgent implements Agent {
   backgroundTerminals: { [key: string]: BackgroundTerminal } = {};
   clientCapabilities?: ClientCapabilities;
   logger: Logger;
-  gatewayAuthMeta?: GatewayAuthMeta;
+  gatewayAuthRequest?: GatewayAuthRequest;
 
   constructor(client: AgentSideConnection, logger?: Logger) {
     this.sessions = {};
@@ -499,6 +501,17 @@ export class ClaudeAcpAgent implements Agent {
       _meta: {
         gateway: {
           protocol: "anthropic",
+        },
+      },
+    };
+
+    const gatewayBedrockAuthMethod: AuthMethod = {
+      id: "gateway-bedrock",
+      name: "Custom model gateway",
+      description: "Use a custom gateway to authenticate and access models",
+      _meta: {
+        gateway: {
+          protocol: "bedrock",
         },
       },
     };
@@ -613,7 +626,10 @@ export class ClaudeAcpAgent implements Agent {
         title: "Claude Agent",
         version: packageJson.version,
       },
-      authMethods: [...terminalAuthMethods, ...(supportsGatewayAuth ? [gatewayAuthMethod] : [])],
+      authMethods: [
+        ...terminalAuthMethods,
+        ...(supportsGatewayAuth ? [gatewayAuthMethod, gatewayBedrockAuthMethod] : []),
+      ],
     };
   }
 
@@ -690,8 +706,8 @@ export class ClaudeAcpAgent implements Agent {
   }
 
   async authenticate(_params: AuthenticateRequest): Promise<void> {
-    if (_params.methodId === "gateway") {
-      this.gatewayAuthMeta = _params._meta as GatewayAuthMeta | undefined;
+    if (_params.methodId === "gateway" || _params.methodId === "gateway-bedrock") {
+      this.gatewayAuthRequest = _params as GatewayAuthRequest;
       return;
     }
     throw new Error("Method not implemented.");
@@ -1864,7 +1880,7 @@ export class ClaudeAcpAgent implements Agent {
       env: {
         ...process.env,
         ...userProvidedOptions?.env,
-        ...createEnvForGateway(this.gatewayAuthMeta),
+        ...createEnvForGateway(this.gatewayAuthRequest),
         // Opt-in to session state events like when the agent is idle
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
       },
@@ -1948,7 +1964,7 @@ export class ClaudeAcpAgent implements Agent {
     if (
       shouldHideClaudeAuth() &&
       initializationResult.account.subscriptionType &&
-      !this.gatewayAuthMeta
+      !this.gatewayAuthRequest
     ) {
       throw RequestError.authRequired(
         undefined,
@@ -2137,15 +2153,25 @@ function snapshotFromUsage(usage: {
   };
 }
 
-function createEnvForGateway(gatewayMeta?: GatewayAuthMeta) {
-  if (!gatewayMeta) {
+function createEnvForGateway(request?: GatewayAuthRequest) {
+  if (!request?._meta) {
     return {};
   }
+  const customHeaders = Object.entries(request._meta.gateway.headers)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+
+  if (request.methodId === "gateway-bedrock") {
+    return {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_BEARER_TOKEN_BEDROCK: "",
+      ANTHROPIC_BEDROCK_BASE_URL: request._meta.gateway.baseUrl,
+      ANTHROPIC_CUSTOM_HEADERS: customHeaders,
+    };
+  }
   return {
-    ANTHROPIC_BASE_URL: gatewayMeta.gateway.baseUrl,
-    ANTHROPIC_CUSTOM_HEADERS: Object.entries(gatewayMeta.gateway.headers)
-      .map(([key, value]) => `${key}: ${value}`)
-      .join("\n"),
+    ANTHROPIC_BASE_URL: request._meta.gateway.baseUrl,
+    ANTHROPIC_CUSTOM_HEADERS: customHeaders,
     ANTHROPIC_AUTH_TOKEN: "", // Must be specified to bypass claude login requirement
   };
 }
