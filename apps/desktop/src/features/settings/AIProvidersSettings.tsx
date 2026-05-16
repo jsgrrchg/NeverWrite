@@ -51,7 +51,11 @@ function isApiKeyMethod(id?: string) {
 }
 
 function isGatewayMethod(id?: string) {
-    return id === "gateway";
+    return id === "gateway" || id === "gateway-bedrock";
+}
+
+function isBedrockGatewayMethod(id?: string) {
+    return id === "gateway-bedrock";
 }
 
 function getMethodDisplayName(
@@ -80,6 +84,8 @@ function getShortMethodDesc(id: string): string {
             return "Anthropic API key";
         case "gateway":
             return "Custom endpoint";
+        case "gateway-bedrock":
+            return "Bedrock gateway";
         case "login_with_google":
             return "Google sign-in";
         case "use_gemini":
@@ -111,6 +117,8 @@ function getAuthHelpText(id: string): string {
             return `Store an Anthropic API key locally for ${APP_BRAND_NAME} only.`;
         case "gateway":
             return "Route requests through a custom gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
+        case "gateway-bedrock":
+            return "Route Claude requests through a custom Bedrock-compatible gateway endpoint. Remote gateways must use HTTPS. Plain HTTP is only allowed for localhost.";
         case "login_with_google":
             return "Opens a Gemini sign-in terminal inside the app.";
         case "use_gemini":
@@ -419,6 +427,7 @@ function ProviderExpandedPanel({
         geminiApiKey: AISecretPatch;
         kiloApiKey: AISecretPatch;
         anthropicBaseUrl?: string;
+        anthropicBedrockBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
         anthropicApiKey: AISecretPatch;
@@ -438,6 +447,7 @@ function ProviderExpandedPanel({
         setupStatus.authMethods.find((m) => m.id === selectedMethodId) ?? null;
     const apiKeySelected = isApiKeyMethod(selectedMethodId);
     const gatewaySelected = isGatewayMethod(selectedMethodId);
+    const bedrockGatewaySelected = isBedrockGatewayMethod(selectedMethodId);
     const isOpenAi = selectedMethodId === "openai-api-key";
     const isCodex = selectedMethodId === "codex-api-key";
     const isAnthropic = selectedMethodId === "anthropic-api-key";
@@ -472,12 +482,19 @@ function ProviderExpandedPanel({
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
             anthropicBaseUrl: gatewaySelected
-                ? gatewayUrl || undefined
+                ? bedrockGatewaySelected
+                    ? undefined
+                    : gatewayUrl || undefined
+                : undefined,
+            anthropicBedrockBaseUrl: gatewaySelected
+                ? bedrockGatewaySelected
+                    ? gatewayUrl || undefined
+                    : undefined
                 : undefined,
             anthropicCustomHeaders: gatewaySelected
                 ? setOptionalSecretPatch(gatewayHeaders)
                 : unchangedSecretPatch,
-            anthropicAuthToken: gatewaySelected
+            anthropicAuthToken: gatewaySelected && !bedrockGatewaySelected
                 ? setOptionalSecretPatch(gatewayToken)
                 : unchangedSecretPatch,
         });
@@ -494,7 +511,7 @@ function ProviderExpandedPanel({
         >
             {/* Auth method selector */}
             {setupStatus.authMethods.length > 0 && (
-                <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {setupStatus.authMethods.map((method) => {
                         const selected = method.id === selectedMethodId;
                         return (
@@ -503,7 +520,7 @@ function ProviderExpandedPanel({
                                 type="button"
                                 onClick={() => setSelectedMethodId(method.id)}
                                 style={{
-                                    flex: 1,
+                                    flex: "1 1 160px",
                                     textAlign: "left",
                                     padding: "10px 12px",
                                     borderRadius: 6,
@@ -571,13 +588,15 @@ function ProviderExpandedPanel({
                             resize: "vertical",
                         }}
                     />
-                    <input
-                        type="password"
-                        value={gatewayToken}
-                        onChange={(e) => setGatewayToken(e.target.value)}
-                        placeholder="Auth token (optional)"
-                        style={inputStyle}
-                    />
+                    {!bedrockGatewaySelected && (
+                        <input
+                            type="password"
+                            value={gatewayToken}
+                            onChange={(e) => setGatewayToken(e.target.value)}
+                            placeholder="Auth token (optional)"
+                            style={inputStyle}
+                        />
+                    )}
                     <div
                         style={{
                             fontSize: 11,
@@ -587,6 +606,9 @@ function ProviderExpandedPanel({
                     >
                         Use HTTPS for remote gateways. Plain HTTP is only
                         allowed for localhost.
+                        {bedrockGatewaySelected
+                            ? " Bedrock gateways use the configured headers and do not require an Anthropic auth token."
+                            : ""}
                     </div>
                     {gatewayUrlError && (
                         <div
@@ -924,6 +946,7 @@ export function AIProvidersSettings({
             geminiApiKey: AISecretPatch;
             kiloApiKey: AISecretPatch;
             anthropicBaseUrl?: string;
+            anthropicBedrockBaseUrl?: string;
             anthropicCustomHeaders: AISecretPatch;
             anthropicAuthToken: AISecretPatch;
             anthropicApiKey: AISecretPatch;
@@ -957,6 +980,7 @@ export function AIProvidersSettings({
                     input.kiloApiKey.action !== "unchanged" ||
                     input.anthropicApiKey.action !== "unchanged" ||
                     input.anthropicBaseUrl !== undefined ||
+                    input.anthropicBedrockBaseUrl !== undefined ||
                     input.anthropicCustomHeaders.action !== "unchanged" ||
                     input.anthropicAuthToken.action !== "unchanged"
                 ) {
@@ -973,6 +997,7 @@ export function AIProvidersSettings({
                         gatewayBaseUrl: undefined,
                         gatewayHeaders: unchangedSecretPatch,
                         anthropicBaseUrl: input.anthropicBaseUrl,
+                        anthropicBedrockBaseUrl: input.anthropicBedrockBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
                         anthropicApiKey: input.anthropicApiKey,
@@ -1052,6 +1077,7 @@ export function AIProvidersSettings({
                     gatewayBaseUrl: undefined,
                     gatewayHeaders: unchangedSecretPatch,
                     anthropicBaseUrl: "",
+                    anthropicBedrockBaseUrl: "",
                     anthropicCustomHeaders: clearSecretPatch,
                     anthropicAuthToken: clearSecretPatch,
                 });

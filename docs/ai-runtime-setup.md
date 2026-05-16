@@ -69,7 +69,7 @@ The backend also detects existing CLI auth files and environment secrets:
 | Provider | Existing auth detection |
 | --- | --- |
 | Codex | `CODEX_API_KEY`, `OPENAI_API_KEY`, or non-empty `~/.codex/auth.json` |
-| Claude | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, or non-empty `~/.claude.json` |
+| Claude | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_BEDROCK_BASE_URL`, or non-empty `~/.claude.json` |
 | Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or non-empty `~/.gemini/oauth_creds.json` |
 | Kilo | Non-empty Kilo auth file, including `~/.local/share/kilo/auth.json` on Unix-like systems |
 
@@ -111,8 +111,9 @@ Use one of:
 - Anthropic Console terminal login.
 - Anthropic API key saved in the setup UI, stored as `ANTHROPIC_API_KEY`.
 - Custom Anthropic-compatible gateway.
+- Custom Bedrock-compatible gateway.
 - Existing CLI auth in `~/.claude.json`.
-- Process environment `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_BASE_URL`.
+- Process environment `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, or `ANTHROPIC_BEDROCK_BASE_URL`.
 
 Gateway setup accepts a base URL, optional headers, and an optional auth token.
 Gateway URLs must be HTTPS unless the host is loopback (`localhost`, a
@@ -120,6 +121,11 @@ Gateway URLs must be HTTPS unless the host is loopback (`localhost`, a
 rejected by both frontend validation and backend validation. Gateway headers are
 stored as `ANTHROPIC_CUSTOM_HEADERS`, the token as `ANTHROPIC_AUTH_TOKEN`, and
 the base URL as `ANTHROPIC_BASE_URL`.
+
+Bedrock gateway setup uses the same URL and headers validation, stores the base
+URL as `ANTHROPIC_BEDROCK_BASE_URL`, and sets `CLAUDE_CODE_USE_BEDROCK=1` when
+launching the Claude runtime. Bedrock gateway setup does not use an Anthropic
+auth token.
 
 ### Gemini
 

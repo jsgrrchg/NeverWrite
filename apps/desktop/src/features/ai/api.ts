@@ -284,6 +284,7 @@ export async function aiUpdateSetup(input: {
     gatewayBaseUrl?: string;
     gatewayHeaders: AISecretPatch;
     anthropicBaseUrl?: string;
+    anthropicBedrockBaseUrl?: string;
     anthropicCustomHeaders: AISecretPatch;
     anthropicAuthToken: AISecretPatch;
     anthropicApiKey?: AISecretPatch;
@@ -303,6 +304,8 @@ export async function aiUpdateSetup(input: {
                 gateway_base_url: input.gatewayBaseUrl ?? null,
                 gateway_headers: input.gatewayHeaders,
                 anthropic_base_url: input.anthropicBaseUrl ?? null,
+                anthropic_bedrock_base_url:
+                    input.anthropicBedrockBaseUrl ?? null,
                 anthropic_custom_headers: input.anthropicCustomHeaders,
                 anthropic_auth_token: input.anthropicAuthToken,
                 anthropic_api_key: input.anthropicApiKey ?? { action: "unchanged" },

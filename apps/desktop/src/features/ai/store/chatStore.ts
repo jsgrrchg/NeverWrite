@@ -1193,6 +1193,7 @@ interface ChatStore {
         gatewayBaseUrl?: string;
         gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
+        anthropicBedrockBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
         anthropicApiKey?: AISecretPatch;
@@ -1211,6 +1212,7 @@ interface ChatStore {
         gatewayBaseUrl?: string;
         gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
+        anthropicBedrockBaseUrl?: string;
         anthropicCustomHeaders: AISecretPatch;
         anthropicAuthToken: AISecretPatch;
         anthropicApiKey?: AISecretPatch;
@@ -6860,6 +6862,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     input.gatewayBaseUrl ||
                     secretPatchChanged(input.gatewayHeaders) ||
                     input.anthropicBaseUrl ||
+                    input.anthropicBedrockBaseUrl ||
                     secretPatchChanged(input.anthropicCustomHeaders) ||
                     secretPatchChanged(input.anthropicAuthToken) ||
                     secretPatchChanged(
@@ -6879,6 +6882,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         gatewayBaseUrl: input.gatewayBaseUrl,
                         gatewayHeaders: input.gatewayHeaders,
                         anthropicBaseUrl: input.anthropicBaseUrl,
+                        anthropicBedrockBaseUrl: input.anthropicBedrockBaseUrl,
                         anthropicCustomHeaders: input.anthropicCustomHeaders,
                         anthropicAuthToken: input.anthropicAuthToken,
                         anthropicApiKey: input.anthropicApiKey,
