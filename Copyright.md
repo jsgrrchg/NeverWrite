@@ -33,6 +33,7 @@ governing our direct and transitive dependencies, grouped by license type.
 | ISC                      | ring (partial), rustls-webpki, libloading           |
 | BSD-3-Clause             | subtle, alloc-no-stdlib, brotli (dual)              |
 | Zlib                     | foldhash, tinyvec, dispatch2                        |
+| SIL OFL-1.1              | Bundled Fliege Mono font                            |
 | CC0-1.0                  | notify                                              |
 | Unlicense OR MIT         | aho-corasick, memchr, walkdir, byteorder            |
 
@@ -131,6 +132,17 @@ dictionary licenses.
 | remark-gfm              | MIT     |
 | @wxt-dev/module-react   | MIT     |
 | wxt                     | MIT     |
+
+---
+
+## Bundled Fonts
+
+| Font        | License     | Copyright Holder | Source |
+| ----------- | ----------- | ---------------- | ------ |
+| Fliege Mono | SIL OFL-1.1 | Laptev Pavel     | https://github.com/PavelLaptev/Fliege-mono |
+
+The Fliege Mono license text is included at
+`apps/desktop/src/assets/fonts/fliege-mono/LICENSE.txt`.
 
 ---
 
