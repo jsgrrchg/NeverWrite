@@ -1082,6 +1082,12 @@ export function AIChatComposer({
     const stopTransitionLabel = hasPendingSubmitAfterStop
         ? "Sending next message after stop..."
         : "Stopping previous run...";
+    const stopButtonVisible = isStreaming || isStopping;
+    const stopButtonOpacity = !stopButtonVisible
+        ? 0
+        : disabled || isStopping
+          ? 0.4
+          : 1;
 
     const closeMentionPicker = () => setMentionState(EMPTY_MENTION_STATE);
     const closeSlashPicker = () => setSlashState(EMPTY_SLASH_STATE);
@@ -1953,19 +1959,86 @@ export function AIChatComposer({
                         minHeight: expanded ? 42 : undefined,
                     }}
                 >
-                    <div className="min-w-0 flex-1">
-                        {isStopTransitionActive ? (
-                            <div
-                                className="truncate px-1 pb-1 text-xs"
-                                style={{
-                                    color: "var(--text-secondary)",
-                                }}
-                            >
-                                {stopTransitionLabel}
-                            </div>
-                        ) : null}
-                        {footer}
+                    <div
+                        className="relative min-w-0 flex-1"
+                        // Footer and transition label share the same slot via
+                        // an opacity crossfade. Both are always mounted so the
+                        // dropdowns do not flash on/off when the user stops a
+                        // run or queues a follow-up message. minHeight matches
+                        // the footer so the row never grows vertically.
+                        style={{ minHeight: 24 }}
+                    >
+                        <div
+                            style={{
+                                opacity: isStopTransitionActive ? 0 : 1,
+                                pointerEvents: isStopTransitionActive
+                                    ? "none"
+                                    : "auto",
+                                transition: "opacity 160ms ease-out",
+                            }}
+                            aria-hidden={isStopTransitionActive || undefined}
+                        >
+                            {footer}
+                        </div>
+                        <div
+                            className="pointer-events-none absolute inset-0 flex items-center truncate px-1 text-xs"
+                            style={{
+                                color: "var(--text-secondary)",
+                                opacity: isStopTransitionActive ? 1 : 0,
+                                transition: "opacity 160ms ease-out",
+                            }}
+                            aria-hidden={!isStopTransitionActive || undefined}
+                        >
+                            {stopTransitionLabel}
+                        </div>
                     </div>
+                    {/* Stop is rendered unconditionally and placed before
+                        Send in DOM order so Send stays anchored to the right
+                        edge regardless of streaming state. Visibility toggles
+                        via opacity + pointer-events for a smooth fade with no
+                        layout shift. */}
+                        <button
+                            type="button"
+                            onClick={onStop}
+                            disabled={!stopButtonVisible || disabled || isStopping}
+                            aria-hidden={!stopButtonVisible || undefined}
+                            tabIndex={stopButtonVisible ? 0 : -1}
+                            className="nw-composer-action flex shrink-0 cursor-pointer items-center justify-center rounded-full"
+                            style={{
+                                width: 28,
+                                height: 28,
+                                color: "#fff",
+                                backgroundColor: "#b91c1c",
+                                border: "none",
+                                opacity: stopButtonOpacity,
+                                pointerEvents: stopButtonVisible
+                                    ? "auto"
+                                    : "none",
+                                // No overshoot on transform: the bouncy ease
+                                // used elsewhere would briefly grow the button
+                                // past scale 1 while it is also fading out,
+                                // which reads as a flash. Smooth ease-out keeps
+                                // the press feel without that interaction.
+                                transition:
+                                    "transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 120ms ease-out, box-shadow 120ms ease-out, background-color 150ms ease, opacity 180ms ease-out",
+                            }}
+                            aria-label={isStopping ? "Stopping" : "Stop"}
+                            title={isStopping ? "Stopping" : "Stop"}
+                        ><svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            fill="currentColor"
+                        >
+                            <rect
+                                x="2"
+                                y="2"
+                                width="10"
+                                height="10"
+                                rx="2"
+                            />
+                        </svg>
+                    </button>
                     <button
                         type="button"
                         onClick={onSubmit}
@@ -2011,41 +2084,6 @@ export function AIChatComposer({
                             <path d="M8 12V4M4 7l4-3 4 3" />
                         </svg>
                     </button>
-                    {(isStreaming || isStopping) && (
-                        <button
-                            type="button"
-                            onClick={onStop}
-                            disabled={disabled || isStopping}
-                            className="nw-composer-action flex shrink-0 cursor-pointer items-center justify-center rounded-full"
-                            style={{
-                                width: 28,
-                                height: 28,
-                                color: "#fff",
-                                backgroundColor: "#b91c1c",
-                                border: "none",
-                                opacity: disabled || isStopping ? 0.4 : 1,
-                                transition:
-                                    "transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1), filter 120ms ease-out, box-shadow 120ms ease-out, background-color 150ms ease, opacity 150ms ease",
-                            }}
-                            aria-label={isStopping ? "Stopping" : "Stop"}
-                            title={isStopping ? "Stopping" : "Stop"}
-                        >
-                            <svg
-                                width="14"
-                                height="14"
-                                viewBox="0 0 14 14"
-                                fill="currentColor"
-                            >
-                                <rect
-                                    x="2"
-                                    y="2"
-                                    width="10"
-                                    height="10"
-                                    rx="2"
-                                />
-                            </svg>
-                        </button>
-                    )}
                 </div>
                 <AIChatMentionPicker
                     open={mentionState.open}
