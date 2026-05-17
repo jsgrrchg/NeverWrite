@@ -691,6 +691,15 @@ export const livePreviewTheme = EditorView.baseTheme({
         textDecorationStyle: "dotted",
         textUnderlineOffset: "2px",
     },
+    ".cm-lp-block-gap-hidden": {
+        height: "0",
+        minHeight: "0",
+        paddingTop: "0 !important",
+        paddingBottom: "0 !important",
+        lineHeight: "0",
+        fontSize: "0",
+        overflow: "hidden",
+    },
     ".cm-lp-table-widget": {
         display: "block",
         padding: "12px 0",

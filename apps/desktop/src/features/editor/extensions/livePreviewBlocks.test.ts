@@ -41,6 +41,50 @@ describe("resolvePreviewAssetPath", () => {
 });
 
 describe("code block live preview", () => {
+    it("compacts inactive blank lines around rendered tables", () => {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc = [
+            "## Table",
+            "",
+            "| A | B |",
+            "| --- | --- |",
+            "| 1 | 2 |",
+            "",
+            "After",
+        ].join("\n");
+        const state = EditorState.create({
+            doc,
+            selection: EditorSelection.cursor(0),
+            extensions: [
+                markdown({ base: markdownLanguage }),
+                livePreviewExtension(null, {
+                    resolveWikilink: () => false,
+                    navigateWikilink: () => {},
+                    getNoteLinkTarget: () => null,
+                    openLinkContextMenu: () => {},
+                }),
+            ],
+        });
+
+        const view = new EditorView({ state, parent });
+
+        expect(view.dom.querySelector(".cm-lp-table-widget")).not.toBeNull();
+        const blankLines = [...view.dom.querySelectorAll(".cm-line")].filter(
+            (line) => line.textContent?.trim() === "",
+        );
+        expect(blankLines).toHaveLength(2);
+        expect(
+            blankLines.every((line) =>
+                line.classList.contains("cm-lp-block-gap-hidden"),
+            ),
+        ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("shows the code block header even when the caret is on the fence line", () => {
         const parent = document.createElement("div");
         document.body.appendChild(parent);

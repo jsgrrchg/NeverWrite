@@ -43,7 +43,10 @@ import {
     parseLinkChildren,
     resolveLinkHref,
 } from "./livePreviewHelpers";
-import { selectionTouchesRange } from "./selectionActivity";
+import {
+    selectionTouchesLine,
+    selectionTouchesRange,
+} from "./selectionActivity";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
 const PDF_EXTENSION = /\.pdf([?#].*)?$/i;
@@ -1523,6 +1526,67 @@ function parseMarkdownTable(source: string) {
     };
 }
 
+function getInactiveAdjacentBlankLineRange(
+    state: EditorState,
+    from: number,
+    to: number,
+) {
+    let replaceFrom = from;
+    let replaceTo = to;
+
+    const startLine = state.doc.lineAt(from);
+    if (startLine.number > 1) {
+        const previousLine = state.doc.line(startLine.number - 1);
+        if (
+            previousLine.text.trim().length === 0 &&
+            !selectionTouchesLine(state, previousLine.from, previousLine.to)
+        ) {
+            replaceFrom = previousLine.from;
+        }
+    }
+
+    const endLine = state.doc.lineAt(Math.max(from, to - 1));
+    if (endLine.number < state.doc.lines) {
+        const nextLine = state.doc.line(endLine.number + 1);
+        if (
+            nextLine.text.trim().length === 0 &&
+            !selectionTouchesLine(state, nextLine.from, nextLine.to)
+        ) {
+            replaceTo = nextLine.to;
+        }
+    }
+
+    return { from: replaceFrom, to: replaceTo };
+}
+
+function addInactiveAdjacentBlankLineDecorations(
+    decos: DecoEntry[],
+    state: EditorState,
+    from: number,
+    to: number,
+) {
+    const addIfInactiveBlank = (lineNumber: number) => {
+        if (lineNumber < 1 || lineNumber > state.doc.lines) return;
+
+        const line = state.doc.line(lineNumber);
+        if (
+            line.text.trim().length > 0 ||
+            selectionTouchesLine(state, line.from, line.to)
+        ) {
+            return;
+        }
+
+        decos.push({
+            from: line.from,
+            to: line.from,
+            deco: Decoration.line({ class: "cm-lp-block-gap-hidden" }),
+        });
+    };
+
+    addIfInactiveBlank(state.doc.lineAt(from).number - 1);
+    addIfInactiveBlank(state.doc.lineAt(Math.max(from, to - 1)).number + 1);
+}
+
 function createTableCell(
     tagName: "div",
     cellInfo: ParsedTableCell,
@@ -2154,9 +2218,23 @@ function buildTableDecorations(
             }
 
             const source = state.doc.sliceString(node.from, node.to);
+            // CodeMirror keeps visual line boxes for inactive blank lines around
+            // block widgets unless the replacement range and line styling both
+            // account for them.
+            const replacementRange = getInactiveAdjacentBlankLineRange(
+                state,
+                node.from,
+                node.to,
+            );
+            addInactiveAdjacentBlankLineDecorations(
+                decos,
+                state,
+                node.from,
+                node.to,
+            );
             decos.push({
-                from: node.from,
-                to: node.to,
+                from: replacementRange.from,
+                to: replacementRange.to,
                 deco: Decoration.replace({
                     widget: new TableWidget(
                         source,
