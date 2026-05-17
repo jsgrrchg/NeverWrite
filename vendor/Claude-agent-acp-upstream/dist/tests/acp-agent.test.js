@@ -527,6 +527,8 @@ describe("tool conversions", () => {
                 ],
                 stop_reason: null,
                 stop_sequence: null,
+                stop_details: null,
+                diagnostics: null,
                 usage: {
                     input_tokens: 6,
                     cache_creation_input_tokens: 326,
@@ -1295,6 +1297,7 @@ describe("stop reason propagation", () => {
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
     }
     it("should return max_tokens when success result has stop_reason max_tokens", async () => {
@@ -1419,6 +1422,7 @@ describe("stop reason propagation", () => {
             nextPendingOrder: 0,
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
         const response = await agent.prompt({
             sessionId: "test-session",
@@ -1552,6 +1556,7 @@ describe("session/close", () => {
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
         return agent.sessions[sessionId];
     }
@@ -1627,6 +1632,7 @@ describe("getOrCreateSession param change detection", () => {
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
         return agent.sessions[sessionId];
     }
@@ -1807,6 +1813,7 @@ describe("usage_update computation", () => {
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
     }
     it("used sums all token types as post-turn context occupancy proxy", async () => {
@@ -2622,6 +2629,7 @@ describe("emitRawSDKMessages", () => {
             abortController: new AbortController(),
             emitRawSDKMessages,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
     }
     function createResultMessage() {
@@ -2797,6 +2805,7 @@ describe("result origin handling", () => {
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
+            taskState: new Map(),
         };
     }
     function createAssistantMessage() {

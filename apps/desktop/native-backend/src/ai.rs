@@ -12,9 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::{
     AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
     FileSystemCapabilities, Implementation, InitializeRequest, LoadSessionRequest, LogoutRequest,
-    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
+    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
     SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -24,13 +25,14 @@ use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
     AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
     AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiRuntimeBinarySource, AiRuntimeConnectionPayload,
-    AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload,
-    AiSessionStatus, AiStatusEventPayload, AiTokenUsageCostPayload, AiTokenUsagePayload,
-    AiToolActivityActionPayload, AiToolActivityPayload, ToolDiffState,
-    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
-    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
+    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiRuntimeBinarySource,
+    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
+    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
+    AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
+    AiToolActivityPayload, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
+    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
+    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT,
     AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT,
     AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
@@ -2623,6 +2625,12 @@ impl NativeAcpClient {
                 }
                 self.handle_subagent_lifecycle_breadcrumb(&session_id, meta.as_ref());
             }
+            SessionUpdate::Plan(plan) => {
+                self.emit(
+                    AI_PLAN_UPDATED_EVENT,
+                    map_plan_update(&session_id, plan, meta.as_ref()),
+                );
+            }
             SessionUpdate::UsageUpdate(update) => {
                 self.emit(
                     AI_TOKEN_USAGE_EVENT,
@@ -3565,6 +3573,46 @@ fn map_tool_call(
     }
 }
 
+fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanUpdatePayload {
+    AiPlanUpdatePayload {
+        session_id: session_id.to_string(),
+        // ACP plans do not carry IDs; use the stable app session ID so streamed updates replace
+        // the active plan instead of creating a new plan message for each notification.
+        plan_id: session_id.to_string(),
+        title: meta.and_then(|meta| meta_string(meta, "title")),
+        detail: meta.and_then(|meta| {
+            meta_string(meta, "detail").or_else(|| meta_string(meta, "explanation"))
+        }),
+        entries: plan
+            .entries
+            .into_iter()
+            .map(|entry| AiPlanEntryPayload {
+                content: entry.content,
+                priority: plan_entry_priority_label(&entry.priority).to_string(),
+                status: plan_entry_status_label(&entry.status).to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn plan_entry_priority_label(priority: &PlanEntryPriority) -> &'static str {
+    match priority {
+        PlanEntryPriority::High => "high",
+        PlanEntryPriority::Medium => "medium",
+        PlanEntryPriority::Low => "low",
+        _ => "medium",
+    }
+}
+
+fn plan_entry_status_label(status: &PlanEntryStatus) -> &'static str {
+    match status {
+        PlanEntryStatus::Pending => "pending",
+        PlanEntryStatus::InProgress => "in_progress",
+        PlanEntryStatus::Completed => "completed",
+        _ => "pending",
+    }
+}
+
 fn merged_session_notification_meta(args: &SessionNotification) -> Option<Meta> {
     let mut merged = args.meta.clone().unwrap_or_default();
     if let Some(update_meta) = session_update_meta(&args.update) {
@@ -3583,6 +3631,7 @@ fn session_update_meta(update: &SessionUpdate) -> Option<&Meta> {
         | SessionUpdate::AgentThoughtChunk(chunk) => chunk.meta.as_ref(),
         SessionUpdate::ToolCall(tool_call) => tool_call.meta.as_ref(),
         SessionUpdate::ToolCallUpdate(update) => update.meta.as_ref(),
+        SessionUpdate::Plan(plan) => plan.meta.as_ref(),
         SessionUpdate::CurrentModeUpdate(update) => update.meta.as_ref(),
         SessionUpdate::ConfigOptionUpdate(update) => update.meta.as_ref(),
         SessionUpdate::SessionInfoUpdate(update) => update.meta.as_ref(),
@@ -5929,7 +5978,7 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, SessionConfigOption,
+        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, PlanEntry, SessionConfigOption,
         SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
         SessionModelState, SessionNotification, SessionUpdate, ToolCallContent, ToolCallId,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -5992,6 +6041,107 @@ mod tests {
     const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
+
+    #[test]
+    fn session_plan_update_emits_plan_event_without_tool_activity() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(
+            client.session_notification(
+                SessionNotification::new(
+                    "runtime-session-1",
+                    SessionUpdate::Plan(
+                        Plan::new(vec![
+                            PlanEntry::new(
+                                "Inspect ACP plan stream",
+                                PlanEntryPriority::High,
+                                PlanEntryStatus::Completed,
+                            ),
+                            PlanEntry::new(
+                                "Bridge plan updates to the UI",
+                                PlanEntryPriority::Medium,
+                                PlanEntryStatus::InProgress,
+                            ),
+                            PlanEntry::new(
+                                "Verify change-control events stay isolated",
+                                PlanEntryPriority::Low,
+                                PlanEntryStatus::Pending,
+                            ),
+                        ])
+                        .meta(Meta::from_iter([
+                            ("title".to_string(), json!("Execution plan")),
+                            (
+                                "detail".to_string(),
+                                json!("Plan streamed from ACP notification"),
+                            ),
+                        ])),
+                    ),
+                )
+                .meta(Meta::from_iter([(
+                    "detail".to_string(),
+                    json!("Notification detail should be overwritten"),
+                )])),
+            ),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("plan update event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_PLAN_UPDATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("runtime-session-1")
+        );
+        assert_eq!(
+            payload.get("plan_id").and_then(Value::as_str),
+            Some("runtime-session-1")
+        );
+        assert_eq!(
+            payload.get("title").and_then(Value::as_str),
+            Some("Execution plan")
+        );
+        assert_eq!(
+            payload.get("detail").and_then(Value::as_str),
+            Some("Plan streamed from ACP notification")
+        );
+        assert_eq!(
+            payload
+                .pointer("/entries/0/content")
+                .and_then(Value::as_str),
+            Some("Inspect ACP plan stream")
+        );
+        assert_eq!(
+            payload
+                .pointer("/entries/0/priority")
+                .and_then(Value::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            payload.pointer("/entries/0/status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            payload.pointer("/entries/1/status").and_then(Value::as_str),
+            Some("in_progress")
+        );
+        assert_eq!(
+            payload
+                .pointer("/entries/2/priority")
+                .and_then(Value::as_str),
+            Some("low")
+        );
+        assert!(payload.get("diffs").is_none());
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
 
     fn test_native_ai_with_secret_store(
         path: PathBuf,
