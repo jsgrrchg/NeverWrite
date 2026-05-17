@@ -1672,8 +1672,12 @@ export function AIChatComposer({
                             stroke="currentColor"
                             strokeWidth="1.6"
                             strokeLinecap="round"
+                            strokeLinejoin="round"
                         >
-                            <path d="M1 5V1h4M9 13h4V9M1 1l4 4M13 13l-4-4" />
+                            {/* Collapse: inner brackets at (5,5) and (9,9)
+                                with diagonals out to the outer corners — reads
+                                as arrows pulling inward toward the centre. */}
+                            <path d="M5 1V5H1M9 13V9H13M5 5L1 1M9 9L13 13" />
                         </svg>
                     ) : (
                         <svg
@@ -1684,7 +1688,11 @@ export function AIChatComposer({
                             stroke="currentColor"
                             strokeWidth="1.6"
                             strokeLinecap="round"
+                            strokeLinejoin="round"
                         >
+                            {/* Expand: outer brackets at the corners with
+                                diagonals pushing outward — arrows reaching
+                                toward the corners. */}
                             <path d="M9 1h4v4M5 13H1V9M13 1l-5 5M1 13l5-5" />
                         </svg>
                     )}
