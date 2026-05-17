@@ -771,13 +771,7 @@ const listMarkRule: NodeRule = (node, context) => {
         return;
     }
     const hideTo = extendPastFollowingWhitespace(context.state, node.to);
-    const activeEmptyItem = isActiveEmptyListLine(
-        context.state,
-        line.from,
-        line.to,
-    );
-
-    hideRange(context, line.from, activeEmptyItem ? node.to : hideTo);
+    hideRange(context, line.from, hideTo);
 
     if (isTaskItem) return;
 
