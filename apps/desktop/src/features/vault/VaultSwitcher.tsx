@@ -86,16 +86,12 @@ export function VaultSwitcher({
         <button
             key={label}
             onClick={action}
-            className="w-full text-left px-3 py-1.5 text-xs rounded flex items-center gap-2"
+            className="nw-vault-menu-item w-full cursor-pointer text-left px-3 py-1.5 text-xs rounded flex items-center gap-2"
             style={{
                 color: muted ? "var(--text-secondary)" : "var(--text-primary)",
+                background: "transparent",
+                border: "none",
             }}
-            onMouseEnter={(e) =>
-                (e.currentTarget.style.backgroundColor = "var(--bg-tertiary)")
-            }
-            onMouseLeave={(e) =>
-                (e.currentTarget.style.backgroundColor = "transparent")
-            }
         >
             <span style={{ width: 12, flexShrink: 0, color: "var(--accent)" }}>
                 {checked ? "✓" : ""}
@@ -126,14 +122,14 @@ export function VaultSwitcher({
                     style={{
                         position: "absolute",
                         bottom: "100%",
-                        left: 0,
-                        right: 0,
+                        left: 8,
+                        right: 8,
                         marginBottom: 4,
                         zIndex: 9999,
                         borderRadius: 8,
                         backgroundColor: "var(--bg-secondary)",
                         border: "1px solid var(--border)",
-                        boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
                         padding: 4,
                     }}
                 >
@@ -301,15 +297,28 @@ export function VaultSwitcher({
                         payload: { path: vaultPath },
                     });
                 }}
-                className="w-full flex items-center gap-2 px-3 py-3 text-xs"
-                style={{ color: "var(--text-secondary)" }}
+                data-open={isOpen ? "true" : undefined}
+                className="nw-vault-trigger flex w-full cursor-pointer items-center gap-2 text-xs"
+                style={{
+                    margin: "4px 8px",
+                    width: "calc(100% - 16px)",
+                    padding: "4px 8px",
+                    borderRadius: 7,
+                    border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
+                    background: "color-mix(in srgb, var(--bg-tertiary) 38%, transparent)",
+                    color: "var(--text-secondary)",
+                }}
             >
                 <svg
+                    aria-hidden="true"
                     width="13"
                     height="13"
                     viewBox="0 0 16 16"
                     fill="none"
-                    style={{ flexShrink: 0 }}
+                    style={{
+                        flexShrink: 0,
+                        color: "var(--text-secondary)",
+                    }}
                 >
                     <rect
                         x="2"
@@ -334,11 +343,13 @@ export function VaultSwitcher({
                     {vaultName}
                 </span>
                 <svg
+                    className="nw-vault-trigger-chevron"
                     width="10"
                     height="10"
                     viewBox="0 0 16 16"
                     fill="none"
-                    style={{ flexShrink: 0 }}
+                    style={{ flexShrink: 0, opacity: 0.65 }}
+                    aria-hidden="true"
                 >
                     <path
                         d="M5 6l3-3 3 3M5 10l3 3 3-3"
