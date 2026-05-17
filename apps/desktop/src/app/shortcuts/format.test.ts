@@ -19,6 +19,8 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("new_agent", "windows")).toBe(
             "Ctrl+Shift+N",
         );
+        expect(formatShortcutAction("new_terminal", "macos")).toBe("⌘R");
+        expect(formatShortcutAction("new_terminal", "windows")).toBe("Ctrl+R");
         expect(formatShortcutAction("zoom_in", "macos")).toBe("⌘=");
         expect(formatShortcutAction("zoom_out", "windows")).toBe("Ctrl+-");
         expect(formatShortcutAction("reset_zoom", "macos")).toBe("⌘0");
@@ -59,6 +61,13 @@ describe("shortcut registry formatting", () => {
                 shortcut: "Ctrl+Shift+N",
             },
         );
+        expect(
+            entries.find((entry) => entry.id === "new_terminal"),
+        ).toMatchObject({
+            label: "New Terminal",
+            category: "Developer",
+            shortcut: "Ctrl+R",
+        });
         expect(entries.find((entry) => entry.id === "zoom_in")).toMatchObject({
             label: "Zoom In",
             category: "View",
@@ -239,6 +248,24 @@ describe("shortcut registry matching", () => {
         );
         expect(
             matchesShortcutAction(windowsEvent, "new_agent", "windows"),
+        ).toBe(true);
+    });
+
+    it("matches new terminal on both platforms", () => {
+        const macEvent = new KeyboardEvent("keydown", {
+            key: "R",
+            metaKey: true,
+        });
+        const windowsEvent = new KeyboardEvent("keydown", {
+            key: "r",
+            ctrlKey: true,
+        });
+
+        expect(matchesShortcutAction(macEvent, "new_terminal", "macos")).toBe(
+            true,
+        );
+        expect(
+            matchesShortcutAction(windowsEvent, "new_terminal", "windows"),
         ).toBe(true);
     });
 
