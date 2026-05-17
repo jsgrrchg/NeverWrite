@@ -865,10 +865,10 @@ body.dragging-tab * {
     ) !important;
 }
 
-/* Sidebar shell tabs. Mirrors Comando's `.sidebar-git-scope-trigger:hover`
-   feel — subtle background/border shift plus a 1px lift so the pill
-   "jumps" forward under the cursor. Works for both inactive and active
-   tabs; active tabs keep their accent-aware border intact. */
+/* Sidebar shell tabs. A small physical-button feel: lift + soft shadow on
+   hover, then a snappy press-down with inset shadow on :active so the pill
+   tangibly depresses under the cursor. Active tabs share the same press
+   behaviour while keeping their accent-aware border intact. */
 .ub-sidebar-tab:hover:not([data-active]) {
     background-color: color-mix(
         in srgb,
@@ -882,9 +882,27 @@ body.dragging-tab * {
     );
     color: var(--text-primary);
     transform: translateY(-1px);
+    box-shadow:
+        0 2px 6px color-mix(in srgb, black 18%, transparent),
+        inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .ub-sidebar-tab[data-active]:hover {
     transform: translateY(-1px);
+    box-shadow:
+        0 2px 6px color-mix(in srgb, black 22%, transparent),
+        0 1px 2px color-mix(in srgb, black 10%, transparent);
+}
+.ub-sidebar-tab:active:not(:disabled),
+.ub-sidebar-tab[data-active]:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow:
+        inset 0 1px 2px color-mix(in srgb, black 28%, transparent),
+        inset 0 0 0 1px color-mix(in srgb, black 6%, transparent);
+    transition-duration: 60ms;
+}
+.ub-sidebar-tab:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
 }
 
 .ub-nav-btn {

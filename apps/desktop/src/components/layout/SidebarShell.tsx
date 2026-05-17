@@ -137,7 +137,7 @@ function SidebarTabButton({
                     ? "0 1px 2px rgb(0 0 0 / 0.12)"
                     : "none",
                 transition:
-                    "background-color 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease",
+                    "background-color 140ms ease-out, color 140ms ease-out, border-color 140ms ease-out, transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 140ms ease-out",
             }}
         >
             <SidebarTabIcon view={view} />
