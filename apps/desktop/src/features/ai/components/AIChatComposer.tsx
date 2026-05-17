@@ -1962,7 +1962,7 @@ export function AIChatComposer({
                         type="button"
                         onClick={onSubmit}
                         disabled={!canSubmit}
-                        className="flex shrink-0 items-center justify-center rounded-full"
+                        className="nw-composer-action flex shrink-0 cursor-pointer items-center justify-center rounded-full"
                         style={{
                             width: 28,
                             height: 28,
@@ -1972,7 +1972,8 @@ export function AIChatComposer({
                                 : "var(--accent)",
                             border: "none",
                             opacity: canSubmit ? 1 : 0.4,
-                            transition: "all 0.15s ease",
+                            transition:
+                                "transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1), filter 120ms ease-out, box-shadow 120ms ease-out, background-color 150ms ease, color 150ms ease, opacity 150ms ease",
                         }}
                         aria-label={
                             hasPendingSubmitAfterStop
@@ -2007,7 +2008,7 @@ export function AIChatComposer({
                             type="button"
                             onClick={onStop}
                             disabled={disabled || isStopping}
-                            className="flex shrink-0 items-center justify-center rounded-full"
+                            className="nw-composer-action flex shrink-0 cursor-pointer items-center justify-center rounded-full"
                             style={{
                                 width: 28,
                                 height: 28,
@@ -2015,7 +2016,8 @@ export function AIChatComposer({
                                 backgroundColor: "#b91c1c",
                                 border: "none",
                                 opacity: disabled || isStopping ? 0.4 : 1,
-                                transition: "all 0.15s ease",
+                                transition:
+                                    "transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1), filter 120ms ease-out, box-shadow 120ms ease-out, background-color 150ms ease, opacity 150ms ease",
                             }}
                             aria-label={isStopping ? "Stopping" : "Stop"}
                             title={isStopping ? "Stopping" : "Stop"}
