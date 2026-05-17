@@ -788,6 +788,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                         width: 20,
                                                         height: 20,
                                                         color: "var(--text-secondary)",
+                                                        // Match UnifiedBar tab close: sit closer to the
+                                                        // right edge of the tab.
+                                                        marginRight: -6,
                                                     }}
                                                 >
                                                     <svg

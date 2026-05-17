@@ -1380,6 +1380,10 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                                                         style={{
                                                             width: tabLayout.closeButtonSize,
                                                             height: tabLayout.closeButtonSize,
+                                                            // Eat into the tab's right padding so the
+                                                            // close button sits closer to the right edge
+                                                            // without losing its clickable area.
+                                                            marginRight: -6,
                                                         }}
                                                     >
                                                         <svg
