@@ -1,7 +1,5 @@
 // A pushable async iterable: allows you to push items and consume them with for-await.
 import { WritableStream, ReadableStream } from "node:stream/web";
-import { readFileSync } from "node:fs";
-import { getManagedSettingsPath } from "./settings.js";
 // Useful for bridging push-based and async-iterator-based code.
 export class Pushable {
     constructor() {
@@ -82,19 +80,4 @@ export function unreachable(value, logger = console) {
 }
 export function sleep(time) {
     return new Promise((resolve) => setTimeout(resolve, time));
-}
-export function loadManagedSettings() {
-    try {
-        return JSON.parse(readFileSync(getManagedSettingsPath(), "utf8"));
-    }
-    catch {
-        return null;
-    }
-}
-export function applyEnvironmentSettings(settings) {
-    if (settings.env) {
-        for (const [key, value] of Object.entries(settings.env)) {
-            process.env[key] = value;
-        }
-    }
 }

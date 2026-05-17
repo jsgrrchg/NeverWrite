@@ -1,28 +1,4 @@
-/**
- * Permission rule format examples:
- * - "Read" - matches all Read tool calls
- * - "Read(./.env)" - matches specific path
- * - "Read(./.env.*)" - glob pattern
- * - "Read(./secrets/**)" - recursive glob
- * - "Bash(npm run lint)" - exact command prefix
- * - "Bash(npm run:*)" - command prefix with wildcard
- *
- * Docs: https://code.claude.com/docs/en/iam#tool-specific-permission-rules
- */
-export interface PermissionSettings {
-    defaultMode?: string;
-}
-export interface ClaudeCodeSettings {
-    permissions?: PermissionSettings;
-    env?: Record<string, string>;
-    model?: string;
-    effortLevel?: string;
-    availableModels?: string[];
-}
-/**
- * Gets the enterprise settings path based on the current platform
- */
-export declare function getManagedSettingsPath(): string;
+import { type Settings } from "@anthropic-ai/claude-agent-sdk";
 export interface SettingsManagerOptions {
     onChange?: () => void;
     logger?: {
@@ -31,23 +7,17 @@ export interface SettingsManagerOptions {
     };
 }
 /**
- * Manages Claude Code settings from multiple sources with proper precedence.
+ * Manages Claude Code settings using the SDK's `resolveSettings` merge engine
+ * so the values we see match what `query()` would observe.
  *
- * Settings are loaded from (in order of increasing precedence):
- * 1. User settings (~/.claude/settings.json)
- * 2. Project settings (<cwd>/.claude/settings.json)
- * 3. Local project settings (<cwd>/.claude/settings.local.json)
- * 4. Enterprise managed settings (platform-specific path)
- *
- * The manager watches all settings files for changes and automatically reloads.
+ * Watches the user/project/local/managed settings files for changes and
+ * re-resolves through the SDK on update. Escalating `permissions.defaultMode`
+ * values from repo-committed sources are filtered out via
+ * `filterEscalatingDefaultMode`, matching the CLI's trust policy.
  */
 export declare class SettingsManager {
     private cwd;
-    private userSettings;
-    private projectSettings;
-    private localSettings;
-    private enterpriseSettings;
-    private mergedSettings;
+    private effective;
     private watchers;
     private onChange?;
     private logger;
@@ -61,27 +31,15 @@ export declare class SettingsManager {
      */
     initialize(): Promise<void>;
     /**
-     * Returns the path to the user settings file
+     * Paths the SDK reads when resolving settings for this cwd. Watching the
+     * containing directories means we pick up file creation as well as edits.
      */
-    private getUserSettingsPath;
+    private getWatchedPaths;
     /**
-     * Returns the path to the project settings file
-     */
-    private getProjectSettingsPath;
-    /**
-     * Returns the path to the local project settings file
-     */
-    private getLocalSettingsPath;
-    /**
-     * Loads settings from all sources
+     * Resolves the effective settings via the SDK and applies the CLI's trust
+     * filter for escalating `permissions.defaultMode` values.
      */
     private loadAllSettings;
-    /**
-     * Merges all settings sources with proper precedence.
-     * For permissions, rules from all sources are combined.
-     * Deny rules always take precedence during permission checks.
-     */
-    private mergeSettings;
     /**
      * Sets up file watchers for all settings files
      */
@@ -93,7 +51,7 @@ export declare class SettingsManager {
     /**
      * Returns the current merged settings
      */
-    getSettings(): ClaudeCodeSettings;
+    getSettings(): Settings;
     /**
      * Returns the current working directory
      */
