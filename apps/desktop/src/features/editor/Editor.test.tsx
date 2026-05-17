@@ -416,6 +416,41 @@ describe("Editor", () => {
         expect(screen.getAllByDisplayValue("Updated title")).toHaveLength(2);
     });
 
+    it("allows inserting spaces while editing text properties", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Frontmatter title",
+                content: "---\ntitle: Frontmatter title\n---\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Properties" }));
+        });
+
+        const view = getEditorView();
+        const propertyInput = screen.getAllByDisplayValue(
+            "Frontmatter title",
+        )[1];
+
+        await act(async () => {
+            fireEvent.change(propertyInput, {
+                target: { value: "Frontmatter title " },
+            });
+        });
+
+        expect((propertyInput as HTMLInputElement).value).toBe(
+            "Frontmatter title ",
+        );
+        expect(view.state.doc.toString()).toContain(
+            'title: "Frontmatter title "',
+        );
+    });
+
     it("does not underline markdown headings in source mode", async () => {
         setEditorTabs([
             {

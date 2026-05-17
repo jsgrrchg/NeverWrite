@@ -78,14 +78,15 @@ export function serializeFrontmatterRaw(
             key: key.trim(),
             value: Array.isArray(value)
                 ? value.map((item) => item.trim()).filter(Boolean)
-                : typeof value === "string"
-                  ? value.trim()
-                  : value,
+                : value,
         }))
         .filter(({ key, value }) => {
             if (!key) return false;
             if (Array.isArray(value)) return value.length > 0;
-            return value !== null && value !== "";
+            return (
+                value !== null &&
+                (typeof value !== "string" || value.trim() !== "")
+            );
         });
 
     if (!cleaned.length) return null;
@@ -104,7 +105,12 @@ export function serializeFrontmatterRaw(
 
 function quoteYaml(value: string): string {
     if (!value) return '""';
-    if (/^[A-Za-z0-9 _./:@#%+,-]+$/.test(value)) return value;
+    if (
+        value.trim() === value &&
+        /^[A-Za-z0-9 _./:@#%+,-]+$/.test(value)
+    ) {
+        return value;
+    }
     return JSON.stringify(value);
 }
 
