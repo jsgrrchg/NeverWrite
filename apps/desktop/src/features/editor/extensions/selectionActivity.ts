@@ -20,6 +20,26 @@ export function selectionTouchesRange(
     return false;
 }
 
+export function selectionTouchesRangeBoundary(
+    state: EditorState,
+    from: number,
+    to: number,
+): boolean {
+    for (const range of state.selection.ranges) {
+        if (range.empty) {
+            if (range.from >= from && range.from <= to) {
+                return true;
+            }
+            continue;
+        }
+
+        if (range.to >= from && range.from <= to) {
+            return true;
+        }
+    }
+    return false;
+}
+
 export function selectionTouchesLine(
     state: EditorState,
     from: number,

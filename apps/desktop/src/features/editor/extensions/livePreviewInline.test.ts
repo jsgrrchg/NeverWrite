@@ -584,6 +584,31 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("reveals emphasis delimiters when the caret is at the closing boundary", () => {
+        const doc = "*Texto en cursiva para revisar contraste.*";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 1, "cm-lp-hidden-inline")).toBe(
+            false,
+        );
+        expect(
+            hasHiddenRange(
+                decorations,
+                doc.length - 1,
+                doc.length,
+                "cm-lp-hidden-inline",
+            ),
+        ).toBe(false);
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("reveals the full markdown link when the caret is inside the token", () => {
         const doc = "[text](url)";
         const { plugin, parent, view } = createView(

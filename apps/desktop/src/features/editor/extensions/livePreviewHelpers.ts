@@ -9,6 +9,7 @@ import type { SyntaxNode } from "@lezer/common";
 import {
     selectionTouchesLine,
     selectionTouchesRange,
+    selectionTouchesRangeBoundary,
 } from "./selectionActivity";
 
 // ---------------------------------------------------------------------------
@@ -127,8 +128,11 @@ export function hideInactiveChildMarks(
     state: EditorState,
     decos: DecoEntry[],
     hiddenDeco: Decoration,
+    includeEndBoundary = false,
 ) {
-    const tokenActive = selectionTouchesRange(state, activeFrom, activeTo);
+    const tokenActive = includeEndBoundary
+        ? selectionTouchesRangeBoundary(state, activeFrom, activeTo)
+        : selectionTouchesRange(state, activeFrom, activeTo);
     if (tokenActive) return;
 
     const cursor = parentNode.cursor();
