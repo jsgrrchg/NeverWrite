@@ -38,4 +38,18 @@ tags:
 ---
 `);
     });
+
+    it("preserves a trailing space while text properties are being edited", () => {
+        const raw = serializeFrontmatterRaw([
+            { key: "title", value: "Roadmap " },
+        ]);
+
+        expect(raw).toBe(`---
+title: "Roadmap "
+---
+`);
+        expect(parseFrontmatterRaw(raw ?? "")).toEqual([
+            { key: "title", value: "Roadmap " },
+        ]);
+    });
 });
