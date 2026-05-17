@@ -932,6 +932,170 @@ body.dragging-tab * {
     filter: brightness(0.95);
 }
 
+/* ── Settings panel primitives ─────────────────────────────────
+   Toggle switches, segmented controls, select dropdowns, +/- steppers
+   and theme tiles all share the same tactile press feel as the rest of
+   the UI so the settings panel doesn't feel "dead" compared to the chat
+   surfaces. */
+
+.nw-settings-toggle {
+    transition:
+        background-color 150ms ease,
+        opacity 150ms ease,
+        box-shadow 150ms ease,
+        transform 150ms ease;
+}
+.nw-settings-toggle:hover:not(:disabled) {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nw-settings-toggle:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 70ms;
+}
+.nw-settings-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+
+.nw-settings-segment {
+    transition:
+        background-color 120ms ease,
+        color 120ms ease,
+        box-shadow 120ms ease,
+        transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.nw-settings-segment:not([data-active="true"]):hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-secondary) 50%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+}
+.nw-settings-segment:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 60ms;
+}
+.nw-settings-segment:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
+.nw-settings-select {
+    transition:
+        background-color 120ms ease-out,
+        border-color 120ms ease-out,
+        box-shadow 120ms ease-out,
+        transform 120ms ease-out;
+}
+.nw-settings-select:hover:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 22%,
+        var(--border)
+    ) !important;
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 80%,
+        var(--bg-secondary)
+    ) !important;
+}
+.nw-settings-select[data-open="true"]:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--accent) 48%,
+        var(--border)
+    ) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nw-settings-select:active:not(:disabled) {
+    transform: scale(0.985);
+    transition-duration: 60ms;
+}
+.nw-settings-select:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
+.nw-settings-select-item {
+    transition:
+        background-color 80ms ease-out,
+        color 80ms ease-out;
+}
+.nw-settings-select-item:hover {
+    background-color: var(--bg-tertiary) !important;
+}
+.nw-settings-select-item:active {
+    background-color: color-mix(
+        in srgb,
+        var(--accent) 18%,
+        var(--bg-tertiary)
+    ) !important;
+}
+
+.nw-settings-stepper-btn {
+    transition:
+        background-color 100ms ease-out,
+        color 100ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-settings-stepper-btn:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--text-primary) 10%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+}
+.nw-settings-stepper-btn:active:not(:disabled) {
+    transform: scale(0.9);
+    background-color: color-mix(
+        in srgb,
+        var(--text-primary) 18%,
+        transparent
+    ) !important;
+    transition-duration: 50ms;
+}
+.nw-settings-stepper-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -1px;
+}
+
+.nw-settings-stepper-input:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+    border-radius: 4px;
+}
+
+.nw-settings-theme-tile {
+    transition:
+        border-color 140ms ease-out,
+        transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+        box-shadow 140ms ease-out;
+}
+.nw-settings-theme-tile:hover:not([data-active="true"]) {
+    transform: translateY(-1px);
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 28%,
+        var(--border)
+    ) !important;
+    box-shadow: 0 4px 12px color-mix(in srgb, black 22%, transparent);
+}
+.nw-settings-theme-tile[data-active="true"]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px
+        color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.nw-settings-theme-tile:active:not(:disabled) {
+    transform: scale(0.985);
+    transition-duration: 70ms;
+}
+.nw-settings-theme-tile:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+
 /* Vault switcher trigger (sidebar footer). A real-looking button with a
    tinted icon chip, hover lift, pressed-in open state, and tactile click
    feedback. */

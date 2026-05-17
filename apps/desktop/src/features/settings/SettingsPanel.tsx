@@ -83,7 +83,9 @@ function Toggle({
         <button
             role="switch"
             aria-checked={value}
+            disabled={disabled}
             onClick={() => !disabled && onChange(!value)}
+            className="nw-settings-toggle"
             style={{
                 width: 36,
                 height: 20,
@@ -93,7 +95,6 @@ function Toggle({
                 backgroundColor: value ? "var(--accent)" : "var(--bg-tertiary)",
                 position: "relative",
                 flexShrink: 0,
-                transition: "background-color 150ms",
                 opacity: disabled ? 0.4 : 1,
             }}
         >
@@ -139,6 +140,8 @@ function SegmentedControl<T extends string | number>({
                     <button
                         key={String(opt.value)}
                         onClick={() => onChange(opt.value)}
+                        data-active={active || undefined}
+                        className="nw-settings-segment"
                         style={{
                             padding: "3px 10px",
                             borderRadius: 5,
@@ -156,7 +159,6 @@ function SegmentedControl<T extends string | number>({
                                 ? "0 1px 3px rgba(0,0,0,0.1)"
                                 : "none",
                             fontWeight: active ? 500 : 400,
-                            transition: "all 100ms",
                         }}
                     >
                         {opt.label}
@@ -256,6 +258,8 @@ function SelectField<T extends string | number | null>({
                 type="button"
                 disabled={disabled}
                 onClick={() => setOpen((v) => !v)}
+                data-open={open ? "true" : undefined}
+                className="nw-settings-select"
                 style={{
                     display: "flex",
                     alignItems: "center",
@@ -345,6 +349,7 @@ function SelectField<T extends string | number | null>({
                                             onChange(opt.value);
                                             setOpen(false);
                                         }}
+                                        className="nw-settings-select-item"
                                         style={{
                                             display: "block",
                                             width: "100%",
@@ -361,14 +366,6 @@ function SelectField<T extends string | number | null>({
                                             backgroundColor: "transparent",
                                             cursor: "pointer",
                                             whiteSpace: "nowrap",
-                                        }}
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor =
-                                                "var(--bg-tertiary)";
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor =
-                                                "transparent";
                                         }}
                                     >
                                         {opt.label}
@@ -419,18 +416,23 @@ function NumberStepper({
             }}
         >
             <button
+                type="button"
+                aria-label="Decrement"
+                disabled={value <= min}
                 onClick={() => onChange(Math.max(min, value - step))}
+                className="nw-settings-stepper-btn"
                 style={{
                     width: 24,
                     height: 26,
                     border: "none",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: value <= min ? "not-allowed" : "pointer",
                     color: "var(--text-secondary)",
                     fontSize: 14,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    opacity: value <= min ? 0.45 : 1,
                 }}
             >
                 −
@@ -459,6 +461,7 @@ function NumberStepper({
                         inputRef.current?.blur();
                     }
                 }}
+                className="nw-settings-stepper-input"
                 style={{
                     width: 34,
                     textAlign: "center",
@@ -471,18 +474,23 @@ function NumberStepper({
                 }}
             />
             <button
+                type="button"
+                aria-label="Increment"
+                disabled={value >= max}
                 onClick={() => onChange(Math.min(max, value + step))}
+                className="nw-settings-stepper-btn"
                 style={{
                     width: 24,
                     height: 26,
                     border: "none",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: value >= max ? "not-allowed" : "pointer",
                     color: "var(--text-secondary)",
                     fontSize: 14,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    opacity: value >= max ? 0.45 : 1,
                 }}
             >
                 +
@@ -595,6 +603,8 @@ function ThemePicker({
                     <button
                         key={name}
                         onClick={() => onChange(name)}
+                        data-active={active || undefined}
+                        className="nw-settings-theme-tile"
                         style={{
                             display: "flex",
                             flexDirection: "column",
@@ -607,7 +617,6 @@ function ThemePicker({
                                 : "2px solid var(--border)",
                             background: "var(--bg-secondary)",
                             cursor: "pointer",
-                            transition: "border-color 150ms",
                         }}
                     >
                         {/* Color preview */}
