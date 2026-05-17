@@ -550,6 +550,7 @@ function useRegisterCommands(
         const openVaultShortcut = getShortcutDefinition("open_vault");
         const newNoteShortcut = getShortcutDefinition("new_note");
         const newAgentShortcut = getShortcutDefinition("new_agent");
+        const newTerminalShortcut = getShortcutDefinition("new_terminal");
         const closeTabShortcut = getShortcutDefinition("close_tab");
         const newTabShortcut = getShortcutDefinition("new_tab");
         const reopenClosedTabShortcut =
@@ -934,8 +935,9 @@ function useRegisterCommands(
 
         register({
             id: "developer:new-terminal-tab",
-            label: "New Terminal",
-            category: "Developer",
+            label: newTerminalShortcut.label,
+            shortcut: formatShortcutAction(newTerminalShortcut.id, platform),
+            category: newTerminalShortcut.category,
             when: developerModeEnabled,
             execute: () => {
                 useEditorStore.getState().openTerminal();
@@ -1039,6 +1041,12 @@ function useGlobalShortcuts(openSettings: () => void) {
             if (matchesShortcutAction(e, "new_agent", platform)) {
                 e.preventDefault();
                 useCommandStore.getState().execute("ai:new-agent");
+                return;
+            }
+
+            if (matchesShortcutAction(e, "new_terminal", platform)) {
+                e.preventDefault();
+                useCommandStore.getState().execute("developer:new-terminal-tab");
                 return;
             }
 

@@ -13,6 +13,7 @@ import { useCommandStore } from "./features/command-palette/store/commandStore";
 import { isTerminalTab, useEditorStore } from "./app/store/editorStore";
 import { useSettingsStore } from "./app/store/settingsStore";
 import { useVaultStore } from "./app/store/vaultStore";
+import { getDesktopPlatform } from "./app/utils/platform";
 import {
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
@@ -207,6 +208,69 @@ describe("App note window", () => {
                 (tab) => tab.id === useEditorStore.getState().activeTabId,
             );
         expect(activeTab && isTerminalTab(activeTab)).toBe(true);
+    });
+
+    it("opens workspace terminals from the developer terminal shortcut", async () => {
+        detachedWindowMock.label = "main";
+        detachedWindowMock.mode = "main";
+        window.history.replaceState({}, "", "/");
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: true,
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        const platform = getDesktopPlatform();
+
+        await act(async () => {
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "r",
+                    metaKey: platform === "macos",
+                    ctrlKey: platform !== "macos",
+                }),
+            );
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        const activeTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) => tab.id === useEditorStore.getState().activeTabId,
+            );
+        expect(activeTab && isTerminalTab(activeTab)).toBe(true);
+    });
+
+    it("does not open workspace terminals from the shortcut when disabled", async () => {
+        detachedWindowMock.label = "main";
+        detachedWindowMock.mode = "main";
+        window.history.replaceState({}, "", "/");
+        useSettingsStore.setState({
+            developerModeEnabled: true,
+            developerTerminalEnabled: false,
+        });
+
+        renderComponent(<App />);
+        await flushPromises();
+
+        const platform = getDesktopPlatform();
+
+        await act(async () => {
+            window.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    key: "r",
+                    metaKey: platform === "macos",
+                    ctrlKey: platform !== "macos",
+                }),
+            );
+            await Promise.resolve();
+        });
+        await flushPromises();
+
+        expect(useEditorStore.getState().tabs.some(isTerminalTab)).toBe(false);
     });
 
     it("starts workspace terminal runtimes inside detached note windows", async () => {
