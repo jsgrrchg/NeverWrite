@@ -36,6 +36,7 @@ import {
     selectionHasMultilineRangeTouchingLine,
     selectionTouchesLine,
     selectionTouchesRange,
+    selectionTouchesRangeBoundary,
 } from "./selectionActivity";
 import { parseMarkdownListItem } from "../markdownLists";
 import {
@@ -130,7 +131,7 @@ type RevealSensitiveRange = {
     key: string;
     from: number;
     to: number;
-    strategy: "line" | "range" | "multiline-line";
+    strategy: "line" | "range" | "range-boundary" | "multiline-line";
 };
 
 class InlineBreakWidget extends WidgetType {
@@ -550,6 +551,8 @@ function getRevealSensitiveSignature(
         const active =
             range.strategy === "line"
                 ? selectionTouchesLine(state, range.from, range.to)
+                : range.strategy === "range-boundary"
+                  ? selectionTouchesRangeBoundary(state, range.from, range.to)
                 : range.strategy === "multiline-line"
                   ? selectionHasMultilineRangeTouchingLine(
                         state,
@@ -596,7 +599,12 @@ function createInlineFormattingRule(
 ): NodeRule {
     return (node, context) => {
         if (node.name !== nodeName) return;
-        registerRevealSensitiveRange(context, "range", node.from, node.to);
+        registerRevealSensitiveRange(
+            context,
+            "range-boundary",
+            node.from,
+            node.to,
+        );
         pushDeco(context, node.from, node.to, mark);
         hideInactiveChildMarks(
             node.node,
@@ -606,6 +614,7 @@ function createInlineFormattingRule(
             context.state,
             context.decos,
             hideInlineMark,
+            true,
         );
     };
 }
