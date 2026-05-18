@@ -159,6 +159,10 @@ class EmptyListCaretAnchorWidget extends WidgetType {
 }
 
 const emptyListCaretAnchorWidget = new EmptyListCaretAnchorWidget();
+const emptyListCaretAnchorDecoration = Decoration.widget({
+    widget: emptyListCaretAnchorWidget,
+    side: -1,
+});
 
 function createMathMark(display: "inline" | "block") {
     return Decoration.mark({
@@ -512,15 +516,7 @@ function hideRange(
 }
 
 function addEmptyListCaretAnchor(context: BuildContext, pos: number) {
-    pushDeco(
-        context,
-        pos,
-        pos,
-        Decoration.widget({
-            widget: emptyListCaretAnchorWidget,
-            side: -1,
-        }),
-    );
+    pushDeco(context, pos, pos, emptyListCaretAnchorDecoration);
 }
 
 function getActiveEmptyListPrefixEndAtPos(
