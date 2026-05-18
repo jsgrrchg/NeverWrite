@@ -165,6 +165,29 @@ test("clicking an active empty list prefix keeps the caret visible (#102)", asyn
     expectCaretAnchoredToBullet(await measureCaretAtLine(page, 4));
 });
 
+test("clicking an inactive empty list item activates its caret anchor (#102)", async ({
+    page,
+}) => {
+    const doc = "- eee\n- \n    - rrrrr";
+    await page.evaluate((d) => {
+        window.mountEditor({ doc: d, selection: 5 });
+    }, doc);
+    await page.waitForSelector(".cm-lp-li-line");
+
+    const emptyLine = page.locator(".cm-content > .cm-line").nth(1);
+    const box = await emptyLine.boundingBox();
+    if (!box) throw new Error("empty list line not measurable");
+
+    await page.mouse.click(box.x + 8, box.y + box.height / 2);
+
+    const selectionHead = await page.evaluate(() => {
+        return window.editorView?.state.selection.main.head ?? null;
+    });
+
+    expect(selectionHead).toBe(8);
+    expectCaretAnchoredToBullet(await measureCaretAtLine(page, 2));
+});
+
 // ---------------------------------------------------------------------------
 // Task list — active empty (acceptance criterion: tasks not regressed)
 // ---------------------------------------------------------------------------

@@ -317,6 +317,19 @@ function isActiveEmptyListLine(
     return item?.isEmpty === true;
 }
 
+function registerEmptyListCaretAnchorDependency(
+    context: BuildContext,
+    lineFrom: number,
+    lineTo: number,
+) {
+    const item = parseMarkdownListItem(
+        context.state.doc.sliceString(lineFrom, lineTo),
+    );
+    if (!item?.isEmpty) return;
+
+    registerRevealSensitiveRange(context, "line", lineFrom, lineTo);
+}
+
 function getListItemPresentation(
     listItem: SyntaxNode,
     state: EditorState,
@@ -827,6 +840,7 @@ const listMarkRule: NodeRule = (node, context) => {
     const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
     const line = context.state.doc.lineAt(node.from);
     registerRevealSensitiveRange(context, "multiline-line", line.from, line.to);
+    registerEmptyListCaretAnchorDependency(context, line.from, line.to);
     if (
         selectionHasMultilineRangeTouchingLine(
             context.state,
