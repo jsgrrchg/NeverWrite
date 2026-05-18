@@ -369,7 +369,7 @@ describe("createInlineLivePreviewPlugin", () => {
         const decorations = collectDecorations(view, plugin);
 
         expect(hasHiddenRange(decorations, 0, 2)).toBe(true);
-        expect(hasHiddenRange(decorations, 2, 5)).toBe(true);
+        expect(hasHiddenRange(decorations, 2, doc.length)).toBe(true);
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-task-line"),
