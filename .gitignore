@@ -28,6 +28,9 @@ apps/desktop/dist-electron/
 apps/desktop/dist-electron*/
 apps/desktop/out/
 apps/desktop/node_modules/
+apps/desktop/test-results/
+apps/desktop/playwright-report/
+apps/desktop/e2e/dist/
 assets/
 !apps/desktop/src/assets/
 !apps/desktop/src/assets/fonts/

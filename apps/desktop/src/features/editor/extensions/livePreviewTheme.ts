@@ -16,6 +16,13 @@ import {
 } from "./livePreviewListMetrics";
 
 export const livePreviewTheme = EditorView.baseTheme({
+    ".cm-lp-caret-anchor": {
+        display: "inline-block",
+        width: "0",
+        height: "1em",
+        overflow: "hidden",
+        verticalAlign: "text-bottom",
+    },
     ".cm-lp-hidden": {
         display: "inline-block",
         fontSize: "0",

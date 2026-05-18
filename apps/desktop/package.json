@@ -14,6 +14,8 @@
         "lint": "eslint .",
         "test": "vitest run",
         "test:watch": "vitest",
+        "test:e2e": "playwright test --config e2e/playwright.config.ts",
+        "test:e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
         "test:split-grid-baseline": "vitest run src/app/store/workspaceLayoutTree.test.ts src/app/store/workspaceLayoutNavigation.test.ts src/app/store/editorStore.test.ts src/app/store/editorSession.test.ts src/app/store/layoutStore.test.ts src/features/editor/MultiPaneWorkspace.test.tsx src/features/editor/EditorPaneBar.test.tsx src/features/editor/workspaceTabDropPreview.test.ts src/features/editor/UnifiedBar.test.tsx src/features/vault/FileTree.test.tsx src/features/ai/components/reviewMultiSessionIntegration.test.tsx src/features/ai/components/AIReviewView.test.tsx",
         "preview": "vite preview",
         "electron:dev": "node scripts/run-electron-dev.mjs",
@@ -73,6 +75,7 @@
     },
     "devDependencies": {
         "@eslint/js": "^9.39.1",
+        "@playwright/test": "^1.60.0",
         "@tailwindcss/vite": "^4.2.4",
         "@testing-library/jest-dom": "^6.9.1",
         "@testing-library/react": "^16.3.2",
