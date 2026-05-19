@@ -203,6 +203,44 @@ function getSelectableRowKey(row: FlatTreeRow): string | null {
     return null;
 }
 
+function getFlatTreeRowFilterText(row: FlatTreeRow): string {
+    if (row.kind === "folder") {
+        return `${row.name}\n${row.path}`.toLowerCase();
+    }
+    if (row.kind === "note") return getNoteFilterText(row.note);
+    if (row.kind === "pdf" || row.kind === "file") {
+        return getVaultEntryFilterText(row.entry);
+    }
+    return "";
+}
+
+function filterFlatTreeRows(rows: FlatTreeRow[], normalizedFilter: string) {
+    if (!normalizedFilter) return rows;
+
+    const keepExactPaths = new Set<string>();
+    const keepSubtreePrefixes: string[] = [];
+    for (const row of rows) {
+        if (row.kind === "create") continue;
+        if (!getFlatTreeRowFilterText(row).includes(normalizedFilter)) {
+            continue;
+        }
+        keepExactPaths.add(row.path);
+        const parts = row.path.split("/");
+        for (let i = 1; i < parts.length; i++) {
+            keepExactPaths.add(parts.slice(0, i).join("/"));
+        }
+        if (row.kind === "folder") {
+            keepSubtreePrefixes.push(`${row.path}/`);
+        }
+    }
+    if (keepExactPaths.size === 0) return [];
+
+    return rows.filter((row) => {
+        if (keepExactPaths.has(row.path)) return true;
+        return keepSubtreePrefixes.some((prefix) => row.path.startsWith(prefix));
+    });
+}
+
 function canKeyboardOpenRow(row: FlatTreeRow) {
     return row.kind === "note" || row.kind === "pdf" || row.kind === "file";
 }
@@ -2121,6 +2159,7 @@ export function FileTree() {
     const lastClickedRowKeyRef = useRef<string | null>(null);
     const flatRowsRef = useRef<FlatTreeRow[]>([]);
     const displayRowsRef = useRef<FlatTreeRow[]>([]);
+    const shortcutNavigableRowsRef = useRef<FlatTreeRow[]>([]);
     const renameGuardRef = useRef(false);
     const expandedFoldersVaultPathRef = useRef(vaultPath);
     const skipExpandedFoldersPersistRef = useRef(false);
@@ -2194,6 +2233,10 @@ export function FileTree() {
         return next;
     }, [expandedFolders, revealedFolders]);
     const normalizedFilter = filterText.trim().toLowerCase();
+    const fullyExpandedRows = useMemo(
+        () => flattenTreeRows(tree, new Set(allFolderPaths), sortMode),
+        [allFolderPaths, sortMode, tree],
+    );
     const flatRows = useMemo(() => {
         // Without a filter, honor the user's expansion state as usual.
         if (!normalizedFilter) {
@@ -2203,50 +2246,20 @@ export function FileTree() {
         // buried inside collapsed folders surface. Then keep only rows that
         // match directly, their ancestor folders (to preserve hierarchy),
         // and — if a folder itself matches — all of its descendants.
-        const fullRows = flattenTreeRows(
-            tree,
-            new Set(allFolderPaths),
-            sortMode,
-        );
-        const rowNameLower = (row: FlatTreeRow): string => {
-            if (row.kind === "folder") {
-                return `${row.name}\n${row.path}`.toLowerCase();
-            }
-            if (row.kind === "note") return getNoteFilterText(row.note);
-            if (row.kind === "pdf" || row.kind === "file") {
-                return getVaultEntryFilterText(row.entry);
-            }
-            return "";
-        };
-        const keepExactPaths = new Set<string>();
-        const keepSubtreePrefixes: string[] = [];
-        for (const row of fullRows) {
-            if (row.kind === "create") continue;
-            if (!rowNameLower(row).includes(normalizedFilter)) continue;
-            keepExactPaths.add(row.path);
-            const parts = row.path.split("/");
-            for (let i = 1; i < parts.length; i++) {
-                keepExactPaths.add(parts.slice(0, i).join("/"));
-            }
-            if (row.kind === "folder") {
-                keepSubtreePrefixes.push(`${row.path}/`);
-            }
-        }
-        if (keepExactPaths.size === 0) return [];
-        return fullRows.filter((row) => {
-            if (keepExactPaths.has(row.path)) return true;
-            return keepSubtreePrefixes.some((prefix) =>
-                row.path.startsWith(prefix),
-            );
-        });
+        return filterFlatTreeRows(fullyExpandedRows, normalizedFilter);
     }, [
-        allFolderPaths,
+        fullyExpandedRows,
         normalizedFilter,
         sortMode,
         tree,
         visibleExpandedFolders,
     ]);
     flatRowsRef.current = flatRows;
+    const shortcutNavigableRows = useMemo(
+        () => filterFlatTreeRows(fullyExpandedRows, normalizedFilter),
+        [fullyExpandedRows, normalizedFilter],
+    );
+    shortcutNavigableRowsRef.current = shortcutNavigableRows;
     const displayRows = useMemo(() => {
         if (!creatingMode) return flatRows;
 
@@ -4304,6 +4317,27 @@ export function FileTree() {
         );
     }, [getKeyboardRowKey]);
 
+    const expandKeyboardRowAncestors = useCallback((row: FlatTreeRow) => {
+        const parts = row.path.split("/");
+        if (parts.length <= 1) return;
+
+        const ancestorPaths = parts
+            .slice(0, -1)
+            .map((_, index) => parts.slice(0, index + 1).join("/"));
+        if (ancestorPaths.length === 0) return;
+
+        setExpandedFolders((prev) => {
+            const next = new Set(prev);
+            let changed = false;
+            for (const path of ancestorPaths) {
+                if (next.has(path)) continue;
+                next.add(path);
+                changed = true;
+            }
+            return changed ? next : prev;
+        });
+    }, []);
+
     const selectKeyboardRow = useCallback((row: FlatTreeRow) => {
         const rowKey = getSelectableRowKey(row);
         if (!rowKey) return;
@@ -4411,13 +4445,17 @@ export function FileTree() {
         [navigateKeyboardToRow],
     );
 
-    const navigateKeyboardToOpenableRow = useCallback(
+    const navigateShortcutToOpenableRow = useCallback(
         (direction: -1 | 1) => {
-            const rows = displayRowsRef.current;
+            const rows = shortcutNavigableRowsRef.current;
             if (rows.length === 0) return false;
 
-            const currentIndex = getKeyboardRowIndex();
+            const currentKey = getKeyboardRowKey();
+            const currentIndex = currentKey
+                ? rows.findIndex((row) => getSelectableRowKey(row) === currentKey)
+                : -1;
             const fallbackIndex = direction > 0 ? -1 : rows.length;
+
             for (
                 let index =
                     (currentIndex === -1 ? fallbackIndex : currentIndex) +
@@ -4425,16 +4463,22 @@ export function FileTree() {
                 index >= 0 && index < rows.length;
                 index += direction
             ) {
-                if (canKeyboardOpenRow(rows[index])) {
-                    return navigateKeyboardToRow(index, {
-                        openFileRows: true,
-                    });
-                }
+                const row = rows[index];
+                if (!canKeyboardOpenRow(row)) continue;
+                expandKeyboardRowAncestors(row);
+                selectKeyboardRow(row);
+                activateKeyboardRow(row);
+                return true;
             }
 
             return false;
         },
-        [getKeyboardRowIndex, navigateKeyboardToRow],
+        [
+            activateKeyboardRow,
+            expandKeyboardRowAncestors,
+            getKeyboardRowKey,
+            selectKeyboardRow,
+        ],
     );
 
     const navigateKeyboardIntoFolder = useCallback(() => {
@@ -4525,7 +4569,7 @@ export function FileTree() {
 
             event.preventDefault();
             event.stopPropagation();
-            navigateKeyboardToOpenableRow(direction);
+            navigateShortcutToOpenableRow(direction);
         };
 
         document.addEventListener("keydown", handleDocumentKeyDown, true);
@@ -4535,7 +4579,7 @@ export function FileTree() {
                 handleDocumentKeyDown,
                 true,
             );
-    }, [navigateKeyboardToOpenableRow]);
+    }, [navigateShortcutToOpenableRow]);
 
     const handleTreeKeyDown = useCallback(
         (event: React.KeyboardEvent<HTMLDivElement>) => {

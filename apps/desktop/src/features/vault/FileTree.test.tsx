@@ -1548,7 +1548,7 @@ describe("FileTree", () => {
         });
     });
 
-    it("uses Cmd+Shift+ArrowDown to open the next visible file without stealing focus", async () => {
+    it("uses Cmd+Shift+ArrowDown to open the next file without stealing focus", async () => {
         setVaultNotes([
             {
                 id: "alpha",
@@ -1624,7 +1624,7 @@ describe("FileTree", () => {
         expect(document.activeElement).toBe(editor);
     });
 
-    it("respects the current visible sort order when using file navigation shortcuts", async () => {
+    it("respects the current sort order when using file navigation shortcuts", async () => {
         const user = userEvent.setup();
 
         setVaultNotes([
@@ -1693,6 +1693,74 @@ describe("FileTree", () => {
                 activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
             ).toBe("alpha");
         });
+    });
+
+    it("expands collapsed folders when the next-file shortcut enters them", async () => {
+        const user = userEvent.setup();
+        vi.mocked(invoke).mockResolvedValue({ content: "Loaded note" });
+
+        setVaultNotes([
+            {
+                id: "A/alpha",
+                path: "/vault/A/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "B/beta",
+                path: "/vault/B/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "A/alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "B/beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "A");
+
+        expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            metaKey: true,
+            shiftKey: true,
+        });
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("B/beta");
+        });
+        expect(screen.getByText("B")).toBeInTheDocument();
+        expect(screen.getByText("Beta")).toBeInTheDocument();
     });
 
     it("opens a note in a new tab on middle click", async () => {
