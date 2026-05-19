@@ -1277,4 +1277,74 @@ describe("FileTabView", () => {
         expect(getChunks(view!.state)).toBeNull();
         expect(view!.state.doc.toString()).toBe('name = "NeverWrite"');
     });
+
+    it("does not leak edits from one text file tab into a different text file tab", async () => {
+        vi.useFakeTimers();
+        setEditorTabs(
+            [
+                {
+                    id: "text-tab-a",
+                    kind: "file",
+                    relativePath: "src/a.toml",
+                    title: "a.toml",
+                    path: "/vault/src/a.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "A"',
+                },
+                {
+                    id: "text-tab-b",
+                    kind: "file",
+                    relativePath: "src/b.toml",
+                    title: "b.toml",
+                    path: "/vault/src/b.toml",
+                    mimeType: "application/toml",
+                    viewer: "text",
+                    content: 'name = "B"',
+                },
+            ],
+            "text-tab-a",
+        );
+
+        renderComponent(<FileTabView />);
+
+        const view = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(view).not.toBeNull();
+        await act(async () => {
+            view!.dispatch({
+                changes: {
+                    from: view!.state.doc.length,
+                    to: view!.state.doc.length,
+                    insert: "\nchanged = true",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await Promise.resolve();
+        });
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("text-tab-b");
+            await Promise.resolve();
+        });
+
+        const nextView = EditorView.findFromDOM(
+            document.querySelector(".cm-editor") as HTMLElement,
+        );
+        expect(nextView).not.toBeNull();
+        expect(nextView!.state.doc.toString()).toBe('name = "B"');
+        const tabB = useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === "text-tab-b");
+        expect(tabB && "content" in tabB ? tabB.content : null).toBe(
+            'name = "B"',
+        );
+        expect(useEditorStore.getState().dirtyTabIds.has("text-tab-b")).toBe(
+            false,
+        );
+    });
 });
