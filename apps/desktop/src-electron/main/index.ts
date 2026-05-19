@@ -1,4 +1,4 @@
-import { app, BrowserWindow, protocol } from "electron";
+import { app, BrowserWindow, protocol, session } from "electron";
 import { installNativeMenus, refreshDockMenu } from "./menu";
 import { createAppWindow, getWindowByLabel } from "./window";
 import {
@@ -15,6 +15,7 @@ import {
     installProcessDiagnostics,
     writeAppLog,
 } from "./appLogger";
+import { installYouTubeEmbedIdentityHeaders } from "./youtubeEmbedIdentity";
 
 const WINDOWS_APP_USER_MODEL_ID =
     process.env.NEVERWRITE_ELECTRON_APP_ID?.trim() || "com.neverwrite";
@@ -99,6 +100,7 @@ if (!hasLock) {
 
     void app.whenReady().then(() => {
         writeAppLog("main", "info", "Electron app ready");
+        installYouTubeEmbedIdentityHeaders(session.defaultSession);
         protocol.handle("neverwrite-file", registerPreviewProtocolHandler());
         registerIpcHandlers();
         void installNativeMenus();
