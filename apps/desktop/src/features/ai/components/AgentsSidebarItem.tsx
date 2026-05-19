@@ -1,7 +1,7 @@
 import {
+    useEffect,
     useRef,
     type MouseEvent as ReactMouseEvent,
-    type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { AIChatSession } from "../types";
 
@@ -78,6 +78,34 @@ function isInteractiveDragTarget(target: EventTarget | null) {
         : false;
 }
 
+const AGENT_SIDEBAR_DRAG_THRESHOLD_PX = 5;
+
+function toDragCoordinates(event: PointerEvent) {
+    return {
+        clientX: event.clientX,
+        clientY: event.clientY,
+    };
+}
+
+function safelySetPointerCapture(target: HTMLElement, pointerId: number) {
+    try {
+        target.setPointerCapture?.(pointerId);
+    } catch {
+        // Pointer capture can fail if the pointer was already released.
+    }
+}
+
+function safelyReleasePointerCapture(
+    target: HTMLElement | null,
+    pointerId: number,
+) {
+    try {
+        target?.releasePointerCapture?.(pointerId);
+    } catch {
+        // The pointer may no longer be captured; global listeners still clean up.
+    }
+}
+
 export function AgentsSidebarItem({
     title,
     preview,
@@ -115,7 +143,15 @@ export function AgentsSidebarItem({
         startX: number;
         startY: number;
         active: boolean;
+        captureTarget: HTMLElement | null;
     } | null>(null);
+    const dragCallbacksRef = useRef({
+        onDragStart,
+        onDragMove,
+        onDragEnd,
+        onDragCancel,
+    });
+    const globalDragCleanupRef = useRef<(() => void) | null>(null);
     const suppressClickRef = useRef(false);
     const hasChildren = childCount > 0;
     const hierarchyAdornmentWidth =
@@ -125,6 +161,126 @@ export function AgentsSidebarItem({
         : 0;
     const subagentTextColumnOffset =
         depth > 0 ? hierarchyAdornmentWidth + activityAdornmentWidth : 0;
+
+    useEffect(() => {
+        dragCallbacksRef.current = {
+            onDragStart,
+            onDragMove,
+            onDragEnd,
+            onDragCancel,
+        };
+    }, [onDragStart, onDragMove, onDragEnd, onDragCancel]);
+
+    useEffect(() => {
+        return () => {
+            const state = dragStateRef.current;
+            dragStateRef.current = null;
+            globalDragCleanupRef.current?.();
+            globalDragCleanupRef.current = null;
+            if (!state) return;
+
+            safelyReleasePointerCapture(state.captureTarget, state.pointerId);
+            if (state.active) {
+                dragCallbacksRef.current.onDragCancel?.();
+            }
+        };
+    }, []);
+
+    const suppressNextClick = () => {
+        suppressClickRef.current = true;
+        window.requestAnimationFrame(() => {
+            suppressClickRef.current = false;
+        });
+    };
+
+    const clearDragSession = () => {
+        const state = dragStateRef.current;
+        dragStateRef.current = null;
+        globalDragCleanupRef.current?.();
+        globalDragCleanupRef.current = null;
+        if (state) {
+            safelyReleasePointerCapture(state.captureTarget, state.pointerId);
+        }
+        return state;
+    };
+
+    const completeDrag = (
+        pointerId: number,
+        coords: AgentsSidebarItemDragCoordinates,
+    ) => {
+        const state = dragStateRef.current;
+        if (!state || state.pointerId !== pointerId) return;
+
+        clearDragSession();
+        if (!state.active) return;
+
+        suppressNextClick();
+        dragCallbacksRef.current.onDragEnd?.(coords);
+    };
+
+    const cancelDrag = (pointerId: number) => {
+        const state = dragStateRef.current;
+        if (!state || state.pointerId !== pointerId) return;
+
+        clearDragSession();
+        if (state.active) {
+            dragCallbacksRef.current.onDragCancel?.();
+        }
+    };
+
+    const processDragMove = (event: PointerEvent) => {
+        const state = dragStateRef.current;
+        if (!state || state.pointerId !== event.pointerId) return;
+
+        const coords = toDragCoordinates(event);
+
+        if (event.buttons === 0) {
+            if (state.active) {
+                completeDrag(event.pointerId, coords);
+            } else {
+                clearDragSession();
+            }
+            return;
+        }
+
+        if (!state.active) {
+            const dx = event.clientX - state.startX;
+            const dy = event.clientY - state.startY;
+            if (Math.hypot(dx, dy) < AGENT_SIDEBAR_DRAG_THRESHOLD_PX) {
+                return;
+            }
+
+            state.active = true;
+            dragCallbacksRef.current.onDragStart?.(coords);
+        }
+
+        event.preventDefault();
+        dragCallbacksRef.current.onDragMove?.(coords);
+    };
+
+    const startGlobalDragTracking = () => {
+        globalDragCleanupRef.current?.();
+
+        const handlePointerMove = (event: PointerEvent) => {
+            processDragMove(event);
+        };
+        const handlePointerUp = (event: PointerEvent) => {
+            completeDrag(event.pointerId, toDragCoordinates(event));
+        };
+        const handlePointerCancel = (event: PointerEvent) => {
+            cancelDrag(event.pointerId);
+        };
+
+        window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointerup", handlePointerUp);
+        window.addEventListener("pointercancel", handlePointerCancel);
+        globalDragCleanupRef.current = () => {
+            window.removeEventListener("pointermove", handlePointerMove);
+            window.removeEventListener("pointerup", handlePointerUp);
+            window.removeEventListener("pointercancel", handlePointerCancel);
+        };
+    };
+
     return (
         <div
             role="option"
@@ -160,69 +316,36 @@ export function AgentsSidebarItem({
                     return;
                 }
 
+                const previousState = clearDragSession();
+                if (previousState?.active) {
+                    dragCallbacksRef.current.onDragCancel?.();
+                }
+
                 dragStateRef.current = {
                     pointerId: event.pointerId,
                     startX: event.clientX,
                     startY: event.clientY,
                     active: false,
+                    captureTarget: event.currentTarget,
                 };
-                event.currentTarget.setPointerCapture?.(event.pointerId);
+                safelySetPointerCapture(event.currentTarget, event.pointerId);
+                startGlobalDragTracking();
             }}
-            onPointerMove={(event: ReactPointerEvent<HTMLElement>) => {
+            onLostPointerCapture={(event) => {
                 const state = dragStateRef.current;
                 if (!state || state.pointerId !== event.pointerId) {
                     return;
                 }
 
-                const coords = {
-                    clientX: event.clientX,
-                    clientY: event.clientY,
-                };
-                if (!state.active) {
-                    const dx = event.clientX - state.startX;
-                    const dy = event.clientY - state.startY;
-                    if (Math.hypot(dx, dy) < 5) {
-                        return;
-                    }
-
-                    state.active = true;
-                    onDragStart?.(coords);
-                }
-
-                event.preventDefault();
-                onDragMove?.(coords);
-            }}
-            onPointerUp={(event) => {
-                const state = dragStateRef.current;
-                if (!state || state.pointerId !== event.pointerId) {
+                if (event.buttons !== 0) {
                     return;
                 }
 
-                dragStateRef.current = null;
-                event.currentTarget.releasePointerCapture?.(event.pointerId);
-                if (!state.active) {
-                    return;
+                const wasActive = state.active;
+                clearDragSession();
+                if (wasActive) {
+                    dragCallbacksRef.current.onDragCancel?.();
                 }
-
-                event.preventDefault();
-                event.stopPropagation();
-                suppressClickRef.current = true;
-                window.requestAnimationFrame(() => {
-                    suppressClickRef.current = false;
-                });
-                onDragEnd?.({
-                    clientX: event.clientX,
-                    clientY: event.clientY,
-                });
-            }}
-            onPointerCancel={(event) => {
-                const state = dragStateRef.current;
-                if (!state || state.pointerId !== event.pointerId) {
-                    return;
-                }
-
-                dragStateRef.current = null;
-                onDragCancel?.();
             }}
             onDoubleClick={(event) => {
                 if (isRenaming || !canRename) return;
