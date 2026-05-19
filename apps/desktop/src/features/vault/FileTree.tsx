@@ -75,6 +75,7 @@ import {
 } from "../../app/utils/safeStorage";
 import { logError } from "../../app/utils/runtimeLog";
 import { getViewportSafeMenuPosition } from "../../app/utils/menuPosition";
+import { matchesShortcutAction } from "../../app/shortcuts/registry";
 
 // --- Sort ---
 
@@ -200,6 +201,21 @@ function getSelectableRowKey(row: FlatTreeRow): string | null {
         return `entry:${row.entry.path}`;
     }
     return null;
+}
+
+function canKeyboardOpenRow(row: FlatTreeRow) {
+    return row.kind === "note" || row.kind === "pdf" || row.kind === "file";
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+    return (
+        target instanceof HTMLElement &&
+        Boolean(
+            target.closest(
+                "input, textarea, select, [contenteditable='true']",
+            ),
+        )
+    );
 }
 
 function buildSelectionFromRows(rows: FlatTreeRow[]): TreeSelectionState {
@@ -689,26 +705,74 @@ function SortMenu({
     onClose: () => void;
 }) {
     const ref = useRef<HTMLDivElement>(null);
+    const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+    const [focusedIndex, setFocusedIndex] = useState(() =>
+        Math.max(
+            0,
+            SORT_OPTIONS.findIndex((option) => option.id === current),
+        ),
+    );
+
+    useEffect(() => {
+        optionRefs.current[focusedIndex]?.focus();
+    }, [focusedIndex]);
 
     useEffect(() => {
         const handleDown = (e: MouseEvent) => {
             if (ref.current && !ref.current.contains(e.target as Node))
                 onClose();
         };
-        const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
-        };
         document.addEventListener("mousedown", handleDown);
-        document.addEventListener("keydown", handleKey);
         return () => {
             document.removeEventListener("mousedown", handleDown);
-            document.removeEventListener("keydown", handleKey);
         };
     }, [onClose]);
+
+    const focusOption = (index: number) => {
+        const lastIndex = SORT_OPTIONS.length - 1;
+        setFocusedIndex(Math.min(lastIndex, Math.max(0, index)));
+    };
+
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        switch (event.key) {
+            case "ArrowDown":
+                event.preventDefault();
+                focusOption((focusedIndex + 1) % SORT_OPTIONS.length);
+                break;
+            case "ArrowUp":
+                event.preventDefault();
+                focusOption(
+                    focusedIndex === 0
+                        ? SORT_OPTIONS.length - 1
+                        : focusedIndex - 1,
+                );
+                break;
+            case "Home":
+                event.preventDefault();
+                focusOption(0);
+                break;
+            case "End":
+                event.preventDefault();
+                focusOption(SORT_OPTIONS.length - 1);
+                break;
+            case "Enter":
+            case " ":
+                event.preventDefault();
+                onSelect(SORT_OPTIONS[focusedIndex].id);
+                break;
+            case "Escape":
+                event.preventDefault();
+                onClose();
+                break;
+        }
+    };
 
     return (
         <div
             ref={ref}
+            role="menu"
+            aria-label="Sort order"
+            onKeyDown={handleKeyDown}
             style={{
                 position: "absolute",
                 top: "100%",
@@ -723,16 +787,24 @@ function SortMenu({
                 padding: 4,
             }}
         >
-            {SORT_OPTIONS.map((opt) => (
+            {SORT_OPTIONS.map((opt, index) => (
                 <button
                     key={opt.id}
+                    ref={(element) => {
+                        optionRefs.current[index] = element;
+                    }}
+                    role="menuitemradio"
+                    aria-checked={opt.id === current}
+                    tabIndex={index === focusedIndex ? 0 : -1}
                     onClick={() => onSelect(opt.id)}
+                    onFocus={() => setFocusedIndex(index)}
                     className="w-full text-left px-3 py-1.5 text-xs rounded flex items-center gap-2"
                     style={{ color: "var(--text-primary)" }}
-                    onMouseEnter={(e) =>
+                    onMouseEnter={(e) => {
+                        setFocusedIndex(index);
                         (e.currentTarget.style.backgroundColor =
-                            "var(--bg-tertiary)")
-                    }
+                            "var(--bg-tertiary)");
+                    }}
                     onMouseLeave={(e) =>
                         (e.currentTarget.style.backgroundColor = "transparent")
                     }
@@ -769,6 +841,7 @@ interface FlatTreeRowViewProps {
     metrics: TreeMetrics;
     activeNoteId: string | null;
     activeEntryPath: string | null;
+    keyboardCursorKey: string | null;
     expandedFolders: Set<string>;
     selectedNoteIds: Set<string>;
     selectedEntryPaths: Set<string>;
@@ -826,6 +899,7 @@ const FlatTreeRowView = memo(
         metrics,
         activeNoteId,
         activeEntryPath,
+        keyboardCursorKey,
         expandedFolders,
         selectedNoteIds,
         selectedEntryPaths,
@@ -886,6 +960,18 @@ const FlatTreeRowView = memo(
             row.kind === "file" && row.entry.path === renamingEntryPath;
         const isRenamingNote =
             row.kind === "note" && row.note.id === renamingNoteId;
+        const rowKey = getSelectableRowKey(row);
+        const hasKeyboardCursor =
+            rowKey !== null && rowKey === keyboardCursorKey;
+        const keyboardCursorOutline = hasKeyboardCursor
+            ? "1px solid color-mix(in srgb, var(--accent) 58%, transparent)"
+            : undefined;
+        const keyboardCursorStyle: React.CSSProperties = hasKeyboardCursor
+            ? {
+                  outline: keyboardCursorOutline,
+                  outlineOffset: -1,
+              }
+            : {};
 
         useEffect(() => {
             if (
@@ -996,6 +1082,7 @@ const FlatTreeRowView = memo(
                             ? "true"
                             : "false"
                     }
+                    data-keyboard-focus={hasKeyboardCursor ? "true" : "false"}
                     className="file-tree-row flex items-center gap-1.5 text-left text-xs rounded"
                     style={{
                         position: "relative",
@@ -1018,7 +1105,8 @@ const FlatTreeRowView = memo(
                               : {}),
                         outline: isDragOver
                             ? "1px solid var(--accent)"
-                            : "none",
+                            : (keyboardCursorOutline ?? "none"),
+                        outlineOffset: hasKeyboardCursor ? -1 : undefined,
                         opacity: isDraggingFolder ? 0.4 : 1,
                     }}
                 >
@@ -1106,6 +1194,7 @@ const FlatTreeRowView = memo(
                     data-note-id={entry.id}
                     data-selected={isSelected ? "true" : "false"}
                     data-active={isActive ? "true" : "false"}
+                    data-keyboard-focus={hasKeyboardCursor ? "true" : "false"}
                     onMouseDown={(e) => onPdfMouseDown(entry, e)}
                     onClick={(e) =>
                         onPdfClick(entry, {
@@ -1139,6 +1228,7 @@ const FlatTreeRowView = memo(
                         boxShadow: isActive
                             ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
                             : "none",
+                        ...keyboardCursorStyle,
                         minHeight: metrics.rowHeight,
                         fontSize: metrics.fontSize,
                         ...TREE_ROW_BOX_STYLE,
@@ -1234,6 +1324,7 @@ const FlatTreeRowView = memo(
                     data-file-path={entry.relative_path}
                     data-selected={isSelected ? "true" : "false"}
                     data-active={isActive ? "true" : "false"}
+                    data-keyboard-focus={hasKeyboardCursor ? "true" : "false"}
                     onMouseDown={(e) => onFileMouseDown(entry, e)}
                     onClick={(e) =>
                         onFileClick(entry, {
@@ -1267,6 +1358,7 @@ const FlatTreeRowView = memo(
                         boxShadow: isActive
                             ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
                             : "none",
+                        ...keyboardCursorStyle,
                         minHeight: metrics.rowHeight,
                         fontSize: metrics.fontSize,
                         ...TREE_ROW_BOX_STYLE,
@@ -1353,6 +1445,7 @@ const FlatTreeRowView = memo(
                 data-folder-path={getParentPath(note.id)}
                 data-selected={isSelected ? "true" : "false"}
                 data-active={isActive ? "true" : "false"}
+                data-keyboard-focus={hasKeyboardCursor ? "true" : "false"}
                 data-drag-over={isDragOver ? "true" : "false"}
                 onMouseDown={(e) => onNoteMouseDown(note, e)}
                 onClick={(e) =>
@@ -1387,6 +1480,7 @@ const FlatTreeRowView = memo(
                     boxShadow: isActive
                         ? "inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)"
                         : "none",
+                    ...keyboardCursorStyle,
                     opacity: isDraggingThis ? 0.4 : 1,
                     minHeight: metrics.rowHeight,
                     fontSize: metrics.fontSize,
@@ -1414,6 +1508,12 @@ const FlatTreeRowView = memo(
         // Callback props are stable (ref-backed) so they don't need comparison.
         if (prev.row !== next.row) return false;
         if (prev.metrics !== next.metrics) return false;
+        if (
+            (getSelectableRowKey(prev.row) === prev.keyboardCursorKey) !==
+            (getSelectableRowKey(next.row) === next.keyboardCursorKey)
+        ) {
+            return false;
+        }
         if (prev.stickyContentOffsetX !== next.stickyContentOffsetX) {
             return false;
         }
@@ -2006,6 +2106,9 @@ export function FileTree() {
     const [, setClipboardVersion] = useState(0);
     const [focusedFolderPath, setFocusedFolderPath] = useState("");
     const [filterText, setFilterText] = useState("");
+    const [keyboardCursorKey, setKeyboardCursorKey] = useState<string | null>(
+        null,
+    );
 
     const treeScrollRef = useRef<HTMLDivElement>(null);
     const dragStateRef = useRef<DragState | null>(null);
@@ -2017,6 +2120,7 @@ export function FileTree() {
     const lastClickedEntryPathRef = useRef<string | null>(null);
     const lastClickedRowKeyRef = useRef<string | null>(null);
     const flatRowsRef = useRef<FlatTreeRow[]>([]);
+    const displayRowsRef = useRef<FlatTreeRow[]>([]);
     const renameGuardRef = useRef(false);
     const expandedFoldersVaultPathRef = useRef(vaultPath);
     const skipExpandedFoldersPersistRef = useRef(false);
@@ -2175,6 +2279,28 @@ export function FileTree() {
             ...flatRows.slice(folderIndex + 1),
         ];
     }, [creatingMode, creatingParentPath, flatRows]);
+    displayRowsRef.current = displayRows;
+
+    useEffect(() => {
+        const visibleKeys = new Set(
+            displayRows
+                .map((row) => getSelectableRowKey(row))
+                .filter((key): key is string => key !== null),
+        );
+
+        setKeyboardCursorKey((current) => {
+            if (activeNoteId && visibleKeys.has(`note:${activeNoteId}`)) {
+                return `note:${activeNoteId}`;
+            }
+            if (
+                activeEntryPath &&
+                visibleKeys.has(`entry:${activeEntryPath}`)
+            ) {
+                return `entry:${activeEntryPath}`;
+            }
+            return current && visibleKeys.has(current) ? current : null;
+        });
+    }, [activeEntryPath, activeNoteId, displayRows]);
     const canCollapseAll = expandedFolders.size > 0;
     const treeClipboard = readFileTreeClipboard(vaultPath);
     const treeScale = fileTreeScale / 100;
@@ -3027,6 +3153,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(path);
             const rowKey = `folder:${path}`;
+            setKeyboardCursorKey(rowKey);
 
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
@@ -3182,6 +3309,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(getParentPath(entry.relative_path));
             const rowKey = `entry:${entry.path}`;
+            setKeyboardCursorKey(rowKey);
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
             }
@@ -3300,6 +3428,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(getParentPath(entry.relative_path));
             const rowKey = `entry:${entry.path}`;
+            setKeyboardCursorKey(rowKey);
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
             }
@@ -3527,34 +3656,38 @@ export function FileTree() {
         [insertExternalTab, readNoteContent],
     );
 
-    const handleNoteClick = async (
-        note: NoteDto,
-        modifiers: { cmd: boolean; shift: boolean },
-    ) => {
-        if (wasJustDraggingRef.current) return;
-        setFocusedFolderPath(getParentPath(note.id));
-        const rowKey = `note:${note.id}`;
+    const handleNoteClick = useCallback(
+        async (
+            note: NoteDto,
+            modifiers: { cmd: boolean; shift: boolean },
+        ) => {
+            if (wasJustDraggingRef.current) return;
+            setFocusedFolderPath(getParentPath(note.id));
+            const rowKey = `note:${note.id}`;
+            setKeyboardCursorKey(rowKey);
 
-        if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
-            return;
-        }
+            if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
+                return;
+            }
 
-        if (modifiers.cmd) {
-            setSelectedNoteIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(note.id)) next.delete(note.id);
-                else next.add(note.id);
-                return next;
-            });
+            if (modifiers.cmd) {
+                setSelectedNoteIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(note.id)) next.delete(note.id);
+                    else next.add(note.id);
+                    return next;
+                });
+                lastClickedRowKeyRef.current = rowKey;
+                return;
+            }
+
+            clearEntrySelection();
+            setSelectedNoteIds(new Set([note.id]));
             lastClickedRowKeyRef.current = rowKey;
-            return;
-        }
-
-        clearEntrySelection();
-        setSelectedNoteIds(new Set([note.id]));
-        lastClickedRowKeyRef.current = rowKey;
-        await openTreeNote(note);
-    };
+            await openTreeNote(note);
+        },
+        [clearEntrySelection, openTreeNote, selectRowRange],
+    );
 
     const handleNoteAuxClick = useCallback(
         (note: NoteDto, event: React.MouseEvent) => {
@@ -4156,12 +4289,318 @@ export function FileTree() {
         [vaultPath],
     );
 
+    const getKeyboardRowKey = useCallback(() => {
+        if (keyboardCursorKey) return keyboardCursorKey;
+        if (activeNoteId) return `note:${activeNoteId}`;
+        if (activeEntryPath) return `entry:${activeEntryPath}`;
+        return lastClickedRowKeyRef.current;
+    }, [activeEntryPath, activeNoteId, keyboardCursorKey]);
+
+    const getKeyboardRowIndex = useCallback(() => {
+        const key = getKeyboardRowKey();
+        if (!key) return -1;
+        return displayRowsRef.current.findIndex(
+            (row) => getSelectableRowKey(row) === key,
+        );
+    }, [getKeyboardRowKey]);
+
+    const selectKeyboardRow = useCallback((row: FlatTreeRow) => {
+        const rowKey = getSelectableRowKey(row);
+        if (!rowKey) return;
+
+        setKeyboardCursorKey(rowKey);
+        lastClickedRowKeyRef.current = rowKey;
+
+        if (row.kind === "folder") {
+            setFocusedFolderPath(row.path);
+            setSelectedNoteIds(new Set());
+            setSelectedEntryPaths(new Set());
+            setSelectedFolderPaths(new Set([row.path]));
+            return;
+        }
+
+        if (row.kind === "note") {
+            setFocusedFolderPath(getParentPath(row.note.id));
+            clearEntrySelection();
+            setSelectedNoteIds(new Set([row.note.id]));
+            return;
+        }
+
+        if (row.kind === "pdf" || row.kind === "file") {
+            setFocusedFolderPath(getParentPath(row.entry.relative_path));
+            setSelectedNoteIds(new Set());
+            setSelectedEntryPaths(new Set([row.entry.path]));
+            setSelectedFolderPaths(new Set());
+            lastClickedEntryPathRef.current = row.entry.path;
+        }
+    }, [clearEntrySelection]);
+
+    const activateKeyboardRow = useCallback(
+        (row: FlatTreeRow) => {
+            if (row.kind === "folder") {
+                handleFolderClick(row.path, { cmd: false, shift: false });
+                return;
+            }
+            if (row.kind === "note") {
+                void handleNoteClick(row.note, { cmd: false, shift: false });
+                return;
+            }
+            if (row.kind === "pdf") {
+                handlePdfClick(row.entry, { cmd: false, shift: false });
+                return;
+            }
+            if (row.kind === "file") {
+                handleFileClick(row.entry, { cmd: false, shift: false });
+            }
+        },
+        [handleFileClick, handleFolderClick, handleNoteClick, handlePdfClick],
+    );
+
+    const navigateKeyboardToRow = useCallback(
+        (rowIndex: number, options?: { openFileRows?: boolean }) => {
+            const row = displayRowsRef.current[rowIndex];
+            if (!row || row.kind === "create") return false;
+
+            selectKeyboardRow(row);
+            scrollToRow(rowIndex, "instant");
+            if (options?.openFileRows && canKeyboardOpenRow(row)) {
+                activateKeyboardRow(row);
+            }
+            return true;
+        },
+        [activateKeyboardRow, scrollToRow, selectKeyboardRow],
+    );
+
+    const navigateKeyboardByDelta = useCallback(
+        (delta: -1 | 1) => {
+            const rows = displayRowsRef.current;
+            if (rows.length === 0) return false;
+
+            const currentIndex = getKeyboardRowIndex();
+            const fallbackIndex = delta > 0 ? -1 : rows.length;
+            let nextIndex = currentIndex === -1 ? fallbackIndex : currentIndex;
+
+            do {
+                nextIndex += delta;
+            } while (rows[nextIndex]?.kind === "create");
+
+            if (nextIndex < 0 || nextIndex >= rows.length) return false;
+            return navigateKeyboardToRow(nextIndex, { openFileRows: true });
+        },
+        [getKeyboardRowIndex, navigateKeyboardToRow],
+    );
+
+    const navigateKeyboardToEdge = useCallback(
+        (edge: "first" | "last") => {
+            const rows = displayRowsRef.current;
+            const start = edge === "first" ? 0 : rows.length - 1;
+            const delta = edge === "first" ? 1 : -1;
+            for (
+                let index = start;
+                index >= 0 && index < rows.length;
+                index += delta
+            ) {
+                if (rows[index].kind !== "create") {
+                    return navigateKeyboardToRow(index, {
+                        openFileRows: true,
+                    });
+                }
+            }
+            return false;
+        },
+        [navigateKeyboardToRow],
+    );
+
+    const navigateKeyboardToOpenableRow = useCallback(
+        (direction: -1 | 1) => {
+            const rows = displayRowsRef.current;
+            if (rows.length === 0) return false;
+
+            const currentIndex = getKeyboardRowIndex();
+            const fallbackIndex = direction > 0 ? -1 : rows.length;
+            for (
+                let index =
+                    (currentIndex === -1 ? fallbackIndex : currentIndex) +
+                    direction;
+                index >= 0 && index < rows.length;
+                index += direction
+            ) {
+                if (canKeyboardOpenRow(rows[index])) {
+                    return navigateKeyboardToRow(index, {
+                        openFileRows: true,
+                    });
+                }
+            }
+
+            return false;
+        },
+        [getKeyboardRowIndex, navigateKeyboardToRow],
+    );
+
+    const navigateKeyboardIntoFolder = useCallback(() => {
+        const rows = displayRowsRef.current;
+        const currentIndex = getKeyboardRowIndex();
+        const currentRow = rows[currentIndex];
+        if (!currentRow || currentRow.kind !== "folder") return false;
+
+        if (!visibleExpandedFolders.has(currentRow.path)) {
+            selectKeyboardRow(currentRow);
+            setExpandedFolders((prev) => {
+                const next = new Set(prev);
+                next.add(currentRow.path);
+                return next;
+            });
+            return true;
+        }
+
+        const childIndex = currentIndex + 1;
+        if (
+            childIndex < rows.length &&
+            rows[childIndex].depth > currentRow.depth
+        ) {
+            return navigateKeyboardToRow(childIndex, { openFileRows: true });
+        }
+
+        return false;
+    }, [
+        getKeyboardRowIndex,
+        navigateKeyboardToRow,
+        selectKeyboardRow,
+        visibleExpandedFolders,
+    ]);
+
+    const navigateKeyboardToParent = useCallback(() => {
+        const rows = displayRowsRef.current;
+        const currentIndex = getKeyboardRowIndex();
+        const currentRow = rows[currentIndex];
+        if (!currentRow) return false;
+
+        if (
+            currentRow.kind === "folder" &&
+            visibleExpandedFolders.has(currentRow.path)
+        ) {
+            selectKeyboardRow(currentRow);
+            setExpandedFolders((prev) => {
+                const next = new Set(prev);
+                next.delete(currentRow.path);
+                return next;
+            });
+            return true;
+        }
+
+        for (let index = currentIndex - 1; index >= 0; index -= 1) {
+            const row = rows[index];
+            if (
+                row.kind === "folder" &&
+                row.depth < currentRow.depth &&
+                currentRow.path.startsWith(`${row.path}/`)
+            ) {
+                return navigateKeyboardToRow(index);
+            }
+        }
+
+        return false;
+    }, [
+        getKeyboardRowIndex,
+        navigateKeyboardToRow,
+        selectKeyboardRow,
+        visibleExpandedFolders,
+    ]);
+
+    useEffect(() => {
+        const handleDocumentKeyDown = (event: KeyboardEvent) => {
+            if (
+                event.target instanceof HTMLElement &&
+                event.target.closest("input, textarea, select")
+            ) {
+                return;
+            }
+
+            const direction = matchesShortcutAction(event, "next_file")
+                ? 1
+                : matchesShortcutAction(event, "previous_file")
+                  ? -1
+                  : null;
+            if (direction === null) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            navigateKeyboardToOpenableRow(direction);
+        };
+
+        document.addEventListener("keydown", handleDocumentKeyDown, true);
+        return () =>
+            document.removeEventListener(
+                "keydown",
+                handleDocumentKeyDown,
+                true,
+            );
+    }, [navigateKeyboardToOpenableRow]);
+
     const handleTreeKeyDown = useCallback(
         (event: React.KeyboardEvent<HTMLDivElement>) => {
             const target = event.target;
-            if (target instanceof HTMLInputElement) return;
+            if (isEditableKeyboardTarget(target)) return;
+
+            if (
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey &&
+                !event.shiftKey
+            ) {
+                let handled = false;
+                const canActivateFromViewport =
+                    event.target === event.currentTarget;
+                switch (event.key) {
+                    case "ArrowDown":
+                        handled = navigateKeyboardByDelta(1);
+                        break;
+                    case "ArrowUp":
+                        handled = navigateKeyboardByDelta(-1);
+                        break;
+                    case "ArrowRight":
+                        handled = navigateKeyboardIntoFolder();
+                        break;
+                    case "ArrowLeft":
+                        handled = navigateKeyboardToParent();
+                        break;
+                    case "Home":
+                        handled = navigateKeyboardToEdge("first");
+                        break;
+                    case "End":
+                        handled = navigateKeyboardToEdge("last");
+                        break;
+                    case "Enter": {
+                        if (!canActivateFromViewport) break;
+                        const row =
+                            displayRowsRef.current[getKeyboardRowIndex()];
+                        if (row && row.kind !== "create") {
+                            activateKeyboardRow(row);
+                            handled = true;
+                        }
+                        break;
+                    }
+                    case " ": {
+                        if (!canActivateFromViewport) break;
+                        const row =
+                            displayRowsRef.current[getKeyboardRowIndex()];
+                        if (row && row.kind !== "create") {
+                            activateKeyboardRow(row);
+                            handled = true;
+                        }
+                        break;
+                    }
+                }
+
+                if (handled) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                return;
+            }
+
             if (!(event.metaKey || event.ctrlKey)) return;
-            if (event.altKey) return;
+            if (event.altKey || event.shiftKey) return;
 
             const lowerKey = event.key.toLowerCase();
             if (lowerKey === "c") {
@@ -4196,10 +4635,16 @@ export function FileTree() {
             }
         },
         [
+            activateKeyboardRow,
             focusedFolderPath,
+            getKeyboardRowIndex,
             handleCopyFolder,
             handleCopyNotes,
             handlePasteIntoFolder,
+            navigateKeyboardByDelta,
+            navigateKeyboardIntoFolder,
+            navigateKeyboardToEdge,
+            navigateKeyboardToParent,
             notes,
             selectedNoteIds,
             treeClipboard,
@@ -5149,6 +5594,9 @@ export function FileTree() {
                                             metrics={metrics}
                                             activeNoteId={activeNoteId}
                                             activeEntryPath={activeEntryPath}
+                                            keyboardCursorKey={
+                                                keyboardCursorKey
+                                            }
                                             expandedFolders={
                                                 visibleExpandedFolders
                                             }
@@ -5279,6 +5727,9 @@ export function FileTree() {
                                             metrics={metrics}
                                             activeNoteId={activeNoteId}
                                             activeEntryPath={activeEntryPath}
+                                            keyboardCursorKey={
+                                                keyboardCursorKey
+                                            }
                                             expandedFolders={
                                                 visibleExpandedFolders
                                             }

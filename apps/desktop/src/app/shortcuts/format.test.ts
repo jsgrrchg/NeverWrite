@@ -32,6 +32,10 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("find_in_note", "windows")).toBe("Ctrl+F");
         expect(formatShortcutAction("go_back", "windows")).toBe("Ctrl+[");
         expect(formatShortcutAction("go_forward", "macos")).toBe("⌘]");
+        expect(formatShortcutAction("next_file", "macos")).toBe("⌘⇧Arrow Down");
+        expect(formatShortcutAction("previous_file", "windows")).toBe(
+            "Ctrl+Shift+Arrow Up",
+        );
         expect(formatShortcutAction("heading_1", "windows")).toBe("Ctrl+1");
         expect(formatShortcutAction("remove_heading", "windows")).toBe(
             "Ctrl+Shift+0",
@@ -80,6 +84,13 @@ describe("shortcut registry formatting", () => {
             category: "Editor",
             shortcut: "Ctrl+F",
         });
+        expect(entries.find((entry) => entry.id === "next_file")).toMatchObject(
+            {
+                label: "Next File",
+                category: "Navigation",
+                shortcut: "Ctrl+Shift+Arrow Down",
+            },
+        );
         expect(
             entries.find((entry) => entry.id === "remove_heading"),
         ).toMatchObject({

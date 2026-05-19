@@ -1475,6 +1475,226 @@ describe("FileTree", () => {
         ).toBe("notes/beta");
     });
 
+    it("opens notes while navigating visible tree rows with arrow keys", async () => {
+        vi.mocked(invoke).mockResolvedValue({ content: "Loaded note" });
+
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await screen.findByText("Alpha");
+
+        const viewport = screen.getByTestId("file-tree-viewport");
+        viewport.focus();
+        fireEvent.keyDown(viewport, { key: "ArrowDown" });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("beta");
+        });
+        expect(getNoteRow("Beta")).toHaveAttribute(
+            "data-keyboard-focus",
+            "true",
+        );
+
+        fireEvent.keyDown(viewport, { key: "ArrowUp" });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("alpha");
+        });
+    });
+
+    it("uses Cmd+Shift+ArrowDown to open the next visible file without stealing focus", async () => {
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(
+            <>
+                <div
+                    data-testid="mock-editor-focus"
+                    contentEditable
+                    suppressContentEditableWarning
+                    tabIndex={0}
+                >
+                    Editor
+                </div>
+                <FileTree />
+            </>,
+        );
+        await screen.findByText("Alpha");
+
+        const editor = screen.getByTestId("mock-editor-focus");
+        editor.focus();
+        fireEvent.keyDown(editor, {
+            key: "ArrowDown",
+            metaKey: true,
+            shiftKey: true,
+        });
+        fireEvent.keyDown(editor, {
+            key: "ArrowDown",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("beta");
+        });
+        expect(document.activeElement).toBe(editor);
+    });
+
+    it("respects the current visible sort order when using file navigation shortcuts", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-beta",
+        );
+
+        renderComponent(<FileTree />);
+        await user.click(screen.getByTitle("Sort order"));
+
+        const menu = screen.getByRole("menu", { name: "Sort order" });
+        fireEvent.keyDown(menu, { key: "ArrowDown" });
+        fireEvent.keyDown(menu, { key: "Enter" });
+
+        await waitFor(() => {
+            expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+        });
+
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            metaKey: true,
+            shiftKey: true,
+        });
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("alpha");
+        });
+    });
+
     it("opens a note in a new tab on middle click", async () => {
         const user = userEvent.setup();
         vi.mocked(invoke).mockResolvedValue({ content: "Beta body" });
