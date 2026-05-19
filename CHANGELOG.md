@@ -34,6 +34,28 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.7] - 2026-05-19
+
+### Added
+
+- Added keyboard navigation for the file tree, including Next File and Previous File shortcuts (`Cmd/Ctrl+Shift+Down` and `Cmd/Ctrl+Shift+Up`) that can move through files inside collapsed folders.
+- Added a New Terminal shortcut (`Cmd+R` on macOS, `Ctrl+R` on Windows/Linux), available from the app menu and shortcut settings.
+- Added Fliege Mono as an editor font option.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to upstream `0.35.0`, including the `0.34.0` gateway and authorization compatibility updates.
+- Polished app chrome and core controls with more tactile hover, press, focus, and open states across sidebar tabs, agent controls, settings controls, the vault switcher, tab close buttons, and the chat composer.
+- Changed the expanded chat composer so it collapses after sending and keeps its action row stable during queued sends or stop actions.
+
+### Fixed
+
+- Fixed frontmatter property editing so values keep their intended spaces.
+- Fixed live preview rendering around tables, inline markup boundaries, and empty list items so caret placement, marker alignment, and spacing remain stable while editing.
+- Fixed YouTube embeds opened in theater mode so their video identity is recognized correctly.
+- Fixed restored AI chat sessions so transcript hydration preserves usable conversation history.
+- Fixed the agent sidebar drag lifecycle so thread dragging, previews, and cleanup behave consistently.
+
 ## [0.2.6] - 2026-05-15
 
 ### Added
