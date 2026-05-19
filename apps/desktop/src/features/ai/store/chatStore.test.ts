@@ -2250,6 +2250,156 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("loads every restored workspace chat tab after history metadata is reconciled", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        const pages = {
+            "history-active": [
+                {
+                    id: "active-m1",
+                    role: "user",
+                    kind: "text",
+                    content: "Active recovered prompt",
+                    timestamp: 10,
+                },
+            ],
+            "history-background": [
+                {
+                    id: "background-m1",
+                    role: "assistant",
+                    kind: "text",
+                    content: "Background recovered reply",
+                    timestamp: 20,
+                },
+            ],
+        } as const;
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "session-active",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                    {
+                        ...sessionPayload,
+                        session_id: "session-background",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-active",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 0,
+                        message_count: 1,
+                        title: "Active restored",
+                        preview: "Active recovered prompt",
+                        messages: [],
+                    },
+                    {
+                        version: 1,
+                        session_id: "history-background",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 20,
+                        updated_at: 0,
+                        message_count: 1,
+                        title: "Background restored",
+                        preview: "Background recovered reply",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                const sessionId =
+                    (args as { sessionId?: keyof typeof pages } | undefined)
+                        ?.sessionId ?? "history-active";
+                const messages = pages[sessionId] ?? [];
+                return {
+                    session_id: sessionId,
+                    total_messages: messages.length,
+                    start_index: 0,
+                    end_index: messages.length,
+                    messages,
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+            [
+                {
+                    id: "tab-active",
+                    sessionId: "session-active",
+                    historySessionId: "history-active",
+                    runtimeId: "codex-acp",
+                },
+                {
+                    id: "tab-background",
+                    sessionId: "session-background",
+                    historySessionId: "history-background",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            "tab-active",
+        );
+
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["session-active"]?.messages.map(
+                    (message) => message.id,
+                ),
+        ).toEqual(["active-m1"]);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["session-background"]?.messages.map(
+                    (message) => message.id,
+                ),
+        ).toEqual(["background-m1"]);
+        expect(
+            invokeMock.mock.calls
+                .filter(
+                    ([command]) => command === "ai_load_session_history_page",
+                )
+                .map(([, args]) => (args as { sessionId?: string }).sessionId)
+                .sort(),
+        ).toEqual(["history-active", "history-background"]);
+    });
+
     it("loads only the latest persisted transcript page for the active live session on initialize", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
 
@@ -2331,6 +2481,244 @@ describe("chatStore", () => {
                 limit: 60,
             },
         );
+    });
+
+    it("preserves loaded persisted transcripts when initialize refreshes metadata-only histories", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles("session-active", []),
+                historySessionId: "session-active",
+                runtimeId: "codex-acp",
+                runtimeState: "live",
+                modelId: "test-model",
+                modeId: "default",
+            },
+            true,
+        );
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles(
+                    "persisted:history-background",
+                    [],
+                ),
+                historySessionId: "history-background",
+                runtimeId: "codex-acp",
+                runtimeState: "persisted_only",
+                isPersistedSession: true,
+                persistedMessageCount: 1,
+                loadedPersistedMessageStart: 0,
+                messages: [
+                    {
+                        id: "background-loaded",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Already loaded background transcript",
+                        timestamp: 30,
+                    },
+                ],
+            },
+            false,
+            { allowUnknownSession: true },
+        );
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "session-active",
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-background",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 20,
+                        message_count: 1,
+                        title: "Background restored",
+                        preview: "Already loaded background transcript",
+                        messages: [],
+                    },
+                ];
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        const background =
+            useChatStore.getState().sessionsById[
+                "persisted:history-background"
+            ]!;
+        expect(background.messages.map((message) => message.id)).toEqual([
+            "background-loaded",
+        ]);
+        expect(background.loadedPersistedMessageStart).toBe(0);
+        expect(background.persistedTitle).toBe("Background restored");
+    });
+
+    it("replaces stale persisted transcript windows when refreshed metadata grows", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        const refreshedPersistedMessages = [
+            ...Array.from({ length: 5 }, (_, index) => ({
+                id: `persisted-new-${index}`,
+                role: index % 2 === 0 ? "user" : "assistant",
+                kind: "text",
+                content: `New persisted message ${index}`,
+                timestamp: 100 + index,
+            })),
+            {
+                id: "live-tail-persisted",
+                role: "assistant",
+                kind: "text",
+                content: "Live tail already persisted",
+                timestamp: 105,
+            },
+        ];
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles("session-growing", []),
+                historySessionId: "session-growing",
+                runtimeId: "codex-acp",
+                runtimeState: "live",
+                modelId: "test-model",
+                modeId: "default",
+                persistedMessageCount: 4,
+                loadedPersistedMessageStart: 1,
+                messages: [
+                    {
+                        id: "persisted-old-1",
+                        role: "user",
+                        kind: "text",
+                        content: "Old persisted message 1",
+                        timestamp: 10,
+                    },
+                    {
+                        id: "persisted-old-2",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Old persisted message 2",
+                        timestamp: 11,
+                    },
+                    {
+                        id: "persisted-old-3",
+                        role: "user",
+                        kind: "text",
+                        content: "Old persisted message 3",
+                        timestamp: 12,
+                    },
+                    {
+                        id: "live-tail-persisted",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Live tail that was persisted after metadata refresh",
+                        timestamp: 13,
+                    },
+                    {
+                        id: "live-tail-local",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Live tail that is not persisted yet",
+                        timestamp: 14,
+                    },
+                ],
+            },
+            true,
+        );
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "session-growing",
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "session-growing",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        models: acpModels,
+                        modes: acpModes,
+                        config_options: acpConfigOptions,
+                        created_at: 10,
+                        updated_at: 200,
+                        message_count: 6,
+                        title: "Growing history",
+                        preview: "New persisted message 5",
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    sessionId: "session-growing",
+                    startIndex: 0,
+                    limit: 6,
+                });
+                return {
+                    session_id: "session-growing",
+                    total_messages: 6,
+                    start_index: 0,
+                    end_index: 6,
+                    messages: refreshedPersistedMessages,
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["session-growing"]?.messages.map(
+                    (message) => message.id,
+                ),
+        ).toEqual([
+            ...refreshedPersistedMessages.map((message) => message.id),
+            "live-tail-local",
+        ]);
     });
 
     it("does not replace an already-normalized empty persisted transcript session", async () => {

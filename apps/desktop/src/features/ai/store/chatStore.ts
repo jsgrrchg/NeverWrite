@@ -4508,30 +4508,87 @@ function ensurePersistedTranscriptWindowAnchor(session: AIChatSession) {
     };
 }
 
+function resolveLoadedPersistedMessageStartForMetadata(
+    session: AIChatSession,
+    persistedMessageCount: number,
+) {
+    if (persistedMessageCount === 0) {
+        return 0;
+    }
+
+    const loadedStart = session.loadedPersistedMessageStart;
+    if (loadedStart == null) {
+        return null;
+    }
+    if (loadedStart < 0 || loadedStart > persistedMessageCount) {
+        return null;
+    }
+
+    // Persisted window markers are tied to the metadata count they were loaded
+    // against. If the count changed, reload the latest page and preserve only
+    // the live tail that sat after the old persisted window.
+    if ((session.persistedMessageCount ?? 0) !== persistedMessageCount) {
+        return null;
+    }
+
+    // Metadata can arrive after an earlier "empty history" pass. Keep the
+    // window marker only when the transcript still proves that window exists.
+    const loadedPersistedCount = persistedMessageCount - loadedStart;
+    return getSessionTranscriptLength(session) >= loadedPersistedCount
+        ? loadedStart
+        : null;
+}
+
 function applyPersistedHistoryMetadata(
     session: AIChatSession,
     history: PersistedSessionHistorySummary,
 ) {
     const persistedCatalog = getPersistedHistoryCatalogSnapshot(history);
+    const persistedMessageCount = getPersistedHistoryMessageCount(history);
+    const loadedPersistedMessageStart =
+        resolveLoadedPersistedMessageStartForMetadata(
+            session,
+            persistedMessageCount,
+        );
+    let nextSession = session;
+    if (
+        persistedMessageCount > 0 &&
+        session.loadedPersistedMessageStart != null &&
+        loadedPersistedMessageStart === null
+    ) {
+        // The persisted window marker no longer matches the refreshed history
+        // metadata. Drop the stale persisted window, but keep any live tail
+        // that was appended after it.
+        const previousPersistedWindowLength = Math.max(
+            0,
+            (session.persistedMessageCount ?? 0) -
+                session.loadedPersistedMessageStart,
+        );
+        const liveTail =
+            getSessionTranscriptMessages(session).slice(
+                previousPersistedWindowLength,
+            );
+        nextSession = replaceSessionTranscript(session, liveTail);
+    }
+
     if (hasRuntimeCatalog(persistedCatalog)) {
         saveRuntimeCatalogCache(session.runtimeId, persistedCatalog);
     }
 
     return hydrateSessionCatalogFromSnapshot(
         {
-            ...session,
+            ...nextSession,
             parentSessionId:
-                history.parent_session_id ?? session.parentSessionId ?? null,
+                history.parent_session_id ??
+                nextSession.parentSessionId ??
+                null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
             customTitle: history.custom_title ?? null,
             persistedPreview: history.preview ?? null,
-            persistedMessageCount: getPersistedHistoryMessageCount(history),
-            loadedPersistedMessageStart:
-                getPersistedHistoryMessageCount(history) === 0
-                    ? 0
-                    : (session.loadedPersistedMessageStart ?? null),
+            persistedMessageCount,
+            loadedPersistedMessageStart,
         },
         persistedCatalog,
     );
@@ -4565,6 +4622,10 @@ function applyPersistedHistoryPage(
         preview: session.persistedPreview ?? undefined,
         messages: page.messages,
     });
+    const pageMessageIds = new Set(pageMessages.map((message) => message.id));
+    const liveTailNotInPage = liveTail.filter(
+        (message) => !pageMessageIds.has(message.id),
+    );
 
     const nextSession = {
         ...session,
@@ -4577,7 +4638,7 @@ function applyPersistedHistoryPage(
         nextSession,
         mode === "prepend"
             ? [...pageMessages, ...currentMessages]
-            : [...pageMessages, ...liveTail],
+            : [...pageMessages, ...liveTailNotInPage],
     );
 }
 
@@ -5660,11 +5721,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     const shouldPrepend =
                         mode === "older" ||
                         (currentSession.messages.length > 0 &&
-                            (currentSession.loadedPersistedMessageStart ==
-                                null ||
-                                currentSession.loadedPersistedMessageStart >=
-                                    (currentSession.persistedMessageCount ??
-                                        0)));
+                            currentSession.loadedPersistedMessageStart != null &&
+                            currentSession.loadedPersistedMessageStart >=
+                                (currentSession.persistedMessageCount ?? 0));
 
                     return applyPersistedHistoryPage(
                         currentSession,
@@ -6432,6 +6491,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 if (sessions.length || histories.length) {
                     set((state) => {
+                        const existingSessionByHistoryId = new Map(
+                            Object.values(state.sessionsById).flatMap(
+                                (session) =>
+                                    session.historySessionId
+                                        ? [
+                                              [
+                                                  session.historySessionId,
+                                                  session,
+                                              ] as const,
+                                          ]
+                                        : [],
+                            ),
+                        );
                         const nextSessionsById = sessions.reduce<
                             Record<string, AIChatSession>
                         >((accumulator, session) => {
@@ -6440,7 +6512,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 vaultPath,
                             );
                             const existing =
-                                state.sessionsById[scopedSession.sessionId];
+                                state.sessionsById[scopedSession.sessionId] ??
+                                existingSessionByHistoryId.get(
+                                    scopedSession.historySessionId,
+                                );
                             let merged = mergeSession(existing, scopedSession);
                             const persisted = persistedBySessionId.get(
                                 merged.historySessionId,
@@ -6491,7 +6566,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 vaultPath,
                             );
                             if (!restored) continue;
-                            nextSessionsById[restored.sessionId] = restored;
+                            const existing =
+                                state.sessionsById[restored.sessionId] ??
+                                existingSessionByHistoryId.get(
+                                    restored.historySessionId,
+                                );
+                            nextSessionsById[restored.sessionId] =
+                                mergeSession(existing, restored);
                         }
 
                         const nextSessionOrder =
@@ -6607,8 +6688,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
 
             const sessionIdsNeedingCatalog = new Set<string>();
+            const restoredSessionIds: string[] = [];
+            const restoredSessionIdSet = new Set<string>();
             const vaultPath = useVaultStore.getState().vaultPath;
             const resolvedSessionIdByTabId = new Map<string, string>();
+            const rememberRestoredSessionId = (sessionId: string) => {
+                if (restoredSessionIdSet.has(sessionId)) {
+                    return;
+                }
+                restoredSessionIdSet.add(sessionId);
+                restoredSessionIds.push(sessionId);
+            };
 
             set((state) => {
                 const nextSessionsById = { ...state.sessionsById };
@@ -6641,6 +6731,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     if (!currentSession) {
                         continue;
                     }
+                    rememberRestoredSessionId(resolvedSessionId);
 
                     let nextSession = currentSession;
                     if (
@@ -6704,37 +6795,52 @@ export const useChatStore = create<ChatStore>((set, get) => {
                   null)
                 : null;
             if (!activeSessionId) {
+                for (const sessionId of restoredSessionIds) {
+                    await get().ensureSessionTranscriptLoaded(
+                        sessionId,
+                        "latest",
+                    );
+                }
                 return;
             }
 
             let activeSession: AIChatSession | null =
                 get().sessionsById[activeSessionId] ?? null;
-            if (!activeSession) {
-                return;
+            if (activeSession) {
+                if (
+                    !isLiveRuntimeSession(activeSession) &&
+                    !activeSession.isResumingSession
+                ) {
+                    const resumedSessionId =
+                        await get().resumeSession(activeSessionId);
+                    activeSession =
+                        (resumedSessionId
+                            ? get().sessionsById[resumedSessionId]
+                            : null) ?? null;
+                }
+
+                if (activeSession) {
+                    await ensureSessionAgentCatalogLoaded(
+                        activeSession.sessionId,
+                    );
+                    if (isLiveRuntimeSession(activeSession)) {
+                        await get().ensureSessionTranscriptLoaded(
+                            activeSession.sessionId,
+                            "latest",
+                        );
+                    }
+                }
             }
 
-            if (
-                !isLiveRuntimeSession(activeSession) &&
-                !activeSession.isResumingSession
-            ) {
-                const resumedSessionId =
-                    await get().resumeSession(activeSessionId);
-                activeSession =
-                    (resumedSessionId
-                        ? get().sessionsById[resumedSessionId]
-                        : null) ?? null;
-            }
-
-            if (!activeSession) {
-                return;
-            }
-
-            await ensureSessionAgentCatalogLoaded(activeSession.sessionId);
-            if (isLiveRuntimeSession(activeSession)) {
-                await get().ensureSessionTranscriptLoaded(
-                    activeSession.sessionId,
-                    "latest",
-                );
+            for (const sessionId of restoredSessionIds) {
+                if (sessionId === activeSessionId) {
+                    continue;
+                }
+                const session = get().sessionsById[sessionId];
+                if (!session || session.isResumingSession) {
+                    continue;
+                }
+                await get().ensureSessionTranscriptLoaded(sessionId, "latest");
             }
         },
 
