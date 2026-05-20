@@ -31,6 +31,7 @@ import { useVirtualList } from "../../app/hooks/useVirtualList";
 import {
     getVaultEntryDisplayName,
     openVaultFileEntry,
+    shouldShowVaultEntryInFileTree,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
@@ -151,6 +152,9 @@ function QuickSwitcherDialog() {
     const openPdf = useEditorStore((s) => s.openPdf);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
+    const fileTreeExtensionFilter = useSettingsStore(
+        (s) => s.fileTreeExtensionFilter,
+    );
     const deferredQuery = useDeferredValue(query);
     const noteMap = useMemo(
         () => new Map(notes.map((note) => [note.id, note])),
@@ -218,8 +222,19 @@ function QuickSwitcherDialog() {
     );
 
     const results = useMemo(() => {
+        const searchableNotes =
+            fileTreeExtensionFilter.length > 0 &&
+            !fileTreeExtensionFilter.includes("md")
+                ? []
+                : notes;
         const searchableEntries = entries.filter(
-            (entry) => entry.kind !== "note" && entry.kind !== "folder",
+            (entry) =>
+                entry.kind !== "note" &&
+                entry.kind !== "folder" &&
+                shouldShowVaultEntryInFileTree(entry, {
+                    contentMode: fileTreeContentMode,
+                    extensionFilter: fileTreeExtensionFilter,
+                }),
         );
 
         if (!deferredQuery.trim()) {
@@ -267,7 +282,7 @@ function QuickSwitcherDialog() {
                 })
                 .filter((item): item is QuickSwitcherItem => item !== null);
 
-            const remainingNotes = notes
+            const remainingNotes = searchableNotes
                 .filter(
                     (note) =>
                         !ordered.some((item) => item.key === `note:${note.id}`),
@@ -314,7 +329,7 @@ function QuickSwitcherDialog() {
                         ),
                     };
                 }),
-            ...notes.map((note) => ({
+            ...searchableNotes.map((note) => ({
                 item: buildNoteItem(note),
                 score:
                     fileTreeContentMode === "all_files"
@@ -339,20 +354,11 @@ function QuickSwitcherDialog() {
             })),
             ...searchableEntries.map((entry) => ({
                 item: buildEntryItem(entry),
-                score:
-                    fileTreeContentMode === "all_files"
-                        ? fileOrientedScore(deferredQuery, {
-                              fileName: entry.file_name,
-                              path: entry.relative_path,
-                              title: entry.title,
-                          })
-                        : Math.max(
-                              fuzzyScore(
-                                  deferredQuery,
-                                  getVaultEntryDisplayName(entry, true),
-                              ),
-                              fuzzyScore(deferredQuery, entry.relative_path),
-                          ),
+                score: fileOrientedScore(deferredQuery, {
+                    fileName: entry.file_name,
+                    path: entry.relative_path,
+                    title: entry.title,
+                }),
             })),
         ]
             .filter(({ score }) => score > 0)
@@ -367,6 +373,7 @@ function QuickSwitcherDialog() {
         entries,
         entryMap,
         fileTreeContentMode,
+        fileTreeExtensionFilter,
         noteMap,
         notes,
         openTabs,

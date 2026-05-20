@@ -16,9 +16,12 @@ describe("wikilinkSuggester", () => {
             ...state,
             vaultPath: `/vault-${crypto.randomUUID()}`,
             resolverRevision: state.resolverRevision + 1,
+            entries: [],
         }));
         useSettingsStore.setState({
             fileTreeContentMode: "notes_only",
+            fileTreeShowExtensions: false,
+            fileTreeExtensionFilter: [],
         });
     });
 
@@ -107,6 +110,112 @@ describe("wikilinkSuggester", () => {
                 title: "main.ts",
                 subtitle: "src/main.ts",
                 insertText: "/src/main.ts",
+            }),
+        ]);
+    });
+
+    it("includes curated text files in wikilink suggestions when all-files mode is disabled", async () => {
+        useVaultStore.setState((state) => ({
+            ...state,
+            entries: [
+                {
+                    id: "docs/data.csv",
+                    path: "/vault/docs/data.csv",
+                    relative_path: "docs/data.csv",
+                    title: "data",
+                    file_name: "data.csv",
+                    extension: "csv",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 12,
+                    mime_type: "text/csv",
+                    is_text_like: true,
+                },
+                {
+                    id: "docs/config.toml",
+                    path: "/vault/docs/config.toml",
+                    relative_path: "docs/config.toml",
+                    title: "config",
+                    file_name: "config.toml",
+                    extension: "toml",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 12,
+                    mime_type: "application/toml",
+                    is_text_like: true,
+                },
+            ],
+        }));
+        mockInvoke().mockResolvedValue([]);
+
+        const items = await getWikilinkSuggestions("notes/current", "data");
+
+        expect(items).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                title: "data.csv",
+                subtitle: "docs/data.csv",
+                insertText: "/docs/data.csv",
+            }),
+        ]);
+    });
+
+    it("uses the extension allowlist as the wikilink suggestion scope", async () => {
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+        useVaultStore.setState((state) => ({
+            ...state,
+            entries: [
+                {
+                    id: "docs/data.csv",
+                    path: "/vault/docs/data.csv",
+                    relative_path: "docs/data.csv",
+                    title: "data",
+                    file_name: "data.csv",
+                    extension: "csv",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 12,
+                    mime_type: "text/csv",
+                    is_text_like: true,
+                },
+                {
+                    id: "docs/config.toml",
+                    path: "/vault/docs/config.toml",
+                    relative_path: "docs/config.toml",
+                    title: "config",
+                    file_name: "config.toml",
+                    extension: "toml",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 12,
+                    mime_type: "application/toml",
+                    is_text_like: true,
+                },
+            ],
+        }));
+        mockInvoke().mockResolvedValue([
+            {
+                id: "notes/data",
+                title: "Data Note",
+                subtitle: "notes/data",
+                insert_text: "notes/data",
+            },
+        ]);
+
+        const items = await getWikilinkSuggestions("notes/current", "data");
+
+        expect(mockInvoke()).not.toHaveBeenCalled();
+        expect(items).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                title: "data.csv",
             }),
         ]);
     });

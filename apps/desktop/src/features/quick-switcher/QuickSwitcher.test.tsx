@@ -1,5 +1,5 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
     mockInvoke,
@@ -12,6 +12,38 @@ import {
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
+
+afterEach(() => {
+    vi.useRealTimers();
+    useSettingsStore.setState({
+        fileTreeContentMode: "notes_only",
+        fileTreeShowExtensions: false,
+        fileTreeExtensionFilter: [],
+    });
+    setVaultNotes([]);
+    setVaultEntries([]);
+    setEditorTabs([]);
+    setCommands([], null);
+});
+
+function buildVaultFileEntry(path: string, mimeType = "text/plain") {
+    const fileName = path.split("/").pop() ?? path;
+    const dotIndex = fileName.lastIndexOf(".");
+
+    return {
+        id: path,
+        path: `/vault/${path}`,
+        relative_path: path,
+        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
+        file_name: fileName,
+        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
+        kind: "file" as const,
+        modified_at: 1,
+        created_at: 1,
+        size: 1,
+        mime_type: mimeType,
+    };
+}
 
 describe("QuickSwitcher", () => {
     it("shows open tabs first when the query is empty", async () => {
@@ -147,6 +179,118 @@ describe("QuickSwitcher", () => {
             "diagnostico.mdnotes/diagnostico",
             "roadmap.mdnotes/roadmap",
         ]);
+    });
+
+    it("searches curated vault files by filename when all-files mode is disabled", async () => {
+        vi.useFakeTimers();
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "data.csv" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "config.toml" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+        expect(screen.getByText("No matching items")).toBeInTheDocument();
+
+    });
+
+    it("includes technical files in Quick Switcher when all-files mode is active", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({ fileTreeContentMode: "all_files" });
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "config.toml" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("config")).toBeInTheDocument();
+    });
+
+    it("uses the extension allowlist as the Quick Switcher file scope", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+        setVaultNotes([]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "data" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "config" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+        expect(screen.getByText("No matching items")).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "Alpha" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
     });
 
     it("opens an already open note from the filtered results without reading it again", async () => {

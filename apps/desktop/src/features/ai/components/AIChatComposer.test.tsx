@@ -21,6 +21,7 @@ afterEach(() => {
         useSettingsStore.setState({
             fileTreeContentMode: "notes_only",
             fileTreeShowExtensions: false,
+            fileTreeExtensionFilter: [],
         });
     });
     setEditorTabs([], null);
@@ -107,6 +108,25 @@ function setCaret(node: Node, offset: number) {
     range.collapse(true);
     selection?.removeAllRanges();
     selection?.addRange(range);
+}
+
+function buildVaultFileEntry(path: string, mimeType = "text/plain") {
+    const fileName = path.split("/").pop() ?? path;
+    const dotIndex = fileName.lastIndexOf(".");
+
+    return {
+        id: path,
+        path: `/vault/${path}`,
+        relative_path: path,
+        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
+        file_name: fileName,
+        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
+        kind: "file" as const,
+        modified_at: 1,
+        created_at: 1,
+        size: 1,
+        mime_type: mimeType,
+    };
 }
 
 describe("AIChatComposer mention picker", () => {
@@ -454,6 +474,89 @@ describe("AIChatComposer mention picker", () => {
                     relativePath: "src/main.ts",
                 }),
             );
+        });
+    });
+
+    it("shows curated text-like vault files in the @ picker with all-files mode disabled", async () => {
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[
+                    {
+                        id: "notes/alpha.md",
+                        title: "Alpha",
+                        path: "/vault/notes/alpha.md",
+                    },
+                ]}
+                status="idle"
+                runtimeName="Assistant"
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message NeverWrite",
+        });
+        composer.textContent = "@data";
+        setCaret(composer.firstChild as Text, 5);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("data")).toBeInTheDocument();
+            expect(screen.queryByText("config")).not.toBeInTheDocument();
+            expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+        });
+    });
+
+    it("uses the extension allowlist as the @ picker file scope", async () => {
+        act(() => {
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeExtensionFilter: ["csv"],
+            });
+        });
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[]}
+                status="idle"
+                runtimeName="Assistant"
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message NeverWrite",
+        });
+        composer.textContent = "@";
+        setCaret(composer.firstChild as Text, 1);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("data")).toBeInTheDocument();
+            expect(screen.queryByText("config")).not.toBeInTheDocument();
         });
     });
 

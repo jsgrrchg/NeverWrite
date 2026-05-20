@@ -660,7 +660,7 @@ function ExtensionFilterInput({
                 ref={inputRef}
                 value={draft}
                 aria-label="Add file extension"
-                placeholder={value.length === 0 ? "pdf, txt, csv..." : ""}
+                placeholder={value.length === 0 ? "Add: pdf, txt, csv..." : ""}
                 onChange={(event) => setDraft(event.currentTarget.value)}
                 onPaste={(event) => {
                     const pasted = event.clipboardData.getData("text");
@@ -3305,7 +3305,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="File Tree"
                 label="Show all vault files"
-                description="Display every file in the vault tree, beyond the curated writing and media file set."
+                description="Display every vault file, beyond the curated writing and media set."
                 keywords={[
                     "File-oriented search is active",
                     "Search Files & Notes",
@@ -3342,7 +3342,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="File Tree"
                 label="File extension filter"
-                description="Optional allowlist for the file tree. Leave empty to use the current content mode."
+                description="Optional allowlist for the file tree and file pickers. When set, it overrides Show all vault files; leave empty to use the current mode."
                 keywords={["allowlist", "pdf, txt, csv"]}
                 control={
                     <ExtensionFilterInput
@@ -3362,10 +3362,10 @@ function DevelopersSettings({
                         color: "var(--text-secondary)",
                     }}
                 >
-                    File-oriented search is active. Search Files & Notes, New
-                    Tab, `@` mentions, and wikilink suggestions now match notes
-                    by file name and path before note title, and text files can
-                    also appear in `@` mentions and `[[ ]]` suggestions.
+                    Normal mode already includes Markdown notes plus curated
+                    writing and media files. All-files mode expands the file
+                    tree, New Tab, `@` mentions, and wikilink suggestions to
+                    technical project files where supported.
                 </div>
             )}
         </div>

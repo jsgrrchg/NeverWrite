@@ -164,6 +164,15 @@ const IMAGE_EXTENSIONS = new Set([
     "ico",
 ]);
 
+const CURATED_VAULT_ENTRY_EXTENSIONS = new Set([
+    "csv",
+    "htm",
+    "html",
+    "txt",
+]);
+
+type FileTreeContentMode = "notes_only" | "all_files";
+
 export function isTextLikeMimeType(mimeType: string | null | undefined) {
     if (!mimeType) return false;
     return (
@@ -233,6 +242,43 @@ export function isImageLikeVaultEntry(
     }
     if (isImageLikeVaultPath(entry.extension)) return true;
     return entry.mime_type?.startsWith("image/") ?? false;
+}
+
+export function isCuratedVaultEntry(
+    entry: Pick<
+        VaultEntryDto,
+        "kind" | "extension" | "mime_type" | "is_image_like"
+    >,
+) {
+    if (entry.kind === "pdf") return true;
+    if (isImageLikeVaultEntry(entry)) return true;
+    return CURATED_VAULT_ENTRY_EXTENSIONS.has(entry.extension.toLowerCase());
+}
+
+export function isAllowedByExtensionFilter(
+    entry: Pick<VaultEntryDto, "extension">,
+    extensionFilter: readonly string[],
+) {
+    return extensionFilter.includes(entry.extension.toLowerCase());
+}
+
+export function shouldShowVaultEntryInFileTree(
+    entry: Pick<
+        VaultEntryDto,
+        "kind" | "extension" | "mime_type" | "is_image_like"
+    >,
+    options: {
+        contentMode: FileTreeContentMode;
+        extensionFilter: readonly string[];
+    },
+) {
+    if (entry.kind === "note") return false;
+    if (entry.kind === "folder") return true;
+    if (options.extensionFilter.length > 0) {
+        return isAllowedByExtensionFilter(entry, options.extensionFilter);
+    }
+    if (options.contentMode === "all_files") return true;
+    return isCuratedVaultEntry(entry);
 }
 
 export function canOpenVaultFileEntryInApp(

@@ -4,10 +4,42 @@ import { useEditorStore } from "../store/editorStore";
 import { useVaultStore } from "../store/vaultStore";
 import {
     getVaultEntryDisplayName,
+    isAllowedByExtensionFilter,
+    isCuratedVaultEntry,
     isTextLikeVaultEntry,
     openVaultFileEntry,
+    shouldShowVaultEntryInFileTree,
 } from "./vaultEntries";
 import { setEditorTabs } from "../../test/test-utils";
+
+function buildEntry(
+    path: string,
+    options: {
+        kind?: "note" | "pdf" | "file" | "folder";
+        mimeType?: string | null;
+        isImageLike?: boolean | null;
+    } = {},
+) {
+    const fileName = path.split("/").pop() ?? path;
+    const extension = fileName.includes(".")
+        ? (fileName.split(".").pop() ?? "")
+        : "";
+
+    return {
+        id: path,
+        path: `/vault/${path}`,
+        relative_path: path,
+        title: fileName.replace(/\.[^/.]+$/, ""),
+        file_name: fileName,
+        extension,
+        kind: options.kind ?? "file",
+        modified_at: 1,
+        created_at: 1,
+        size: 1,
+        mime_type: options.mimeType ?? null,
+        is_image_like: options.isImageLike ?? null,
+    };
+}
 
 describe("vaultEntries", () => {
     beforeEach(() => {
@@ -69,6 +101,88 @@ describe("vaultEntries", () => {
                 mime_type: null,
             }),
         ).toBe(true);
+    });
+
+    it("identifies the curated default vault entry set", () => {
+        expect(
+            isCuratedVaultEntry(buildEntry("docs/reference.pdf", { kind: "pdf" })),
+        ).toBe(true);
+        expect(
+            isCuratedVaultEntry(buildEntry("docs/page.html", { mimeType: "text/html" })),
+        ).toBe(true);
+        expect(
+            isCuratedVaultEntry(buildEntry("docs/page.htm", { mimeType: "text/html" })),
+        ).toBe(true);
+        expect(
+            isCuratedVaultEntry(buildEntry("docs/data.csv", { mimeType: "text/csv" })),
+        ).toBe(true);
+        expect(
+            isCuratedVaultEntry(buildEntry("docs/readme.txt", { mimeType: "text/plain" })),
+        ).toBe(true);
+        expect(
+            isCuratedVaultEntry(
+                buildEntry("docs/photo.png", {
+                    mimeType: "image/png",
+                    isImageLike: true,
+                }),
+            ),
+        ).toBe(true);
+
+        expect(
+            isCuratedVaultEntry(
+                buildEntry("docs/config.toml", { mimeType: "application/toml" }),
+            ),
+        ).toBe(false);
+        expect(
+            isCuratedVaultEntry(
+                buildEntry("docs/package.json", { mimeType: "application/json" }),
+            ),
+        ).toBe(false);
+        expect(
+            isCuratedVaultEntry(
+                buildEntry("src/runtime.ts", { mimeType: "text/typescript" }),
+            ),
+        ).toBe(false);
+    });
+
+    it("applies all-files and explicit extension filters to file tree entries", () => {
+        const folder = buildEntry("docs", { kind: "folder" });
+        const csv = buildEntry("docs/data.csv", { mimeType: "text/csv" });
+        const toml = buildEntry("docs/config.toml", {
+            mimeType: "application/toml",
+        });
+
+        expect(
+            shouldShowVaultEntryInFileTree(folder, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldShowVaultEntryInFileTree(csv, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldShowVaultEntryInFileTree(toml, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(false);
+        expect(
+            shouldShowVaultEntryInFileTree(toml, {
+                contentMode: "all_files",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldShowVaultEntryInFileTree(toml, {
+                contentMode: "all_files",
+                extensionFilter: ["csv"],
+            }),
+        ).toBe(false);
+        expect(isAllowedByExtensionFilter(csv, ["csv"])).toBe(true);
     });
 
     it("falls back to the file name when a file title is empty", () => {
