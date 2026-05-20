@@ -17,6 +17,7 @@ import {
     getVaultEntryDisplayName,
     moveVaultEntryToTrash,
     openVaultFileEntry,
+    shouldIncludeMarkdownNotesInFileScope,
     shouldShowVaultEntryInFileTree,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
@@ -2201,11 +2202,14 @@ export function FileTree() {
             ? `${structureRevision}:${contentRevision}`
             : structureRevision;
     const fileTreeExtensionFilterKey = fileTreeExtensionFilter.join("\n");
-    const isFileTreeExtensionFilterActive = fileTreeExtensionFilter.length > 0;
     const visibleNotes = useMemo(() => {
-        if (!isFileTreeExtensionFilterActive) return notes;
-        return fileTreeExtensionFilter.includes("md") ? notes : [];
-    }, [fileTreeExtensionFilter, isFileTreeExtensionFilterActive, notes]);
+        return shouldIncludeMarkdownNotesInFileScope({
+            contentMode: fileTreeContentMode,
+            extensionFilter: fileTreeExtensionFilter,
+        })
+            ? notes
+            : [];
+    }, [fileTreeContentMode, fileTreeExtensionFilter, notes]);
     const visibleEntries = useMemo(
         () =>
             entries.filter((entry) =>

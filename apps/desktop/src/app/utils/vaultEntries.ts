@@ -171,7 +171,16 @@ const CURATED_VAULT_ENTRY_EXTENSIONS = new Set([
     "txt",
 ]);
 
-type FileTreeContentMode = "notes_only" | "all_files";
+export type VaultFileScope = {
+    contentMode: "notes_only" | "all_files";
+    extensionFilter: readonly string[];
+};
+
+type VaultFileSummaryForScope = {
+    fileName: string;
+    relativePath?: string;
+    mimeType: string | null;
+};
 
 export function isTextLikeMimeType(mimeType: string | null | undefined) {
     if (!mimeType) return false;
@@ -262,23 +271,70 @@ export function isAllowedByExtensionFilter(
     return extensionFilter.includes(entry.extension.toLowerCase());
 }
 
+export function shouldIncludeMarkdownNotesInFileScope(scope: VaultFileScope) {
+    return (
+        scope.extensionFilter.length === 0 ||
+        scope.extensionFilter.includes("md")
+    );
+}
+
+export function shouldIncludeVaultEntryInFileScope(
+    entry: Pick<
+        VaultEntryDto,
+        "kind" | "extension" | "mime_type" | "is_image_like"
+    >,
+    scope: VaultFileScope,
+) {
+    if (entry.kind === "note") return false;
+    if (entry.kind === "folder") return false;
+    if (scope.extensionFilter.length > 0) {
+        return isAllowedByExtensionFilter(entry, scope.extensionFilter);
+    }
+    if (scope.contentMode === "all_files") return true;
+    return isCuratedVaultEntry(entry);
+}
+
 export function shouldShowVaultEntryInFileTree(
     entry: Pick<
         VaultEntryDto,
         "kind" | "extension" | "mime_type" | "is_image_like"
     >,
-    options: {
-        contentMode: FileTreeContentMode;
-        extensionFilter: readonly string[];
-    },
+    scope: VaultFileScope,
 ) {
-    if (entry.kind === "note") return false;
     if (entry.kind === "folder") return true;
-    if (options.extensionFilter.length > 0) {
-        return isAllowedByExtensionFilter(entry, options.extensionFilter);
+    return shouldIncludeVaultEntryInFileScope(entry, scope);
+}
+
+function getFileSummaryExtension(file: VaultFileSummaryForScope) {
+    const fileName = file.fileName || file.relativePath || "";
+    const leafName = fileName.split(/[\\/]/).pop() ?? fileName;
+    const dotIndex = leafName.lastIndexOf(".");
+    return dotIndex > 0 ? leafName.slice(dotIndex + 1).toLowerCase() : "";
+}
+
+function isTextLikeFileSummary(file: VaultFileSummaryForScope) {
+    const fileName = file.fileName || file.relativePath || "";
+    return isTextLikeVaultPath(fileName) || isTextLikeMimeType(file.mimeType);
+}
+
+export function shouldIncludeFileSummaryInFileScope(
+    file: VaultFileSummaryForScope,
+    scope: VaultFileScope,
+) {
+    if (!isTextLikeFileSummary(file)) return false;
+
+    const extension = getFileSummaryExtension(file);
+    if (scope.extensionFilter.length > 0) {
+        return scope.extensionFilter.includes(extension);
     }
-    if (options.contentMode === "all_files") return true;
-    return isCuratedVaultEntry(entry);
+    if (scope.contentMode === "all_files") return true;
+
+    return isCuratedVaultEntry({
+        kind: "file",
+        extension,
+        mime_type: file.mimeType,
+        is_image_like: false,
+    });
 }
 
 export function canOpenVaultFileEntryInApp(

@@ -8,6 +8,9 @@ import {
     isCuratedVaultEntry,
     isTextLikeVaultEntry,
     openVaultFileEntry,
+    shouldIncludeFileSummaryInFileScope,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldIncludeVaultEntryInFileScope,
     shouldShowVaultEntryInFileTree,
 } from "./vaultEntries";
 import { setEditorTabs } from "../../test/test-utils";
@@ -145,7 +148,7 @@ describe("vaultEntries", () => {
         ).toBe(false);
     });
 
-    it("applies all-files and explicit extension filters to file tree entries", () => {
+    it("applies file scope rules to vault entries and file tree folders", () => {
         const folder = buildEntry("docs", { kind: "folder" });
         const csv = buildEntry("docs/data.csv", { mimeType: "text/csv" });
         const toml = buildEntry("docs/config.toml", {
@@ -158,6 +161,12 @@ describe("vaultEntries", () => {
                 extensionFilter: [],
             }),
         ).toBe(true);
+        expect(
+            shouldIncludeVaultEntryInFileScope(folder, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(false);
         expect(
             shouldShowVaultEntryInFileTree(csv, {
                 contentMode: "notes_only",
@@ -183,6 +192,76 @@ describe("vaultEntries", () => {
             }),
         ).toBe(false);
         expect(isAllowedByExtensionFilter(csv, ["csv"])).toBe(true);
+    });
+
+    it("decides whether markdown notes are in the current file scope", () => {
+        expect(
+            shouldIncludeMarkdownNotesInFileScope({
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldIncludeMarkdownNotesInFileScope({
+                contentMode: "all_files",
+                extensionFilter: ["csv"],
+            }),
+        ).toBe(false);
+        expect(
+            shouldIncludeMarkdownNotesInFileScope({
+                contentMode: "all_files",
+                extensionFilter: ["md"],
+            }),
+        ).toBe(true);
+    });
+
+    it("applies file scope rules to text-like file summaries", () => {
+        const csv = {
+            fileName: "data.csv",
+            relativePath: "docs/data.csv",
+            mimeType: "text/csv",
+        };
+        const toml = {
+            fileName: "config.toml",
+            relativePath: "docs/config.toml",
+            mimeType: "application/toml",
+        };
+        const image = {
+            fileName: "photo.png",
+            relativePath: "docs/photo.png",
+            mimeType: "image/png",
+        };
+
+        expect(
+            shouldIncludeFileSummaryInFileScope(csv, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldIncludeFileSummaryInFileScope(toml, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(false);
+        expect(
+            shouldIncludeFileSummaryInFileScope(toml, {
+                contentMode: "all_files",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldIncludeFileSummaryInFileScope(toml, {
+                contentMode: "all_files",
+                extensionFilter: ["csv"],
+            }),
+        ).toBe(false);
+        expect(
+            shouldIncludeFileSummaryInFileScope(image, {
+                contentMode: "all_files",
+                extensionFilter: [],
+            }),
+        ).toBe(false);
     });
 
     it("falls back to the file name when a file title is empty", () => {

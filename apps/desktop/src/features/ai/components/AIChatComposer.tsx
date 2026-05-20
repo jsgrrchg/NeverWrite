@@ -48,11 +48,10 @@ import {
 } from "../../../app/store/vaultStore";
 import { AI_MESSAGE_LABEL } from "../../../app/utils/branding";
 import {
-    isCuratedVaultEntry,
-    isTextLikeMimeType,
+    shouldIncludeFileSummaryInFileScope,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldIncludeVaultEntryInFileScope,
     isTextLikeVaultEntry,
-    isTextLikeVaultPath,
-    shouldShowVaultEntryInFileTree,
 } from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
@@ -953,40 +952,6 @@ function getMentionSuggestions(
     return results.slice(0, limit);
 }
 
-function getFileSummaryExtension(file: AIChatFileSummary) {
-    const fileName = file.fileName || file.relativePath;
-    const leafName = fileName.split(/[\\/]/).pop() ?? fileName;
-    const dotIndex = leafName.lastIndexOf(".");
-    return dotIndex > 0 ? leafName.slice(dotIndex + 1).toLowerCase() : "";
-}
-
-function isTextLikeFileSummary(file: AIChatFileSummary) {
-    return isTextLikeVaultPath(file.fileName) || isTextLikeMimeType(file.mimeType);
-}
-
-function shouldIncludeFileSummaryInMentions(
-    file: AIChatFileSummary,
-    options: {
-        contentMode: "notes_only" | "all_files";
-        extensionFilter: readonly string[];
-    },
-) {
-    if (!isTextLikeFileSummary(file)) return false;
-
-    const extension = getFileSummaryExtension(file);
-    if (options.extensionFilter.length > 0) {
-        return options.extensionFilter.includes(extension);
-    }
-    if (options.contentMode === "all_files") return true;
-
-    return isCuratedVaultEntry({
-        kind: "file",
-        extension,
-        mime_type: file.mimeType,
-        is_image_like: false,
-    });
-}
-
 export function AIChatComposer({
     sessionId,
     parts,
@@ -1055,13 +1020,17 @@ export function AIChatComposer({
         [fallbackEntries, notes],
     );
     const visibleMentionNotes = useMemo(() => {
-        if (fileTreeExtensionFilter.length === 0) return notes;
-        return fileTreeExtensionFilter.includes("md") ? notes : [];
-    }, [fileTreeExtensionFilter, notes]);
+        return shouldIncludeMarkdownNotesInFileScope({
+            contentMode: fileTreeContentMode,
+            extensionFilter: fileTreeExtensionFilter,
+        })
+            ? notes
+            : [];
+    }, [fileTreeContentMode, fileTreeExtensionFilter, notes]);
     const mentionableFiles = useMemo(() => {
         if (files) {
             return files.filter((file) =>
-                shouldIncludeFileSummaryInMentions(file, {
+                shouldIncludeFileSummaryInFileScope(file, {
                     contentMode: fileTreeContentMode,
                     extensionFilter: fileTreeExtensionFilter,
                 }),
@@ -1073,7 +1042,7 @@ export function AIChatComposer({
                 (entry) =>
                     entry.kind === "file" &&
                     isTextLikeVaultEntry(entry) &&
-                    shouldShowVaultEntryInFileTree(entry, {
+                    shouldIncludeVaultEntryInFileScope(entry, {
                         contentMode: fileTreeContentMode,
                         extensionFilter: fileTreeExtensionFilter,
                     }),

@@ -642,15 +642,34 @@ fn search_entry_file_name(entry: &SearchEntry) -> &str {
     }
 }
 
+const CURATED_SEARCH_ENTRY_EXTENSIONS: &[&str] = &["csv", "txt", "html", "htm"];
+const CURATED_SEARCH_PDF_EXTENSION: &str = "pdf";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchFileScopeMode {
+    NotesOnly,
+    AllFiles,
+}
+
+impl SearchFileScopeMode {
+    fn from_scope_mode(value: &str) -> Self {
+        if value == "all_files" {
+            Self::AllFiles
+        } else {
+            Self::NotesOnly
+        }
+    }
+}
+
 struct FileScopeMatcher {
-    mode: String,
+    mode: SearchFileScopeMode,
     extension_filter: HashSet<String>,
 }
 
 impl FileScopeMatcher {
     fn new(scope: &AdvancedSearchFileScope) -> Self {
         Self {
-            mode: scope.mode.clone(),
+            mode: SearchFileScopeMode::from_scope_mode(&scope.mode),
             extension_filter: scope
                 .extension_filter
                 .iter()
@@ -665,11 +684,12 @@ impl FileScopeMatcher {
         if !self.extension_filter.is_empty() {
             return self.extension_filter.contains(&extension);
         }
-        if self.mode == "all_files" {
+        if self.mode == SearchFileScopeMode::AllFiles {
             return true;
         }
 
-        matches!(extension.as_str(), "pdf" | "csv" | "txt" | "html" | "htm")
+        CURATED_SEARCH_ENTRY_EXTENSIONS.contains(&extension.as_str())
+            || extension == CURATED_SEARCH_PDF_EXTENSION
     }
 
     fn allows_notes(&self) -> bool {
@@ -682,17 +702,14 @@ impl FileScopeMatcher {
                 .extension_filter
                 .contains(&entry.extension.to_ascii_lowercase());
         }
-        if self.mode == "all_files" {
+        if self.mode == SearchFileScopeMode::AllFiles {
             return true;
         }
         if entry.is_image_like.unwrap_or(false) {
             return true;
         }
 
-        matches!(
-            entry.extension.to_ascii_lowercase().as_str(),
-            "csv" | "txt" | "html" | "htm"
-        )
+        CURATED_SEARCH_ENTRY_EXTENSIONS.contains(&entry.extension.to_ascii_lowercase().as_str())
     }
 }
 

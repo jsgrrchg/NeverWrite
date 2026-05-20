@@ -3,7 +3,9 @@ import { useVaultStore } from "../../../app/store/vaultStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import {
     isTextLikeVaultEntry,
-    shouldShowVaultEntryInFileTree,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldIncludeVaultEntryInFileScope,
+    type VaultFileScope,
 } from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import { LruCache } from "../lruCache";
@@ -67,10 +69,7 @@ function getWikilinkNoteDisplayTitle(
 function getFileSuggestions(
     query: string,
     limit: number,
-    options: {
-        contentMode: "notes_only" | "all_files";
-        extensionFilter: readonly string[];
-    },
+    scope: VaultFileScope,
 ): WikilinkSuggestionItem[] {
     const normalizedQuery = normalizeForSearch(query);
 
@@ -80,7 +79,7 @@ function getFileSuggestions(
             (entry) =>
                 entry.kind === "file" &&
                 isTextLikeVaultEntry(entry) &&
-                shouldShowVaultEntryInFileTree(entry, options),
+                shouldIncludeVaultEntryInFileScope(entry, scope),
         )
         .map((entry) => {
             const normalizedFileName = normalizeForSearch(entry.file_name);
@@ -259,9 +258,11 @@ export async function getWikilinkSuggestions(
         useSettingsStore.getState();
     const preferFileName = fileTreeContentMode === "all_files";
     const extensionFilterKey = fileTreeExtensionFilter.join(",");
-    const showMarkdownNotes =
-        fileTreeExtensionFilter.length === 0 ||
-        fileTreeExtensionFilter.includes("md");
+    const fileScope = {
+        contentMode: fileTreeContentMode,
+        extensionFilter: fileTreeExtensionFilter,
+    };
+    const showMarkdownNotes = shouldIncludeMarkdownNotesInFileScope(fileScope);
     const cacheKey = `${resolverRevision}\u0000${structureRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${Number(fileTreeShowExtensions)}\u0000${extensionFilterKey}\u0000${query}`;
     const cached = suggestionCache.get(cacheKey);
     if (cached) {
@@ -289,10 +290,7 @@ export async function getWikilinkSuggestions(
         insertText: item.insert_text,
     }));
 
-    const fileSuggestions = getFileSuggestions(query, limit, {
-        contentMode: fileTreeContentMode,
-        extensionFilter: fileTreeExtensionFilter,
-    });
+    const fileSuggestions = getFileSuggestions(query, limit, fileScope);
     const merged = mergeWikilinkSuggestions(
         items,
         fileSuggestions,

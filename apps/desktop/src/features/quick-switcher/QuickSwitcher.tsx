@@ -31,7 +31,9 @@ import { useVirtualList } from "../../app/hooks/useVirtualList";
 import {
     getVaultEntryDisplayName,
     openVaultFileEntry,
-    shouldShowVaultEntryInFileTree,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldIncludeVaultEntryInFileScope,
+    type VaultFileScope,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
@@ -139,6 +141,56 @@ type QuickSwitcherItem =
           subtitle: string;
           tab: ChatHistoryTab;
       };
+
+function getQuickSwitcherItemKey(item: QuickSwitcherItem) {
+    return item.key;
+}
+
+function scoreQuickSwitcherItem(
+    item: QuickSwitcherItem,
+    query: string,
+    options: {
+        fileScope: VaultFileScope;
+        showExtensions: boolean;
+    },
+) {
+    if (item.kind === "note") {
+        if (options.fileScope.contentMode === "all_files") {
+            return fileOrientedScore(query, {
+                fileName: getNoteFileName(item.note),
+                path: item.note.id || item.note.path,
+                title: item.note.title,
+            });
+        }
+
+        return Math.max(
+            fuzzyScore(
+                query,
+                getNoteQuickSwitcherTitle(
+                    item.note,
+                    options.fileScope.contentMode,
+                    options.showExtensions,
+                ),
+            ),
+            fuzzyScore(query, item.note.path),
+            fuzzyScore(query, item.note.id),
+            fuzzyScore(query, item.note.title),
+        );
+    }
+
+    if (item.kind === "file" || item.kind === "pdf") {
+        return fileOrientedScore(query, {
+            fileName: item.entry.file_name,
+            path: item.entry.relative_path,
+            title: item.entry.title,
+        });
+    }
+
+    return Math.max(
+        fuzzyScore(query, item.title),
+        fuzzyScore(query, item.subtitle),
+    );
+}
 
 function QuickSwitcherDialog() {
     const [query, setQuery] = useState("");
@@ -276,40 +328,34 @@ function QuickSwitcherDialog() {
             orderedTabs,
         ],
     );
+    const openItemKeys = useMemo(
+        () => new Set(openTabItems.map(getQuickSwitcherItemKey)),
+        [openTabItems],
+    );
 
     const results = useMemo(() => {
-        const searchableNotes =
-            fileTreeExtensionFilter.length > 0 &&
-            !fileTreeExtensionFilter.includes("md")
-                ? []
-                : notes;
+        const fileScope = {
+            contentMode: fileTreeContentMode,
+            extensionFilter: fileTreeExtensionFilter,
+        };
+        const searchableNotes = shouldIncludeMarkdownNotesInFileScope(fileScope)
+            ? notes
+            : [];
         const searchableEntries = entries.filter(
             (entry) =>
                 entry.kind !== "note" &&
                 entry.kind !== "folder" &&
-                shouldShowVaultEntryInFileTree(entry, {
-                    contentMode: fileTreeContentMode,
-                    extensionFilter: fileTreeExtensionFilter,
-                }),
+                shouldIncludeVaultEntryInFileScope(entry, fileScope),
         );
 
         if (!deferredQuery.trim()) {
             const remainingNotes = searchableNotes
-                .filter(
-                    (note) =>
-                        !openTabItems.some(
-                            (item) => item.key === `note:${note.id}`,
-                        ),
-                )
+                .filter((note) => !openItemKeys.has(`note:${note.id}`))
                 .map(buildNoteItem);
             const remainingEntries = searchableEntries
                 .filter(
                     (entry) =>
-                        !openTabItems.some(
-                            (item) =>
-                                item.key ===
-                                `${entry.kind}:${entry.relative_path}`,
-                        ),
+                        !openItemKeys.has(`${entry.kind}:${entry.relative_path}`),
                 )
                 .map(buildEntryItem);
 
@@ -319,85 +365,38 @@ function QuickSwitcherDialog() {
         return [
             ...openTabItems.map((item) => ({
                 item,
-                score:
-                    item.kind === "note"
-                        ? fileTreeContentMode === "all_files"
-                            ? fileOrientedScore(deferredQuery, {
-                                  fileName: getNoteFileName(item.note),
-                                  path: item.note.id || item.note.path,
-                                  title: item.note.title,
-                              })
-                            : Math.max(
-                                  fuzzyScore(
-                                      deferredQuery,
-                                      getNoteQuickSwitcherTitle(
-                                          item.note,
-                                          fileTreeContentMode,
-                                          showExtensions,
-                                      ),
-                                  ),
-                                  fuzzyScore(deferredQuery, item.note.path),
-                                  fuzzyScore(deferredQuery, item.note.id),
-                                  fuzzyScore(deferredQuery, item.note.title),
-                              )
-                        : item.kind === "file" || item.kind === "pdf"
-                          ? fileOrientedScore(deferredQuery, {
-                                fileName: item.entry.file_name,
-                                path: item.entry.relative_path,
-                                title: item.entry.title,
-                            })
-                          : Math.max(
-                                fuzzyScore(deferredQuery, item.title),
-                                fuzzyScore(deferredQuery, item.subtitle),
-                            ),
+                score: scoreQuickSwitcherItem(item, deferredQuery, {
+                    fileScope,
+                    showExtensions,
+                }),
             })),
             ...searchableNotes
-                .filter(
-                    (note) =>
-                        !openTabItems.some(
-                            (item) => item.key === `note:${note.id}`,
-                        ),
-                )
-                .map((note) => ({
-                    item: buildNoteItem(note),
-                    score:
-                        fileTreeContentMode === "all_files"
-                            ? fileOrientedScore(deferredQuery, {
-                                  fileName: getNoteFileName(note),
-                                  path: note.id || note.path,
-                                  title: note.title,
-                              })
-                            : Math.max(
-                                  fuzzyScore(
-                                      deferredQuery,
-                                      getNoteQuickSwitcherTitle(
-                                          note,
-                                          fileTreeContentMode,
-                                          showExtensions,
-                                      ),
-                                  ),
-                                  fuzzyScore(deferredQuery, note.path),
-                                  fuzzyScore(deferredQuery, note.id),
-                                  fuzzyScore(deferredQuery, note.title),
-                              ),
-                })),
+                .filter((note) => !openItemKeys.has(`note:${note.id}`))
+                .map((note) => {
+                    const item = buildNoteItem(note);
+                    return {
+                        item,
+                        score: scoreQuickSwitcherItem(item, deferredQuery, {
+                            fileScope,
+                            showExtensions,
+                        }),
+                    };
+                }),
             ...searchableEntries
                 .filter(
                     (entry) =>
-                        !openTabItems.some(
-                            (item) =>
-                                item.key ===
-                                `${entry.kind}:${entry.relative_path}`,
-                        ),
+                        !openItemKeys.has(`${entry.kind}:${entry.relative_path}`),
                 )
-                .map((entry) => ({
-                    item: buildEntryItem(entry),
-                    score: fileOrientedScore(deferredQuery, {
-                        fileName: entry.file_name,
-                        path: entry.relative_path,
-                        title: entry.title,
-                    }),
-                })),
+                .map((entry) => {
+                    const item = buildEntryItem(entry);
+                    return {
+                        item,
+                        score: scoreQuickSwitcherItem(item, deferredQuery, {
+                            fileScope,
+                            showExtensions,
+                        }),
+                    };
+                }),
         ]
             .filter(({ score }) => score > 0)
             .sort((a, b) => b.score - a.score)
@@ -410,6 +409,7 @@ function QuickSwitcherDialog() {
         fileTreeContentMode,
         fileTreeExtensionFilter,
         notes,
+        openItemKeys,
         openTabItems,
         showExtensions,
     ]);
