@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useEditorStore } from "../../../app/store/editorStore";
 import {
+    buildVaultFileEntry,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -108,25 +109,6 @@ function setCaret(node: Node, offset: number) {
     range.collapse(true);
     selection?.removeAllRanges();
     selection?.addRange(range);
-}
-
-function buildVaultFileEntry(path: string, mimeType = "text/plain") {
-    const fileName = path.split("/").pop() ?? path;
-    const dotIndex = fileName.lastIndexOf(".");
-
-    return {
-        id: path,
-        path: `/vault/${path}`,
-        relative_path: path,
-        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
-        file_name: fileName,
-        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
-        kind: "file" as const,
-        modified_at: 1,
-        created_at: 1,
-        size: 1,
-        mime_type: mimeType,
-    };
 }
 
 describe("AIChatComposer mention picker", () => {

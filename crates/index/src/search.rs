@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use neverwrite_types::{
     AdvancedSearchFileScope, AdvancedSearchParams, AdvancedSearchResultDto, ContentMatchDto,
-    ContentSearchParam, NoteId, NoteMetadata, PropertyFilterParam, VaultEntryDto,
+    ContentSearchParam, NoteId, NoteMetadata, PropertyFilterParam, SearchTermParam, VaultEntryDto,
 };
 use neverwrite_vault::Vault;
 use regex::Regex;
@@ -305,47 +305,15 @@ impl VaultIndex {
         {
             let mut pdf_candidates: HashSet<&NoteId> = self.pdf_metadata.keys().collect();
 
-            for filter in &params.file_filters {
-                let matcher = build_matcher(&filter.value, filter.is_regex);
-                pdf_candidates.retain(|id| {
-                    let entry = match self.pdf_search_index.get(*id) {
-                        Some(e) => e,
-                        None => return false,
-                    };
-                    let filename = search_entry_file_name(entry);
-                    matcher.matches(filename) != filter.negated
-                });
-            }
-
-            for filter in &params.path_filters {
-                let matcher = build_matcher(&filter.value, filter.is_regex);
-                pdf_candidates.retain(|id| {
-                    let entry = match self.pdf_search_index.get(*id) {
-                        Some(e) => e,
-                        None => return false,
-                    };
-                    matcher.matches(&entry.path_lower) != filter.negated
-                });
-            }
-
-            for term in &params.terms {
-                let matcher = build_matcher(&term.value, term.is_regex);
-                pdf_candidates.retain(|id| {
-                    let entry = match self.pdf_search_index.get(*id) {
-                        Some(e) => e,
-                        None => return false,
-                    };
-                    let filename = search_entry_file_name(entry);
-                    let found = if params.prefer_file_name {
-                        matcher.matches(filename)
-                            || matcher.matches(&entry.path_lower)
-                            || matcher.matches(&entry.title_lower)
-                    } else {
-                        matcher.matches(&entry.title_lower) || matcher.matches(&entry.path_lower)
-                    };
-                    found != term.negated
-                });
-            }
+            pdf_candidates.retain(|id| {
+                let entry = match self.pdf_search_index.get(*id) {
+                    Some(e) => e,
+                    None => return false,
+                };
+                let fields = file_search_fields_for_entry(entry);
+                file_search_filters_match(&fields, params)
+                    && file_search_terms_match(&fields, &params.terms, params.prefer_file_name)
+            });
 
             for pdf_id in &pdf_candidates {
                 let pdf_meta = match self.pdf_metadata.get(*pdf_id) {
@@ -355,21 +323,8 @@ impl VaultIndex {
 
                 let entry = self.pdf_search_index.get(*pdf_id);
                 let title_path_score = if let Some(entry) = entry {
-                    let mut best = 0.0f64;
-                    for term in &params.terms {
-                        if !term.negated {
-                            let score = compute_entry_score_match(
-                                &term.value,
-                                &entry.title_lower,
-                                &entry.path_lower,
-                                search_entry_file_name(entry),
-                                term.is_regex,
-                                params.prefer_file_name,
-                            );
-                            best = best.max(score);
-                        }
-                    }
-                    best
+                    let fields = file_search_fields_for_entry(entry);
+                    score_file_search_fields(&fields, &params.terms, params.prefer_file_name)
                 } else {
                     0.0
                 };
@@ -407,53 +362,22 @@ impl VaultIndex {
                 let title_lower = entry.title.to_lowercase();
                 let path_lower = entry.relative_path.to_lowercase();
                 let file_name_lower = entry.file_name.to_lowercase();
+                let fields = FileSearchFields {
+                    title: &title_lower,
+                    path: &path_lower,
+                    file_name: &file_name_lower,
+                };
 
-                let file_filter_match = params.file_filters.iter().all(|filter| {
-                    let matcher = build_matcher(&filter.value, filter.is_regex);
-                    matcher.matches(&entry.file_name.to_lowercase()) != filter.negated
-                });
-                if !file_filter_match {
+                if !file_search_filters_match(&fields, params) {
                     continue;
                 }
 
-                let path_filter_match = params.path_filters.iter().all(|filter| {
-                    let matcher = build_matcher(&filter.value, filter.is_regex);
-                    matcher.matches(&path_lower) != filter.negated
-                });
-                if !path_filter_match {
+                if !file_search_terms_match(&fields, &params.terms, params.prefer_file_name) {
                     continue;
                 }
 
-                let term_match = params.terms.iter().all(|term| {
-                    let matcher = build_matcher(&term.value, term.is_regex);
-                    let found = if params.prefer_file_name {
-                        matcher.matches(&file_name_lower)
-                            || matcher.matches(&path_lower)
-                            || matcher.matches(&title_lower)
-                    } else {
-                        matcher.matches(&title_lower) || matcher.matches(&path_lower)
-                    };
-                    found != term.negated
-                });
-                if !term_match {
-                    continue;
-                }
-
-                let mut best = 0.0f64;
-                for term in &params.terms {
-                    if term.negated {
-                        continue;
-                    }
-                    let score = compute_file_oriented_score_match(
-                        &term.value,
-                        &file_name_lower,
-                        &path_lower,
-                        &title_lower,
-                        term.is_regex,
-                        params.prefer_file_name,
-                    );
-                    best = best.max(score);
-                }
+                let best =
+                    score_file_search_fields(&fields, &params.terms, params.prefer_file_name);
 
                 results.push(AdvancedSearchResultDto {
                     id: entry.id.clone(),
@@ -642,7 +566,77 @@ fn search_entry_file_name(entry: &SearchEntry) -> &str {
     }
 }
 
-const CURATED_SEARCH_ENTRY_EXTENSIONS: &[&str] = &["csv", "txt", "html", "htm"];
+struct FileSearchFields<'a> {
+    title: &'a str,
+    path: &'a str,
+    file_name: &'a str,
+}
+
+fn file_search_fields_for_entry(entry: &SearchEntry) -> FileSearchFields<'_> {
+    FileSearchFields {
+        title: &entry.title_lower,
+        path: &entry.path_lower,
+        file_name: search_entry_file_name(entry),
+    }
+}
+
+fn file_search_filters_match(fields: &FileSearchFields<'_>, params: &AdvancedSearchParams) -> bool {
+    let file_filter_match = params.file_filters.iter().all(|filter| {
+        let matcher = build_matcher(&filter.value, filter.is_regex);
+        matcher.matches(fields.file_name) != filter.negated
+    });
+    if !file_filter_match {
+        return false;
+    }
+
+    params.path_filters.iter().all(|filter| {
+        let matcher = build_matcher(&filter.value, filter.is_regex);
+        matcher.matches(fields.path) != filter.negated
+    })
+}
+
+fn file_search_terms_match(
+    fields: &FileSearchFields<'_>,
+    terms: &[SearchTermParam],
+    prefer_file_name: bool,
+) -> bool {
+    terms.iter().all(|term| {
+        let matcher = build_matcher(&term.value, term.is_regex);
+        let found = if prefer_file_name {
+            matcher.matches(fields.file_name)
+                || matcher.matches(fields.path)
+                || matcher.matches(fields.title)
+        } else {
+            matcher.matches(fields.title) || matcher.matches(fields.path)
+        };
+        found != term.negated
+    })
+}
+
+fn score_file_search_fields(
+    fields: &FileSearchFields<'_>,
+    terms: &[SearchTermParam],
+    prefer_file_name: bool,
+) -> f64 {
+    let mut best = 0.0f64;
+    for term in terms {
+        if term.negated {
+            continue;
+        }
+        let score = compute_entry_score_match(
+            &term.value,
+            fields.title,
+            fields.path,
+            fields.file_name,
+            term.is_regex,
+            prefer_file_name,
+        );
+        best = best.max(score);
+    }
+    best
+}
+
+const CURATED_SEARCH_ENTRY_EXTENSIONS: &[&str] = &["csv", "excalidraw", "txt", "html", "htm"];
 const CURATED_SEARCH_PDF_EXTENSION: &str = "pdf";
 
 #[derive(Clone, Copy, PartialEq, Eq)]

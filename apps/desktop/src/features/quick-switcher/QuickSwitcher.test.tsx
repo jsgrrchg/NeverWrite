@@ -2,6 +2,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
+    buildVaultFileEntry,
     mockInvoke,
     renderComponent,
     setCommands,
@@ -25,25 +26,6 @@ afterEach(() => {
     setEditorTabs([]);
     setCommands([], null);
 });
-
-function buildVaultFileEntry(path: string, mimeType = "text/plain") {
-    const fileName = path.split("/").pop() ?? path;
-    const dotIndex = fileName.lastIndexOf(".");
-
-    return {
-        id: path,
-        path: `/vault/${path}`,
-        relative_path: path,
-        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
-        file_name: fileName,
-        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
-        kind: "file" as const,
-        modified_at: 1,
-        created_at: 1,
-        size: 1,
-        mime_type: mimeType,
-    };
-}
 
 describe("QuickSwitcher", () => {
     it("shows open tabs first when the query is empty", async () => {
@@ -187,6 +169,7 @@ describe("QuickSwitcher", () => {
         setVaultNotes([]);
         setVaultEntries([
             buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/diagram.excalidraw", "application/json"),
             buildVaultFileEntry("docs/config.toml", "application/toml"),
         ]);
         setEditorTabs([]);
@@ -205,6 +188,13 @@ describe("QuickSwitcher", () => {
 
         expect(screen.getByText("data")).toBeInTheDocument();
         expect(screen.queryByText("config")).not.toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "diagram.excalidraw" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("diagram")).toBeInTheDocument();
 
         fireEvent.change(input, { target: { value: "config.toml" } });
         await act(async () => {

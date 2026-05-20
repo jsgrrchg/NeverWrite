@@ -166,6 +166,7 @@ const IMAGE_EXTENSIONS = new Set([
 
 const CURATED_VAULT_ENTRY_EXTENSIONS = new Set([
     "csv",
+    "excalidraw",
     "htm",
     "html",
     "txt",

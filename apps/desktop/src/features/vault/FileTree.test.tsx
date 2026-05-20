@@ -22,6 +22,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import {
+    buildVaultFileEntry as buildFileEntry,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -89,24 +90,6 @@ function buildFolderEntry(path: string) {
         created_at: 1,
         size: 0,
         mime_type: null,
-    };
-}
-
-function buildFileEntry(path: string, mimeType = "text/plain") {
-    const fileName = path.split("/").pop() ?? path;
-    const dotIndex = fileName.lastIndexOf(".");
-    return {
-        id: path,
-        path: `/vault/${path}`,
-        relative_path: path,
-        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
-        file_name: fileName,
-        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
-        kind: "file" as const,
-        modified_at: 1,
-        created_at: 1,
-        size: 16,
-        mime_type: mimeType,
     };
 }
 
@@ -488,6 +471,7 @@ describe("FileTree", () => {
         setVaultEntries([
             buildFolderEntry("docs"),
             buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/diagram.excalidraw", "application/json"),
             buildFileEntry("docs/readme.txt", "text/plain"),
             buildFileEntry("docs/page.html", "text/html"),
             {
@@ -518,6 +502,7 @@ describe("FileTree", () => {
         await expandFolder(user, "docs");
 
         expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.getByText("diagram")).toBeInTheDocument();
         expect(screen.getByText("readme")).toBeInTheDocument();
         expect(screen.getByText("page")).toBeInTheDocument();
         expect(screen.getByText("photo")).toBeInTheDocument();

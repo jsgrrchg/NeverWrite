@@ -120,6 +120,13 @@ describe("vaultEntries", () => {
             isCuratedVaultEntry(buildEntry("docs/data.csv", { mimeType: "text/csv" })),
         ).toBe(true);
         expect(
+            isCuratedVaultEntry(
+                buildEntry("docs/diagram.excalidraw", {
+                    mimeType: "application/json",
+                }),
+            ),
+        ).toBe(true);
+        expect(
             isCuratedVaultEntry(buildEntry("docs/readme.txt", { mimeType: "text/plain" })),
         ).toBe(true);
         expect(

@@ -401,6 +401,7 @@ fn advanced_search_respects_curated_file_scope() {
     let (vault, root) = make_empty_temp_vault("advanced-search-curated-scope");
     std::fs::create_dir_all(root.join("docs")).unwrap();
     std::fs::write(root.join("docs/data.csv"), "name,value\nalice,1").unwrap();
+    std::fs::write(root.join("docs/diagram.excalidraw"), "{}").unwrap();
     std::fs::write(root.join("docs/config.toml"), "enabled = true").unwrap();
 
     let curated_params = make_search_params_with_scope(
@@ -418,6 +419,22 @@ fn advanced_search_respects_curated_file_scope() {
         .collect();
 
     assert_eq!(curated_ids, vec!["docs/data.csv"]);
+
+    let map_params = make_search_params_with_scope(
+        "diagram",
+        false,
+        AdvancedSearchFileScope {
+            mode: "notes_only".to_string(),
+            extension_filter: vec![],
+        },
+    );
+    let map_results = index.advanced_search(&map_params, &vault);
+    let map_ids: Vec<&str> = map_results
+        .iter()
+        .map(|result| result.id.as_str())
+        .collect();
+
+    assert_eq!(map_ids, vec!["docs/diagram.excalidraw"]);
 
     let hidden_params = make_search_params_with_scope(
         "config",
