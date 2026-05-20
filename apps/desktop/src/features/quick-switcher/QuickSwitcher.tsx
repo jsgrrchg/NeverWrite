@@ -221,24 +221,9 @@ function QuickSwitcherDialog() {
         [],
     );
 
-    const results = useMemo(() => {
-        const searchableNotes =
-            fileTreeExtensionFilter.length > 0 &&
-            !fileTreeExtensionFilter.includes("md")
-                ? []
-                : notes;
-        const searchableEntries = entries.filter(
-            (entry) =>
-                entry.kind !== "note" &&
-                entry.kind !== "folder" &&
-                shouldShowVaultEntryInFileTree(entry, {
-                    contentMode: fileTreeContentMode,
-                    extensionFilter: fileTreeExtensionFilter,
-                }),
-        );
-
-        if (!deferredQuery.trim()) {
-            const ordered = orderedTabs
+    const openTabItems = useMemo(
+        () =>
+            orderedTabs
                 .map((tab) => {
                     if (isChatTab(tab)) {
                         return buildChatItem(tab);
@@ -280,18 +265,47 @@ function QuickSwitcherDialog() {
                     const note = noteMap.get(tab.noteId);
                     return note ? buildNoteItem(note) : null;
                 })
-                .filter((item): item is QuickSwitcherItem => item !== null);
+                .filter((item): item is QuickSwitcherItem => item !== null),
+        [
+            buildChatItem,
+            buildEntryItem,
+            buildHistoryItem,
+            buildNoteItem,
+            entryMap,
+            noteMap,
+            orderedTabs,
+        ],
+    );
 
+    const results = useMemo(() => {
+        const searchableNotes =
+            fileTreeExtensionFilter.length > 0 &&
+            !fileTreeExtensionFilter.includes("md")
+                ? []
+                : notes;
+        const searchableEntries = entries.filter(
+            (entry) =>
+                entry.kind !== "note" &&
+                entry.kind !== "folder" &&
+                shouldShowVaultEntryInFileTree(entry, {
+                    contentMode: fileTreeContentMode,
+                    extensionFilter: fileTreeExtensionFilter,
+                }),
+        );
+
+        if (!deferredQuery.trim()) {
             const remainingNotes = searchableNotes
                 .filter(
                     (note) =>
-                        !ordered.some((item) => item.key === `note:${note.id}`),
+                        !openTabItems.some(
+                            (item) => item.key === `note:${note.id}`,
+                        ),
                 )
                 .map(buildNoteItem);
             const remainingEntries = searchableEntries
                 .filter(
                     (entry) =>
-                        !ordered.some(
+                        !openTabItems.some(
                             (item) =>
                                 item.key ===
                                 `${entry.kind}:${entry.relative_path}`,
@@ -299,85 +313,104 @@ function QuickSwitcherDialog() {
                 )
                 .map(buildEntryItem);
 
-            return [...ordered, ...remainingNotes, ...remainingEntries];
+            return [...openTabItems, ...remainingNotes, ...remainingEntries];
         }
 
         return [
-            ...openTabs
-                .filter((tab): tab is ChatTab => isChatTab(tab))
-                .map((tab) => {
-                    const item = buildChatItem(tab);
-                    return {
-                        item,
-                        score: Math.max(
-                            fuzzyScore(deferredQuery, item.title),
-                            fuzzyScore(deferredQuery, tab.sessionId),
-                        ),
-                    };
-                }),
-            ...openTabs
-                .filter(
-                    (tab): tab is ChatHistoryTab => isChatHistoryTab(tab),
-                )
-                .map((tab) => {
-                    const item = buildHistoryItem(tab);
-                    return {
-                        item,
-                        score: Math.max(
-                            fuzzyScore(deferredQuery, item.title),
-                            fuzzyScore(deferredQuery, item.subtitle),
-                        ),
-                    };
-                }),
-            ...searchableNotes.map((note) => ({
-                item: buildNoteItem(note),
+            ...openTabItems.map((item) => ({
+                item,
                 score:
-                    fileTreeContentMode === "all_files"
-                        ? fileOrientedScore(deferredQuery, {
-                              fileName: getNoteFileName(note),
-                              path: note.id || note.path,
-                              title: note.title,
-                          })
-                        : Math.max(
-                              fuzzyScore(
-                                  deferredQuery,
-                                  getNoteQuickSwitcherTitle(
-                                      note,
-                                      fileTreeContentMode,
-                                      showExtensions,
+                    item.kind === "note"
+                        ? fileTreeContentMode === "all_files"
+                            ? fileOrientedScore(deferredQuery, {
+                                  fileName: getNoteFileName(item.note),
+                                  path: item.note.id || item.note.path,
+                                  title: item.note.title,
+                              })
+                            : Math.max(
+                                  fuzzyScore(
+                                      deferredQuery,
+                                      getNoteQuickSwitcherTitle(
+                                          item.note,
+                                          fileTreeContentMode,
+                                          showExtensions,
+                                      ),
                                   ),
+                                  fuzzyScore(deferredQuery, item.note.path),
+                                  fuzzyScore(deferredQuery, item.note.id),
+                                  fuzzyScore(deferredQuery, item.note.title),
+                              )
+                        : item.kind === "file" || item.kind === "pdf"
+                          ? fileOrientedScore(deferredQuery, {
+                                fileName: item.entry.file_name,
+                                path: item.entry.relative_path,
+                                title: item.entry.title,
+                            })
+                          : Math.max(
+                                fuzzyScore(deferredQuery, item.title),
+                                fuzzyScore(deferredQuery, item.subtitle),
+                            ),
+            })),
+            ...searchableNotes
+                .filter(
+                    (note) =>
+                        !openTabItems.some(
+                            (item) => item.key === `note:${note.id}`,
+                        ),
+                )
+                .map((note) => ({
+                    item: buildNoteItem(note),
+                    score:
+                        fileTreeContentMode === "all_files"
+                            ? fileOrientedScore(deferredQuery, {
+                                  fileName: getNoteFileName(note),
+                                  path: note.id || note.path,
+                                  title: note.title,
+                              })
+                            : Math.max(
+                                  fuzzyScore(
+                                      deferredQuery,
+                                      getNoteQuickSwitcherTitle(
+                                          note,
+                                          fileTreeContentMode,
+                                          showExtensions,
+                                      ),
+                                  ),
+                                  fuzzyScore(deferredQuery, note.path),
+                                  fuzzyScore(deferredQuery, note.id),
+                                  fuzzyScore(deferredQuery, note.title),
                               ),
-                              fuzzyScore(deferredQuery, note.path),
-                              fuzzyScore(deferredQuery, note.id),
-                              fuzzyScore(deferredQuery, note.title),
-                          ),
-            })),
-            ...searchableEntries.map((entry) => ({
-                item: buildEntryItem(entry),
-                score: fileOrientedScore(deferredQuery, {
-                    fileName: entry.file_name,
-                    path: entry.relative_path,
-                    title: entry.title,
-                }),
-            })),
+                })),
+            ...searchableEntries
+                .filter(
+                    (entry) =>
+                        !openTabItems.some(
+                            (item) =>
+                                item.key ===
+                                `${entry.kind}:${entry.relative_path}`,
+                        ),
+                )
+                .map((entry) => ({
+                    item: buildEntryItem(entry),
+                    score: fileOrientedScore(deferredQuery, {
+                        fileName: entry.file_name,
+                        path: entry.relative_path,
+                        title: entry.title,
+                    }),
+                })),
         ]
             .filter(({ score }) => score > 0)
             .sort((a, b) => b.score - a.score)
             .map(({ item }) => item);
     }, [
         buildEntryItem,
-        buildChatItem,
-        buildHistoryItem,
         buildNoteItem,
         deferredQuery,
         entries,
-        entryMap,
         fileTreeContentMode,
         fileTreeExtensionFilter,
-        noteMap,
         notes,
-        openTabs,
-        orderedTabs,
+        openTabItems,
         showExtensions,
     ]);
     const virtual = useVirtualList(
