@@ -204,6 +204,10 @@ describe("MultiPaneWorkspace", () => {
                 y: 40,
             }),
         });
+        Object.defineProperty(document, "elementsFromPoint", {
+            configurable: true,
+            value: vi.fn(() => []),
+        });
     });
 
     it("focuses the clicked pane", () => {

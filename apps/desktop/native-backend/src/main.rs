@@ -772,6 +772,7 @@ impl NativeBackend {
             }
             "save_vault_file" => self.save_vault_file(args),
             "save_vault_binary_file" => self.save_vault_binary_file(args),
+            "copy_external_file_to_vault" => self.copy_external_file_to_vault(args),
             "read_note" => {
                 let state = self.state(&args)?;
                 let note_id = required_string(&args, &["noteId", "note_id"])?;
@@ -1452,6 +1453,61 @@ impl NativeBackend {
             Some(entry),
             Some(detail.relative_path.clone()),
             op_id,
+            revision,
+            None,
+            state.graph_revision.max(1),
+        );
+        self.emit_vault_change(change);
+        Ok(json!(detail))
+    }
+
+    fn copy_external_file_to_vault(&mut self, args: Value) -> Result<Value, String> {
+        let source_path = required_string(&args, &["sourcePath", "source_path"])?;
+        let target_folder = optional_string(&args, &["targetFolder", "target_folder"])
+            .unwrap_or_default();
+        let (vault_path, state) = self.state_mut(&args)?;
+
+        let source = std::path::PathBuf::from(&source_path);
+        if !source.is_file() {
+            return Err(format!("Source file not found: {source_path}"));
+        }
+
+        let file_name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "Could not determine file name from source path".to_string())?
+            .to_string();
+
+        let target = state
+            .vault
+            .prepare_binary_file_target(&target_folder, &file_name)
+            .map_err(|error| error.to_string())?;
+
+        state.write_tracker.track_any(target.clone());
+        fs::copy(&source, &target).map_err(|error| error.to_string())?;
+
+        let entry = state
+            .vault
+            .read_vault_entry_from_path(&target)
+            .map_err(|error| error.to_string())?;
+
+        let detail = SavedBinaryFileDetail {
+            path: entry.path.clone(),
+            relative_path: entry.relative_path.clone(),
+            file_name: entry.file_name.clone(),
+            mime_type: entry.mime_type.clone(),
+        };
+        let revision =
+            advance_revision(&mut state.file_revisions, &entry.relative_path, None).max(1);
+        Self::refresh_vault_state(state)?;
+        let change = build_vault_note_change(
+            &vault_path,
+            "upsert",
+            None,
+            None,
+            Some(entry),
+            Some(detail.relative_path.clone()),
+            None,
             revision,
             None,
             state.graph_revision.max(1),
