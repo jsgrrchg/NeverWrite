@@ -15,6 +15,8 @@ import { OutlinePanel } from "./features/notes/OutlinePanel";
 import { AIChatWorkspaceHost } from "./features/ai/AIChatWorkspaceHost";
 import { AIChatDetachedWindowHost } from "./features/ai/AIChatDetachedWindowHost";
 import { createNewChatInWorkspace } from "./features/ai/chatPaneMovement";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "./features/ai/utils/runtimeMetadata";
+import { openClaudeCodeTerminalWithContext } from "./features/terminal/claudeCodeTerminal";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { migrateLegacyTerminalTabsToWorkspace } from "./features/terminal/legacyTerminalMigration";
 import { UnifiedBar } from "./features/editor/UnifiedBar";
@@ -685,7 +687,14 @@ function useRegisterCommands(
             category: newAgentShortcut.category,
             when: hasVault,
             execute: () => {
-                void createNewChatInWorkspace();
+                if (
+                    useChatStore.getState().getDefaultNewChatRuntimeId() ===
+                    CLAUDE_TERMINAL_RUNTIME_ID
+                ) {
+                    void openClaudeCodeTerminalWithContext();
+                } else {
+                    void createNewChatInWorkspace();
+                }
             },
         });
 
@@ -934,11 +943,10 @@ function useRegisterCommands(
         });
 
         register({
-            id: "developer:new-terminal-tab",
+            id: "workspace:new-terminal-tab",
             label: newTerminalShortcut.label,
             shortcut: formatShortcutAction(newTerminalShortcut.id, platform),
             category: newTerminalShortcut.category,
-            when: developerModeEnabled,
             execute: () => {
                 useEditorStore.getState().openTerminal();
             },
@@ -1046,7 +1054,7 @@ function useGlobalShortcuts(openSettings: () => void) {
 
             if (matchesShortcutAction(e, "new_terminal", platform)) {
                 e.preventDefault();
-                useCommandStore.getState().execute("developer:new-terminal-tab");
+                useCommandStore.getState().execute("workspace:new-terminal-tab");
                 return;
             }
 

@@ -827,7 +827,8 @@ describe("chatStore", () => {
         expect(state.runtimeConnectionByRuntimeId["codex-acp"]?.status).toBe(
             "ready",
         );
-        expect(state.runtimes).toHaveLength(1);
+        // One backend runtime + the claude-code-terminal pseudo-runtime.
+        expect(state.runtimes).toHaveLength(2);
         expect(state.activeSessionId).toBe("codex-session-1");
         expect(state.sessionsById["codex-session-1"]?.runtimeId).toBe(
             "codex-acp",
@@ -864,7 +865,7 @@ describe("chatStore", () => {
                     return {
                         ...readySetupStatus,
                         runtime_id: "claude-acp",
-                        auth_method: "claude-login",
+                        auth_method: "anthropic-api-key",
                     };
                 }
 

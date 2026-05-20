@@ -8,7 +8,7 @@ import {
     safeStorageGetItem,
     safeStorageSetItem,
 } from "../../app/utils/safeStorage";
-import { readPersistedTerminalWorkspace } from "../devtools/terminal/useTerminalTabs";
+import { readPersistedTerminalWorkspace } from "./useTerminalTabs";
 
 const LEGACY_TERMINAL_MIGRATION_KEY_PREFIX =
     "neverwrite.workspace.terminal.legacyMigrated:";

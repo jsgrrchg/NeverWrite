@@ -9,6 +9,7 @@ import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import { getPreferredWorkspaceChatSessionIdForSession } from "./chatWorkspaceSelectors";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
 import type {
     AIChatSession,
     AIRuntimeDescriptor,
@@ -279,6 +280,9 @@ export async function createNewChatInWorkspace(
     options?: OpenChatInWorkspaceOptions,
 ) {
     const resolvedRuntimeId = resolveWorkspaceNewChatRuntimeId(runtimeId);
+    // The claude-terminal pseudo-runtime has no ACP backend — callers that
+    // detect it should route to openClaudeCodeTerminalWithContext instead.
+    if (resolvedRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID) return null;
     const pendingSession = createPendingWorkspaceSession(resolvedRuntimeId);
     if (!pendingSession) {
         const createdSessionId = await useChatStore

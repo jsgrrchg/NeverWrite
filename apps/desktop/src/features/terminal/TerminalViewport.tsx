@@ -14,12 +14,14 @@ import {
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent,
 } from "react";
-import { useThemeStore } from "../../../app/store/themeStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
+import { useThemeStore } from "../../app/store/themeStore";
+import { useLayoutStore } from "../../app/store/layoutStore";
 import {
     ContextMenu,
     type ContextMenuEntry,
     type ContextMenuState,
-} from "../../../components/context-menu/ContextMenu";
+} from "../../components/context-menu/ContextMenu";
 import { getTerminalTheme } from "./terminalTheme";
 import type { TerminalSessionView } from "./terminalTypes";
 
@@ -40,7 +42,26 @@ function createXtermTheme(theme: ReturnType<typeof getTerminalTheme>) {
         cursor: theme.cursor,
         cursorAccent: theme.background,
         foreground: theme.text,
-        selectionBackground: "rgba(120, 138, 158, 0.28)",
+        black: theme.black,
+        red: theme.red,
+        green: theme.green,
+        yellow: theme.yellow,
+        blue: theme.blue,
+        magenta: theme.magenta,
+        cyan: theme.cyan,
+        white: theme.white,
+        brightBlack: theme.brightBlack,
+        brightRed: theme.brightRed,
+        brightGreen: theme.brightGreen,
+        brightYellow: theme.brightYellow,
+        brightBlue: theme.brightBlue,
+        brightMagenta: theme.brightMagenta,
+        brightCyan: theme.brightCyan,
+        brightWhite: theme.brightWhite,
+        selectionBackground: theme.selectionBackground,
+        scrollbarSliderBackground: theme.scrollbarSliderBackground,
+        scrollbarSliderHoverBackground: theme.scrollbarSliderHoverBackground,
+        scrollbarSliderActiveBackground: theme.scrollbarSliderActiveBackground,
     };
 }
 
@@ -101,7 +122,19 @@ export function TerminalViewport({
         useState<ContextMenuState<void> | null>(null);
 
     useThemeStore((state) => `${state.themeName}:${state.isDark}`);
-    const theme = getTerminalTheme(null);
+    // Track right panel state so we can re-fit when it opens/closes/peeks.
+    // The peek overlay is position:absolute and doesn't trigger ResizeObserver.
+    const rightPanelKey = useLayoutStore(
+        (s) => `${s.rightPanelCollapsed}:${s.rightPanelWidth}`,
+    );
+    const terminalFontFamily = useSettingsStore(
+        (state) => state.terminalFontFamily,
+    );
+    const terminalFontSize = useSettingsStore((state) => state.terminalFontSize);
+    const theme = getTerminalTheme(null, {
+        fontFamily: terminalFontFamily,
+        fontSize: terminalFontSize,
+    });
 
     const focusTerminal = useCallback(() => {
         shouldRestoreFocusRef.current = true;
@@ -256,58 +289,94 @@ export function TerminalViewport({
             }
             return true;
         });
-        terminal.open(host);
-        terminalRef.current = terminal;
-        fitAddonRef.current = fitAddon;
-        searchAddonRef.current = searchAddon;
+        let cancelled = false;
+        let onDataDisposable: ReturnType<typeof terminal.onData> | null = null;
+        let onSelectionDisposable: ReturnType<
+            typeof terminal.onSelectionChange
+        > | null = null;
+        let onSearchResultsDisposable: ReturnType<
+            typeof searchAddon.onDidChangeResults
+        > | null = null;
+        let textarea: HTMLTextAreaElement | null = null;
+        let handleFocus: (() => void) | null = null;
+        let handleBlur: ((event: FocusEvent) => void) | null = null;
+        let observer: ResizeObserver | null = null;
 
-        const onDataDisposable = terminal.onData((data) => {
-            void writeInputRef
-                .current(data)
-                .catch((error) =>
-                    console.error("[terminal] writeInput error:", error),
-                );
-        });
-        const onSelectionDisposable = terminal.onSelectionChange(syncSelection);
-        const onSearchResultsDisposable = searchAddon.onDidChangeResults(
-            (event) => {
-                setSearchResultIndex(event.resultIndex);
-                setSearchResultCount(event.resultCount);
-            },
-        );
-        const textarea = terminal.textarea;
-        const handleFocus = () => {
-            shouldRestoreFocusRef.current = true;
-            setFocused(true);
+        const finishOpen = () => {
+            if (cancelled) return;
+
+            terminal.open(host);
+            terminalRef.current = terminal;
+            fitAddonRef.current = fitAddon;
+            searchAddonRef.current = searchAddon;
+
+            onDataDisposable = terminal.onData((data) => {
+                void writeInputRef
+                    .current(data)
+                    .catch((error) =>
+                        console.error("[terminal] writeInput error:", error),
+                    );
+            });
+            onSelectionDisposable =
+                terminal.onSelectionChange(syncSelection);
+            onSearchResultsDisposable = searchAddon.onDidChangeResults(
+                (event) => {
+                    setSearchResultIndex(event.resultIndex);
+                    setSearchResultCount(event.resultCount);
+                },
+            );
+
+            textarea = terminal.textarea;
+            handleFocus = () => {
+                shouldRestoreFocusRef.current = true;
+                setFocused(true);
+            };
+            handleBlur = (event: FocusEvent) => {
+                const nextTarget = event.relatedTarget;
+                const nextInsideSearch =
+                    nextTarget instanceof Node &&
+                    searchPanelRef.current?.contains(nextTarget);
+                if (!nextInsideSearch) {
+                    shouldRestoreFocusRef.current = false;
+                }
+                setFocused(false);
+                searchAddon.clearActiveDecoration();
+            };
+            textarea?.addEventListener("focus", handleFocus);
+            textarea?.addEventListener("blur", handleBlur);
+
+            syncSize();
+            observer = new ResizeObserver(syncSize);
+            observer.observe(host);
         };
-        const handleBlur = (event: FocusEvent) => {
-            const nextTarget = event.relatedTarget;
-            const nextInsideSearch =
-                nextTarget instanceof Node &&
-                searchPanelRef.current?.contains(nextTarget);
 
-            if (!nextInsideSearch) {
-                shouldRestoreFocusRef.current = false;
-            }
-            setFocused(false);
-            searchAddon.clearActiveDecoration();
-        };
-
-        textarea?.addEventListener("focus", handleFocus);
-        textarea?.addEventListener("blur", handleBlur);
-
-        syncSize();
-
-        const observer = new ResizeObserver(syncSize);
-        observer.observe(host);
+        const fontFamily = theme.fontFamily.trim();
+        // Only await font loading for custom fonts (fallback stack is always available).
+        const isCustomFont =
+            fontFamily.length > 0 &&
+            !fontFamily.startsWith('"SFMono-Regular"');
+        if (isCustomFont) {
+            const spec = `${theme.fontSize}px "${fontFamily.split(",")[0].trim().replace(/^"|"$/g, "")}"`;
+            Promise.all([
+                document.fonts.load(spec),
+                document.fonts.load(`bold ${spec}`),
+            ])
+                .catch(() => undefined)
+                .then(finishOpen);
+        } else {
+            finishOpen();
+        }
 
         return () => {
-            observer.disconnect();
-            onSearchResultsDisposable.dispose();
-            onSelectionDisposable.dispose();
-            textarea?.removeEventListener("blur", handleBlur);
-            textarea?.removeEventListener("focus", handleFocus);
-            onDataDisposable.dispose();
+            cancelled = true;
+            observer?.disconnect();
+            onSearchResultsDisposable?.dispose();
+            onSelectionDisposable?.dispose();
+            if (textarea && handleBlur)
+                textarea.removeEventListener("blur", handleBlur);
+            if (textarea && handleFocus)
+                textarea.removeEventListener("focus", handleFocus);
+            onDataDisposable?.dispose();
             terminal.dispose();
             syncSizeRef.current = () => undefined;
             terminalRef.current = null;
@@ -347,6 +416,14 @@ export function TerminalViewport({
         return () => cancelAnimationFrame(frame);
     }, [active, autoFocus, focusTerminal, snapshot.sessionId]);
 
+    // Re-fit after right panel open/close/peek. The peek overlay is
+    // position:absolute so it doesn't trigger the ResizeObserver on the
+    // terminal host. We wait 210ms to let the 190ms CSS transition finish.
+    useEffect(() => {
+        const timer = setTimeout(() => syncSizeRef.current(), 210);
+        return () => clearTimeout(timer);
+    }, [rightPanelKey]);
+
     useEffect(() => {
         const terminal = terminalRef.current;
         if (!terminal) return;
@@ -357,14 +434,7 @@ export function TerminalViewport({
         terminal.options.theme = createXtermTheme(theme);
         fitAddonRef.current?.fit();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [
-        theme.background,
-        theme.cursor,
-        theme.fontFamily,
-        theme.fontSize,
-        theme.lineHeight,
-        theme.text,
-    ]);
+    }, [JSON.stringify(theme)]);
 
     useEffect(() => {
         const terminal = terminalRef.current;
@@ -556,7 +626,7 @@ export function TerminalViewport({
         >
             <div
                 ref={hostRef}
-                className="devtools-terminal-surface h-full min-h-0"
+                className="terminal-surface h-full min-h-0"
             />
 
             {searchOpen && (

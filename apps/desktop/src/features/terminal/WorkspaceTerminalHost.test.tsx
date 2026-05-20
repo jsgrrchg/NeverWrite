@@ -7,7 +7,7 @@ import {
     DEV_TERMINAL_EXITED_EVENT,
     DEV_TERMINAL_OUTPUT_EVENT,
     DEV_TERMINAL_STARTED_EVENT,
-} from "../devtools/terminal/terminalTypes";
+} from "./terminalTypes";
 import {
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
@@ -94,6 +94,7 @@ describe("WorkspaceTerminalHost", () => {
                     cwd: "/vault",
                     cols: 120,
                     rows: 24,
+                    extraEnv: {},
                 },
             },
         );
