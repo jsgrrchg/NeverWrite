@@ -119,7 +119,10 @@ export function buildNewTabContextMenuEntries(options?: {
                                   runtime.runtime.id ===
                                   CLAUDE_TERMINAL_RUNTIME_ID
                               ) {
-                                  void openClaudeCodeTerminalWithContext();
+                                  void openClaudeCodeTerminalWithContext(
+                                      undefined,
+                                      paneId,
+                                  );
                               } else {
                                   void createNewChat(
                                       runtime.runtime.id,

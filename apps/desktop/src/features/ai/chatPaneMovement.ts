@@ -280,14 +280,9 @@ export async function createNewChatInWorkspace(
     options?: OpenChatInWorkspaceOptions,
 ) {
     const resolvedRuntimeId = resolveWorkspaceNewChatRuntimeId(runtimeId);
-    // The claude-terminal pseudo-runtime has no ACP backend. Guard both the
-    // explicitly passed ID and the user's effective default.
-    if (
-        resolvedRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID ||
-        useChatStore.getState().getDefaultNewChatRuntimeId() ===
-            CLAUDE_TERMINAL_RUNTIME_ID
-    )
-        return null;
+    // The claude-terminal pseudo-runtime has no ACP backend — callers that
+    // detect it should route to openClaudeCodeTerminalWithContext instead.
+    if (resolvedRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID) return null;
     const pendingSession = createPendingWorkspaceSession(resolvedRuntimeId);
     if (!pendingSession) {
         const createdSessionId = await useChatStore

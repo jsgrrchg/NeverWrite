@@ -160,6 +160,14 @@ impl DevTerminalManager {
             }
             "devtools_check_binary" => {
                 let name = required_string(&args, &["name"])?;
+                // Reject anything that isn't a plain binary name to prevent
+                // shell injection when interpolating into the sh -lc command.
+                if !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+                {
+                    return Err(format!("Invalid binary name: {name}"));
+                }
                 // Use a login shell so the full user PATH is available (important
                 // on macOS where Electron inherits a stripped environment PATH).
                 #[cfg(unix)]
