@@ -56,3 +56,20 @@ export function emitFileTreeAttachToNewChat(detail: FileTreeNoteDragDetail) {
         ),
     );
 }
+
+export const EXTERNAL_FILE_TREE_DRAG_EVENT =
+    "neverwrite:external-file-tree-drag";
+
+export interface ExternalFileTreeDragDetail {
+    phase: "over" | "cancel";
+    folderPath: string | null;
+}
+
+export function emitExternalFileTreeDrag(detail: ExternalFileTreeDragDetail) {
+    window.dispatchEvent(
+        new CustomEvent<ExternalFileTreeDragDetail>(
+            EXTERNAL_FILE_TREE_DRAG_EVENT,
+            { detail },
+        ),
+    );
+}

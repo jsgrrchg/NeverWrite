@@ -21,8 +21,10 @@ import {
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     FILE_TREE_NOTE_DRAG_EVENT,
+    emitExternalFileTreeDrag,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import {
     AGENT_SIDEBAR_DRAG_EVENT,
     type AgentSidebarDragDetail,
@@ -44,6 +46,27 @@ import {
 } from "./workspaceTabDropPreview";
 
 const AGENT_SIDEBAR_DROP_SOURCE_PANE_ID = "__agents-sidebar__";
+
+function resolveFileTreeFolderAtPoint(x: number, y: number): string | null {
+    const els = document.elementsFromPoint(x, y);
+    const folderEl = els.find((el) => el.hasAttribute("data-folder-path"));
+    if (!folderEl) return null;
+    return folderEl.getAttribute("data-folder-path") ?? null;
+}
+
+async function copyExternalFilesToVaultFolder(
+    sourcePaths: string[],
+    targetFolder: string,
+) {
+    await Promise.all(
+        sourcePaths.map((sourcePath) =>
+            vaultInvoke("copy_external_file_to_vault", {
+                sourcePath,
+                targetFolder,
+            }),
+        ),
+    );
+}
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -370,6 +393,13 @@ export function MultiPaneWorkspace() {
                             getWorkspaceFileDropPaneId(target.target),
                         );
                     }
+                    const folderPath = position
+                        ? resolveFileTreeFolderAtPoint(
+                              position.x,
+                              position.y,
+                          )
+                        : null;
+                    emitExternalFileTreeDrag({ phase: "over", folderPath });
                     return;
                 }
 
@@ -377,17 +407,28 @@ export function MultiPaneWorkspace() {
                     setExternalFileDropPaneId(null);
                 }
                 dispatchCrossPaneTabDropPreview(null);
+                emitExternalFileTreeDrag({ phase: "cancel", folderPath: null });
 
-                if (
-                    type !== "drop" ||
-                    !isWorkspaceFileDropTarget(target.target)
-                ) {
+                if (type !== "drop") {
                     return;
                 }
 
                 const paths =
                     (event.payload as { paths?: string[] }).paths ?? [];
                 if (paths.length === 0) {
+                    return;
+                }
+
+                const fileTreeFolder = position
+                    ? resolveFileTreeFolderAtPoint(position.x, position.y)
+                    : null;
+
+                if (fileTreeFolder !== null) {
+                    void copyExternalFilesToVaultFolder(paths, fileTreeFolder);
+                    return;
+                }
+
+                if (!isWorkspaceFileDropTarget(target.target)) {
                     return;
                 }
 

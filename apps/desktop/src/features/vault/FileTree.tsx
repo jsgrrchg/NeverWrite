@@ -57,8 +57,10 @@ import {
 import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "../../components/icons/FolderTypeIcon";
 import {
+    EXTERNAL_FILE_TREE_DRAG_EVENT,
     emitFileTreeAttachToNewChat,
     emitFileTreeNoteDrag,
+    type ExternalFileTreeDragDetail,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
 import { getPreferredWorkspaceChatSessionId } from "../ai/chatWorkspaceSelectors";
@@ -2732,6 +2734,19 @@ export function FileTree() {
         moveVaultEntry,
         resetDragState,
     ]);
+
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const { phase, folderPath } = (
+                event as CustomEvent<ExternalFileTreeDragDetail>
+            ).detail;
+            setDragOverPath(phase === "over" ? folderPath : null);
+        };
+        window.addEventListener(EXTERNAL_FILE_TREE_DRAG_EVENT, handler);
+        return () => {
+            window.removeEventListener(EXTERNAL_FILE_TREE_DRAG_EVENT, handler);
+        };
+    }, []);
 
     const handleToggleFolder = (path: string) => {
         setExpandedFolders((prev) => {
