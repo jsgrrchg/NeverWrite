@@ -56,6 +56,8 @@ struct DevTerminalCreateInput {
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    #[serde(default)]
+    extra_env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +158,24 @@ impl DevTerminalManager {
                 let session_id = required_string(&args, &["sessionId", "session_id"])?;
                 Ok(json!(self.snapshot(&session_id)?))
             }
+            "devtools_check_binary" => {
+                let name = required_string(&args, &["name"])?;
+                // Use a login shell so the full user PATH is available (important
+                // on macOS where Electron inherits a stripped environment PATH).
+                #[cfg(unix)]
+                let found = std::process::Command::new("sh")
+                    .args(["-lc", &format!("command -v {name}")])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                #[cfg(windows)]
+                let found = std::process::Command::new("where.exe")
+                    .arg(&name)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                Ok(json!({ "found": found }))
+            }
             _ => Err(format!("Unknown devtools command: {command}")),
         }
     }
@@ -187,6 +207,7 @@ impl DevTerminalManager {
                 cwd: Some(snapshot.cwd),
                 cols: Some(snapshot.cols),
                 rows: Some(snapshot.rows),
+                extra_env: HashMap::new(),
             },
         )
     }
@@ -343,8 +364,12 @@ impl DevTerminalManager {
         command.args(&launch_config.args);
         command.cwd(&launch_config.cwd);
         command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
         command.env("COLUMNS", cols.to_string());
         command.env("LINES", rows.to_string());
+        for (key, value) in &input.extra_env {
+            command.env(key, value);
+        }
 
         let child = pair.slave.spawn_command(command).map_err(|error| {
             format!(

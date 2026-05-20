@@ -39,6 +39,7 @@ import { SETTINGS_OPEN_SECTION_EVENT } from "../../app/detachedWindows";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { readSearchParam } from "../../app/utils/safeBrowser";
 import { subscribeSafeStorage } from "../../app/utils/safeStorage";
+import { checkClaudeCodeInstalled } from "../terminal/claudeCodeTerminal";
 import { APP_BRAND_NAME } from "../../app/utils/branding";
 import {
     APP_ZOOM_STEP,
@@ -3044,6 +3045,248 @@ function resolveStatusDescription({
     }
 }
 
+const CLAUDE_CODE_MODEL_OPTIONS = [
+    { value: "", label: "Default (Claude Code decides)" },
+    { value: "claude-opus-4-7", label: "Opus 4.7 — most capable" },
+    { value: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced" },
+    { value: "claude-haiku-4-5", label: "Haiku 4.5 — fast" },
+] as const;
+
+function TerminalSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
+    const {
+        terminalFontFamily,
+        terminalFontSize,
+        claudeCodeOptimized,
+        claudeCodeSkipPermissions,
+        claudeCodeModel,
+        claudeCodeContinueSession,
+        claudeCodeMaxTurns,
+        setSetting,
+    } = useSettingsStore();
+
+    const [claudeCodeReady, setClaudeCodeReady] = useState(false);
+    useEffect(() => {
+        void checkClaudeCodeInstalled().then(setClaudeCodeReady);
+    }, []);
+
+    const showFont = sectionHasSettingsSearchMatches(searchQuery, "Font", [
+        [
+            "Font family",
+            "Monospace font used in the terminal. Must be installed on this system. Nerd Fonts are supported.",
+        ],
+        ["Font size", "Terminal text size in pixels."],
+    ]);
+    const showShell = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Shell Environment",
+        [
+            [
+                "Fullscreen rendering",
+                "Sets CLAUDE_CODE_NO_FLICKER=1 when opening a new terminal. Improves rendering stability for Claude Code but disables scrollback. Only applies to newly opened terminals.",
+            ],
+        ],
+    );
+    const showClaudeCode =
+        claudeCodeReady &&
+        sectionHasSettingsSearchMatches(searchQuery, "Claude Code", [
+            [
+                "Skip permissions",
+                "Passes --dangerously-skip-permissions. Claude Code will not ask for approval before running tools. Only enable if you trust the session context.",
+                "yolo",
+                "dangerously-skip-permissions",
+            ],
+            [
+                "Model",
+                "Which Claude model to use. Leave blank to let Claude Code choose.",
+                "opus",
+                "sonnet",
+                "haiku",
+                ...CLAUDE_CODE_MODEL_OPTIONS.map((o) => o.label),
+            ],
+            [
+                "Continue last session",
+                "Passes --continue. Resumes your most recent Claude Code conversation instead of starting fresh.",
+            ],
+            [
+                "Max turns",
+                "Passes --max-turns. Stops an agentic session after this many turns. Set to 0 for no limit.",
+            ],
+        ]);
+
+    if (!showFont && !showShell && !showClaudeCode) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    const selectStyle = {
+        width: 220,
+        padding: "6px 8px",
+        fontSize: 12,
+        fontFamily: "inherit",
+        borderRadius: 6,
+        border: "1px solid var(--border)",
+        backgroundColor: "var(--bg-secondary)",
+        color: "var(--text-primary)",
+        cursor: "pointer",
+        outline: "none",
+    } as const;
+
+    return (
+        <div>
+            {showFont ? <SectionLabel>Font</SectionLabel> : null}
+            {showFont && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Font"
+                    label="Font family"
+                    description="Monospace font for the terminal. Must be installed on this system. Nerd Fonts are supported."
+                    keywords={["monospace", "nerd font", "firacode", "jetbrains"]}
+                    control={
+                        <input
+                            type="text"
+                            placeholder="e.g. FiraCode Nerd Font"
+                            value={terminalFontFamily}
+                            onChange={(e) =>
+                                setSetting("terminalFontFamily", e.target.value)
+                            }
+                            style={{
+                                width: 200,
+                                padding: "6px 8px",
+                                fontSize: 12,
+                                fontFamily: "inherit",
+                                borderRadius: 6,
+                                border: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-secondary)",
+                                color: "var(--text-primary)",
+                                outline: "none",
+                            }}
+                        />
+                    }
+                />
+            )}
+            {showFont && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Font"
+                    label="Font size"
+                    description="Terminal text size in pixels."
+                    control={
+                        <NumberStepper
+                            value={terminalFontSize}
+                            min={8}
+                            max={24}
+                            onChange={(v) => setSetting("terminalFontSize", v)}
+                        />
+                    }
+                />
+            )}
+            {showShell ? (
+                <SectionLabel>Shell Environment</SectionLabel>
+            ) : null}
+            {showShell && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Shell Environment"
+                    label="Fullscreen rendering (experimental)"
+                    description="Sets CLAUDE_CODE_NO_FLICKER=1. Reduces flicker in Claude Code but disables scrollback. Applies to new terminals only."
+                    keywords={["claude code", "flicker", "CLAUDE_CODE_NO_FLICKER"]}
+                    control={
+                        <Toggle
+                            value={claudeCodeOptimized}
+                            onChange={(value) =>
+                                setSetting("claudeCodeOptimized", value)
+                            }
+                        />
+                    }
+                />
+            )}
+            {showClaudeCode ? (
+                <SectionLabel>Claude Code</SectionLabel>
+            ) : null}
+            {showClaudeCode && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Claude Code"
+                    label="Skip permissions"
+                    description="Passes --dangerously-skip-permissions. Claude Code will not ask for approval before running tools or writing files. Only enable if you trust the session context."
+                    keywords={["yolo", "dangerously-skip-permissions", "permissions"]}
+                    control={
+                        <Toggle
+                            value={claudeCodeSkipPermissions}
+                            onChange={(v) =>
+                                setSetting("claudeCodeSkipPermissions", v)
+                            }
+                        />
+                    }
+                />
+            )}
+            {showClaudeCode && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Claude Code"
+                    label="Model"
+                    description="Which Claude model powers each session. Leave on Default to let Claude Code choose based on your subscription."
+                    keywords={["opus", "sonnet", "haiku", "model", "claude"]}
+                    control={
+                        <select
+                            value={claudeCodeModel}
+                            onChange={(e) =>
+                                setSetting("claudeCodeModel", e.target.value)
+                            }
+                            style={selectStyle}
+                        >
+                            {CLAUDE_CODE_MODEL_OPTIONS.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                    {o.label}
+                                </option>
+                            ))}
+                        </select>
+                    }
+                />
+            )}
+            {showClaudeCode && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Claude Code"
+                    label="Continue last session"
+                    description="Passes --continue. Resumes your most recent Claude Code conversation instead of starting a new one."
+                    keywords={["resume", "continue", "session", "history"]}
+                    control={
+                        <Toggle
+                            value={claudeCodeContinueSession}
+                            onChange={(v) =>
+                                setSetting("claudeCodeContinueSession", v)
+                            }
+                        />
+                    }
+                />
+            )}
+            {showClaudeCode && (
+                <SearchableRow
+                    searchQuery={searchQuery}
+                    section="Claude Code"
+                    label="Max turns"
+                    description="Passes --max-turns N. Stops an agentic run after this many turns to prevent runaway sessions. Set to 0 for no limit."
+                    keywords={["max turns", "limit", "agentic", "turns"]}
+                    control={
+                        <NumberStepper
+                            value={claudeCodeMaxTurns}
+                            min={0}
+                            max={200}
+                            onChange={(v) =>
+                                setSetting("claudeCodeMaxTurns", v)
+                            }
+                        />
+                    }
+                />
+            )}
+        </div>
+    );
+}
+
 function DevelopersSettings({
     searchQuery,
 }: {
@@ -3582,6 +3825,7 @@ type Category =
     | "editor"
     | "spellcheck"
     | "updates"
+    | "terminal"
     | "developers"
     | "vault"
     | "shortcuts"
@@ -3670,6 +3914,30 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
                 <path
                     d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7M3 12.5h10"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "terminal",
+        label: "Terminal",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <rect
+                    x="1.5"
+                    y="2.5"
+                    width="13"
+                    height="11"
+                    rx="2"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
+                <path
+                    d="M4.5 6 6.5 8 4.5 10M8 10h3.5"
                     stroke="currentColor"
                     strokeWidth="1.2"
                     strokeLinecap="round"
@@ -3790,6 +4058,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     editor: "Typography and text editing behavior",
     spellcheck: "Languages and dictionary management",
     updates: "Manual update checks and appcast configuration",
+    terminal: "Font, size, and shell environment settings",
     developers: "Advanced developer-facing file tree options",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
@@ -3866,6 +4135,30 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "check for updates",
         "appcast",
         "release feed",
+    ],
+    terminal: [
+        "Terminal",
+        "Font family",
+        "Font size",
+        "Nerd Font",
+        "FiraCode",
+        "JetBrains Mono",
+        "Claude Code",
+        "Fullscreen rendering",
+        "CLAUDE_CODE_NO_FLICKER",
+        "Skip permissions",
+        "yolo",
+        "dangerously-skip-permissions",
+        "Model",
+        "opus",
+        "sonnet",
+        "haiku",
+        "Continue last session",
+        "resume",
+        "Max turns",
+        "agentic",
+        "shell",
+        "monospace",
     ],
     developers: [
         "Developer Mode",
@@ -3995,6 +4288,8 @@ function getDynamicCategorySearchValues(
                 context.updateStatus.status?.update?.body,
                 context.updateStatus.error,
             ];
+        case "terminal":
+            return [];
         case "developers":
             return [];
         case "vault":
@@ -4529,6 +4824,12 @@ export function SettingsPanel({
                         {filteredCategories.length > 0 &&
                             activeCategory === "updates" && (
                                 <UpdatesSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "terminal" && (
+                                <TerminalSettings
                                     searchQuery={activeSearchQuery}
                                 />
                             )}

@@ -934,11 +934,10 @@ function useRegisterCommands(
         });
 
         register({
-            id: "developer:new-terminal-tab",
+            id: "workspace:new-terminal-tab",
             label: newTerminalShortcut.label,
             shortcut: formatShortcutAction(newTerminalShortcut.id, platform),
             category: newTerminalShortcut.category,
-            when: developerModeEnabled,
             execute: () => {
                 useEditorStore.getState().openTerminal();
             },
@@ -1046,7 +1045,7 @@ function useGlobalShortcuts(openSettings: () => void) {
 
             if (matchesShortcutAction(e, "new_terminal", platform)) {
                 e.preventDefault();
-                useCommandStore.getState().execute("developer:new-terminal-tab");
+                useCommandStore.getState().execute("workspace:new-terminal-tab");
                 return;
             }
 

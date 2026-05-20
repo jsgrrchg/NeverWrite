@@ -177,14 +177,10 @@ describe("App note window", () => {
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 
-    it("opens workspace terminals from the developer terminal command", async () => {
+    it("opens workspace terminals from the terminal command", async () => {
         detachedWindowMock.label = "main";
         detachedWindowMock.mode = "main";
         window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
 
         renderComponent(<App />);
         await flushPromises();
@@ -197,7 +193,7 @@ describe("App note window", () => {
         ).toBe(true);
 
         await act(async () => {
-            useCommandStore.getState().execute("developer:new-terminal-tab");
+            useCommandStore.getState().execute("workspace:new-terminal-tab");
             await Promise.resolve();
         });
         await flushPromises();
@@ -308,6 +304,7 @@ describe("App note window", () => {
                     cwd: "/vault",
                     cols: 120,
                     rows: 24,
+                    extraEnv: {},
                 },
             },
         );
