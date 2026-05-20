@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use neverwrite_types::{
-    AdvancedSearchParams, AdvancedSearchResultDto, ContentMatchDto, ContentSearchParam, NoteId,
-    NoteMetadata, PropertyFilterParam,
+    AdvancedSearchFileScope, AdvancedSearchParams, AdvancedSearchResultDto, ContentMatchDto,
+    ContentSearchParam, NoteId, NoteMetadata, PropertyFilterParam, VaultEntryDto,
 };
 use neverwrite_vault::Vault;
 use regex::Regex;
@@ -128,8 +128,12 @@ impl VaultIndex {
         params: &AdvancedSearchParams,
         vault: &Vault,
     ) -> Vec<AdvancedSearchResultDto> {
+        let file_scope = FileScopeMatcher::new(&params.file_scope);
         // Start with all notes as candidates
         let mut candidates: HashSet<&NoteId> = self.metadata.keys().collect();
+        if !file_scope.allows_notes() {
+            candidates.clear();
+        }
 
         // Phase 1: Fast in-memory filtering
 
@@ -294,7 +298,8 @@ impl VaultIndex {
 
         // Phase 2b: PDF search
         // PDFs participate only in lightweight title/path matching.
-        if params.tag_filters.is_empty()
+        if file_scope.allows_extension("pdf")
+            && params.tag_filters.is_empty()
             && params.property_filters.is_empty()
             && params.content_searches.is_empty()
         {
@@ -395,7 +400,10 @@ impl VaultIndex {
         {
             let generic_entries = vault.discover_vault_entries().unwrap_or_default();
 
-            for entry in generic_entries.iter().filter(|entry| entry.kind == "file") {
+            for entry in generic_entries
+                .iter()
+                .filter(|entry| entry.kind == "file" && file_scope.allows_entry(entry))
+            {
                 let title_lower = entry.title.to_lowercase();
                 let path_lower = entry.relative_path.to_lowercase();
                 let file_name_lower = entry.file_name.to_lowercase();
@@ -631,6 +639,60 @@ fn search_entry_file_name(entry: &SearchEntry) -> &str {
         file_name_from_path(&entry.path_lower)
     } else {
         &entry.file_name_lower
+    }
+}
+
+struct FileScopeMatcher {
+    mode: String,
+    extension_filter: HashSet<String>,
+}
+
+impl FileScopeMatcher {
+    fn new(scope: &AdvancedSearchFileScope) -> Self {
+        Self {
+            mode: scope.mode.clone(),
+            extension_filter: scope
+                .extension_filter
+                .iter()
+                .map(|value| value.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .collect(),
+        }
+    }
+
+    fn allows_extension(&self, extension: &str) -> bool {
+        let extension = extension.to_ascii_lowercase();
+        if !self.extension_filter.is_empty() {
+            return self.extension_filter.contains(&extension);
+        }
+        if self.mode == "all_files" {
+            return true;
+        }
+
+        matches!(extension.as_str(), "pdf" | "csv" | "txt" | "html" | "htm")
+    }
+
+    fn allows_notes(&self) -> bool {
+        self.extension_filter.is_empty() || self.extension_filter.contains("md")
+    }
+
+    fn allows_entry(&self, entry: &VaultEntryDto) -> bool {
+        if !self.extension_filter.is_empty() {
+            return self
+                .extension_filter
+                .contains(&entry.extension.to_ascii_lowercase());
+        }
+        if self.mode == "all_files" {
+            return true;
+        }
+        if entry.is_image_like.unwrap_or(false) {
+            return true;
+        }
+
+        matches!(
+            entry.extension.to_ascii_lowercase().as_str(),
+            "csv" | "txt" | "html" | "htm"
+        )
     }
 }
 

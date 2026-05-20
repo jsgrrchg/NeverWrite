@@ -223,6 +223,27 @@ pub struct AdvancedSearchParams {
     /// Prefer filename/path matches over note title matches for file-oriented UI.
     #[serde(default)]
     pub prefer_file_name: bool,
+    /// Controls which non-note files participate in file-oriented search.
+    #[serde(default)]
+    pub file_scope: AdvancedSearchFileScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvancedSearchFileScope {
+    /// "notes_only" uses the curated writing/media set; "all_files" includes every file.
+    pub mode: String,
+    /// Explicit extension allowlist. When non-empty, it overrides mode.
+    #[serde(default)]
+    pub extension_filter: Vec<String>,
+}
+
+impl Default for AdvancedSearchFileScope {
+    fn default() -> Self {
+        Self {
+            mode: "all_files".to_string(),
+            extension_filter: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
