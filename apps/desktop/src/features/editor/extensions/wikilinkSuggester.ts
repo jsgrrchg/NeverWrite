@@ -159,6 +159,30 @@ function rankWikilinkSuggestions(
         .map(({ item }) => item);
 }
 
+function mergeWikilinkSuggestions(
+    noteSuggestions: WikilinkSuggestionItem[],
+    fileSuggestions: WikilinkSuggestionItem[],
+    query: string,
+    limit: number,
+    preferFileName: boolean,
+) {
+    if (fileSuggestions.length === 0) {
+        return noteSuggestions;
+    }
+
+    if (preferFileName) {
+        return rankWikilinkSuggestions(
+            [...noteSuggestions, ...fileSuggestions],
+            query,
+            limit,
+        );
+    }
+
+    // Normal mode keeps the note suggester's title-first ordering. Files are
+    // added after notes so curated files do not unexpectedly outrank note titles.
+    return [...noteSuggestions, ...fileSuggestions].slice(0, limit);
+}
+
 export const MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES = 256;
 
 const suggestionCache = new LruCache<string, WikilinkSuggestionItem[]>(
@@ -167,20 +191,24 @@ const suggestionCache = new LruCache<string, WikilinkSuggestionItem[]>(
 
 let cachedVaultPath: string | null = null;
 let cachedResolverRevision: number | null = null;
+let cachedStructureRevision: number | null = null;
 
 function ensureFreshSuggestionCache() {
-    const { vaultPath, resolverRevision } = useVaultStore.getState();
+    const { vaultPath, resolverRevision, structureRevision } =
+        useVaultStore.getState();
     if (
         cachedVaultPath === vaultPath &&
-        cachedResolverRevision === resolverRevision
+        cachedResolverRevision === resolverRevision &&
+        cachedStructureRevision === structureRevision
     ) {
-        return resolverRevision;
+        return { resolverRevision, structureRevision };
     }
 
     suggestionCache.clear();
     cachedVaultPath = vaultPath;
     cachedResolverRevision = resolverRevision;
-    return resolverRevision;
+    cachedStructureRevision = structureRevision;
+    return { resolverRevision, structureRevision };
 }
 
 export function getWikilinkContext(state: EditorState): WikilinkContext | null {
@@ -222,7 +250,7 @@ export async function getWikilinkSuggestions(
     query: string,
     limit = 8,
 ): Promise<WikilinkSuggestionItem[]> {
-    const resolverRevision = ensureFreshSuggestionCache();
+    const { resolverRevision, structureRevision } = ensureFreshSuggestionCache();
     const {
         fileTreeContentMode,
         fileTreeShowExtensions,
@@ -234,7 +262,7 @@ export async function getWikilinkSuggestions(
     const showMarkdownNotes =
         fileTreeExtensionFilter.length === 0 ||
         fileTreeExtensionFilter.includes("md");
-    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${Number(fileTreeShowExtensions)}\u0000${extensionFilterKey}\u0000${query}`;
+    const cacheKey = `${resolverRevision}\u0000${structureRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${Number(fileTreeShowExtensions)}\u0000${extensionFilterKey}\u0000${query}`;
     const cached = suggestionCache.get(cacheKey);
     if (cached) {
         return cached;
@@ -265,14 +293,13 @@ export async function getWikilinkSuggestions(
         contentMode: fileTreeContentMode,
         extensionFilter: fileTreeExtensionFilter,
     });
-    const merged =
-        fileSuggestions.length === 0
-            ? items
-            : rankWikilinkSuggestions(
-                  [...items, ...fileSuggestions],
-                  query,
-                  limit,
-              );
+    const merged = mergeWikilinkSuggestions(
+        items,
+        fileSuggestions,
+        query,
+        limit,
+        preferFileName,
+    );
 
     suggestionCache.set(cacheKey, merged);
     return merged;
