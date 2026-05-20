@@ -505,6 +505,19 @@ function getVaultEntryFilterText(entry: VaultEntryDto) {
         .toLowerCase();
 }
 
+function isDefaultVisibleVaultEntry(entry: VaultEntryDto) {
+    if (entry.kind === "pdf") return true;
+    if (entry.is_image_like) return true;
+
+    const extension = entry.extension.toLowerCase();
+    return (
+        extension === "csv" ||
+        extension === "txt" ||
+        extension === "html" ||
+        extension === "htm"
+    );
+}
+
 function isMarkdownLeafName(name: string) {
     return name.toLowerCase().endsWith(".md");
 }
@@ -2084,6 +2097,9 @@ export function FileTree() {
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
+    const fileTreeExtensionFilter = useSettingsStore(
+        (s) => s.fileTreeExtensionFilter,
+    );
 
     // Editor/workspace toggles that the unified toolbar exposes alongside the
     // tree-specific actions. Sourced from the same stores the old utility
@@ -2196,24 +2212,43 @@ export function FileTree() {
         sortMode === "modified_desc" || sortMode === "modified_asc"
             ? `${structureRevision}:${contentRevision}`
             : structureRevision;
+    const fileTreeExtensionFilterKey = fileTreeExtensionFilter.join("\n");
+    const fileTreeExtensionFilterSet = useMemo(
+        () => new Set(fileTreeExtensionFilter),
+        [fileTreeExtensionFilter],
+    );
+    const isFileTreeExtensionFilterActive = fileTreeExtensionFilter.length > 0;
+    const visibleNotes = useMemo(() => {
+        if (!isFileTreeExtensionFilterActive) return notes;
+        return fileTreeExtensionFilterSet.has("md") ? notes : [];
+    }, [fileTreeExtensionFilterSet, isFileTreeExtensionFilterActive, notes]);
     const visibleEntries = useMemo(
         () =>
             entries.filter((entry) => {
                 if (entry.kind === "note") return false;
                 if (entry.kind === "folder") return true;
+                if (isFileTreeExtensionFilterActive) {
+                    return fileTreeExtensionFilterSet.has(
+                        entry.extension.toLowerCase(),
+                    );
+                }
                 if (fileTreeContentMode === "all_files") return true;
-                if (entry.kind === "pdf") return true;
-                return entry.extension === "html" || entry.extension === "htm";
+                return isDefaultVisibleVaultEntry(entry);
             }),
-        [entries, fileTreeContentMode],
+        [
+            entries,
+            fileTreeContentMode,
+            fileTreeExtensionFilterSet,
+            isFileTreeExtensionFilterActive,
+        ],
     );
     // Intentionally keyed by revisions instead of the full notes array to avoid
     // rebuilding the folder tree for content-only updates.
     const tree = useMemo(
-        () => buildTree(notes, visibleEntries),
-        // visibleEntries changes only when entries/settings change
+        () => buildTree(visibleNotes, visibleEntries),
+        // visibleEntries and the filter key change only when entries/settings change.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [treeRevision, visibleEntries],
+        [treeRevision, visibleEntries, fileTreeExtensionFilterKey],
     );
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {

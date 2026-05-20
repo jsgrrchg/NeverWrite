@@ -554,6 +554,150 @@ function SliderField({
     );
 }
 
+function parseExtensionTokens(value: string): string[] {
+    return value
+        .split(/[,\s]+/)
+        .map((item) => item.trim().replace(/^\.+/, "").toLowerCase())
+        .filter(Boolean);
+}
+
+function ExtensionFilterInput({
+    value,
+    onChange,
+}: {
+    value: string[];
+    onChange: (value: string[]) => void;
+}) {
+    const [draft, setDraft] = useState("");
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const addExtensions = (raw: string) => {
+        const tokens = parseExtensionTokens(raw);
+        if (tokens.length === 0) return;
+
+        const seen = new Set(value);
+        const next = [...value];
+        for (const token of tokens) {
+            if (seen.has(token)) continue;
+            seen.add(token);
+            next.push(token);
+        }
+        onChange(next);
+        setDraft("");
+    };
+
+    const removeExtension = (extension: string) => {
+        onChange(value.filter((item) => item !== extension));
+    };
+
+    return (
+        <div
+            role="group"
+            aria-label="File extension filter"
+            onClick={() => inputRef.current?.focus()}
+            style={{
+                display: "flex",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 6,
+                width: 260,
+                minHeight: 30,
+                padding: "4px 6px",
+                borderRadius: 7,
+                border: "1px solid var(--border)",
+                backgroundColor: "var(--bg-tertiary)",
+                cursor: "text",
+            }}
+        >
+            {value.map((extension) => (
+                <span
+                    key={extension}
+                    style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        maxWidth: 120,
+                        borderRadius: 999,
+                        padding: "2px 6px",
+                        backgroundColor:
+                            "color-mix(in srgb, var(--accent) 14%, transparent)",
+                        color: "var(--text-primary)",
+                        fontSize: 11,
+                        lineHeight: 1.2,
+                    }}
+                >
+                    <span
+                        style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        .{extension}
+                    </span>
+                    <button
+                        type="button"
+                        aria-label={`Remove .${extension}`}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            removeExtension(extension);
+                        }}
+                        style={{
+                            border: "none",
+                            padding: 0,
+                            background: "transparent",
+                            color: "var(--text-secondary)",
+                            cursor: "pointer",
+                            fontSize: 13,
+                            lineHeight: 1,
+                        }}
+                    >
+                        ×
+                    </button>
+                </span>
+            ))}
+            <input
+                ref={inputRef}
+                value={draft}
+                aria-label="Add file extension"
+                placeholder={value.length === 0 ? "pdf, txt, csv..." : ""}
+                onChange={(event) => setDraft(event.currentTarget.value)}
+                onPaste={(event) => {
+                    const pasted = event.clipboardData.getData("text");
+                    if (parseExtensionTokens(pasted).length <= 1) return;
+                    event.preventDefault();
+                    addExtensions(pasted);
+                }}
+                onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === ",") {
+                        event.preventDefault();
+                        addExtensions(draft);
+                        return;
+                    }
+                    if (
+                        event.key === "Backspace" &&
+                        draft.length === 0 &&
+                        value.length > 0
+                    ) {
+                        onChange(value.slice(0, -1));
+                    }
+                }}
+                onBlur={() => addExtensions(draft)}
+                style={{
+                    flex: "1 1 88px",
+                    minWidth: 74,
+                    border: "none",
+                    outline: "none",
+                    background: "transparent",
+                    color: "var(--text-primary)",
+                    fontSize: 12,
+                    fontFamily: "inherit",
+                }}
+            />
+        </div>
+    );
+}
+
 // --- Theme Picker ---
 
 const THEME_ORDER: ThemeName[] = [
@@ -3055,6 +3199,7 @@ function DevelopersSettings({
         lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
+        fileTreeExtensionFilter,
         setSetting,
     } = useSettingsStore();
     const showDeveloperMode = sectionHasSettingsSearchMatches(
@@ -3081,7 +3226,7 @@ function DevelopersSettings({
         [
             [
                 "Show all vault files",
-                "Display every file in the vault tree, not only Markdown notes and PDFs.",
+                "Display every file in the vault tree, beyond the curated writing and media file set.",
                 "File-oriented search is active",
                 "Search Files & Notes",
                 "wikilink suggestions",
@@ -3090,6 +3235,12 @@ function DevelopersSettings({
             [
                 "Show file extensions",
                 "Display full file names with their extensions in the vault tree.",
+            ],
+            [
+                "File extension filter",
+                "Optional allowlist for the file tree. Leave empty to use the current content mode.",
+                "allowlist",
+                "pdf, txt, csv",
             ],
         ],
     );
@@ -3154,7 +3305,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="File Tree"
                 label="Show all vault files"
-                description="Display every file in the vault tree, not only Markdown notes and PDFs."
+                description="Display every file in the vault tree, beyond the curated writing and media file set."
                 keywords={[
                     "File-oriented search is active",
                     "Search Files & Notes",
@@ -3183,6 +3334,21 @@ function DevelopersSettings({
                         value={fileTreeShowExtensions}
                         onChange={(value) =>
                             setSetting("fileTreeShowExtensions", value)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="File Tree"
+                label="File extension filter"
+                description="Optional allowlist for the file tree. Leave empty to use the current content mode."
+                keywords={["allowlist", "pdf, txt, csv"]}
+                control={
+                    <ExtensionFilterInput
+                        value={fileTreeExtensionFilter}
+                        onChange={(value) =>
+                            setSetting("fileTreeExtensionFilter", value)
                         }
                     />
                 }
