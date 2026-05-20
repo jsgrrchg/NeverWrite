@@ -1575,6 +1575,49 @@ export function AIProvidersSettings({
                                             )}
 
                                             {/* Expanded content — not shown for terminal runtime */}
+                                            {!isTerminalRuntime &&
+                                                isExpanded &&
+                                                provider.id === "claude-acp" && (
+                                                    <div
+                                                        style={{
+                                                            padding:
+                                                                "10px 14px",
+                                                            fontSize: 11,
+                                                            color: "var(--text-secondary)",
+                                                            borderTop:
+                                                                "1px solid var(--border)",
+                                                            lineHeight: 1.5,
+                                                        }}
+                                                    >
+                                                        <strong
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                            }}
+                                                        >
+                                                            Claude subscription
+                                                        </strong>{" "}
+                                                        authentication only
+                                                        works with{" "}
+                                                        <strong
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                            }}
+                                                        >
+                                                            Claude Code
+                                                        </strong>{" "}
+                                                        in the terminal. To use
+                                                        this provider, configure
+                                                        an{" "}
+                                                        <strong
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                            }}
+                                                        >
+                                                            Anthropic API key
+                                                        </strong>{" "}
+                                                        below.
+                                                    </div>
+                                                )}
                                             {!isTerminalRuntime && isExpanded &&
                                                 (provider.setupStatus ? (
                                                     <ProviderExpandedPanel

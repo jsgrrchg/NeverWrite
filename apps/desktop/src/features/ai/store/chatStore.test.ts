@@ -865,7 +865,7 @@ describe("chatStore", () => {
                     return {
                         ...readySetupStatus,
                         runtime_id: "claude-acp",
-                        auth_method: "claude-login",
+                        auth_method: "anthropic-api-key",
                     };
                 }
 
