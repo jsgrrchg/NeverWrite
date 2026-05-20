@@ -3305,7 +3305,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="File Tree"
                 label="Show all vault files"
-                description="Display every vault file, beyond the curated writing and media set."
+                description="Display every vault file, beyond the curated writing and media set. With this off, Markdown, PDFs, images, CSV, TXT, and HTML files are shown."
                 keywords={[
                     "File-oriented search is active",
                     "Search Files & Notes",
