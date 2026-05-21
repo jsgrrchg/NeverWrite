@@ -5,6 +5,7 @@ import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useEditorStore } from "../../../app/store/editorStore";
 import {
+    buildVaultFileEntry,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -21,6 +22,7 @@ afterEach(() => {
         useSettingsStore.setState({
             fileTreeContentMode: "notes_only",
             fileTreeShowExtensions: false,
+            fileTreeExtensionFilter: [],
         });
     });
     setEditorTabs([], null);
@@ -454,6 +456,89 @@ describe("AIChatComposer mention picker", () => {
                     relativePath: "src/main.ts",
                 }),
             );
+        });
+    });
+
+    it("shows curated text-like vault files in the @ picker with all-files mode disabled", async () => {
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[
+                    {
+                        id: "notes/alpha.md",
+                        title: "Alpha",
+                        path: "/vault/notes/alpha.md",
+                    },
+                ]}
+                status="idle"
+                runtimeName="Assistant"
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message NeverWrite",
+        });
+        composer.textContent = "@data";
+        setCaret(composer.firstChild as Text, 5);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("data")).toBeInTheDocument();
+            expect(screen.queryByText("config")).not.toBeInTheDocument();
+            expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+        });
+    });
+
+    it("uses the extension allowlist as the @ picker file scope", async () => {
+        act(() => {
+            useSettingsStore.setState({
+                fileTreeContentMode: "all_files",
+                fileTreeExtensionFilter: ["csv"],
+            });
+        });
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+
+        renderComponent(
+            <AIChatComposer
+                parts={[]}
+                notes={[]}
+                status="idle"
+                runtimeName="Assistant"
+                composerFontFamily="system"
+                availableCommands={[]}
+                onChange={vi.fn()}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />,
+        );
+
+        const composer = screen.getByRole("textbox", {
+            name: "Message NeverWrite",
+        });
+        composer.textContent = "@";
+        setCaret(composer.firstChild as Text, 1);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("data")).toBeInTheDocument();
+            expect(screen.queryByText("config")).not.toBeInTheDocument();
         });
     });
 

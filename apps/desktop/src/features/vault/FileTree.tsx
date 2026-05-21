@@ -17,6 +17,8 @@ import {
     getVaultEntryDisplayName,
     moveVaultEntryToTrash,
     openVaultFileEntry,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldShowVaultEntryInFileTree,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
@@ -2084,6 +2086,9 @@ export function FileTree() {
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
+    const fileTreeExtensionFilter = useSettingsStore(
+        (s) => s.fileTreeExtensionFilter,
+    );
 
     // Editor/workspace toggles that the unified toolbar exposes alongside the
     // tree-specific actions. Sourced from the same stores the old utility
@@ -2196,24 +2201,32 @@ export function FileTree() {
         sortMode === "modified_desc" || sortMode === "modified_asc"
             ? `${structureRevision}:${contentRevision}`
             : structureRevision;
+    const fileTreeExtensionFilterKey = fileTreeExtensionFilter.join("\n");
+    const visibleNotes = useMemo(() => {
+        return shouldIncludeMarkdownNotesInFileScope({
+            contentMode: fileTreeContentMode,
+            extensionFilter: fileTreeExtensionFilter,
+        })
+            ? notes
+            : [];
+    }, [fileTreeContentMode, fileTreeExtensionFilter, notes]);
     const visibleEntries = useMemo(
         () =>
-            entries.filter((entry) => {
-                if (entry.kind === "note") return false;
-                if (entry.kind === "folder") return true;
-                if (fileTreeContentMode === "all_files") return true;
-                if (entry.kind === "pdf") return true;
-                return entry.extension === "html" || entry.extension === "htm";
-            }),
-        [entries, fileTreeContentMode],
+            entries.filter((entry) =>
+                shouldShowVaultEntryInFileTree(entry, {
+                    contentMode: fileTreeContentMode,
+                    extensionFilter: fileTreeExtensionFilter,
+                }),
+            ),
+        [entries, fileTreeContentMode, fileTreeExtensionFilter],
     );
     // Intentionally keyed by revisions instead of the full notes array to avoid
     // rebuilding the folder tree for content-only updates.
     const tree = useMemo(
-        () => buildTree(notes, visibleEntries),
-        // visibleEntries changes only when entries/settings change
+        () => buildTree(visibleNotes, visibleEntries),
+        // visibleEntries and the filter key change only when entries/settings change.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        [treeRevision, visibleEntries],
+        [treeRevision, visibleEntries, fileTreeExtensionFilterKey],
     );
     const allFolderPaths = useMemo(() => getAllFolderPaths(tree), [tree]);
     const revealedFolders = useMemo(() => {

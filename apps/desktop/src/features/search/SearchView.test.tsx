@@ -7,7 +7,10 @@ import { SearchView } from "./SearchView";
 
 describe("SearchView", () => {
     afterEach(() => {
-        useSettingsStore.setState({ fileTreeContentMode: "notes_only" });
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: [],
+        });
         mockInvoke().mockReset();
     });
 
@@ -85,7 +88,42 @@ describe("SearchView", () => {
             "advanced_search",
             expect.objectContaining({
                 params: expect.objectContaining({
+                    file_scope: {
+                        mode: "all_files",
+                        extension_filter: [],
+                    },
                     prefer_file_name: true,
+                }),
+            }),
+        );
+    });
+
+    it("passes the extension allowlist as the advanced search file scope", async () => {
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+        const invokeMock = mockInvoke().mockResolvedValue([]);
+
+        renderComponent(<SearchView tabId="search-tab-allowlist" />);
+        const input = screen.getByPlaceholderText(
+            "Search files and notes... (e.g. tag:project content:react)",
+        );
+
+        fireEvent.change(input, { target: { value: "data" } });
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "advanced_search",
+            expect.objectContaining({
+                params: expect.objectContaining({
+                    file_scope: {
+                        mode: "all_files",
+                        extension_filter: ["csv"],
+                    },
                 }),
             }),
         );

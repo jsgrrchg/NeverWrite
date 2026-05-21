@@ -183,9 +183,7 @@ impl VaultIndex {
                     .file_name()
                     .and_then(|value| value.to_str())
                     .map(|value| value.to_lowercase())
-                    .unwrap_or_else(|| {
-                        id.0.rsplit('/').next().unwrap_or(&id.0).to_lowercase()
-                    }),
+                    .unwrap_or_else(|| id.0.rsplit('/').next().unwrap_or(&id.0).to_lowercase()),
             },
         );
         self.pdf_metadata.insert(
