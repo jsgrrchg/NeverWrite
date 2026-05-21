@@ -149,6 +149,12 @@ import {
     subscribeSafeStorage,
 } from "../../../app/utils/safeStorage";
 import { logDebug, logError, logWarn } from "../../../app/utils/runtimeLog";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "../utils/runtimeMetadata";
+import {
+    CLAUDE_TERMINAL_DESCRIPTOR,
+    buildClaudeTerminalSetupStatus,
+} from "../utils/claudeTerminalRuntime";
+import { checkClaudeCodeInstalled } from "../../terminal/claudeCodeTerminal";
 
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
@@ -197,6 +203,7 @@ interface AiPreferences {
     editDiffZoom?: number;
     historyRetentionDays?: number;
     screenshotRetentionSeconds?: number;
+    defaultRuntimeId?: string;
 }
 
 interface NormalizedAiPreferences {
@@ -1179,6 +1186,7 @@ interface ChatStore {
     ) => Promise<void>;
     syncAutoContextForVault: (vaultPath: string | null) => void;
     setSelectedRuntime: (runtimeId: string | null) => void;
+    getDefaultNewChatRuntimeId: () => string | null;
     refreshSetupStatus: (runtimeId?: string) => Promise<void>;
     saveSetup: (input: {
         runtimeId?: string;
@@ -5036,6 +5044,10 @@ function isRuntimeSetupReady(setupStatus?: AIRuntimeSetupStatus | null) {
     return setupStatus?.authReady === true && !setupStatus.onboardingRequired;
 }
 
+function isClaudeTerminalRuntimeId(runtimeId?: string | null) {
+    return runtimeId === CLAUDE_TERMINAL_RUNTIME_ID;
+}
+
 function getDefaultRuntimeId(
     runtimes: AIRuntimeDescriptor[],
     setupStatusByRuntimeId?: Record<string, AIRuntimeSetupStatus>,
@@ -5049,6 +5061,34 @@ function getDefaultRuntimeId(
         : null;
 
     return readyRuntime?.runtime.id ?? runtimes[0]?.runtime.id ?? null;
+}
+
+function getImplicitDefaultAcpRuntimeId(
+    runtimes: AIRuntimeDescriptor[],
+    setupStatusByRuntimeId?: Record<string, AIRuntimeSetupStatus>,
+) {
+    return getDefaultRuntimeId(
+        runtimes.filter(
+            (runtime) => !isClaudeTerminalRuntimeId(runtime.runtime.id),
+        ),
+        setupStatusByRuntimeId,
+    );
+}
+
+function getSelectableDefaultRuntimeId(
+    runtimeId: string | null | undefined,
+    runtimes: AIRuntimeDescriptor[],
+    setupStatusByRuntimeId?: Record<string, AIRuntimeSetupStatus>,
+) {
+    if (!runtimeId) return null;
+    if (!runtimes.some((runtime) => runtime.runtime.id === runtimeId)) {
+        return null;
+    }
+
+    if (!setupStatusByRuntimeId) return runtimeId;
+    return isRuntimeSetupReady(setupStatusByRuntimeId[runtimeId])
+        ? runtimeId
+        : null;
 }
 
 function runtimeSupportsCapability(
@@ -6394,6 +6434,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         setSelectedRuntime: (runtimeId) => {
             set({ selectedRuntimeId: runtimeId });
+            saveAiPreferences({ defaultRuntimeId: runtimeId ?? undefined });
+        },
+
+        getDefaultNewChatRuntimeId: () => {
+            const state = get();
+            return (
+                getSelectableDefaultRuntimeId(
+                    state.selectedRuntimeId,
+                    state.runtimes,
+                    state.setupStatusByRuntimeId,
+                ) ??
+                getSelectableDefaultRuntimeId(
+                    loadAiPreferences().defaultRuntimeId,
+                    state.runtimes,
+                    state.setupStatusByRuntimeId,
+                ) ??
+                getImplicitDefaultAcpRuntimeId(
+                    state.runtimes,
+                    state.setupStatusByRuntimeId,
+                )
+            );
         },
 
         initialize: async (options) => {
@@ -6407,17 +6468,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set({ isInitializing: true });
 
             try {
-                const runtimes = hydrateRuntimesFromCache(
+                const backendRuntimes = hydrateRuntimesFromCache(
                     await aiListRuntimes(),
                 );
-                const runtimeIds = runtimes.map(
+                const runtimeIds = backendRuntimes.map(
                     (descriptor) => descriptor.runtime.id,
                 );
                 const setupResults = await Promise.allSettled(
                     runtimeIds.map((runtimeId) => aiGetSetupStatus(runtimeId)),
                 );
                 const runtimeConnectionByRuntimeId = buildRuntimeConnectionMap(
-                    runtimes,
+                    backendRuntimes,
                     get().runtimeConnectionByRuntimeId,
                 );
                 const setupStatuses: AIRuntimeSetupStatus[] = [];
@@ -6438,11 +6499,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         ),
                     };
                 });
-                const setupStatusByRuntimeId =
-                    buildSetupStatusMap(setupStatuses);
+                const claudeFound = await checkClaudeCodeInstalled();
+                const runtimes = [
+                    ...backendRuntimes,
+                    CLAUDE_TERMINAL_DESCRIPTOR,
+                ];
+                const setupStatusByRuntimeId = {
+                    ...buildSetupStatusMap(setupStatuses),
+                    [CLAUDE_TERMINAL_RUNTIME_ID]:
+                        buildClaudeTerminalSetupStatus(claudeFound),
+                };
+                // Persisted explicit selection wins only while that runtime is
+                // still available and ready. Otherwise stay on ACP runtimes;
+                // Claude Code remains available but is not promoted to the
+                // default just because the binary exists in PATH.
+                const persistedRuntimeId =
+                    getSelectableDefaultRuntimeId(
+                        loadAiPreferences().defaultRuntimeId,
+                        runtimes,
+                        setupStatusByRuntimeId,
+                    );
                 const defaultRuntimeId =
-                    get().selectedRuntimeId ??
-                    getDefaultRuntimeId(runtimes, setupStatusByRuntimeId);
+                    persistedRuntimeId ??
+                    getImplicitDefaultAcpRuntimeId(
+                        runtimes,
+                        setupStatusByRuntimeId,
+                    );
 
                 set({
                     runtimes,
@@ -10229,7 +10311,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const runtimes = get().runtimes;
             const nextRuntimeId =
                 runtimeId ??
-                get().selectedRuntimeId ??
+                getSelectableDefaultRuntimeId(
+                    get().selectedRuntimeId,
+                    runtimes,
+                    get().setupStatusByRuntimeId,
+                ) ??
                 getDefaultRuntimeId(runtimes, get().setupStatusByRuntimeId);
             if (!nextRuntimeId) return null;
 

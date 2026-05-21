@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { TerminalTab } from "../../app/store/editorStore";
-import { TerminalViewport } from "../devtools/terminal/TerminalViewport";
+import { TerminalViewport } from "./TerminalViewport";
 import {
     createTerminalSessionView,
     useTerminalRuntimeStore,

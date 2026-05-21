@@ -1279,10 +1279,6 @@ describe("EditorPaneBar", () => {
 
     it("creates a workspace terminal from the pane plus-button context menu", async () => {
         useVaultStore.setState({ vaultPath: "/vault" });
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
 
         renderComponent(<EditorPaneBar paneId="secondary" isFocused />);
 

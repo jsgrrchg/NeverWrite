@@ -1486,9 +1486,20 @@ function getTabOpenBehavior() {
     return useSettingsStore.getState().tabOpenBehavior;
 }
 
+const DEFAULT_TERMINAL_TITLE_PATTERN = /^Terminal(?: (\d+))?$/;
+
 function getNextTerminalTitle(tabs: readonly Tab[]) {
-    const count = tabs.filter((tab) => isTerminalTab(tab)).length;
-    return `Terminal ${count + 1}`;
+    const maxExistingIndex = tabs.reduce((maxIndex, tab) => {
+        if (!isTerminalTab(tab)) return maxIndex;
+
+        const match = tab.title.trim().match(DEFAULT_TERMINAL_TITLE_PATTERN);
+        if (!match) return maxIndex;
+
+        const index = match[1] ? Number(match[1]) : 1;
+        return Number.isFinite(index) ? Math.max(maxIndex, index) : maxIndex;
+    }, 0);
+
+    return `Terminal ${maxExistingIndex + 1}`;
 }
 
 function resolvePinnedAwareTabReorder(

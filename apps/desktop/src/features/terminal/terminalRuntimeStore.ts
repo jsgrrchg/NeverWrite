@@ -1,11 +1,12 @@
 import { invoke } from "../../app/runtime";
 import type { TerminalTab } from "../../app/store/editorStore";
-import { appendTerminalRawOutput } from "../devtools/terminal/terminalRawOutput";
+import { useSettingsStore } from "../../app/store/settingsStore";
+import { appendTerminalRawOutput } from "./terminalRawOutput";
 import {
     allocateTabSessionVersion,
     collectSessionIdsToClose,
     deleteTabSessionVersions,
-} from "../devtools/terminal/terminalSessionTracking";
+} from "./terminalSessionTracking";
 import {
     EMPTY_TERMINAL_SNAPSHOT,
     type TerminalErrorEventPayload,
@@ -13,7 +14,7 @@ import {
     type TerminalSessionCreateInput,
     type TerminalSessionSnapshot,
     type TerminalSessionView,
-} from "../devtools/terminal/terminalTypes";
+} from "./terminalTypes";
 import { create } from "zustand";
 
 export interface WorkspaceTerminalRuntime {
@@ -136,6 +137,11 @@ async function createSessionForTerminal(
     const requestVersion = allocateTerminalSessionVersion(terminalId);
 
     try {
+        const { claudeCodeOptimized } = useSettingsStore.getState();
+        const extraEnv: Record<string, string> = {
+            ...(claudeCodeOptimized && { CLAUDE_CODE_NO_FLICKER: "1" }),
+            ...input?.extraEnv,
+        };
         const next = await invoke<TerminalSessionSnapshot>(
             "devtools_create_terminal_session",
             {
@@ -143,6 +149,7 @@ async function createSessionForTerminal(
                     cwd: input?.cwd ?? null,
                     cols: input?.cols,
                     rows: input?.rows,
+                    extraEnv,
                 },
             },
         );

@@ -125,12 +125,6 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         (state) => state.fileTreeShowExtensions,
     );
     const tabOpenBehavior = useSettingsStore((state) => state.tabOpenBehavior);
-    const developerModeEnabled = useSettingsStore(
-        (state) => state.developerModeEnabled,
-    );
-    const developerTerminalEnabled = useSettingsStore(
-        (state) => state.developerTerminalEnabled,
-    );
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const [tabContextMenu, setTabContextMenu] = useState<ContextMenuState<{
         tabId: string;
@@ -1032,11 +1026,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                 <ContextMenu
                     menu={newTabContextMenu}
                     onClose={() => setNewTabContextMenu(null)}
-                    entries={buildNewTabContextMenuEntries({
-                        paneId,
-                        developerModeEnabled,
-                        developerTerminalEnabled,
-                    })}
+                    entries={buildNewTabContextMenuEntries({ paneId })}
                 />
             )}
 

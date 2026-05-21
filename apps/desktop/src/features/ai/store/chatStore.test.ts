@@ -44,6 +44,8 @@ import {
     resetExternalReloadBaselinesForTests,
 } from "../../editor/externalReloadBaselineCache";
 import { useChatRowUiStore } from "./chatRowUiStore";
+import { resetClaudeCodeInstalledCacheForTests } from "../../terminal/claudeCodeTerminal";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "../utils/runtimeMetadata";
 
 const invokeMock = vi.mocked(invoke);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
@@ -346,6 +348,10 @@ function getMockTrackedFilePatchInputs(
 }
 
 async function defaultInvokeImplementation(command: string, args?: unknown) {
+    if (command === "devtools_check_binary") {
+        return { found: false };
+    }
+
     if (command === "ai_list_runtimes") {
         return runtimePayload;
     }
@@ -518,6 +524,7 @@ describe("chatStore", () => {
     beforeEach(() => {
         disposeChatStoreRuntime();
         initializeChatStoreRuntime();
+        resetClaudeCodeInstalledCacheForTests();
         resetChatStore();
         resetChatTabsStore();
         resetExternalReloadBaselinesForTests();
@@ -827,11 +834,122 @@ describe("chatStore", () => {
         expect(state.runtimeConnectionByRuntimeId["codex-acp"]?.status).toBe(
             "ready",
         );
-        expect(state.runtimes).toHaveLength(1);
+        // One backend runtime + the claude-code-terminal pseudo-runtime.
+        expect(state.runtimes).toHaveLength(2);
         expect(state.activeSessionId).toBe("codex-session-1");
         expect(state.sessionsById["codex-session-1"]?.runtimeId).toBe(
             "codex-acp",
         );
+    });
+
+    it("keeps Claude Code available without making it the implicit default", async () => {
+        localStorage.removeItem(AI_PREFS_KEY);
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "devtools_check_binary") {
+                return { found: true };
+            }
+
+            if (command === "ai_create_session") {
+                const runtimeId =
+                    typeof args === "object" &&
+                    args !== null &&
+                    "input" in args
+                        ? (args.input as { runtime_id?: string }).runtime_id
+                        : null;
+
+                expect(runtimeId).toBe("codex-acp");
+                return sessionPayload;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        const state = useChatStore.getState();
+        expect(state.runtimes.map((runtime) => runtime.runtime.id)).toContain(
+            CLAUDE_TERMINAL_RUNTIME_ID,
+        );
+        expect(
+            state.setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID],
+        ).toMatchObject({
+            authReady: true,
+            binaryReady: true,
+        });
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.activeSessionId).toBe("codex-session-1");
+        expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}")
+                .defaultRuntimeId,
+        ).toBeUndefined();
+    });
+
+    it("respects an explicit Claude Code default preference", async () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                defaultRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            }),
+        );
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "devtools_check_binary") {
+                return { found: true };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .initialize({ createDefaultSession: false });
+
+        const state = useChatStore.getState();
+        expect(state.selectedRuntimeId).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
+        expect(state.getDefaultNewChatRuntimeId()).toBe(
+            CLAUDE_TERMINAL_RUNTIME_ID,
+        );
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}")
+                .defaultRuntimeId,
+        ).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
+    });
+
+    it("falls back when a persisted default runtime is no longer available", async () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ defaultRuntimeId: "missing-runtime" }),
+        );
+
+        await useChatStore.getState().initialize();
+
+        const state = useChatStore.getState();
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
+        expect(state.sessionsById["codex-session-1"]?.runtimeId).toBe(
+            "codex-acp",
+        );
+    });
+
+    it("falls back when a persisted Claude Code default is no longer ready", async () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                defaultRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            }),
+        );
+
+        await useChatStore.getState().initialize();
+
+        const state = useChatStore.getState();
+        expect(
+            state.setupStatusByRuntimeId[CLAUDE_TERMINAL_RUNTIME_ID],
+        ).toMatchObject({
+            authReady: false,
+            binaryReady: false,
+        });
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
     });
 
     it("selects the first configured runtime on fresh boot", async () => {
@@ -864,7 +982,7 @@ describe("chatStore", () => {
                     return {
                         ...readySetupStatus,
                         runtime_id: "claude-acp",
-                        auth_method: "claude-login",
+                        auth_method: "anthropic-api-key",
                     };
                 }
 
