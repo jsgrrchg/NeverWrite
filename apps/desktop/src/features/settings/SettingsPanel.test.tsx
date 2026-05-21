@@ -228,6 +228,20 @@ describe("SettingsPanel", () => {
         ]);
     });
 
+    it("does not render a developer toggle for the first-class terminal", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Developers" }));
+
+        expect(screen.getByText("Enable Developer Mode")).toBeInTheDocument();
+        expect(
+            screen.queryByText(["Enable", "Integrated", "Terminal"].join(" ")),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByText(/integrated terminal/i),
+        ).not.toBeInTheDocument();
+    });
+
     it("renders and persists app zoom as a percentage stepper", async () => {
         localStorage.setItem(APP_ZOOM_STORAGE_KEY, "1.1");
 

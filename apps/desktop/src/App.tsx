@@ -590,16 +590,12 @@ function useRegisterCommands(
                 ? selectPaneNeighbor(state, focusedPaneId, direction) !== null
                 : false;
         };
-        const developerModeEnabled = () =>
-            developerCommandsEnabled &&
-            useSettingsStore.getState().developerModeEnabled &&
-            useSettingsStore.getState().developerTerminalEnabled;
         const activeTerminalTab = () => {
             const tab = selectFocusedEditorTab(useEditorStore.getState());
             return tab && isTerminalTab(tab) ? tab : null;
         };
         const canRestartActiveTerminal = () =>
-            developerModeEnabled() && activeTerminalTab() !== null;
+            developerCommandsEnabled && activeTerminalTab() !== null;
 
         // Navigation
         register({

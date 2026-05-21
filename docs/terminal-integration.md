@@ -4,7 +4,7 @@ Related issue: [jsgrrchg/NeverWrite#107](https://github.com/jsgrrchg/NeverWrite/
 
 ## Background
 
-The terminal currently works but sits behind a double gate: `developerModeEnabled` must be on, then `developerTerminalEnabled` inside it. Both flags live in the Developer section of Settings.
+The terminal is now a first-class workspace surface. It is available from workspace commands and tab menus without requiring Developer Mode.
 
 **The PTY backend is a Rust sidecar** (`apps/desktop/native-backend/src/devtools.rs`) using `portable-pty`, spawned and managed by `nativeBackend.ts` over JSON-line stdio. There is no node-pty. This matters for Step 6: any change to env vars or spawn options crosses a language boundary and requires the sidecar binary to be rebuilt and repackaged. `TERM=xterm-256color` is already set at `devtools.rs:345`. `COLORTERM=truecolor` is not.
 
@@ -31,20 +31,18 @@ There is no viable drop-in replacement for xterm.js today. The most promising fu
 
 ---
 
-## Step 1 — Ungate the terminal
+## Step 1 — Keep the terminal ungated
 
 **Files:** `src/App.tsx:921-943`, `src/features/editor/newTabMenuActions.ts:85-147`, `src/features/editor/EditorPaneBar.tsx`
 
-Remove the `developerModeEnabled` guard from the `developer:new-terminal-tab` command palette entry (`App.tsx:939`). Remove the `developerTerminalEnabled` check from `buildNewTabContextMenuEntries` (`newTabMenuActions.ts:138`) so "New Terminal" appears in every pane's `+` menu unconditionally.
+The "New Terminal" action should stay available from the workspace command palette entry and every pane's `+` menu unconditionally.
 
-Note: `developerTerminalEnabled` already defaults to `true` (`settingsStore.ts:175`). No default flip needed — only the `developerModeEnabled` outer gate has to drop.
+Do not add a Developer Mode setting that promises to enable or disable terminal tabs. Terminal availability is not user-gated anymore.
 
-Leave both toggles in the Developer settings section for users who want to hide the feature.
-
-The `developer:restart-terminal` command stays behind `developerModeEnabled`. But once terminal creation is ungated, restart becomes a usability need for ordinary users too. Add a right-click context menu entry on the terminal tab itself (already partially exists in `EditorPaneBar.tsx` tab context menu) so non-developer users have a recovery path that doesn't require dev mode.
+Restart remains a recovery action for active terminal tabs and should not depend on Developer Mode.
 
 **Also do:**
-- Change the command id from `developer:new-terminal-tab` to `workspace:new-terminal-tab` and the category from `"Developer"` to `"Workspace"` (or `"Tabs"`) — cosmetics, but "first-class" means it shows up in the right palette group.
+- Keep the command id as `workspace:new-terminal-tab` and the category as `"Workspace"` — "first-class" means it shows up in the right palette group.
 - Assign a keyboard shortcut. Check for collisions in the existing shortcut registry.
 
 **Do this step last** — only ungate once the full experience (Steps 2–7) is ready.
@@ -83,7 +81,7 @@ Section contents:
 - **Font size** — number input, range 8–24. Check whether a number input control already exists in the settings component library before building a new one.
 - **Optimize for Claude Code** — toggle. Label: "Fullscreen rendering (experimental)". Hint: "Sets CLAUDE_CODE_NO_FLICKER=1. Improves rendering but disables scrollback. Only applies to new terminals." Wired to `claudeCodeOptimized`.
 
-The Developer section keeps `developerTerminalEnabled` and `developerModeEnabled`. Consider whether `developerTerminalEnabled` should be renamed `terminalEnabled` now that the terminal is first-class — if so, add a migration in the persistence merge.
+The Developer section keeps `developerModeEnabled` only for low-level developer-facing tools. Do not reintroduce a terminal enablement toggle there.
 
 ---
 

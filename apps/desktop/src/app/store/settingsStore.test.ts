@@ -28,7 +28,6 @@ describe("settingsStore developer mode", () => {
 
     it("defaults developerModeEnabled to false", () => {
         expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
-        expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
         expect(useSettingsStore.getState().terminalFontFamily).toBe("");
         expect(useSettingsStore.getState().terminalFontSize).toBe(13);
         expect(useSettingsStore.getState().claudeCodeOptimized).toBe(false);
@@ -54,9 +53,6 @@ describe("settingsStore developer mode", () => {
         useVaultStore.setState({ vaultPath: "/vaults/devtools" });
 
         useSettingsStore.getState().setSetting("developerModeEnabled", true);
-        useSettingsStore
-            .getState()
-            .setSetting("developerTerminalEnabled", false);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
         useSettingsStore.getState().setSetting("pdfFilter", "sepia");
         useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
@@ -64,9 +60,6 @@ describe("settingsStore developer mode", () => {
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
 
         expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
-        expect(useSettingsStore.getState().developerTerminalEnabled).toBe(
-            false,
-        );
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(useSettingsStore.getState().pdfFilter).toBe("sepia");
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
@@ -79,7 +72,6 @@ describe("settingsStore developer mode", () => {
         ).toMatchObject({
             state: {
                 developerModeEnabled: true,
-                developerTerminalEnabled: false,
                 inlineReviewEnabled: false,
                 pdfFilter: "sepia",
                 fileTreeStickyFolders: false,

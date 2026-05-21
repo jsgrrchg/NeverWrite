@@ -210,10 +210,6 @@ describe("App note window", () => {
         detachedWindowMock.label = "main";
         detachedWindowMock.mode = "main";
         window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
 
         renderComponent(<App />);
         await flushPromises();
@@ -292,10 +288,6 @@ describe("App note window", () => {
         detachedWindowMock.label = "main";
         detachedWindowMock.mode = "main";
         window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
         const restartSpy = vi
             .spyOn(useTerminalRuntimeStore.getState(), "restart")
             .mockResolvedValue(undefined);

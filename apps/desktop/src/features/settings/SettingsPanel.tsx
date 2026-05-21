@@ -3295,7 +3295,6 @@ function DevelopersSettings({
 }) {
     const {
         developerModeEnabled,
-        developerTerminalEnabled,
         lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
@@ -3308,12 +3307,7 @@ function DevelopersSettings({
         [
             [
                 "Enable Developer Mode",
-                "Show experimental developer-facing surfaces such as the integrated terminal.",
-            ],
-            [
-                "Enable Integrated Terminal",
-                "Enable terminal tabs in the editor workspace and related commands.",
-                "terminal",
+                "Show low-level developer-facing tools and diagnostics.",
             ],
         ],
     );
@@ -3358,29 +3352,12 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="Developer Mode"
                 label="Enable Developer Mode"
-                description="Show experimental developer-facing surfaces such as the integrated terminal."
+                description="Show low-level developer-facing tools and diagnostics."
                 control={
                     <Toggle
                         value={developerModeEnabled}
                         onChange={(value) =>
                             setSetting("developerModeEnabled", value)
-                        }
-                    />
-                }
-            />
-            <SearchableRow
-                searchQuery={searchQuery}
-                section="Developer Mode"
-                label="Enable Integrated Terminal"
-                description="Enable terminal tabs in the editor workspace and related commands."
-                disabled={!developerModeEnabled}
-                keywords={["terminal"]}
-                control={
-                    <Toggle
-                        value={developerTerminalEnabled}
-                        disabled={!developerModeEnabled}
-                        onChange={(value) =>
-                            setSetting("developerTerminalEnabled", value)
                         }
                     />
                 }
@@ -4186,8 +4163,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
     developers: [
         "Developer Mode",
         "Enable Developer Mode",
-        "Enable Integrated Terminal",
-        "terminal",
         "Editor",
         "Line wrapping",
         "File Tree",
