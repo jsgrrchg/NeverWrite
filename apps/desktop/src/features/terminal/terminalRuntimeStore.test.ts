@@ -1,6 +1,7 @@
 import { invoke } from "../../app/runtime";
 import type { TerminalTab } from "../../app/store/editorStore";
-import type { TerminalSessionSnapshot } from "../devtools/terminal/terminalTypes";
+import { useSettingsStore } from "../../app/store/settingsStore";
+import type { TerminalSessionSnapshot } from "./terminalTypes";
 import {
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
@@ -62,6 +63,7 @@ function getRuntime(terminalId = "terminal-1") {
 describe("terminalRuntimeStore", () => {
     beforeEach(() => {
         resetTerminalRuntimeStoreForTests();
+        useSettingsStore.getState().reset();
         vi.mocked(invoke).mockReset();
     });
 
@@ -90,6 +92,30 @@ describe("terminalRuntimeStore", () => {
             rawOutput: "early output\n",
             busy: false,
         });
+    });
+
+    it("adds Claude Code fullscreen rendering env to newly created sessions when enabled", async () => {
+        useSettingsStore.setState({ claudeCodeOptimized: true });
+        vi.mocked(invoke).mockResolvedValue(
+            makeSnapshot({ sessionId: "devterm-1" }),
+        );
+
+        useTerminalRuntimeStore.getState().ensureTerminal(makeTerminalTab());
+        await flushPromises();
+
+        expect(vi.mocked(invoke)).toHaveBeenCalledWith(
+            "devtools_create_terminal_session",
+            {
+                input: {
+                    cwd: "/vault",
+                    cols: 120,
+                    rows: 24,
+                    extraEnv: {
+                        CLAUDE_CODE_NO_FLICKER: "1",
+                    },
+                },
+            },
+        );
     });
 
     it("ignores output from retired sessions after closing a terminal tab", async () => {

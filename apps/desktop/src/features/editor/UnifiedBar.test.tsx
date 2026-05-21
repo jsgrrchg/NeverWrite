@@ -813,7 +813,6 @@ describe("UnifiedBar tab strip drop", () => {
             },
         ]);
         setVaultEntries([]);
-        useSettingsStore.setState({ developerModeEnabled: false });
 
         const { UnifiedBar } = await import("./UnifiedBar");
         const { container } = renderComponent(<UnifiedBar windowMode="main" />);
@@ -854,7 +853,6 @@ describe("UnifiedBar tab strip drop", () => {
                 content: "alpha",
             },
         ]);
-        useSettingsStore.setState({ developerModeEnabled: false });
 
         const { UnifiedBar } = await import("./UnifiedBar");
         const { container } = renderComponent(<UnifiedBar windowMode="main" />);
@@ -962,7 +960,7 @@ describe("UnifiedBar tab strip drop", () => {
         }
     });
 
-    it("creates a workspace terminal from the plus-button context menu in developer terminal mode", async () => {
+    it("creates a workspace terminal from the plus-button context menu", async () => {
         const user = userEvent.setup();
         setEditorTabs([
             {
@@ -974,10 +972,6 @@ describe("UnifiedBar tab strip drop", () => {
             },
         ]);
         setVaultEntries([]);
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
 
         const { UnifiedBar } = await import("./UnifiedBar");
         const { container } = renderComponent(<UnifiedBar windowMode="main" />);

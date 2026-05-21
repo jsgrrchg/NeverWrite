@@ -1098,7 +1098,6 @@ describe("FileTree", () => {
         act(() => {
             useSettingsStore.getState().reset();
             useSettingsStore.setState({
-                developerModeEnabled: true,
                 fileTreeContentMode: "all_files",
                 fileTreeShowExtensions: true,
             });

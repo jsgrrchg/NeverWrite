@@ -10,12 +10,12 @@ import {
     listenToAiAuthTerminalStarted,
 } from "../api";
 import type { AIAuthTerminalSessionSnapshot } from "../types";
-import { appendTerminalRawOutput } from "../../devtools/terminal/terminalRawOutput";
-import { TerminalViewport } from "../../devtools/terminal/TerminalViewport";
+import { appendTerminalRawOutput } from "../../terminal/terminalRawOutput";
+import { TerminalViewport } from "../../terminal/TerminalViewport";
 import {
     EMPTY_TERMINAL_SNAPSHOT,
     type TerminalSessionView,
-} from "../../devtools/terminal/terminalTypes";
+} from "../../terminal/terminalTypes";
 import { APP_BRAND_NAME } from "../../../app/utils/branding";
 
 interface AIAuthTerminalModalProps {

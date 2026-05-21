@@ -4,7 +4,7 @@ import {
     flushPromises,
     getXtermMockInstances,
     renderComponent,
-} from "../../../test/test-utils";
+} from "../../test/test-utils";
 import { TerminalViewport } from "./TerminalViewport";
 import type { TerminalSessionView } from "./terminalTypes";
 

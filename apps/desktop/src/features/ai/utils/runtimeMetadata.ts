@@ -1,5 +1,7 @@
 import type { AIRuntimeDescriptor } from "../types";
 
+export const CLAUDE_TERMINAL_RUNTIME_ID = "claude-code-terminal";
+
 interface RuntimeMetadata {
     id: string;
     name: string;
@@ -71,13 +73,14 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
     },
 ];
 
-export const PROVIDER_CATALOG = RUNTIME_METADATA.map(
-    ({ id, name, company }) => ({
-        id,
-        name,
-        company,
-    }),
-);
+export const PROVIDER_CATALOG = [
+    ...RUNTIME_METADATA.map(({ id, name, company }) => ({ id, name, company })),
+    {
+        id: CLAUDE_TERMINAL_RUNTIME_ID,
+        name: "Claude Code",
+        company: "Anthropic",
+    },
+];
 
 export function getRuntimeDisplayName(
     runtimeId?: string | null,
@@ -91,6 +94,8 @@ export function getRuntimeDisplayName(
     if (!runtimeId) {
         return "Assistant";
     }
+
+    if (runtimeId === CLAUDE_TERMINAL_RUNTIME_ID) return "Claude Code";
 
     return (
         RUNTIME_METADATA.find((runtime) => runtime.id === runtimeId)?.name ??

@@ -6,7 +6,7 @@ import {
 } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
 
-describe("settingsStore developer mode", () => {
+describe("settingsStore", () => {
     beforeEach(() => {
         disposeSettingsStoreRuntime();
         initializeSettingsStore();
@@ -26,9 +26,18 @@ describe("settingsStore developer mode", () => {
         disposeSettingsStoreRuntime();
     });
 
-    it("defaults developerModeEnabled to false", () => {
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
-        expect(useSettingsStore.getState().developerTerminalEnabled).toBe(true);
+    it("defaults app settings", () => {
+        expect(useSettingsStore.getState().terminalFontFamily).toBe("");
+        expect(useSettingsStore.getState().terminalFontSize).toBe(13);
+        expect(useSettingsStore.getState().claudeCodeOptimized).toBe(false);
+        expect(useSettingsStore.getState().claudeCodeSkipPermissions).toBe(
+            false,
+        );
+        expect(useSettingsStore.getState().claudeCodeModel).toBe("");
+        expect(useSettingsStore.getState().claudeCodeContinueSession).toBe(
+            false,
+        );
+        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(0);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
@@ -39,23 +48,15 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([]);
     });
 
-    it("persists developerModeEnabled per vault", () => {
+    it("persists settings per vault", () => {
         useVaultStore.setState({ vaultPath: "/vaults/devtools" });
 
-        useSettingsStore.getState().setSetting("developerModeEnabled", true);
-        useSettingsStore
-            .getState()
-            .setSetting("developerTerminalEnabled", false);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
         useSettingsStore.getState().setSetting("pdfFilter", "sepia");
         useSettingsStore.getState().setSetting("fileTreeStickyFolders", false);
         useSettingsStore.getState().setSetting("agentsSidebarScale", 125);
         useSettingsStore.getState().setSetting("editorAutosaveDelayMs", 750);
 
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
-        expect(useSettingsStore.getState().developerTerminalEnabled).toBe(
-            false,
-        );
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(useSettingsStore.getState().pdfFilter).toBe("sepia");
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(false);
@@ -67,8 +68,6 @@ describe("settingsStore developer mode", () => {
             ),
         ).toMatchObject({
             state: {
-                developerModeEnabled: true,
-                developerTerminalEnabled: false,
                 inlineReviewEnabled: false,
                 pdfFilter: "sepia",
                 fileTreeStickyFolders: false,
@@ -76,6 +75,61 @@ describe("settingsStore developer mode", () => {
                 editorAutosaveDelayMs: 750,
             },
         });
+    });
+
+    it("persists terminal settings per vault", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/terminal" });
+
+        useSettingsStore
+            .getState()
+            .setSetting("terminalFontFamily", "FiraCode Nerd Font");
+        useSettingsStore.getState().setSetting("terminalFontSize", 16);
+        useSettingsStore.getState().setSetting("claudeCodeOptimized", true);
+        useSettingsStore
+            .getState()
+            .setSetting("claudeCodeSkipPermissions", true);
+        useSettingsStore
+            .getState()
+            .setSetting("claudeCodeModel", "claude-sonnet-4-6");
+        useSettingsStore
+            .getState()
+            .setSetting("claudeCodeContinueSession", true);
+        useSettingsStore.getState().setSetting("claudeCodeMaxTurns", 12);
+
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/terminal") ??
+                    "",
+            ),
+        ).toMatchObject({
+            state: {
+                terminalFontFamily: "FiraCode Nerd Font",
+                terminalFontSize: 16,
+                claudeCodeOptimized: true,
+                claudeCodeSkipPermissions: true,
+                claudeCodeModel: "claude-sonnet-4-6",
+                claudeCodeContinueSession: true,
+                claudeCodeMaxTurns: 12,
+            },
+        });
+    });
+
+    it("normalizes persisted terminal numeric settings", () => {
+        localStorage.setItem(
+            "neverwrite:settings",
+            JSON.stringify({
+                state: {
+                    terminalFontSize: 99,
+                    claudeCodeMaxTurns: -3,
+                },
+            }),
+        );
+
+        disposeSettingsStoreRuntime();
+        initializeSettingsStore();
+
+        expect(useSettingsStore.getState().terminalFontSize).toBe(24);
+        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(0);
     });
 
     it("persists custom spellcheck language tags as plain strings", () => {
@@ -155,7 +209,6 @@ describe("settingsStore developer mode", () => {
         useSettingsStore
             .getState()
             .setSetting("spellcheckSecondaryLanguage", "en-US");
-        useSettingsStore.getState().setSetting("developerModeEnabled", true);
         useSettingsStore.getState().setSetting("inlineReviewEnabled", false);
 
         useVaultStore.setState({ vaultPath: "/vaults/two" });
@@ -166,7 +219,6 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().spellcheckSecondaryLanguage).toBe(
             null,
         );
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(false);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
 
         useSettingsStore
@@ -181,7 +233,6 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().spellcheckSecondaryLanguage).toBe(
             "en-US",
         );
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
     });
 
@@ -199,17 +250,11 @@ describe("settingsStore developer mode", () => {
         useVaultStore.setState({ vaultPath: "/vaults/new" });
 
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
-        expect(
-            JSON.parse(
-                localStorage.getItem("neverwrite:settings:/vaults/new") ?? "",
-            ),
-        ).toMatchObject({
-            state: {
-                editorSpellcheck: false,
-                developerModeEnabled: true,
-            },
-        });
+        const stored = JSON.parse(
+            localStorage.getItem("neverwrite:settings:/vaults/new") ?? "",
+        ) as { state: Record<string, unknown> };
+        expect(stored.state.editorSpellcheck).toBe(false);
+        expect(stored.state).not.toHaveProperty("developerModeEnabled");
     });
 
     it("migrates legacy global spellcheck settings into existing vault settings", () => {
@@ -226,7 +271,7 @@ describe("settingsStore developer mode", () => {
             "neverwrite:settings:/vaults/migrated",
             JSON.stringify({
                 state: {
-                    developerModeEnabled: true,
+                    inlineReviewEnabled: false,
                 },
             }),
         );
@@ -239,14 +284,14 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().spellcheckSecondaryLanguage).toBe(
             "en-US",
         );
-        expect(useSettingsStore.getState().developerModeEnabled).toBe(true);
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(
             JSON.parse(
                 localStorage.getItem("neverwrite:settings:/vaults/migrated") ?? "",
             ),
         ).toMatchObject({
             state: {
-                developerModeEnabled: true,
+                inlineReviewEnabled: false,
                 spellcheckPrimaryLanguage: "es-CL",
                 spellcheckSecondaryLanguage: "en-US",
             },

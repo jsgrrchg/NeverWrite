@@ -26,6 +26,25 @@ const CODE_CSS_VAR_ENTRIES = Object.entries(CODE_CSS_VAR_MAP) as Array<
     [keyof CodeColorAnchors, string]
 >;
 
+const TERMINAL_ANSI_CSS_VARS = [
+    "--terminal-ansi-black",
+    "--terminal-ansi-red",
+    "--terminal-ansi-green",
+    "--terminal-ansi-yellow",
+    "--terminal-ansi-blue",
+    "--terminal-ansi-magenta",
+    "--terminal-ansi-cyan",
+    "--terminal-ansi-white",
+    "--terminal-ansi-bright-black",
+    "--terminal-ansi-bright-red",
+    "--terminal-ansi-bright-green",
+    "--terminal-ansi-bright-yellow",
+    "--terminal-ansi-bright-blue",
+    "--terminal-ansi-bright-magenta",
+    "--terminal-ansi-bright-cyan",
+    "--terminal-ansi-bright-white",
+] as const;
+
 function expectCodeVars(themeName: ThemeName, isDark: boolean) {
     applyThemeColors(themeName, isDark);
 
@@ -63,5 +82,19 @@ describe("applyThemeColors", () => {
         expect(themes.tokyoNight.light.codeAnchors.keyword).not.toBe(
             themes.gruvbox.light.codeAnchors.keyword,
         );
+    });
+
+    it("publishes terminal ANSI vars for every theme and mode", () => {
+        for (const themeName of Object.keys(themes) as ThemeName[]) {
+            for (const isDark of [false, true]) {
+                applyThemeColors(themeName, isDark);
+
+                for (const cssVar of TERMINAL_ANSI_CSS_VARS) {
+                    expect(
+                        document.documentElement.style.getPropertyValue(cssVar),
+                    ).toMatch(/^#[0-9a-f]{6}$/i);
+                }
+            }
+        }
     });
 });

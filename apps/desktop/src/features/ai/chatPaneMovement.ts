@@ -9,6 +9,7 @@ import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
 import { getPreferredWorkspaceChatSessionIdForSession } from "./chatWorkspaceSelectors";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
 import type {
     AIChatSession,
     AIRuntimeDescriptor,
@@ -39,8 +40,19 @@ function isRuntimeSetupReady(setupStatus?: AIRuntimeSetupStatus | null) {
     return setupStatus?.authReady === true && !setupStatus.onboardingRequired;
 }
 
+function isClaudeTerminalRuntimeId(runtimeId?: string | null) {
+    return runtimeId === CLAUDE_TERMINAL_RUNTIME_ID;
+}
+
 function resolvePendingRuntime(runtimeId?: string) {
     const state = useChatStore.getState();
+    if (isClaudeTerminalRuntimeId(runtimeId)) {
+        return null;
+    }
+    if (!runtimeId && isClaudeTerminalRuntimeId(state.selectedRuntimeId)) {
+        return null;
+    }
+
     const getRuntime = (candidateRuntimeId?: string | null) =>
         candidateRuntimeId
             ? (state.runtimes.find(
@@ -48,25 +60,36 @@ function resolvePendingRuntime(runtimeId?: string) {
                       descriptor.runtime.id === candidateRuntimeId,
               ) ?? null)
             : null;
-    const firstReadyRuntime = state.runtimes.find((descriptor) =>
-        isRuntimeSetupReady(
-            state.setupStatusByRuntimeId[descriptor.runtime.id],
-        ),
+    const firstReadyRuntime = state.runtimes.find(
+        (descriptor) =>
+            !isClaudeTerminalRuntimeId(descriptor.runtime.id) &&
+            isRuntimeSetupReady(
+                state.setupStatusByRuntimeId[descriptor.runtime.id],
+            ),
     );
     const selectedRuntime = getRuntime(state.selectedRuntimeId);
     const readySelectedRuntimeId =
         selectedRuntime &&
+        !isClaudeTerminalRuntimeId(selectedRuntime.runtime.id) &&
         isRuntimeSetupReady(
             state.setupStatusByRuntimeId[selectedRuntime.runtime.id],
         )
             ? selectedRuntime.runtime.id
             : null;
+    const selectedRuntimeId = !isClaudeTerminalRuntimeId(
+        state.selectedRuntimeId,
+    )
+        ? state.selectedRuntimeId
+        : null;
+    const firstConfiguredRuntimeId = state.runtimes.find(
+        (descriptor) => !isClaudeTerminalRuntimeId(descriptor.runtime.id),
+    )?.runtime.id;
     const resolvedRuntimeId =
         runtimeId ??
         readySelectedRuntimeId ??
         firstReadyRuntime?.runtime.id ??
-        state.selectedRuntimeId ??
-        state.runtimes[0]?.runtime.id;
+        selectedRuntimeId ??
+        firstConfiguredRuntimeId;
     if (!resolvedRuntimeId) {
         return null;
     }
@@ -82,6 +105,26 @@ function resolvePendingRuntime(runtimeId?: string) {
     };
 }
 
+function resolveStoreNewSessionRuntimeId(runtimeId?: string | null) {
+    if (runtimeId) {
+        return runtimeId;
+    }
+
+    const state = useChatStore.getState();
+    const firstReadyRuntimeId = state.runtimes.find((descriptor) =>
+        isRuntimeSetupReady(
+            state.setupStatusByRuntimeId[descriptor.runtime.id],
+        ),
+    )?.runtime.id;
+
+    return (
+        state.selectedRuntimeId ??
+        firstReadyRuntimeId ??
+        state.runtimes[0]?.runtime.id ??
+        null
+    );
+}
+
 function getSessionRuntimeId(sessionId?: string | null) {
     if (!sessionId) {
         return null;
@@ -94,6 +137,12 @@ function resolveWorkspaceNewChatRuntimeId(runtimeId?: string) {
         return runtimeId;
     }
 
+    const chatState = useChatStore.getState();
+    const defaultRuntimeId = chatState.getDefaultNewChatRuntimeId();
+    if (isClaudeTerminalRuntimeId(defaultRuntimeId)) {
+        return defaultRuntimeId;
+    }
+
     const focusedTab = selectFocusedEditorTab(useEditorStore.getState());
     const focusedChatRuntimeId =
         focusedTab && isChatTab(focusedTab)
@@ -103,7 +152,6 @@ function resolveWorkspaceNewChatRuntimeId(runtimeId?: string) {
         return focusedChatRuntimeId;
     }
 
-    const chatState = useChatStore.getState();
     return (
         getSessionRuntimeId(chatState.lastFocusedSessionId) ??
         getSessionRuntimeId(chatState.activeSessionId) ??
@@ -279,8 +327,19 @@ export async function createNewChatInWorkspace(
     options?: OpenChatInWorkspaceOptions,
 ) {
     const resolvedRuntimeId = resolveWorkspaceNewChatRuntimeId(runtimeId);
+    // The claude-terminal pseudo-runtime has no ACP backend — callers that
+    // detect it should route to openClaudeCodeTerminalWithContext instead.
+    if (resolvedRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID) return null;
     const pendingSession = createPendingWorkspaceSession(resolvedRuntimeId);
     if (!pendingSession) {
+        if (
+            isClaudeTerminalRuntimeId(
+                resolveStoreNewSessionRuntimeId(resolvedRuntimeId),
+            )
+        ) {
+            return null;
+        }
+
         const createdSessionId = await useChatStore
             .getState()
             .newSession(resolvedRuntimeId);
@@ -306,15 +365,25 @@ export async function createNewChatInWorkspace(
 export async function ensureWorkspaceChatSession(
     options?: OpenChatInWorkspaceOptions & { runtimeId?: string },
 ) {
+    if (isClaudeTerminalRuntimeId(options?.runtimeId)) {
+        return null;
+    }
+
     const visibleSessionId = getPreferredWorkspaceChatSessionIdForSession(
         useChatStore.getState().lastFocusedSessionId,
     );
     if (visibleSessionId) {
+        if (isClaudeTerminalRuntimeId(getSessionRuntimeId(visibleSessionId))) {
+            return null;
+        }
         return visibleSessionId;
     }
 
     const activeSessionId = useChatStore.getState().activeSessionId;
     if (activeSessionId) {
+        if (isClaudeTerminalRuntimeId(getSessionRuntimeId(activeSessionId))) {
+            return null;
+        }
         return openChatSessionInWorkspace(activeSessionId, options);
     }
 

@@ -2,7 +2,7 @@ import { act, screen } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
-import type { TerminalSessionSnapshot } from "../devtools/terminal/terminalTypes";
+import type { TerminalSessionSnapshot } from "../terminal/terminalTypes";
 import {
     getXtermMockInstances,
     flushPromises,

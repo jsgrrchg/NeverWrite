@@ -35,9 +35,16 @@ export interface Settings {
     fileTreeStickyFolders: boolean;
     tabOpenBehavior: TabOpenBehavior;
 
+    // Terminal
+    terminalFontFamily: string;
+    terminalFontSize: number; // 8–24
+    claudeCodeOptimized: boolean;
+    claudeCodeSkipPermissions: boolean;
+    claudeCodeModel: string; // "" = Claude Code default
+    claudeCodeContinueSession: boolean;
+    claudeCodeMaxTurns: number; // 0 = unlimited
+
     // Developers
-    developerModeEnabled: boolean;
-    developerTerminalEnabled: boolean;
     fileTreeContentMode: "notes_only" | "all_files";
     fileTreeShowExtensions: boolean;
     fileTreeExtensionFilter: string[];
@@ -175,8 +182,13 @@ const defaults: Settings = {
     agentsSidebarScale: 100,
     fileTreeStickyFolders: true,
     tabOpenBehavior: "history",
-    developerModeEnabled: false,
-    developerTerminalEnabled: true,
+    terminalFontFamily: "",
+    terminalFontSize: 13,
+    claudeCodeOptimized: false,
+    claudeCodeSkipPermissions: false,
+    claudeCodeModel: "",
+    claudeCodeContinueSession: false,
+    claudeCodeMaxTurns: 0,
     fileTreeContentMode: "notes_only",
     fileTreeShowExtensions: false,
     fileTreeExtensionFilter: [],
@@ -408,12 +420,35 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             tabOpenBehavior: normalizeTabOpenBehavior(
                 parsed.state.tabOpenBehavior,
             ),
-            developerModeEnabled:
-                parsed.state.developerModeEnabled ??
-                defaults.developerModeEnabled,
-            developerTerminalEnabled:
-                parsed.state.developerTerminalEnabled ??
-                defaults.developerTerminalEnabled,
+            terminalFontFamily:
+                typeof parsed.state.terminalFontFamily === "string"
+                    ? parsed.state.terminalFontFamily
+                    : defaults.terminalFontFamily,
+            terminalFontSize: normalizeIntInRange(
+                parsed.state.terminalFontSize,
+                defaults.terminalFontSize,
+                8,
+                24,
+            ),
+            claudeCodeOptimized:
+                parsed.state.claudeCodeOptimized ??
+                defaults.claudeCodeOptimized,
+            claudeCodeSkipPermissions:
+                parsed.state.claudeCodeSkipPermissions ??
+                defaults.claudeCodeSkipPermissions,
+            claudeCodeModel:
+                typeof parsed.state.claudeCodeModel === "string"
+                    ? parsed.state.claudeCodeModel
+                    : defaults.claudeCodeModel,
+            claudeCodeContinueSession:
+                parsed.state.claudeCodeContinueSession ??
+                defaults.claudeCodeContinueSession,
+            claudeCodeMaxTurns: normalizeIntInRange(
+                parsed.state.claudeCodeMaxTurns,
+                defaults.claudeCodeMaxTurns,
+                0,
+                1000,
+            ),
             fileTreeContentMode: normalizeFileTreeContentMode(
                 parsed.state.fileTreeContentMode,
             ),
@@ -485,8 +520,13 @@ function pickSettings(state: SettingsStore): Settings {
         agentsSidebarScale: state.agentsSidebarScale,
         fileTreeStickyFolders: state.fileTreeStickyFolders,
         tabOpenBehavior: state.tabOpenBehavior,
-        developerModeEnabled: state.developerModeEnabled,
-        developerTerminalEnabled: state.developerTerminalEnabled,
+        terminalFontFamily: state.terminalFontFamily,
+        terminalFontSize: state.terminalFontSize,
+        claudeCodeOptimized: state.claudeCodeOptimized,
+        claudeCodeSkipPermissions: state.claudeCodeSkipPermissions,
+        claudeCodeModel: state.claudeCodeModel,
+        claudeCodeContinueSession: state.claudeCodeContinueSession,
+        claudeCodeMaxTurns: state.claudeCodeMaxTurns,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
         fileTreeExtensionFilter: state.fileTreeExtensionFilter,

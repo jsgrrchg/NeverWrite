@@ -228,6 +228,22 @@ describe("SettingsPanel", () => {
         ]);
     });
 
+    it("does not render obsolete developer toggles", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Developers" }));
+
+        expect(
+            screen.queryByText(["Enable", "Developer", "Mode"].join(" ")),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByText(["Enable", "Integrated", "Terminal"].join(" ")),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByText(/integrated terminal/i),
+        ).not.toBeInTheDocument();
+    });
+
     it("renders and persists app zoom as a percentage stepper", async () => {
         localStorage.setItem(APP_ZOOM_STORAGE_KEY, "1.1");
 
@@ -564,6 +580,75 @@ describe("SettingsPanel", () => {
 
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
         expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+
+    it("renders and persists terminal and Claude Code settings", async () => {
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "devtools_check_binary") {
+                return { found: true };
+            }
+            return undefined;
+        });
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+
+        fireEvent.change(
+            screen.getByPlaceholderText("e.g. FiraCode Nerd Font"),
+            {
+                target: { value: "FiraCode Nerd Font" },
+            },
+        );
+        expect(useSettingsStore.getState().terminalFontFamily).toBe(
+            "FiraCode Nerd Font",
+        );
+
+        const fullscreenRow =
+            screen.getByText("Fullscreen rendering (experimental)")
+                .parentElement?.parentElement;
+        expect(fullscreenRow).not.toBeNull();
+        fireEvent.click(within(fullscreenRow as HTMLElement).getByRole("switch"));
+        expect(useSettingsStore.getState().claudeCodeOptimized).toBe(true);
+
+        expect(await screen.findByText("Skip permissions")).toBeInTheDocument();
+        const skipPermissionsRow =
+            screen.getByText("Skip permissions").parentElement?.parentElement;
+        expect(skipPermissionsRow).not.toBeNull();
+        fireEvent.click(
+            within(skipPermissionsRow as HTMLElement).getByRole("switch"),
+        );
+        expect(useSettingsStore.getState().claudeCodeSkipPermissions).toBe(
+            true,
+        );
+
+        const modelRow = screen.getByText("Model").parentElement?.parentElement;
+        expect(modelRow).not.toBeNull();
+        fireEvent.change(within(modelRow as HTMLElement).getByRole("combobox"), {
+            target: { value: "claude-sonnet-4-6" },
+        });
+        expect(useSettingsStore.getState().claudeCodeModel).toBe(
+            "claude-sonnet-4-6",
+        );
+
+        const continueRow =
+            screen.getByText("Continue last session").parentElement
+                ?.parentElement;
+        expect(continueRow).not.toBeNull();
+        fireEvent.click(within(continueRow as HTMLElement).getByRole("switch"));
+        expect(useSettingsStore.getState().claudeCodeContinueSession).toBe(
+            true,
+        );
+
+        const maxTurnsRow =
+            screen.getByText("Max turns").parentElement?.parentElement;
+        expect(maxTurnsRow).not.toBeNull();
+        const maxTurnsInput =
+            within(maxTurnsRow as HTMLElement).getByDisplayValue("0");
+        fireEvent.focus(maxTurnsInput);
+        fireEvent.change(maxTurnsInput, { target: { value: "12" } });
+        fireEvent.keyDown(maxTurnsInput, { key: "Enter" });
+        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(12);
     });
 
     it("checks updater metadata manually without starting an install", async () => {

@@ -2025,6 +2025,40 @@ describe("editorStore tab management", () => {
         ).toBeNull();
     });
 
+    it("numbers normal terminal tabs independently from Claude Code terminals", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/project-alpha" });
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTerminalTab({
+                            id: "claude-code-tab-1",
+                            terminalId: "claude-code-runtime-1",
+                            title: "Claude Code 1",
+                            cwd: "/vaults/project-alpha",
+                        }),
+                    ],
+                    activeTabId: "claude-code-tab-1",
+                },
+            ],
+            "primary",
+        );
+
+        const tabId = useEditorStore.getState().openTerminal();
+
+        const state = useEditorStore.getState();
+        expect(tabId).toBeTruthy();
+        expect(state.tabs).toContainEqual(
+            expect.objectContaining({
+                id: tabId,
+                kind: "terminal",
+                title: "Terminal 1",
+                cwd: "/vaults/project-alpha",
+            }),
+        );
+    });
+
     it("remembers terminal tabs in recently closed tabs", () => {
         useEditorStore.setState({
             tabs: [

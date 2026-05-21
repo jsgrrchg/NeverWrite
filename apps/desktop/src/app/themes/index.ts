@@ -19,6 +19,7 @@ import { everforestTheme } from "./everforest";
 import { synthwave84Theme } from "./synthwave84";
 import { claudeTheme } from "./claude";
 import { codexTheme } from "./codex";
+import { applyTerminalPalette } from "./terminalPalettes";
 
 // 12 syntax-highlighting anchor colors that drive per-theme code and
 // markdown coloring across CodeMirror and the static highlighter. Each
@@ -157,4 +158,6 @@ export function applyThemeColors(name: ThemeName, isDark: boolean) {
             colors.codeAnchors[key as keyof CodeColorAnchors],
         );
     }
+
+    applyTerminalPalette(name, isDark);
 }
