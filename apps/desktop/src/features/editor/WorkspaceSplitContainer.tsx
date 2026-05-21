@@ -36,6 +36,7 @@ interface WorkspaceSplitContainerProps {
     node: WorkspaceLayoutNode;
     focusedPaneId: string | null;
     externalFileDropPaneId: string | null;
+    onPanePointerDown: () => void;
     onPaneFocus: (paneId: string) => void;
     onResizeSplit: (splitId: string, sizes: readonly number[]) => void;
 }
@@ -94,11 +95,13 @@ const WorkspacePane = memo(function WorkspacePane({
     paneId,
     isFocused,
     isExternalFileDropActive,
+    onPanePointerDown,
     onPaneFocus,
 }: {
     paneId: string;
     isFocused: boolean;
     isExternalFileDropActive: boolean;
+    onPanePointerDown: () => void;
     onPaneFocus: (paneId: string) => void;
 }) {
     return (
@@ -116,7 +119,10 @@ const WorkspacePane = memo(function WorkspacePane({
                       ? "inset 0 1px 0 color-mix(in srgb, var(--accent) 16%, transparent)"
                       : "none",
             }}
-            onPointerDownCapture={() => onPaneFocus(paneId)}
+            onPointerDownCapture={() => {
+                onPanePointerDown();
+                onPaneFocus(paneId);
+            }}
             onFocusCapture={() => onPaneFocus(paneId)}
             data-editor-pane-id={paneId}
             data-editor-pane-focused={isFocused || undefined}
@@ -149,6 +155,7 @@ export function WorkspaceSplitContainer({
     node,
     focusedPaneId,
     externalFileDropPaneId,
+    onPanePointerDown,
     onPaneFocus,
     onResizeSplit,
 }: WorkspaceSplitContainerProps) {
@@ -281,6 +288,7 @@ export function WorkspaceSplitContainer({
                 isExternalFileDropActive={
                     node.paneId === externalFileDropPaneId
                 }
+                onPanePointerDown={onPanePointerDown}
                 onPaneFocus={onPaneFocus}
             />
         );
@@ -320,6 +328,7 @@ export function WorkspaceSplitContainer({
                                 node={child}
                                 focusedPaneId={focusedPaneId}
                                 externalFileDropPaneId={externalFileDropPaneId}
+                                onPanePointerDown={onPanePointerDown}
                                 onPaneFocus={onPaneFocus}
                                 onResizeSplit={onResizeSplit}
                             />

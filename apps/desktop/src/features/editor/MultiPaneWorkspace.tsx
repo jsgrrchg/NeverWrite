@@ -13,6 +13,7 @@ import {
     getCurrentWindowLabel,
     publishWindowTabDropZone,
 } from "../../app/detachedWindows";
+import { clearFileTreeSelection } from "../../app/utils/navigation";
 import {
     selectFocusedPaneId,
     selectLeafPaneIds,
@@ -339,6 +340,10 @@ export function MultiPaneWorkspace() {
         [focusPane],
     );
 
+    const handlePanePointerDown = useCallback(() => {
+        clearFileTreeSelection();
+    }, []);
+
     const handleResizeSplit = useCallback(
         (splitId: string, sizes: readonly number[]) => {
             resizePaneSplit(splitId, sizes);
@@ -510,6 +515,7 @@ export function MultiPaneWorkspace() {
                 node={layoutTree}
                 focusedPaneId={focusedPaneId}
                 externalFileDropPaneId={externalFileDropPaneId}
+                onPanePointerDown={handlePanePointerDown}
                 onPaneFocus={handlePaneFocus}
                 onResizeSplit={handleResizeSplit}
             />

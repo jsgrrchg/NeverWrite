@@ -21,7 +21,10 @@ import {
     shouldShowVaultEntryInFileTree,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
+import {
+    CLEAR_FILE_TREE_SELECTION_EVENT,
+    REVEAL_NOTE_IN_TREE_EVENT,
+} from "../../app/utils/navigation";
 import {
     useVaultStore,
     type NoteDto,
@@ -3575,6 +3578,33 @@ export function FileTree() {
             logError("file-tree", "Failed to move vault entry to trash", error);
         }
     }, []);
+
+    const clearTreeSelection = useCallback(() => {
+        if (
+            selectedRowCount === 0 &&
+            lastClickedRowKeyRef.current === null
+        ) {
+            return;
+        }
+
+        setSelectedNoteIds((prev) => (prev.size === 0 ? prev : new Set()));
+        setSelectedEntryPaths((prev) => (prev.size === 0 ? prev : new Set()));
+        setSelectedFolderPaths((prev) => (prev.size === 0 ? prev : new Set()));
+        lastClickedRowKeyRef.current = null;
+    }, [selectedRowCount]);
+
+    useEffect(() => {
+        window.addEventListener(
+            CLEAR_FILE_TREE_SELECTION_EVENT,
+            clearTreeSelection,
+        );
+        return () => {
+            window.removeEventListener(
+                CLEAR_FILE_TREE_SELECTION_EVENT,
+                clearTreeSelection,
+            );
+        };
+    }, [clearTreeSelection]);
 
     const clearEntrySelection = useCallback(() => {
         setSelectedEntryPaths(new Set());
