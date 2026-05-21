@@ -32,6 +32,7 @@ import {
     openChatHistoryInWorkspace,
     openChatSessionInWorkspace,
 } from "./chatPaneMovement";
+import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
 import { emitAgentSidebarDrag } from "./agentSidebarDragEvents";
 import {
     getSessionPreview,
@@ -48,7 +49,10 @@ import {
 import { useChatStore } from "./store/chatStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import type { AIChatSession } from "./types";
-import { getRuntimeDisplayName } from "./utils/runtimeMetadata";
+import {
+    CLAUDE_TERMINAL_RUNTIME_ID,
+    getRuntimeDisplayName,
+} from "./utils/runtimeMetadata";
 import { useInlineRename } from "./components/useInlineRename";
 import {
     AgentsSidebarItem,
@@ -492,6 +496,11 @@ export function AgentsSidebarPanel() {
         return sortedRuntimes.map((runtime) => ({
             label: getRuntimeMenuLabel(runtime.runtime.name),
             action: () => {
+                useChatStore.getState().setSelectedRuntime(runtime.runtime.id);
+                if (runtime.runtime.id === CLAUDE_TERMINAL_RUNTIME_ID) {
+                    void openClaudeCodeTerminalWithContext();
+                    return;
+                }
                 void createNewChatInWorkspace(runtime.runtime.id);
             },
         }));

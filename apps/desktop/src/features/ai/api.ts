@@ -33,6 +33,7 @@ import type {
     PersistedSessionHistoryPage,
 } from "./types";
 import { buildFallbackRuntimeDescriptors } from "./utils/runtimeMetadata";
+import { isClaudeTerminalAuthMethodId } from "./utils/authMethods";
 
 const FALLBACK_RUNTIMES: AIRuntimeDescriptor[] =
     buildFallbackRuntimeDescriptors();
@@ -151,15 +152,34 @@ function normalizeRuntimeDescriptor(
 function normalizeRuntimeSetupStatus(
     status: AIBackendRuntimeSetupStatusPayload,
 ): AIRuntimeSetupStatus {
+    let authMethods = status.auth_methods;
+    let authReady = status.auth_ready;
+    let authMethod = status.auth_method ?? undefined;
+
+    // Subscription-based auth (claude-ai-login, console-login, claude-login)
+    // only works with the Claude Code CLI, not the ACP sidecar. Strip these
+    // methods from claude-acp and mark as not-ready when the current auth is
+    // subscription-based so the provider shows as "Not configured" and the user
+    // is directed to use an API key instead.
+    if (status.runtime_id === "claude-acp") {
+        authMethods = authMethods.filter(
+            (m) => !isClaudeTerminalAuthMethodId(m.id),
+        );
+        if (isClaudeTerminalAuthMethodId(authMethod)) {
+            authReady = false;
+            authMethod = undefined;
+        }
+    }
+
     return {
         runtimeId: status.runtime_id,
         binaryReady: status.binary_ready,
         binaryPath: status.binary_path ?? undefined,
         binarySource: status.binary_source,
         hasCustomBinaryPath: status.has_custom_binary_path ?? false,
-        authReady: status.auth_ready,
-        authMethod: status.auth_method ?? undefined,
-        authMethods: status.auth_methods,
+        authReady,
+        authMethod,
+        authMethods,
         hasGatewayConfig: status.has_gateway_config ?? false,
         hasGatewayUrl: status.has_gateway_url ?? false,
         onboardingRequired: status.onboarding_required,

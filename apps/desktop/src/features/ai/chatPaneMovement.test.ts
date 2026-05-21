@@ -11,13 +11,16 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { createDeferred, setEditorTabs } from "../../test/test-utils";
 import {
     createNewChatInWorkspace,
+    ensureWorkspaceChatSession,
     openOrMoveChatSessionAtDropTarget,
 } from "./chatPaneMovement";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import { resetChatTabsStore } from "./store/chatTabsStore";
 import type { AIChatSession, AIRuntimeSetupStatus } from "./types";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
 
 const invokeMock = vi.mocked(invoke);
+const AI_PREFS_KEY = "neverwrite.ai.preferences";
 
 const runtimeDescriptor = {
     runtime: {
@@ -89,6 +92,48 @@ const claudeRuntimeDescriptor = {
             type: "select" as const,
             value: "claude-model",
             options: [{ value: "claude-model", label: "Claude Model" }],
+        },
+    ],
+};
+
+const claudeTerminalRuntimeDescriptor = {
+    runtime: {
+        id: CLAUDE_TERMINAL_RUNTIME_ID,
+        name: "Claude Code",
+        description: "Claude Code terminal pseudo-runtime",
+        capabilities: ["create_session"],
+    },
+    models: [
+        {
+            id: "claude-code-terminal-model",
+            runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            name: "Claude Code",
+            description: "Terminal runtime model placeholder",
+        },
+    ],
+    modes: [
+        {
+            id: "default",
+            runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            name: "Default",
+            description: "Default mode",
+            disabled: false,
+        },
+    ],
+    configOptions: [
+        {
+            id: "model",
+            runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            category: "model" as const,
+            label: "Model",
+            type: "select" as const,
+            value: "claude-code-terminal-model",
+            options: [
+                {
+                    value: "claude-code-terminal-model",
+                    label: "Claude Code",
+                },
+            ],
         },
     ],
 };
@@ -198,6 +243,7 @@ function seedChatSessions(...sessions: AIChatSession[]) {
 
 describe("createNewChatInWorkspace", () => {
     beforeEach(() => {
+        localStorage.removeItem(AI_PREFS_KEY);
         resetChatStore();
         resetChatTabsStore();
         setEditorTabs([], null);
@@ -211,6 +257,7 @@ describe("createNewChatInWorkspace", () => {
 
     afterEach(() => {
         vi.restoreAllMocks();
+        localStorage.removeItem(AI_PREFS_KEY);
         resetChatStore();
         resetChatTabsStore();
         setEditorTabs([], null);
@@ -404,6 +451,129 @@ describe("createNewChatInWorkspace", () => {
                 useChatStore.getState().sessionsById["claude-session-2"],
             ).toBeDefined();
         });
+    });
+
+    it("does not create an ACP chat when the selected runtime is Claude Code terminal", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeTerminalRuntimeDescriptor],
+            selectedRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            setupStatusByRuntimeId: {
+                "codex-acp": readySetupStatusState,
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    ...readySetupStatusState,
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                    authMethod: "claude-code",
+                },
+            },
+        }));
+        const newSession = vi.spyOn(useChatStore.getState(), "newSession");
+        const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
+        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+
+        await expect(createNewChatInWorkspace()).resolves.toBeNull();
+
+        expect(newSession).not.toHaveBeenCalled();
+        expect(upsertSession).not.toHaveBeenCalled();
+        expect(openChat).not.toHaveBeenCalled();
+        expect(selectEditorWorkspaceTabs(useEditorStore.getState())).toEqual([]);
+    });
+
+    it("uses the selected native runtime over a stale Claude Code terminal preference", async () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ defaultRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID }),
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [runtimeDescriptor, claudeTerminalRuntimeDescriptor],
+            selectedRuntimeId: "codex-acp",
+            setupStatusByRuntimeId: {
+                "codex-acp": readySetupStatusState,
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    ...readySetupStatusState,
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                    authMethod: "claude-code",
+                },
+            },
+        }));
+        const newSession = vi.spyOn(useChatStore.getState(), "newSession");
+        const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
+        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+
+        const sessionId = await createNewChatInWorkspace();
+
+        expect(sessionId).toMatch(/^pending:/);
+        expect(newSession).toHaveBeenCalledWith("codex-acp", sessionId);
+        expect(upsertSession).toHaveBeenCalled();
+        expect(openChat).toHaveBeenCalled();
+    });
+
+    it("does not create a pending chat when Claude Code terminal is the only ready runtime", async () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ defaultRuntimeId: "missing-runtime" }),
+        );
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [claudeTerminalRuntimeDescriptor],
+            selectedRuntimeId: null,
+            setupStatusByRuntimeId: {
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    ...readySetupStatusState,
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                    authMethod: "claude-code",
+                },
+            },
+        }));
+        const newSession = vi.spyOn(useChatStore.getState(), "newSession");
+        const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
+        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+
+        await expect(createNewChatInWorkspace()).resolves.toBeNull();
+
+        expect(newSession).not.toHaveBeenCalled();
+        expect(upsertSession).not.toHaveBeenCalled();
+        expect(openChat).not.toHaveBeenCalled();
+    });
+
+    it("does not create an ACP chat when the active session uses Claude Code terminal", async () => {
+        const terminalSession = createStoredSession(
+            "claude-terminal-session",
+            "Claude Code terminal",
+            CLAUDE_TERMINAL_RUNTIME_ID,
+        );
+        seedChatSessions(terminalSession);
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: terminalSession.sessionId,
+            lastFocusedSessionId: terminalSession.sessionId,
+        }));
+        const newSession = vi.spyOn(useChatStore.getState(), "newSession");
+        const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
+        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+
+        await expect(createNewChatInWorkspace()).resolves.toBeNull();
+
+        expect(newSession).not.toHaveBeenCalled();
+        expect(upsertSession).not.toHaveBeenCalled();
+        expect(openChat).not.toHaveBeenCalled();
+    });
+
+    it("does not create an ACP chat when ensure is explicitly asked for Claude Code terminal", async () => {
+        const newSession = vi.spyOn(useChatStore.getState(), "newSession");
+        const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
+        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+
+        await expect(
+            ensureWorkspaceChatSession({
+                runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            }),
+        ).resolves.toBeNull();
+
+        expect(newSession).not.toHaveBeenCalled();
+        expect(upsertSession).not.toHaveBeenCalled();
+        expect(openChat).not.toHaveBeenCalled();
     });
 });
 

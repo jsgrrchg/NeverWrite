@@ -167,12 +167,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
         (s) => s.navigateToHistoryIndex,
     );
     const tabOpenBehavior = useSettingsStore((s) => s.tabOpenBehavior);
-    const developerModeEnabled = useSettingsStore(
-        (s) => s.developerModeEnabled,
-    );
-    const developerTerminalEnabled = useSettingsStore(
-        (s) => s.developerTerminalEnabled,
-    );
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
@@ -1780,8 +1774,6 @@ export function UnifiedBar({ windowMode }: UnifiedBarProps) {
                     onClose={() => setNewTabContextMenu(null)}
                     entries={buildNewTabContextMenuEntries({
                         paneId: focusedPaneId ?? undefined,
-                        developerModeEnabled,
-                        developerTerminalEnabled,
                     })}
                 />
             )}

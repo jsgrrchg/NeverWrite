@@ -96,6 +96,7 @@ const SUPPORTED_COMMANDS = new Set([
     "devtools_restart_terminal_session",
     "devtools_close_terminal_session",
     "devtools_get_terminal_session_snapshot",
+    "devtools_check_binary",
     "spellcheck_list_languages",
     "spellcheck_list_catalog",
     "spellcheck_check_text",

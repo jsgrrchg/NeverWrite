@@ -69,7 +69,7 @@ describe("shortcut registry formatting", () => {
             entries.find((entry) => entry.id === "new_terminal"),
         ).toMatchObject({
             label: "New Terminal",
-            category: "Developer",
+            category: "Workspace",
             shortcut: "Ctrl+R",
         });
         expect(entries.find((entry) => entry.id === "zoom_in")).toMatchObject({
