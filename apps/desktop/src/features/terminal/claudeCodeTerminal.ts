@@ -40,6 +40,33 @@ const TERMINAL_READY_TIMEOUT_MS = 10_000;
 const CLAUDE_TUI_SETTLE_MS = 3_500;
 const CLAUDE_CODE_TERMINAL_TITLE = "Claude Code";
 const CLAUDE_CODE_TERMINAL_TITLE_PATTERN = /^Claude Code(?: (\d+))?$/;
+const ALLOWED_CLAUDE_CODE_MODELS = new Set([
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+]);
+
+function shellQuoteArg(arg: string): string {
+    if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)) {
+        return arg;
+    }
+    return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+function buildShellCommand(args: string[]): string {
+    return `${args.map(shellQuoteArg).join(" ")}\n`;
+}
+
+function getSafeClaudeCodeModel(model: string): string | null {
+    const trimmed = model.trim();
+    if (!trimmed) return null;
+    if (ALLOWED_CLAUDE_CODE_MODELS.has(trimmed)) return trimmed;
+
+    console.warn(
+        `[terminal] Ignoring unsupported Claude Code model setting: ${JSON.stringify(trimmed)}`,
+    );
+    return null;
+}
 
 function getNextClaudeCodeTerminalTitle(): string {
     const maxExistingIndex = selectEditorWorkspaceTabs(
@@ -177,7 +204,8 @@ export async function openClaudeCodeTerminalWithContext(
         await store.writeInput(terminalId, `cd ${cdQuoted}\n`);
     }
 
-    // Build the claude command from settings.
+    // Build the claude command from settings. Treat persisted settings as data,
+    // not trusted shell text, before writing into the interactive PTY.
     const {
         claudeCodeSkipPermissions,
         claudeCodeModel,
@@ -185,15 +213,14 @@ export async function openClaudeCodeTerminalWithContext(
         claudeCodeMaxTurns,
     } = useSettingsStore.getState();
 
-    const flags: string[] = [];
-    if (claudeCodeSkipPermissions) flags.push("--dangerously-skip-permissions");
-    if (claudeCodeModel.trim()) flags.push("--model", claudeCodeModel.trim());
-    if (claudeCodeContinueSession) flags.push("--continue");
-    if (claudeCodeMaxTurns > 0) flags.push("--max-turns", String(claudeCodeMaxTurns));
+    const args = ["claude"];
+    if (claudeCodeSkipPermissions) args.push("--dangerously-skip-permissions");
+    const safeModel = getSafeClaudeCodeModel(claudeCodeModel);
+    if (safeModel) args.push("--model", safeModel);
+    if (claudeCodeContinueSession) args.push("--continue");
+    if (claudeCodeMaxTurns > 0) args.push("--max-turns", String(claudeCodeMaxTurns));
 
-    const claudeCommand =
-        flags.length > 0 ? `claude ${flags.join(" ")}\n` : "claude\n";
-    await store.writeInput(terminalId, claudeCommand);
+    await store.writeInput(terminalId, buildShellCommand(args));
 
     if (!detail) return;
 

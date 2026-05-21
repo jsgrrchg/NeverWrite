@@ -128,6 +128,31 @@ describe("openClaudeCodeTerminalWithContext", () => {
         ]);
     });
 
+    it("ignores unsupported persisted Claude Code models before writing to the shell", async () => {
+        const warnSpy = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => undefined);
+        useSettingsStore.setState({
+            claudeCodeModel: "claude-sonnet-4-6\nsay injected",
+            claudeCodeContinueSession: true,
+        });
+
+        const opening = openClaudeCodeTerminalWithContext();
+        await attachOpenedTerminalRuntime();
+        await opening;
+
+        expect(getWrittenInputs()).toEqual([
+            "cd '/vault root'\n",
+            "claude --continue\n",
+        ]);
+        expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(
+                "Ignoring unsupported Claude Code model setting",
+            ),
+        );
+        warnSpy.mockRestore();
+    });
+
     it("prefills vault-relative @mentions after Claude Code settles", async () => {
         vi.useFakeTimers();
         const detail: FileTreeNoteDragDetail = {
