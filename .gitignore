@@ -28,6 +28,7 @@ apps/desktop/dist-electron/
 apps/desktop/dist-electron*/
 apps/desktop/out/
 apps/desktop/node_modules/
+apps/desktop/test-results/
 assets/
 !apps/desktop/src/assets/
 !apps/desktop/src/assets/fonts/
