@@ -19,10 +19,15 @@ export interface AnsiPalette {
     brightWhite: string;
 }
 
+type TerminalPaletteByMode = {
+    dark: AnsiPalette;
+    light: AnsiPalette;
+};
+
 // Maps a theme + isDark flag to an intentionally-designed 16-colour ANSI
-// palette. Themes that don't have an entry fall back to the Catppuccin icon
-// token CSS variables already defined globally.
-const PALETTES: Partial<Record<ThemeName, { dark: AnsiPalette; light: AnsiPalette }>> = {
+// palette. Keep this exhaustive so new app themes cannot accidentally reuse
+// stale terminal colors from the previously-applied theme.
+const PALETTES: Record<ThemeName, TerminalPaletteByMode> = {
     catppuccin: {
         dark: {
             // Catppuccin Mocha
@@ -848,9 +853,7 @@ const SLOT_TO_CSS: Record<keyof AnsiPalette, string> = {
 
 export function applyTerminalPalette(name: ThemeName, isDark: boolean) {
     if (typeof document === "undefined") return;
-    const entry = PALETTES[name];
-    if (!entry) return; // no palette → CSS Catppuccin fallbacks remain
-    const palette = isDark ? entry.dark : entry.light;
+    const palette = isDark ? PALETTES[name].dark : PALETTES[name].light;
     const style = document.documentElement.style;
     for (const [slot, cssVar] of Object.entries(SLOT_TO_CSS) as [keyof AnsiPalette, string][]) {
         style.setProperty(cssVar, palette[slot]);
