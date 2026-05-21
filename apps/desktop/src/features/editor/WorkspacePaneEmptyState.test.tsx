@@ -1,7 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
+import { formatShortcutAction } from "../../app/shortcuts/format";
 import { useEditorStore } from "../../app/store/editorStore";
+import { getDesktopPlatform } from "../../app/utils/platform";
 import { renderComponent } from "../../test/test-utils";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 
@@ -33,12 +35,18 @@ describe("WorkspacePaneEmptyState", () => {
         expect(text).toContain("start a chat");
         expect(text).toContain("launch a terminal");
 
-        // Shortcuts are resolved from the registry for the macOS test platform.
+        // Shortcuts are resolved from the registry for the current test platform.
         const hints = Array.from(
             container.querySelectorAll("kbd"),
             (kbd) => kbd.textContent,
         );
-        expect(hints).toEqual(["⌘O", "⌘K", "⌘⇧N", "⌘R"]);
+        const platform = getDesktopPlatform();
+        expect(hints).toEqual([
+            formatShortcutAction("quick_switcher", platform),
+            formatShortcutAction("command_palette", platform),
+            formatShortcutAction("new_agent", platform),
+            formatShortcutAction("new_terminal", platform),
+        ]);
 
         expect(
             screen.queryByRole("button", { name: "New Note" }),
