@@ -47,7 +47,12 @@ import {
     type VaultEntryDto,
 } from "../../../app/store/vaultStore";
 import { AI_MESSAGE_LABEL } from "../../../app/utils/branding";
-import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
+import {
+    shouldIncludeFileSummaryInFileScope,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldIncludeVaultEntryInFileScope,
+    isTextLikeVaultEntry,
+} from "../../../app/utils/vaultEntries";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
@@ -859,6 +864,7 @@ function getMentionSuggestions(
     files: AIChatFileSummary[],
     folderPaths: string[],
     query: string,
+    includeFiles: boolean,
     preferFileName: boolean,
     showExtensions: boolean,
     limit = 10,
@@ -901,7 +907,7 @@ function getMentionSuggestions(
         });
     }
 
-    if (preferFileName) {
+    if (includeFiles) {
         const fileSuggestions = [...files]
             .map((file) => {
                 const normalizedFileName = normalizeForSearch(file.fileName);
@@ -980,6 +986,9 @@ export function AIChatComposer({
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
     );
+    const fileTreeExtensionFilter = useSettingsStore(
+        (s) => s.fileTreeExtensionFilter,
+    );
     const fallbackEntries = useVaultStore((state) => state.entries);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
@@ -1010,14 +1019,33 @@ export function AIChatComposer({
         () => extractFolderPaths(notes, fallbackEntries),
         [fallbackEntries, notes],
     );
+    const visibleMentionNotes = useMemo(() => {
+        return shouldIncludeMarkdownNotesInFileScope({
+            contentMode: fileTreeContentMode,
+            extensionFilter: fileTreeExtensionFilter,
+        })
+            ? notes
+            : [];
+    }, [fileTreeContentMode, fileTreeExtensionFilter, notes]);
     const mentionableFiles = useMemo(() => {
         if (files) {
-            return files;
+            return files.filter((file) =>
+                shouldIncludeFileSummaryInFileScope(file, {
+                    contentMode: fileTreeContentMode,
+                    extensionFilter: fileTreeExtensionFilter,
+                }),
+            );
         }
 
         return fallbackEntries
             .filter(
-                (entry) => entry.kind === "file" && isTextLikeVaultEntry(entry),
+                (entry) =>
+                    entry.kind === "file" &&
+                    isTextLikeVaultEntry(entry) &&
+                    shouldIncludeVaultEntryInFileScope(entry, {
+                        contentMode: fileTreeContentMode,
+                        extensionFilter: fileTreeExtensionFilter,
+                    }),
             )
             .map((entry) => ({
                 id: entry.id,
@@ -1027,7 +1055,12 @@ export function AIChatComposer({
                 fileName: entry.file_name,
                 mimeType: entry.mime_type,
             }));
-    }, [fallbackEntries, files]);
+    }, [
+        fallbackEntries,
+        files,
+        fileTreeContentMode,
+        fileTreeExtensionFilter,
+    ]);
     const pillMetrics = useMemo(
         () => getChatPillMetrics(composerFontSize),
         [composerFontSize],
@@ -1144,10 +1177,11 @@ export function AIChatComposer({
         }
 
         const suggestions = getMentionSuggestions(
-            notes,
+            visibleMentionNotes,
             mentionableFiles,
             folderPaths,
             trigger.query,
+            mentionableFiles.length > 0,
             fileTreeContentMode === "all_files",
             fileTreeShowExtensions,
             10,

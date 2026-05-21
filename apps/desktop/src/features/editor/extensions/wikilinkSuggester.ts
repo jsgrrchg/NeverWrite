@@ -1,7 +1,12 @@
 import type { EditorState } from "@codemirror/state";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
-import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
+import {
+    isTextLikeVaultEntry,
+    shouldIncludeMarkdownNotesInFileScope,
+    shouldIncludeVaultEntryInFileScope,
+    type VaultFileScope,
+} from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import { LruCache } from "../lruCache";
 
@@ -64,13 +69,17 @@ function getWikilinkNoteDisplayTitle(
 function getFileSuggestions(
     query: string,
     limit: number,
+    scope: VaultFileScope,
 ): WikilinkSuggestionItem[] {
     const normalizedQuery = normalizeForSearch(query);
 
     return useVaultStore
         .getState()
         .entries.filter(
-            (entry) => entry.kind === "file" && isTextLikeVaultEntry(entry),
+            (entry) =>
+                entry.kind === "file" &&
+                isTextLikeVaultEntry(entry) &&
+                shouldIncludeVaultEntryInFileScope(entry, scope),
         )
         .map((entry) => {
             const normalizedFileName = normalizeForSearch(entry.file_name);
@@ -108,6 +117,71 @@ function getFileSuggestions(
         .map(({ rank: _rank, ...item }) => item);
 }
 
+function rankWikilinkSuggestions(
+    items: WikilinkSuggestionItem[],
+    query: string,
+    limit: number,
+) {
+    const normalizedQuery = normalizeForSearch(query);
+
+    return items
+        .map((item) => {
+            const normalizedTitle = normalizeForSearch(item.title);
+            const normalizedSubtitle = normalizeForSearch(item.subtitle);
+            const normalizedBaseName = normalizeForSearch(
+                item.subtitle.split("/").pop() ?? item.title,
+            );
+            const rank = !query
+                ? 100
+                : normalizedBaseName.startsWith(normalizedQuery)
+                  ? 0
+                  : normalizedSubtitle.startsWith(normalizedQuery)
+                    ? 1
+                    : normalizedBaseName.includes(normalizedQuery)
+                      ? 2
+                      : normalizedSubtitle.includes(normalizedQuery)
+                        ? 3
+                        : normalizedTitle.includes(normalizedQuery)
+                          ? 4
+                          : 5;
+
+            return { item, rank };
+        })
+        .sort((left, right) => {
+            if (left.rank !== right.rank) {
+                return left.rank - right.rank;
+            }
+
+            return left.item.subtitle.localeCompare(right.item.subtitle);
+        })
+        .slice(0, limit)
+        .map(({ item }) => item);
+}
+
+function mergeWikilinkSuggestions(
+    noteSuggestions: WikilinkSuggestionItem[],
+    fileSuggestions: WikilinkSuggestionItem[],
+    query: string,
+    limit: number,
+    preferFileName: boolean,
+) {
+    if (fileSuggestions.length === 0) {
+        return noteSuggestions;
+    }
+
+    if (preferFileName) {
+        return rankWikilinkSuggestions(
+            [...noteSuggestions, ...fileSuggestions],
+            query,
+            limit,
+        );
+    }
+
+    // Normal mode keeps the note suggester's title-first ordering. Files are
+    // added after notes so curated files do not unexpectedly outrank note titles.
+    return [...noteSuggestions, ...fileSuggestions].slice(0, limit);
+}
+
 export const MAX_WIKILINK_SUGGESTION_CACHE_ENTRIES = 256;
 
 const suggestionCache = new LruCache<string, WikilinkSuggestionItem[]>(
@@ -116,20 +190,24 @@ const suggestionCache = new LruCache<string, WikilinkSuggestionItem[]>(
 
 let cachedVaultPath: string | null = null;
 let cachedResolverRevision: number | null = null;
+let cachedStructureRevision: number | null = null;
 
 function ensureFreshSuggestionCache() {
-    const { vaultPath, resolverRevision } = useVaultStore.getState();
+    const { vaultPath, resolverRevision, structureRevision } =
+        useVaultStore.getState();
     if (
         cachedVaultPath === vaultPath &&
-        cachedResolverRevision === resolverRevision
+        cachedResolverRevision === resolverRevision &&
+        cachedStructureRevision === structureRevision
     ) {
-        return resolverRevision;
+        return { resolverRevision, structureRevision };
     }
 
     suggestionCache.clear();
     cachedVaultPath = vaultPath;
     cachedResolverRevision = resolverRevision;
-    return resolverRevision;
+    cachedStructureRevision = structureRevision;
+    return { resolverRevision, structureRevision };
 }
 
 export function getWikilinkContext(state: EditorState): WikilinkContext | null {
@@ -171,25 +249,34 @@ export async function getWikilinkSuggestions(
     query: string,
     limit = 8,
 ): Promise<WikilinkSuggestionItem[]> {
-    const resolverRevision = ensureFreshSuggestionCache();
-    const { fileTreeContentMode, fileTreeShowExtensions } =
+    const { resolverRevision, structureRevision } = ensureFreshSuggestionCache();
+    const {
+        fileTreeContentMode,
+        fileTreeShowExtensions,
+        fileTreeExtensionFilter,
+    } =
         useSettingsStore.getState();
     const preferFileName = fileTreeContentMode === "all_files";
-    const cacheKey = `${resolverRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${Number(fileTreeShowExtensions)}\u0000${query}`;
+    const extensionFilterKey = fileTreeExtensionFilter.join(",");
+    const fileScope = {
+        contentMode: fileTreeContentMode,
+        extensionFilter: fileTreeExtensionFilter,
+    };
+    const showMarkdownNotes = shouldIncludeMarkdownNotesInFileScope(fileScope);
+    const cacheKey = `${resolverRevision}\u0000${structureRevision}\u0000${noteId}\u0000${limit}\u0000${Number(preferFileName)}\u0000${Number(fileTreeShowExtensions)}\u0000${extensionFilterKey}\u0000${query}`;
     const cached = suggestionCache.get(cacheKey);
     if (cached) {
         return cached;
     }
 
-    const suggestions = await vaultInvoke<WikilinkSuggestionDto[]>(
-        "suggest_wikilinks",
-        {
-            noteId,
-            query,
-            limit,
-            preferFileName,
-        },
-    );
+    const suggestions = showMarkdownNotes
+        ? await vaultInvoke<WikilinkSuggestionDto[]>("suggest_wikilinks", {
+              noteId,
+              query,
+              limit,
+              preferFileName,
+          })
+        : [];
 
     const items = suggestions.map((item) => ({
         id: item.id,
@@ -203,48 +290,14 @@ export async function getWikilinkSuggestions(
         insertText: item.insert_text,
     }));
 
-    const merged = preferFileName
-        ? [...items, ...getFileSuggestions(query, limit)]
-              .map((item) => {
-                  const normalizedTitle = normalizeForSearch(item.title);
-                  const normalizedSubtitle = normalizeForSearch(item.subtitle);
-                  const normalizedBaseName = normalizeForSearch(
-                      item.subtitle.split("/").pop() ?? item.title,
-                  );
-                  const rank = !query
-                      ? 100
-                      : normalizedBaseName.startsWith(normalizeForSearch(query))
-                        ? 0
-                        : normalizedSubtitle.startsWith(
-                                normalizeForSearch(query),
-                            )
-                          ? 1
-                          : normalizedBaseName.includes(
-                                  normalizeForSearch(query),
-                              )
-                            ? 2
-                            : normalizedSubtitle.includes(
-                                    normalizeForSearch(query),
-                                )
-                              ? 3
-                              : normalizedTitle.includes(
-                                      normalizeForSearch(query),
-                                  )
-                                ? 4
-                                : 5;
-
-                  return { item, rank };
-              })
-              .sort((left, right) => {
-                  if (left.rank !== right.rank) {
-                      return left.rank - right.rank;
-                  }
-
-                  return left.item.subtitle.localeCompare(right.item.subtitle);
-              })
-              .slice(0, limit)
-              .map(({ item }) => item)
-        : items;
+    const fileSuggestions = getFileSuggestions(query, limit, fileScope);
+    const merged = mergeWikilinkSuggestions(
+        items,
+        fileSuggestions,
+        query,
+        limit,
+        preferFileName,
+    );
 
     suggestionCache.set(cacheKey, merged);
     return merged;

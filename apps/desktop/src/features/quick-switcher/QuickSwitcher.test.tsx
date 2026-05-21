@@ -1,7 +1,8 @@
 import { act, fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuickSwitcher } from "./QuickSwitcher";
 import {
+    buildVaultFileEntry,
     mockInvoke,
     renderComponent,
     setCommands,
@@ -12,6 +13,19 @@ import {
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
+
+afterEach(() => {
+    vi.useRealTimers();
+    useSettingsStore.setState({
+        fileTreeContentMode: "notes_only",
+        fileTreeShowExtensions: false,
+        fileTreeExtensionFilter: [],
+    });
+    setVaultNotes([]);
+    setVaultEntries([]);
+    setEditorTabs([]);
+    setCommands([], null);
+});
 
 describe("QuickSwitcher", () => {
     it("shows open tabs first when the query is empty", async () => {
@@ -149,6 +163,195 @@ describe("QuickSwitcher", () => {
         ]);
     });
 
+    it("searches curated vault files by filename when all-files mode is disabled", async () => {
+        vi.useFakeTimers();
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/diagram.excalidraw", "application/json"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "data.csv" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "diagram.excalidraw" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("diagram")).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "config.toml" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+        expect(screen.getByText("No matching items")).toBeInTheDocument();
+
+    });
+
+    it("includes technical files in Quick Switcher when all-files mode is active", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({ fileTreeContentMode: "all_files" });
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "config.toml" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("config")).toBeInTheDocument();
+    });
+
+    it("uses the extension allowlist as the Quick Switcher vault scope", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+        setVaultNotes([]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        setEditorTabs([]);
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "data" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "config" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+        expect(screen.getByText("No matching items")).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "Alpha" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.queryByText("Alpha")).not.toBeInTheDocument();
+    });
+
+    it("keeps open tabs searchable even when the extension allowlist excludes them", async () => {
+        vi.useFakeTimers();
+
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildVaultFileEntry("docs/data.csv", "text/csv"),
+            buildVaultFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "main",
+                    tabs: [
+                        {
+                            id: "tab-alpha",
+                            noteId: "notes/alpha",
+                            title: "Alpha",
+                            content: "cached alpha",
+                        },
+                        {
+                            id: "tab-config",
+                            kind: "file",
+                            relativePath: "docs/config.toml",
+                            path: "/vault/docs/config.toml",
+                            title: "config.toml",
+                            content: "enabled = true",
+                            mimeType: "application/toml",
+                            viewer: "text",
+                        },
+                    ],
+                    activeTabId: "tab-alpha",
+                },
+            ],
+            "main",
+        );
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+
+        fireEvent.change(input, { target: { value: "Alpha" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+        expect(screen.getByText("Alpha")).toBeInTheDocument();
+
+        fireEvent.change(input, { target: { value: "config" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+        expect(screen.getByText("config")).toBeInTheDocument();
+    });
+
     it("opens an already open note from the filtered results without reading it again", async () => {
         vi.useFakeTimers();
         const invokeMock = mockInvoke();
@@ -197,6 +400,45 @@ describe("QuickSwitcher", () => {
             "read_note",
             expect.anything(),
         );
+    });
+
+    it("keeps open note tabs fuzzy-searchable in normal mode", async () => {
+        vi.useFakeTimers();
+
+        setVaultNotes([
+            {
+                id: "notes/open-a",
+                path: "/vault/notes/open-a.md",
+                title: "Open A",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-open-a",
+                    noteId: "notes/open-a",
+                    title: "Open A",
+                    content: "cached",
+                },
+            ],
+            "tab-open-a",
+        );
+        setCommands([], "quick-switcher");
+
+        renderComponent(<QuickSwitcher />);
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        const input = screen.getByPlaceholderText(/Search files/);
+        fireEvent.change(input, { target: { value: "oa" } });
+        await act(async () => {
+            await vi.runAllTimersAsync();
+        });
+
+        expect(screen.getByText("Open A")).toBeInTheDocument();
     });
 
     it("keeps the selected result in view when keyboard navigation moves beyond the virtual window", async () => {

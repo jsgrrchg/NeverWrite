@@ -22,6 +22,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import {
+    buildVaultFileEntry as buildFileEntry,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -89,24 +90,6 @@ function buildFolderEntry(path: string) {
         created_at: 1,
         size: 0,
         mime_type: null,
-    };
-}
-
-function buildFileEntry(path: string, mimeType = "text/plain") {
-    const fileName = path.split("/").pop() ?? path;
-    const dotIndex = fileName.lastIndexOf(".");
-    return {
-        id: path,
-        path: `/vault/${path}`,
-        relative_path: path,
-        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
-        file_name: fileName,
-        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
-        kind: "file" as const,
-        modified_at: 1,
-        created_at: 1,
-        size: 16,
-        mime_type: mimeType,
     };
 }
 
@@ -480,6 +463,154 @@ describe("FileTree", () => {
 
         expect(screen.queryByText('No files match "runtime.ts"')).toBeNull();
         expect(screen.getByText("runtime")).toBeInTheDocument();
+    });
+
+    it("shows curated document and media files in the default content mode", async () => {
+        const user = userEvent.setup();
+
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/diagram.excalidraw", "application/json"),
+            buildFileEntry("docs/readme.txt", "text/plain"),
+            buildFileEntry("docs/page.html", "text/html"),
+            {
+                ...buildFileEntry("docs/photo.png", "image/png"),
+                is_image_like: true,
+            },
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: [],
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.getByText("diagram")).toBeInTheDocument();
+        expect(screen.getByText("readme")).toBeInTheDocument();
+        expect(screen.getByText("page")).toBeInTheDocument();
+        expect(screen.getByText("photo")).toBeInTheDocument();
+        expect(screen.getByText("Reference")).toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+    });
+
+    it("uses an extension allowlist as an explicit file tree mode", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([buildCreatedNote("docs/Meeting")]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: ["csv"],
+        });
+
+        renderComponent(<FileTree />);
+
+        expect(screen.getByText("docs")).toBeInTheDocument();
+        await expandFolder(user, "docs");
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("Meeting")).not.toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+        expect(screen.queryByText("Reference")).not.toBeInTheDocument();
+    });
+
+    it("keeps allowlisted files visible when all-files mode is disabled live", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([buildCreatedNote("docs/Meeting")]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+        expect(screen.getByText("data")).toBeInTheDocument();
+
+        act(() => {
+            useSettingsStore
+                .getState()
+                .setSetting("fileTreeContentMode", "notes_only");
+        });
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("Meeting")).not.toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+    });
+
+    it("shows markdown notes and allowed files when md is allowlisted", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([buildCreatedNote("docs/Meeting")]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "PDF",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: ["md", "pdf", "csv"],
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        expect(screen.getByText("Meeting")).toBeInTheDocument();
+        expect(screen.getByText("Reference")).toBeInTheDocument();
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
     });
 
     it("renders indent guides for nested rows without affecting root rows", async () => {

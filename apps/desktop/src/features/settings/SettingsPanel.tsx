@@ -52,6 +52,7 @@ import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
+import { ExtensionFilterInput } from "./ExtensionFilterInput";
 import { useAppUpdateStore } from "../updates/store";
 import {
     isWindowOperationalStateStorageKey,
@@ -3055,6 +3056,7 @@ function DevelopersSettings({
         lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
+        fileTreeExtensionFilter,
         setSetting,
     } = useSettingsStore();
     const showDeveloperMode = sectionHasSettingsSearchMatches(
@@ -3081,7 +3083,7 @@ function DevelopersSettings({
         [
             [
                 "Show all vault files",
-                "Display every file in the vault tree, not only Markdown notes and PDFs.",
+                "Display every file in the vault tree, beyond the curated writing and media file set.",
                 "File-oriented search is active",
                 "Search Files & Notes",
                 "wikilink suggestions",
@@ -3090,6 +3092,12 @@ function DevelopersSettings({
             [
                 "Show file extensions",
                 "Display full file names with their extensions in the vault tree.",
+            ],
+            [
+                "File extension filter",
+                "Optional allowlist for the file tree. Leave empty to use the current content mode.",
+                "allowlist",
+                "pdf, txt, csv",
             ],
         ],
     );
@@ -3154,7 +3162,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="File Tree"
                 label="Show all vault files"
-                description="Display every file in the vault tree, not only Markdown notes and PDFs."
+                description="Display every vault file, beyond the curated writing and media set. With this off, Markdown, PDFs, images, Excalidraw, CSV, TXT, and HTML files are shown."
                 keywords={[
                     "File-oriented search is active",
                     "Search Files & Notes",
@@ -3187,6 +3195,21 @@ function DevelopersSettings({
                     />
                 }
             />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="File Tree"
+                label="File extension filter"
+                description="Optional allowlist for the file tree and file pickers. When set, it overrides Show all vault files; leave empty to use the current mode."
+                keywords={["allowlist", "pdf, txt, csv"]}
+                control={
+                    <ExtensionFilterInput
+                        value={fileTreeExtensionFilter}
+                        onChange={(value) =>
+                            setSetting("fileTreeExtensionFilter", value)
+                        }
+                    />
+                }
+            />
             {showFileTree && fileTreeContentMode === "all_files" && (
                 <div
                     className="mx-4 mt-3 rounded-lg px-3 py-2 text-[12px]"
@@ -3196,10 +3219,10 @@ function DevelopersSettings({
                         color: "var(--text-secondary)",
                     }}
                 >
-                    File-oriented search is active. Search Files & Notes, New
-                    Tab, `@` mentions, and wikilink suggestions now match notes
-                    by file name and path before note title, and text files can
-                    also appear in `@` mentions and `[[ ]]` suggestions.
+                    Normal mode already includes Markdown notes plus curated
+                    writing and media files. All-files mode expands the file
+                    tree, New Tab, `@` mentions, and wikilink suggestions to
+                    technical project files where supported.
                 </div>
             )}
         </div>

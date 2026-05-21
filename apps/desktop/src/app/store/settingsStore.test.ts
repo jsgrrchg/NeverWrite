@@ -36,6 +36,7 @@ describe("settingsStore developer mode", () => {
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(300);
+        expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([]);
     });
 
     it("persists developerModeEnabled per vault", () => {
@@ -115,6 +116,35 @@ describe("settingsStore developer mode", () => {
         initializeSettingsStore();
 
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
+    });
+
+    it("normalizes persisted file tree extension filters", () => {
+        localStorage.setItem(
+            "neverwrite:settings",
+            JSON.stringify({
+                state: {
+                    fileTreeExtensionFilter: [
+                        ".MD",
+                        " csv ",
+                        "md",
+                        "",
+                        42,
+                        null,
+                        ".PDF",
+                        ".csv",
+                    ],
+                },
+            }),
+        );
+
+        disposeSettingsStoreRuntime();
+        initializeSettingsStore();
+
+        expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([
+            "md",
+            "csv",
+            "pdf",
+        ]);
     });
 
     it("keeps spellcheck languages per vault across vault changes", () => {
