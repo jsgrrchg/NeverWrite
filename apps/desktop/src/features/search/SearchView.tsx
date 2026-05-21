@@ -118,6 +118,9 @@ export function SearchView({ tabId }: SearchViewProps) {
     const insertExternalTab = useEditorStore((s) => s.insertExternalTab);
     const entries = useVaultStore((s) => s.entries);
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
+    const fileTreeExtensionFilter = useSettingsStore(
+        (s) => s.fileTreeExtensionFilter,
+    );
     const showExtensions = useSettingsStore((s) => s.fileTreeShowExtensions);
 
     const parsed = useMemo(() => parseQuery(query), [query]);
@@ -149,6 +152,10 @@ export function SearchView({ tabId }: SearchViewProps) {
                 const p = parseQuery(trimmed);
                 const params = toAdvancedSearchParams(p, sort, asc, {
                     preferFileName: fileTreeContentMode === "all_files",
+                    fileScope: {
+                        mode: fileTreeContentMode,
+                        extension_filter: fileTreeExtensionFilter,
+                    },
                 });
                 const res = await vaultInvoke<AdvancedSearchResultDto[]>(
                     "advanced_search",
@@ -169,7 +176,7 @@ export function SearchView({ tabId }: SearchViewProps) {
                 }
             }
         },
-        [fileTreeContentMode],
+        [fileTreeContentMode, fileTreeExtensionFilter],
     );
 
     useEffect(() => {

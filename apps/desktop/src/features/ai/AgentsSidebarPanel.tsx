@@ -741,12 +741,13 @@ export function AgentsSidebarPanel() {
                         }}
                         title="New chat"
                         aria-label="New chat"
-                        className="flex h-5 w-5 items-center justify-center rounded"
+                        className="ub-chrome-btn flex h-5 w-5 cursor-pointer items-center justify-center rounded"
                         style={{
                             width: metrics.actionButtonSize,
                             height: metrics.actionButtonSize,
                             color: "var(--text-secondary)",
                             background: "transparent",
+                            border: "1px solid transparent",
                         }}
                     >
                         <svg
@@ -765,10 +766,11 @@ export function AgentsSidebarPanel() {
                         type="button"
                         onClick={() => openChatHistoryInWorkspace()}
                         title="Open chat history"
-                        className="rounded px-1.5 py-0.5 text-[10.5px]"
+                        className="ub-chrome-btn cursor-pointer rounded px-1.5 py-0.5 text-[10.5px]"
                         style={{
                             color: "var(--text-secondary)",
                             background: "transparent",
+                            border: "1px solid transparent",
                             fontSize: metrics.summaryFontSize,
                         }}
                     >

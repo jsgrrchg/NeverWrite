@@ -55,6 +55,29 @@ function createSession(
     };
 }
 
+function firePointer(
+    target: Element | Window,
+    type: string,
+    init: {
+        button?: number;
+        buttons?: number;
+        clientX: number;
+        clientY: number;
+        pointerId: number;
+    },
+) {
+    const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: init.button ?? 0,
+        buttons: init.buttons ?? 0,
+        clientX: init.clientX,
+        clientY: init.clientY,
+    });
+    Object.defineProperty(event, "pointerId", { value: init.pointerId });
+    fireEvent(target, event);
+}
+
 describe("AgentsSidebarPanel", () => {
     beforeEach(() => {
         resetChatStore();
@@ -213,7 +236,7 @@ describe("AgentsSidebarPanel", () => {
         });
     });
 
-    it("emits agent drag events from a sidebar row without opening it", () => {
+    it("completes an agent row drag when pointerup is received on window", () => {
         const alpha = createSession("session-alpha", "Alpha task");
         useChatStore.setState((state) => ({
             ...state,
@@ -235,21 +258,23 @@ describe("AgentsSidebarPanel", () => {
             renderComponent(<AgentsSidebarPanel />);
 
             const row = screen.getByRole("option");
-            fireEvent.pointerDown(row, {
+            firePointer(row, "pointerdown", {
                 button: 0,
+                buttons: 1,
                 pointerId: 1,
                 clientX: 10,
                 clientY: 10,
             });
-            fireEvent.pointerMove(row, {
+            firePointer(window, "pointermove", {
                 pointerId: 1,
+                buttons: 1,
                 clientX: 20,
                 clientY: 10,
             });
             expect(
                 screen.getByText("Drag to open in pane · Codex"),
             ).toBeInTheDocument();
-            fireEvent.pointerUp(row, {
+            firePointer(window, "pointerup", {
                 pointerId: 1,
                 clientX: 24,
                 clientY: 12,
@@ -263,6 +288,10 @@ describe("AgentsSidebarPanel", () => {
                 "move",
                 "end",
             ]);
+            expect(dragEvents[2]).toMatchObject({
+                x: 24,
+                y: 12,
+            });
             expect(dragEvents[0]).toMatchObject({
                 sessionId: alpha.sessionId,
                 title: "Alpha task",
@@ -270,6 +299,175 @@ describe("AgentsSidebarPanel", () => {
             expect(
                 chatPaneMovementMock.openChatSessionInWorkspace,
             ).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+        }
+    });
+
+    it("cancels an active agent row drag when pointercancel is received on window", () => {
+        const alpha = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [alpha.sessionId]: alpha,
+            },
+            sessionOrder: [alpha.sessionId],
+        }));
+
+        const dragEvents: AgentSidebarDragDetail[] = [];
+        const handleDrag = (event: Event) => {
+            dragEvents.push(
+                (event as CustomEvent<AgentSidebarDragDetail>).detail,
+            );
+        };
+        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+
+        try {
+            renderComponent(<AgentsSidebarPanel />);
+
+            const row = screen.getByRole("option");
+            firePointer(row, "pointerdown", {
+                button: 0,
+                buttons: 1,
+                pointerId: 2,
+                clientX: 10,
+                clientY: 10,
+            });
+            firePointer(window, "pointermove", {
+                pointerId: 2,
+                buttons: 1,
+                clientX: 20,
+                clientY: 10,
+            });
+            expect(
+                screen.getByText("Drag to open in pane · Codex"),
+            ).toBeInTheDocument();
+
+            firePointer(window, "pointercancel", {
+                pointerId: 2,
+                clientX: 20,
+                clientY: 10,
+            });
+
+            expect(
+                screen.queryByText("Drag to open in pane · Codex"),
+            ).toBeNull();
+            expect(dragEvents.map((event) => event.phase)).toEqual([
+                "start",
+                "move",
+                "cancel",
+            ]);
+        } finally {
+            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+        }
+    });
+
+    it("completes an active agent row drag when movement reports the button was released", () => {
+        const alpha = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [alpha.sessionId]: alpha,
+            },
+            sessionOrder: [alpha.sessionId],
+        }));
+
+        const dragEvents: AgentSidebarDragDetail[] = [];
+        const handleDrag = (event: Event) => {
+            dragEvents.push(
+                (event as CustomEvent<AgentSidebarDragDetail>).detail,
+            );
+        };
+        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+
+        try {
+            renderComponent(<AgentsSidebarPanel />);
+
+            const row = screen.getByRole("option");
+            firePointer(row, "pointerdown", {
+                button: 0,
+                buttons: 1,
+                pointerId: 4,
+                clientX: 10,
+                clientY: 10,
+            });
+            firePointer(window, "pointermove", {
+                pointerId: 4,
+                buttons: 1,
+                clientX: 20,
+                clientY: 10,
+            });
+            firePointer(window, "pointermove", {
+                pointerId: 4,
+                buttons: 0,
+                clientX: 28,
+                clientY: 12,
+            });
+
+            expect(
+                screen.queryByText("Drag to open in pane · Codex"),
+            ).toBeNull();
+            expect(dragEvents.map((event) => event.phase)).toEqual([
+                "start",
+                "move",
+                "end",
+            ]);
+            expect(dragEvents[2]).toMatchObject({
+                x: 28,
+                y: 12,
+            });
+        } finally {
+            window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+        }
+    });
+
+    it("cancels an active agent row drag when the sidebar unmounts", () => {
+        const alpha = createSession("session-alpha", "Alpha task");
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [alpha.sessionId]: alpha,
+            },
+            sessionOrder: [alpha.sessionId],
+        }));
+
+        const dragEvents: AgentSidebarDragDetail[] = [];
+        const handleDrag = (event: Event) => {
+            dragEvents.push(
+                (event as CustomEvent<AgentSidebarDragDetail>).detail,
+            );
+        };
+        window.addEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
+
+        try {
+            const { unmount } = renderComponent(<AgentsSidebarPanel />);
+
+            const row = screen.getByRole("option");
+            firePointer(row, "pointerdown", {
+                button: 0,
+                buttons: 1,
+                pointerId: 3,
+                clientX: 10,
+                clientY: 10,
+            });
+            firePointer(window, "pointermove", {
+                pointerId: 3,
+                buttons: 1,
+                clientX: 20,
+                clientY: 10,
+            });
+            expect(
+                screen.getByText("Drag to open in pane · Codex"),
+            ).toBeInTheDocument();
+
+            unmount();
+
+            expect(
+                dragEvents.map((event) => event.phase),
+            ).toContain("cancel");
+            expect(
+                screen.queryByText("Drag to open in pane · Codex"),
+            ).toBeNull();
         } finally {
             window.removeEventListener(AGENT_SIDEBAR_DRAG_EVENT, handleDrag);
         }

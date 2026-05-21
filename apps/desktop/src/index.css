@@ -30,6 +30,14 @@
 }
 
 @font-face {
+    font-family: "Fliege Mono";
+    src: url("./assets/fonts/fliege-mono/FliegeMonoVF.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
     font-family: "Inter";
     src: url("./assets/fonts/inter/Inter-Regular.woff2") format("woff2");
     font-weight: 400;
@@ -271,6 +279,21 @@
     --diff-update: #1d4ed8;
     --diff-warn: #92400e;
     --diff-move: #a16207;
+
+    /* Syntax highlight anchors — defaults aligned with `default` theme light.
+       `applyThemeColors` overwrites these at runtime for the active theme. */
+    --code-comment: #737373;
+    --code-constant: #9a3412;
+    --code-escape: #be185d;
+    --code-function: #1d4ed8;
+    --code-keyword: #6d28d9;
+    --code-markup: #b42318;
+    --code-parameter: #b45309;
+    --code-property: #1e3a8a;
+    --code-string: #0b6b3a;
+    --code-type: #8a5a00;
+    --code-type-parameter: #15803d;
+    --code-variable: #1f2937;
     --catppuccin-icon-rosewater: #dc8a78;
     --catppuccin-icon-flamingo: #dd7878;
     --catppuccin-icon-pink: #ea76cb;
@@ -312,6 +335,20 @@
     --diff-update: #60a5fa;
     --diff-warn: #fbbf24;
     --diff-move: #fcd34d;
+
+    /* Syntax highlight anchors — defaults aligned with `default` theme dark. */
+    --code-comment: #8a8a8a;
+    --code-constant: #fdba74;
+    --code-escape: #f472b6;
+    --code-function: #93c5fd;
+    --code-keyword: #c4b5fd;
+    --code-markup: #fca5a5;
+    --code-parameter: #fed7aa;
+    --code-property: #fda4af;
+    --code-string: #a7f3d0;
+    --code-type: #fde68a;
+    --code-type-parameter: #86efac;
+    --code-variable: #e5e7eb;
     --catppuccin-icon-rosewater: #f4dbd6;
     --catppuccin-icon-flamingo: #f0c6c6;
     --catppuccin-icon-pink: #f5bde6;
@@ -511,67 +548,70 @@ html[data-desktop-platform="windows"].dark {
 }
 
 .cm-static-token-comment {
-    color: color-mix(in srgb, var(--text-secondary) 92%, transparent);
+    color: var(--code-comment);
     font-style: italic;
 }
 
 .cm-static-token-keyword {
-    color: color-mix(in srgb, var(--diff-update) 82%, var(--text-primary));
+    color: var(--code-keyword);
 }
 
 .cm-static-token-variable {
-    color: color-mix(in srgb, var(--text-primary) 88%, var(--accent));
+    color: var(--code-variable);
 }
 
 .cm-static-token-definition {
-    color: color-mix(in srgb, var(--text-primary) 65%, var(--accent));
+    color: var(--code-variable);
     font-weight: 600;
 }
 
 .cm-static-token-function {
-    color: color-mix(in srgb, #0f766e 86%, var(--text-primary));
+    color: var(--code-function);
 }
 
 .cm-static-token-type {
-    color: color-mix(in srgb, #b45309 78%, var(--text-primary));
+    color: var(--code-type);
 }
 
 .cm-static-token-property {
-    color: color-mix(in srgb, var(--text-primary) 94%, transparent);
+    color: var(--code-property);
 }
 
 .cm-static-token-tag {
-    color: color-mix(in srgb, var(--accent) 62%, var(--text-primary));
+    color: var(--code-markup);
 }
 
 .cm-static-token-attribute {
-    color: color-mix(in srgb, var(--diff-update) 70%, var(--text-primary));
+    color: var(--code-parameter);
 }
 
 .cm-static-token-attribute-value,
 .cm-static-token-string {
-    color: color-mix(in srgb, var(--diff-add) 76%, var(--text-primary));
+    color: var(--code-string);
 }
 
 .cm-static-token-number,
 .cm-static-token-atom {
-    color: color-mix(in srgb, var(--diff-move) 82%, var(--text-primary));
+    color: var(--code-constant);
 }
 
-.cm-static-token-operator,
+.cm-static-token-operator {
+    color: var(--code-keyword);
+}
+
 .cm-static-token-punctuation {
-    color: color-mix(in srgb, var(--text-primary) 80%, var(--text-secondary));
+    color: var(--code-markup);
 }
 
 .cm-static-token-meta,
 .cm-static-token-escape {
-    color: color-mix(in srgb, var(--diff-update) 66%, var(--text-secondary));
+    color: var(--code-escape);
 }
 
 .cm-static-token-invalid {
-    color: var(--diff-remove);
+    color: var(--code-markup);
     text-decoration: wavy underline
-        color-mix(in srgb, var(--diff-remove) 72%, transparent);
+        color-mix(in srgb, var(--code-markup) 72%, transparent);
 }
 
 body.resizing-sidebar,
@@ -825,10 +865,10 @@ body.dragging-tab * {
     ) !important;
 }
 
-/* Sidebar shell tabs. Mirrors Comando's `.sidebar-git-scope-trigger:hover`
-   feel — subtle background/border shift plus a 1px lift so the pill
-   "jumps" forward under the cursor. Works for both inactive and active
-   tabs; active tabs keep their accent-aware border intact. */
+/* Sidebar shell tabs. A small physical-button feel: lift + soft shadow on
+   hover, then a snappy press-down with inset shadow on :active so the pill
+   tangibly depresses under the cursor. Active tabs share the same press
+   behaviour while keeping their accent-aware border intact. */
 .ub-sidebar-tab:hover:not([data-active]) {
     background-color: color-mix(
         in srgb,
@@ -842,9 +882,27 @@ body.dragging-tab * {
     );
     color: var(--text-primary);
     transform: translateY(-1px);
+    box-shadow:
+        0 2px 6px color-mix(in srgb, black 18%, transparent),
+        inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .ub-sidebar-tab[data-active]:hover {
     transform: translateY(-1px);
+    box-shadow:
+        0 2px 6px color-mix(in srgb, black 22%, transparent),
+        0 1px 2px color-mix(in srgb, black 10%, transparent);
+}
+.ub-sidebar-tab:active:not(:disabled),
+.ub-sidebar-tab[data-active]:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow:
+        inset 0 1px 2px color-mix(in srgb, black 28%, transparent),
+        inset 0 0 0 1px color-mix(in srgb, black 6%, transparent);
+    transition-duration: 60ms;
+}
+.ub-sidebar-tab:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
 }
 
 .ub-nav-btn {
@@ -872,6 +930,310 @@ body.dragging-tab * {
 }
 .review-action-btn:active:not(:disabled) {
     filter: brightness(0.95);
+}
+
+/* ── Settings panel primitives ─────────────────────────────────
+   Toggle switches, segmented controls, select dropdowns, +/- steppers
+   and theme tiles all share the same tactile press feel as the rest of
+   the UI so the settings panel doesn't feel "dead" compared to the chat
+   surfaces. */
+
+.nw-settings-toggle {
+    transition:
+        background-color 150ms ease,
+        opacity 150ms ease,
+        box-shadow 150ms ease,
+        transform 150ms ease;
+}
+.nw-settings-toggle:hover:not(:disabled) {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nw-settings-toggle:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 70ms;
+}
+.nw-settings-toggle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+
+.nw-settings-segment {
+    transition:
+        background-color 120ms ease,
+        color 120ms ease,
+        box-shadow 120ms ease,
+        transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.nw-settings-segment:not([data-active="true"]):hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-secondary) 50%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+}
+.nw-settings-segment:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 60ms;
+}
+.nw-settings-segment:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
+.nw-settings-select {
+    transition:
+        background-color 120ms ease-out,
+        border-color 120ms ease-out,
+        box-shadow 120ms ease-out,
+        transform 120ms ease-out;
+}
+.nw-settings-select:hover:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 22%,
+        var(--border)
+    ) !important;
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 80%,
+        var(--bg-secondary)
+    ) !important;
+}
+.nw-settings-select[data-open="true"]:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--accent) 48%,
+        var(--border)
+    ) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.nw-settings-select:active:not(:disabled) {
+    transform: scale(0.985);
+    transition-duration: 60ms;
+}
+.nw-settings-select:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
+.nw-settings-select-item {
+    transition:
+        background-color 80ms ease-out,
+        color 80ms ease-out;
+}
+.nw-settings-select-item:hover {
+    background-color: var(--bg-tertiary) !important;
+}
+.nw-settings-select-item:active {
+    background-color: color-mix(
+        in srgb,
+        var(--accent) 18%,
+        var(--bg-tertiary)
+    ) !important;
+}
+
+.nw-settings-stepper-btn {
+    transition:
+        background-color 100ms ease-out,
+        color 100ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-settings-stepper-btn:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--text-primary) 10%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+}
+.nw-settings-stepper-btn:active:not(:disabled) {
+    transform: scale(0.9);
+    background-color: color-mix(
+        in srgb,
+        var(--text-primary) 18%,
+        transparent
+    ) !important;
+    transition-duration: 50ms;
+}
+.nw-settings-stepper-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -1px;
+}
+
+.nw-settings-stepper-input:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+    border-radius: 4px;
+}
+
+.nw-settings-theme-tile {
+    transition:
+        border-color 140ms ease-out,
+        transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+        box-shadow 140ms ease-out;
+}
+.nw-settings-theme-tile:hover:not([data-active="true"]) {
+    transform: translateY(-1px);
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 28%,
+        var(--border)
+    ) !important;
+    box-shadow: 0 4px 12px color-mix(in srgb, black 22%, transparent);
+}
+.nw-settings-theme-tile[data-active="true"]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px
+        color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.nw-settings-theme-tile:active:not(:disabled) {
+    transform: scale(0.985);
+    transition-duration: 70ms;
+}
+.nw-settings-theme-tile:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+
+/* Vault switcher trigger (sidebar footer). A real-looking button with a
+   tinted icon chip, hover lift, pressed-in open state, and tactile click
+   feedback. */
+.nw-vault-trigger {
+    transition:
+        background-color 140ms ease-out,
+        border-color 140ms ease-out,
+        box-shadow 140ms ease-out,
+        transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.nw-vault-trigger:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 70%,
+        transparent
+    ) !important;
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 14%,
+        transparent
+    ) !important;
+    transform: translateY(-0.5px);
+    box-shadow:
+        0 2px 8px color-mix(in srgb, black 22%, transparent),
+        inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+.nw-vault-trigger[data-open="true"] {
+    background-color: color-mix(
+        in srgb,
+        var(--accent) 10%,
+        var(--bg-tertiary)
+    ) !important;
+    border-color: color-mix(
+        in srgb,
+        var(--accent) 36%,
+        var(--border)
+    ) !important;
+    box-shadow: inset 0 1px 2px color-mix(in srgb, black 18%, transparent);
+}
+.nw-vault-trigger:active:not(:disabled) {
+    transform: scale(0.985) translateY(0);
+    box-shadow: inset 0 1px 2px color-mix(in srgb, black 30%, transparent);
+    transition-duration: 70ms;
+}
+.nw-vault-trigger:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
+}
+.nw-vault-trigger .nw-vault-trigger-chevron {
+    transition:
+        opacity 140ms ease-out,
+        color 140ms ease-out;
+}
+.nw-vault-trigger[data-open="true"] .nw-vault-trigger-chevron {
+    color: var(--accent);
+    opacity: 1 !important;
+}
+
+/* Vault switcher menu items. */
+.nw-vault-menu-item {
+    transition: background-color 80ms ease-out, color 80ms ease-out;
+}
+.nw-vault-menu-item:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 95%,
+        transparent
+    ) !important;
+}
+.nw-vault-menu-item:active:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--accent) 14%,
+        var(--bg-tertiary)
+    ) !important;
+}
+
+/* Composer agent-control dropdown triggers (Approval preset, Model,
+   Reasoning effort, …). Hover lifts background subtly, the open state
+   stays pressed-in until the menu closes, and a press scales down with
+   an inset shadow for a tactile click. */
+.nw-control-trigger {
+    transition:
+        background-color 120ms ease-out,
+        color 120ms ease-out,
+        box-shadow 120ms ease-out,
+        transform 120ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.nw-control-trigger:hover:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 82%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+}
+.nw-control-trigger[data-open="true"]:not(:disabled) {
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 94%,
+        transparent
+    ) !important;
+    color: var(--text-primary) !important;
+    box-shadow: inset 0 1px 2px color-mix(in srgb, black 18%, transparent);
+}
+.nw-control-trigger:active:not(:disabled) {
+    transform: scale(0.96);
+    background-color: color-mix(
+        in srgb,
+        var(--bg-tertiary) 96%,
+        transparent
+    ) !important;
+    box-shadow: inset 0 1px 2px color-mix(in srgb, black 28%, transparent);
+    transition-duration: 60ms;
+}
+.nw-control-trigger:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
+/* Composer send/stop pill buttons. The press should feel like a physical
+   button depressing: shrink slightly, dim, and gain an inset shadow that
+   replaces the lifted drop shadow. */
+.nw-composer-action {
+    transform: translateZ(0);
+}
+.nw-composer-action:hover:not(:disabled) {
+    filter: brightness(1.08);
+    box-shadow: 0 2px 6px color-mix(in srgb, black 24%, transparent);
+}
+.nw-composer-action:active:not(:disabled) {
+    transform: scale(0.9);
+    filter: brightness(0.9);
+    box-shadow: inset 0 2px 4px color-mix(in srgb, black 36%, transparent);
+}
+.nw-composer-action:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 2px;
 }
 
 .ub-tab:not([data-active="true"]):hover {

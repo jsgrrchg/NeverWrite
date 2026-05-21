@@ -52,6 +52,7 @@ import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
+import { ExtensionFilterInput } from "./ExtensionFilterInput";
 import { useAppUpdateStore } from "../updates/store";
 import {
     isWindowOperationalStateStorageKey,
@@ -83,7 +84,9 @@ function Toggle({
         <button
             role="switch"
             aria-checked={value}
+            disabled={disabled}
             onClick={() => !disabled && onChange(!value)}
+            className="nw-settings-toggle"
             style={{
                 width: 36,
                 height: 20,
@@ -93,7 +96,6 @@ function Toggle({
                 backgroundColor: value ? "var(--accent)" : "var(--bg-tertiary)",
                 position: "relative",
                 flexShrink: 0,
-                transition: "background-color 150ms",
                 opacity: disabled ? 0.4 : 1,
             }}
         >
@@ -139,6 +141,8 @@ function SegmentedControl<T extends string | number>({
                     <button
                         key={String(opt.value)}
                         onClick={() => onChange(opt.value)}
+                        data-active={active || undefined}
+                        className="nw-settings-segment"
                         style={{
                             padding: "3px 10px",
                             borderRadius: 5,
@@ -156,7 +160,6 @@ function SegmentedControl<T extends string | number>({
                                 ? "0 1px 3px rgba(0,0,0,0.1)"
                                 : "none",
                             fontWeight: active ? 500 : 400,
-                            transition: "all 100ms",
                         }}
                     >
                         {opt.label}
@@ -256,6 +259,8 @@ function SelectField<T extends string | number | null>({
                 type="button"
                 disabled={disabled}
                 onClick={() => setOpen((v) => !v)}
+                data-open={open ? "true" : undefined}
+                className="nw-settings-select"
                 style={{
                     display: "flex",
                     alignItems: "center",
@@ -345,6 +350,7 @@ function SelectField<T extends string | number | null>({
                                             onChange(opt.value);
                                             setOpen(false);
                                         }}
+                                        className="nw-settings-select-item"
                                         style={{
                                             display: "block",
                                             width: "100%",
@@ -361,14 +367,6 @@ function SelectField<T extends string | number | null>({
                                             backgroundColor: "transparent",
                                             cursor: "pointer",
                                             whiteSpace: "nowrap",
-                                        }}
-                                        onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor =
-                                                "var(--bg-tertiary)";
-                                        }}
-                                        onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor =
-                                                "transparent";
                                         }}
                                     >
                                         {opt.label}
@@ -419,18 +417,23 @@ function NumberStepper({
             }}
         >
             <button
+                type="button"
+                aria-label="Decrement"
+                disabled={value <= min}
                 onClick={() => onChange(Math.max(min, value - step))}
+                className="nw-settings-stepper-btn"
                 style={{
                     width: 24,
                     height: 26,
                     border: "none",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: value <= min ? "not-allowed" : "pointer",
                     color: "var(--text-secondary)",
                     fontSize: 14,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    opacity: value <= min ? 0.45 : 1,
                 }}
             >
                 −
@@ -459,6 +462,7 @@ function NumberStepper({
                         inputRef.current?.blur();
                     }
                 }}
+                className="nw-settings-stepper-input"
                 style={{
                     width: 34,
                     textAlign: "center",
@@ -471,18 +475,23 @@ function NumberStepper({
                 }}
             />
             <button
+                type="button"
+                aria-label="Increment"
+                disabled={value >= max}
                 onClick={() => onChange(Math.min(max, value + step))}
+                className="nw-settings-stepper-btn"
                 style={{
                     width: 24,
                     height: 26,
                     border: "none",
                     background: "transparent",
-                    cursor: "pointer",
+                    cursor: value >= max ? "not-allowed" : "pointer",
                     color: "var(--text-secondary)",
                     fontSize: 14,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    opacity: value >= max ? 0.45 : 1,
                 }}
             >
                 +
@@ -595,6 +604,8 @@ function ThemePicker({
                     <button
                         key={name}
                         onClick={() => onChange(name)}
+                        data-active={active || undefined}
+                        className="nw-settings-theme-tile"
                         style={{
                             display: "flex",
                             flexDirection: "column",
@@ -607,7 +618,6 @@ function ThemePicker({
                                 : "2px solid var(--border)",
                             background: "var(--bg-secondary)",
                             cursor: "pointer",
-                            transition: "border-color 150ms",
                         }}
                     >
                         {/* Color preview */}
@@ -3046,6 +3056,7 @@ function DevelopersSettings({
         lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
+        fileTreeExtensionFilter,
         setSetting,
     } = useSettingsStore();
     const showDeveloperMode = sectionHasSettingsSearchMatches(
@@ -3072,7 +3083,7 @@ function DevelopersSettings({
         [
             [
                 "Show all vault files",
-                "Display every file in the vault tree, not only Markdown notes and PDFs.",
+                "Display every file in the vault tree, beyond the curated writing and media file set.",
                 "File-oriented search is active",
                 "Search Files & Notes",
                 "wikilink suggestions",
@@ -3081,6 +3092,12 @@ function DevelopersSettings({
             [
                 "Show file extensions",
                 "Display full file names with their extensions in the vault tree.",
+            ],
+            [
+                "File extension filter",
+                "Optional allowlist for the file tree. Leave empty to use the current content mode.",
+                "allowlist",
+                "pdf, txt, csv",
             ],
         ],
     );
@@ -3145,7 +3162,7 @@ function DevelopersSettings({
                 searchQuery={searchQuery}
                 section="File Tree"
                 label="Show all vault files"
-                description="Display every file in the vault tree, not only Markdown notes and PDFs."
+                description="Display every vault file, beyond the curated writing and media set. With this off, Markdown, PDFs, images, Excalidraw, CSV, TXT, and HTML files are shown."
                 keywords={[
                     "File-oriented search is active",
                     "Search Files & Notes",
@@ -3178,6 +3195,21 @@ function DevelopersSettings({
                     />
                 }
             />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="File Tree"
+                label="File extension filter"
+                description="Optional allowlist for the file tree and file pickers. When set, it overrides Show all vault files; leave empty to use the current mode."
+                keywords={["allowlist", "pdf, txt, csv"]}
+                control={
+                    <ExtensionFilterInput
+                        value={fileTreeExtensionFilter}
+                        onChange={(value) =>
+                            setSetting("fileTreeExtensionFilter", value)
+                        }
+                    />
+                }
+            />
             {showFileTree && fileTreeContentMode === "all_files" && (
                 <div
                     className="mx-4 mt-3 rounded-lg px-3 py-2 text-[12px]"
@@ -3187,10 +3219,10 @@ function DevelopersSettings({
                         color: "var(--text-secondary)",
                     }}
                 >
-                    File-oriented search is active. Search Files & Notes, New
-                    Tab, `@` mentions, and wikilink suggestions now match notes
-                    by file name and path before note title, and text files can
-                    also appear in `@` mentions and `[[ ]]` suggestions.
+                    Normal mode already includes Markdown notes plus curated
+                    writing and media files. All-files mode expands the file
+                    tree, New Tab, `@` mentions, and wikilink suggestions to
+                    technical project files where supported.
                 </div>
             )}
         </div>

@@ -22,6 +22,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import {
+    buildVaultFileEntry as buildFileEntry,
     renderComponent,
     setEditorTabs,
     setVaultEntries,
@@ -89,24 +90,6 @@ function buildFolderEntry(path: string) {
         created_at: 1,
         size: 0,
         mime_type: null,
-    };
-}
-
-function buildFileEntry(path: string, mimeType = "text/plain") {
-    const fileName = path.split("/").pop() ?? path;
-    const dotIndex = fileName.lastIndexOf(".");
-    return {
-        id: path,
-        path: `/vault/${path}`,
-        relative_path: path,
-        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
-        file_name: fileName,
-        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
-        kind: "file" as const,
-        modified_at: 1,
-        created_at: 1,
-        size: 16,
-        mime_type: mimeType,
     };
 }
 
@@ -480,6 +463,154 @@ describe("FileTree", () => {
 
         expect(screen.queryByText('No files match "runtime.ts"')).toBeNull();
         expect(screen.getByText("runtime")).toBeInTheDocument();
+    });
+
+    it("shows curated document and media files in the default content mode", async () => {
+        const user = userEvent.setup();
+
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/diagram.excalidraw", "application/json"),
+            buildFileEntry("docs/readme.txt", "text/plain"),
+            buildFileEntry("docs/page.html", "text/html"),
+            {
+                ...buildFileEntry("docs/photo.png", "image/png"),
+                is_image_like: true,
+            },
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: [],
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.getByText("diagram")).toBeInTheDocument();
+        expect(screen.getByText("readme")).toBeInTheDocument();
+        expect(screen.getByText("page")).toBeInTheDocument();
+        expect(screen.getByText("photo")).toBeInTheDocument();
+        expect(screen.getByText("Reference")).toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+    });
+
+    it("uses an extension allowlist as an explicit file tree mode", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([buildCreatedNote("docs/Meeting")]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: ["csv"],
+        });
+
+        renderComponent(<FileTree />);
+
+        expect(screen.getByText("docs")).toBeInTheDocument();
+        await expandFolder(user, "docs");
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("Meeting")).not.toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+        expect(screen.queryByText("Reference")).not.toBeInTheDocument();
+    });
+
+    it("keeps allowlisted files visible when all-files mode is disabled live", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([buildCreatedNote("docs/Meeting")]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "all_files",
+            fileTreeExtensionFilter: ["csv"],
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+        expect(screen.getByText("data")).toBeInTheDocument();
+
+        act(() => {
+            useSettingsStore
+                .getState()
+                .setSetting("fileTreeContentMode", "notes_only");
+        });
+
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("Meeting")).not.toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
+    });
+
+    it("shows markdown notes and allowed files when md is allowlisted", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([buildCreatedNote("docs/Meeting")]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFileEntry("docs/data.csv", "text/csv"),
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "PDF",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore.setState({
+            fileTreeContentMode: "notes_only",
+            fileTreeExtensionFilter: ["md", "pdf", "csv"],
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        expect(screen.getByText("Meeting")).toBeInTheDocument();
+        expect(screen.getByText("Reference")).toBeInTheDocument();
+        expect(screen.getByText("data")).toBeInTheDocument();
+        expect(screen.queryByText("config")).not.toBeInTheDocument();
     });
 
     it("renders indent guides for nested rows without affecting root rows", async () => {
@@ -1110,12 +1241,15 @@ describe("FileTree", () => {
         const rootMoveTarget = await screen.findByRole("button", {
             name: "/ Root",
         });
-        const moveMenu = getFixedMenuElement(rootMoveTarget);
-        expect(moveMenu).not.toBeNull();
-        expect(moveMenu).toHaveStyle({
-            overflowY: "auto",
-        });
-        expect(moveMenu?.getAttribute("style")).toContain("max-height:");
+        expect(screen.getByText("Move to Folder")).toBeInTheDocument();
+        expect(
+            screen.getByPlaceholderText("Search folders..."),
+        ).toBeInTheDocument();
+        expect(getFixedMenuElement(rootMoveTarget)).not.toBeNull();
+        const picker = screen.getByRole("dialog", { name: "Move to Folder" });
+        expect(
+            within(picker).getByRole("button", { name: "notes" }),
+        ).toBeDisabled();
 
         const archiveTargets = await screen.findAllByRole("button", {
             name: "archive",
@@ -1127,6 +1261,299 @@ describe("FileTree", () => {
         });
         expect(renameNote).toHaveBeenCalledWith("notes/alpha", "archive/alpha");
         expect(renameNote).toHaveBeenCalledWith("notes/beta", "archive/beta");
+    });
+
+    it("moves a PDF from the context menu with the folder picker", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFolderEntry("archive"),
+            {
+                id: "docs/reference.pdf",
+                path: "/vault/docs/reference.pdf",
+                relative_path: "docs/reference.pdf",
+                title: "Reference",
+                file_name: "reference.pdf",
+                extension: "pdf",
+                kind: "pdf",
+                modified_at: 1,
+                created_at: 1,
+                size: 256,
+                mime_type: "application/pdf",
+            },
+        ]);
+        vi.mocked(invoke).mockImplementation(async (command) => {
+            if (command === "move_vault_entry") {
+                return {
+                    id: "archive/reference.pdf",
+                    path: "/vault/archive/reference.pdf",
+                    relative_path: "archive/reference.pdf",
+                    title: "Reference",
+                    file_name: "reference.pdf",
+                    extension: "pdf",
+                    kind: "pdf",
+                    modified_at: 2,
+                    created_at: 1,
+                    size: 256,
+                    mime_type: "application/pdf",
+                };
+            }
+            if (command === "list_vault_entries") {
+                return [
+                    buildFolderEntry("docs"),
+                    buildFolderEntry("archive"),
+                    {
+                        id: "archive/reference.pdf",
+                        path: "/vault/archive/reference.pdf",
+                        relative_path: "archive/reference.pdf",
+                        title: "Reference",
+                        file_name: "reference.pdf",
+                        extension: "pdf",
+                        kind: "pdf",
+                        modified_at: 2,
+                        created_at: 1,
+                        size: 256,
+                        mime_type: "application/pdf",
+                    },
+                ];
+            }
+            return undefined;
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.contextMenu(getFileRow("Reference"));
+        await user.click(
+            await screen.findByRole("button", { name: "Move File to…" }),
+        );
+        await user.click(
+            within(screen.getByRole("dialog", { name: "Move to Folder" }))
+                .getByRole("button", { name: "archive" }),
+        );
+
+        await waitFor(() => {
+            expect(invoke).toHaveBeenCalledWith("move_vault_entry", {
+                relativePath: "docs/reference.pdf",
+                newRelativePath: "archive/reference.pdf",
+                vaultPath: "/vault",
+            });
+        });
+    });
+
+    it("moves a generic file from the context menu with the folder picker", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFolderEntry("archive"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+        vi.mocked(invoke).mockImplementation(async (command) => {
+            if (command === "move_vault_entry") {
+                return {
+                    ...buildFileEntry("archive/config.toml", "application/toml"),
+                    modified_at: 2,
+                };
+            }
+            if (command === "list_vault_entries") {
+                return [
+                    buildFolderEntry("docs"),
+                    buildFolderEntry("archive"),
+                    buildFileEntry("archive/config.toml", "application/toml"),
+                ];
+            }
+            return undefined;
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.contextMenu(getFileRow("config"));
+        await user.click(
+            await screen.findByRole("button", { name: "Move File to…" }),
+        );
+        await user.click(
+            within(screen.getByRole("dialog", { name: "Move to Folder" }))
+                .getByRole("button", { name: "archive" }),
+        );
+
+        await waitFor(() => {
+            expect(invoke).toHaveBeenCalledWith("move_vault_entry", {
+                relativePath: "docs/config.toml",
+                newRelativePath: "archive/config.toml",
+                vaultPath: "/vault",
+            });
+        });
+    });
+
+    it("moves mixed selected notes and files from the context menu", async () => {
+        const user = userEvent.setup();
+        const renameNote = vi
+            .fn()
+            .mockImplementation(async (_noteId: string, newPath: string) => ({
+                id: newPath,
+                path: `/vault/${newPath}.md`,
+                title: newPath.split("/").pop() ?? newPath,
+            }));
+
+        useVaultStore.setState({ renameNote });
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setVaultEntries([
+            buildFolderEntry("notes"),
+            buildFolderEntry("docs"),
+            buildFolderEntry("archive"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+        vi.mocked(invoke).mockImplementation(async (command) => {
+            if (command === "move_vault_entry") {
+                return {
+                    ...buildFileEntry("archive/config.toml", "application/toml"),
+                    modified_at: 2,
+                };
+            }
+            if (command === "list_vault_entries") {
+                return [
+                    buildFolderEntry("notes"),
+                    buildFolderEntry("docs"),
+                    buildFolderEntry("archive"),
+                    buildFileEntry("archive/config.toml", "application/toml"),
+                ];
+            }
+            return undefined;
+        });
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+        fireEvent.click(getFileRow("config"), { metaKey: true });
+        fireEvent.contextMenu(getFileRow("config"));
+
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Move Selected Items to…",
+            }),
+        );
+        await user.click(
+            within(screen.getByRole("dialog", { name: "Move to Folder" }))
+                .getByRole("button", { name: "archive" }),
+        );
+
+        await waitFor(() => {
+            expect(renameNote).toHaveBeenCalledWith("notes/alpha", "archive/alpha");
+            expect(invoke).toHaveBeenCalledWith("move_vault_entry", {
+                relativePath: "docs/config.toml",
+                newRelativePath: "archive/config.toml",
+                vaultPath: "/vault",
+            });
+        });
+    });
+
+    it("shows move for mixed selections opened from a selected folder", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([]);
+        setVaultEntries([
+            buildFolderEntry("docs"),
+            buildFolderEntry("archive"),
+            buildFileEntry("docs/config.toml", "application/toml"),
+        ]);
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeContentMode", "all_files");
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "docs");
+
+        fireEvent.click(getFolderRow("docs"), { metaKey: true });
+        fireEvent.click(getFileRow("config"), { metaKey: true });
+        fireEvent.contextMenu(getFolderRow("docs"));
+
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Move Selected Items to…",
+            }),
+        );
+
+        const picker = screen.getByRole("dialog", { name: "Move to Folder" });
+        expect(
+            within(picker).getByRole("button", { name: "docs" }),
+        ).toBeDisabled();
+        expect(
+            within(picker).getByRole("button", { name: "archive" }),
+        ).toBeEnabled();
+    });
+
+    it("filters folders in the move destination picker", async () => {
+        const user = userEvent.setup();
+        const renameNote = vi
+            .fn()
+            .mockImplementation(async (_noteId: string, newPath: string) => ({
+                id: newPath,
+                path: `/vault/${newPath}.md`,
+                title: newPath.split("/").pop() ?? newPath,
+            }));
+
+        useVaultStore.setState({ renameNote });
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "archive/keep",
+                path: "/vault/archive/keep.md",
+                title: "Keep",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "receipts/may",
+                path: "/vault/receipts/may.md",
+                title: "May",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+
+        fireEvent.contextMenu(getNoteRow("Alpha"));
+        await user.click(
+            await screen.findByRole("button", { name: "Move Note to…" }),
+        );
+        const picker = screen.getByRole("dialog", { name: "Move to Folder" });
+        await user.type(within(picker).getByPlaceholderText("Search folders..."), "rece");
+
+        expect(
+            within(picker).getByRole("button", { name: "receipts" }),
+        ).toBeInTheDocument();
+        expect(
+            within(picker).queryByRole("button", { name: "archive" }),
+        ).not.toBeInTheDocument();
     });
 
     it("opens a note when clicked in the tree", async () => {
@@ -1177,6 +1604,294 @@ describe("FileTree", () => {
         expect(
             activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
         ).toBe("notes/beta");
+    });
+
+    it("opens notes while navigating visible tree rows with arrow keys", async () => {
+        vi.mocked(invoke).mockResolvedValue({ content: "Loaded note" });
+
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await screen.findByText("Alpha");
+
+        const viewport = screen.getByTestId("file-tree-viewport");
+        viewport.focus();
+        fireEvent.keyDown(viewport, { key: "ArrowDown" });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("beta");
+        });
+        expect(getNoteRow("Beta")).toHaveAttribute(
+            "data-keyboard-focus",
+            "true",
+        );
+
+        fireEvent.keyDown(viewport, { key: "ArrowUp" });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("alpha");
+        });
+    });
+
+    it("uses Cmd+Shift+ArrowDown to open the next file without stealing focus", async () => {
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(
+            <>
+                <div
+                    data-testid="mock-editor-focus"
+                    contentEditable
+                    suppressContentEditableWarning
+                    tabIndex={0}
+                >
+                    Editor
+                </div>
+                <FileTree />
+            </>,
+        );
+        await screen.findByText("Alpha");
+
+        const editor = screen.getByTestId("mock-editor-focus");
+        editor.focus();
+        fireEvent.keyDown(editor, {
+            key: "ArrowDown",
+            metaKey: true,
+            shiftKey: true,
+        });
+        fireEvent.keyDown(editor, {
+            key: "ArrowDown",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("beta");
+        });
+        expect(document.activeElement).toBe(editor);
+    });
+
+    it("respects the current sort order when using file navigation shortcuts", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "alpha",
+                path: "/vault/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "beta",
+                path: "/vault/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-beta",
+        );
+
+        renderComponent(<FileTree />);
+        await user.click(screen.getByTitle("Sort order"));
+
+        const menu = screen.getByRole("menu", { name: "Sort order" });
+        fireEvent.keyDown(menu, { key: "ArrowDown" });
+        fireEvent.keyDown(menu, { key: "Enter" });
+
+        await waitFor(() => {
+            expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+        });
+
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            metaKey: true,
+            shiftKey: true,
+        });
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("alpha");
+        });
+    });
+
+    it("expands collapsed folders when the next-file shortcut enters them", async () => {
+        const user = userEvent.setup();
+        vi.mocked(invoke).mockResolvedValue({ content: "Loaded note" });
+
+        setVaultNotes([
+            {
+                id: "A/alpha",
+                path: "/vault/A/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "B/beta",
+                path: "/vault/B/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "A/alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-beta",
+                    noteId: "B/beta",
+                    title: "Beta",
+                    content: "Beta",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "A");
+
+        expect(screen.queryByText("Beta")).not.toBeInTheDocument();
+
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            metaKey: true,
+            shiftKey: true,
+        });
+        fireEvent.keyDown(document, {
+            key: "ArrowDown",
+            ctrlKey: true,
+            shiftKey: true,
+        });
+
+        await waitFor(() => {
+            const activeTab = useEditorStore
+                .getState()
+                .tabs.find(
+                    (tab) => tab.id === useEditorStore.getState().activeTabId,
+                );
+            expect(
+                activeTab && isNoteTab(activeTab) ? activeTab.noteId : null,
+            ).toBe("B/beta");
+        });
+        expect(screen.getByText("B")).toBeInTheDocument();
+        expect(screen.getByText("Beta")).toBeInTheDocument();
     });
 
     it("opens a note in a new tab on middle click", async () => {

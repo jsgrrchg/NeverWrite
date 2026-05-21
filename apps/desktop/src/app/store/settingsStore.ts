@@ -40,6 +40,7 @@ export interface Settings {
     developerTerminalEnabled: boolean;
     fileTreeContentMode: "notes_only" | "all_files";
     fileTreeShowExtensions: boolean;
+    fileTreeExtensionFilter: string[];
 }
 
 interface SettingsStore extends Settings {
@@ -63,6 +64,7 @@ export type EditorFontFamily =
     | "source-serif"
     | "mono"
     | "jetbrains"
+    | "fliege-mono"
     | "geist-mono"
     | "ibm-plex-mono"
     | "courier"
@@ -92,6 +94,7 @@ const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "source-serif",
     "mono",
     "jetbrains",
+    "fliege-mono",
     "geist-mono",
     "ibm-plex-mono",
     "courier",
@@ -142,6 +145,7 @@ export const EDITOR_FONT_FAMILY_OPTIONS: {
     { value: "slab", label: "Rockwell Slab", group: "Serif" },
     { value: "mono", label: "Monospace (JetBrains)", group: "Mono" },
     { value: "jetbrains", label: "JetBrains Mono", group: "Mono" },
+    { value: "fliege-mono", label: "Fliege Mono", group: "Mono" },
     { value: "geist-mono", label: "Geist Mono", group: "Mono" },
     { value: "ibm-plex-mono", label: "IBM Plex Mono", group: "Mono" },
     { value: "courier", label: "Courier New", group: "Mono" },
@@ -175,12 +179,31 @@ const defaults: Settings = {
     developerTerminalEnabled: true,
     fileTreeContentMode: "notes_only",
     fileTreeShowExtensions: false,
+    fileTreeExtensionFilter: [],
 };
 
 function normalizeFileTreeContentMode(
     value: unknown,
 ): Settings["fileTreeContentMode"] {
     return value === "all_files" ? "all_files" : "notes_only";
+}
+
+function normalizeFileTreeExtensionFilter(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const item of value) {
+        if (typeof item !== "string") continue;
+        const extension = item.trim().replace(/^\.+/, "").toLowerCase();
+        if (!extension || seen.has(extension)) continue;
+        seen.add(extension);
+        normalized.push(extension);
+    }
+
+    return normalized;
 }
 
 function normalizeTabOpenBehavior(value: unknown): TabOpenBehavior {
@@ -397,6 +420,9 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             fileTreeShowExtensions:
                 parsed.state.fileTreeShowExtensions ??
                 defaults.fileTreeShowExtensions,
+            fileTreeExtensionFilter: normalizeFileTreeExtensionFilter(
+                parsed.state.fileTreeExtensionFilter,
+            ),
         };
     } catch {
         return null;
@@ -463,6 +489,7 @@ function pickSettings(state: SettingsStore): Settings {
         developerTerminalEnabled: state.developerTerminalEnabled,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
+        fileTreeExtensionFilter: state.fileTreeExtensionFilter,
     };
 }
 
@@ -598,6 +625,13 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
                     spellcheckPrimaryLanguage: nextPair.primary,
                     spellcheckSecondaryLanguage: nextPair.secondary,
                 } as Partial<Settings>;
+            }
+
+            if (key === "fileTreeExtensionFilter") {
+                return {
+                    fileTreeExtensionFilter:
+                        normalizeFileTreeExtensionFilter(value),
+                };
             }
 
             return { [key]: value } as Partial<Settings>;

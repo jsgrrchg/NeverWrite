@@ -7,6 +7,7 @@ import {
     WidgetType,
 } from "@codemirror/view";
 import {
+    EditorSelection,
     type EditorState,
     RangeSetBuilder,
     StateEffect,
@@ -36,6 +37,7 @@ import {
     selectionHasMultilineRangeTouchingLine,
     selectionTouchesLine,
     selectionTouchesRange,
+    selectionTouchesRangeBoundary,
 } from "./selectionActivity";
 import { parseMarkdownListItem } from "../markdownLists";
 import {
@@ -130,7 +132,7 @@ type RevealSensitiveRange = {
     key: string;
     from: number;
     to: number;
-    strategy: "line" | "range" | "multiline-line";
+    strategy: "line" | "range" | "range-boundary" | "multiline-line";
 };
 
 class InlineBreakWidget extends WidgetType {
@@ -138,6 +140,29 @@ class InlineBreakWidget extends WidgetType {
         return document.createElement("br");
     }
 }
+
+class EmptyListCaretAnchorWidget extends WidgetType {
+    eq() {
+        return true;
+    }
+
+    toDOM() {
+        const span = document.createElement("span");
+        span.className = "cm-lp-caret-anchor";
+        span.setAttribute("aria-hidden", "true");
+        return span;
+    }
+
+    ignoreEvent() {
+        return true;
+    }
+}
+
+const emptyListCaretAnchorWidget = new EmptyListCaretAnchorWidget();
+const emptyListCaretAnchorDecoration = Decoration.widget({
+    widget: emptyListCaretAnchorWidget,
+    side: -1,
+});
 
 function createMathMark(display: "inline" | "block") {
     return Decoration.mark({
@@ -290,6 +315,19 @@ function isActiveEmptyListLine(
     if (!selectionTouchesLine(state, lineFrom, lineTo)) return false;
     const item = parseMarkdownListItem(state.doc.sliceString(lineFrom, lineTo));
     return item?.isEmpty === true;
+}
+
+function registerEmptyListCaretAnchorDependency(
+    context: BuildContext,
+    lineFrom: number,
+    lineTo: number,
+) {
+    const item = parseMarkdownListItem(
+        context.state.doc.sliceString(lineFrom, lineTo),
+    );
+    if (!item?.isEmpty) return;
+
+    registerRevealSensitiveRange(context, "line", lineFrom, lineTo);
 }
 
 function getListItemPresentation(
@@ -490,6 +528,48 @@ function hideRange(
     pushDeco(context, from, to, deco);
 }
 
+function addEmptyListCaretAnchor(context: BuildContext, pos: number) {
+    pushDeco(context, pos, pos, emptyListCaretAnchorDecoration);
+}
+
+function getActiveEmptyListPrefixEndAtPos(
+    state: EditorState,
+    pos: number,
+): number | null {
+    const line = state.doc.lineAt(pos);
+    const item = parseMarkdownListItem(line.text);
+    if (!item?.isEmpty) return null;
+
+    const prefixEnd = line.from + item.prefixLength;
+    if (pos < line.from || pos >= prefixEnd) return null;
+
+    return prefixEnd;
+}
+
+function moveEmptyListPrefixClickToContentStart(
+    event: MouseEvent,
+    view: EditorView,
+) {
+    if (event.button !== 0) return false;
+
+    const pos = view.posAtCoords({
+        x: event.clientX,
+        y: event.clientY,
+    });
+    if (pos === null) return false;
+
+    const prefixEnd = getActiveEmptyListPrefixEndAtPos(view.state, pos);
+    if (prefixEnd === null) return false;
+
+    event.preventDefault();
+    view.dispatch({
+        selection: EditorSelection.cursor(prefixEnd),
+        scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+}
+
 function registerRevealSensitiveRange(
     context: BuildContext,
     strategy: RevealSensitiveRange["strategy"],
@@ -550,6 +630,8 @@ function getRevealSensitiveSignature(
         const active =
             range.strategy === "line"
                 ? selectionTouchesLine(state, range.from, range.to)
+                : range.strategy === "range-boundary"
+                  ? selectionTouchesRangeBoundary(state, range.from, range.to)
                 : range.strategy === "multiline-line"
                   ? selectionHasMultilineRangeTouchingLine(
                         state,
@@ -596,7 +678,12 @@ function createInlineFormattingRule(
 ): NodeRule {
     return (node, context) => {
         if (node.name !== nodeName) return;
-        registerRevealSensitiveRange(context, "range", node.from, node.to);
+        registerRevealSensitiveRange(
+            context,
+            "range-boundary",
+            node.from,
+            node.to,
+        );
         pushDeco(context, node.from, node.to, mark);
         hideInactiveChildMarks(
             node.node,
@@ -606,6 +693,7 @@ function createInlineFormattingRule(
             context.state,
             context.decos,
             hideInlineMark,
+            true,
         );
     };
 }
@@ -752,6 +840,7 @@ const listMarkRule: NodeRule = (node, context) => {
     const isTaskItem = listItem ? hasDescendant(listItem, "TaskMarker") : false;
     const line = context.state.doc.lineAt(node.from);
     registerRevealSensitiveRange(context, "multiline-line", line.from, line.to);
+    registerEmptyListCaretAnchorDependency(context, line.from, line.to);
     if (
         selectionHasMultilineRangeTouchingLine(
             context.state,
@@ -768,7 +857,10 @@ const listMarkRule: NodeRule = (node, context) => {
         line.to,
     );
 
-    hideRange(context, line.from, activeEmptyItem ? node.to : hideTo);
+    hideRange(context, line.from, hideTo);
+    if (activeEmptyItem && !isTaskItem) {
+        addEmptyListCaretAnchor(context, hideTo);
+    }
 
     if (isTaskItem) return;
 
@@ -923,7 +1015,10 @@ const taskMarkerRule: NodeRule = (node, context) => {
         markerWidth: LIVE_PREVIEW_TASK_MARKER_WIDTH,
     });
 
-    hideRange(context, node.from, activeEmptyItem ? node.to : prefixEnd);
+    hideRange(context, node.from, prefixEnd);
+    if (activeEmptyItem) {
+        addEmptyListCaretAnchor(context, prefixEnd);
+    }
     addLineDecoration(
         context.lineDecos,
         line.from,
@@ -1824,7 +1919,12 @@ export function createInlineLivePreviewPlugin() {
                 return buildResult.decorations;
             }
         },
-        { decorations: (value) => value.decorations },
+        {
+            decorations: (value) => value.decorations,
+            eventHandlers: {
+                mousedown: moveEmptyListPrefixClickToContentStart,
+            },
+        },
     );
 }
 

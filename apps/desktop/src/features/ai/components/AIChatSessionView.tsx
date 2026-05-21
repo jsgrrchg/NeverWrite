@@ -642,6 +642,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         chatActions.attachFolder(folderPath, name, sessionId);
                     }}
                     onSubmit={() => {
+                        setComposerExpanded(false);
                         void chatActions.sendMessage(sessionId);
                     }}
                     onStop={() => {

@@ -46,7 +46,6 @@ import {
     type Tab,
     type NoteTab,
 } from "../../app/store/editorStore";
-import { useThemeStore } from "../../app/store/themeStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
@@ -455,7 +454,6 @@ export function Editor({
     );
     const registerCommand = useCommandStore((s) => s.register);
     const unregisterCommand = useCommandStore((s) => s.unregister);
-    const isDark = useThemeStore((s) => s.isDark);
     const editorFontSize = useSettingsStore((s) => s.editorFontSize);
     const editorFontFamily = useSettingsStore((s) => s.editorFontFamily);
     const editorLineHeight = useSettingsStore((s) => s.editorLineHeight);
@@ -2293,9 +2291,7 @@ export function Editor({
                         codeLanguages: resolveMarkdownCodeLanguage,
                     }),
                     baseTheme,
-                    syntaxCompartment.of(
-                        getSyntaxExtension(useThemeStore.getState().isDark),
-                    ),
+                    syntaxCompartment.of(getSyntaxExtension()),
                     wrappingCompartment.of(
                         getWrappingExtension(
                             useSettingsStore.getState().lineWrapping,
@@ -3040,14 +3036,14 @@ export function Editor({
             ),
         );
 
-        // Reconfigure syntax/live-preview only on actual tab switch —
-        // within the same tab the compartments are already correct.
+        // Reconfigure live-preview/spellcheck only on actual tab switch —
+        // within the same tab the compartments are already correct. The
+        // syntax compartment is not reconfigured here: theme changes
+        // propagate through CSS vars and the extension does not vary by
+        // tab.
         if (tabChanged) {
             view.dispatch({
                 effects: [
-                    syntaxCompartment.reconfigure(
-                        getSyntaxExtension(useThemeStore.getState().isDark),
-                    ),
                     livePreviewCompartment.reconfigure(
                         getLivePreviewExtension(
                             handleOpenLinkContextMenu,
@@ -3187,12 +3183,9 @@ export function Editor({
         };
     }, [activeTabInfo, isVisible, openVault]);
 
-    // Reconfigure syntax theme when isDark changes
-    useEffect(() => {
-        viewRef.current?.dispatch({
-            effects: syntaxCompartment.reconfigure(getSyntaxExtension(isDark)),
-        });
-    }, [isDark]);
+    // Syntax highlighting resolves through `--code-*` CSS vars now, so the
+    // editor repaints automatically when `applyThemeColors` updates the
+    // root. No compartment reconfigure is needed on `isDark` changes.
 
     // Reconfigure live preview when vault metadata or the setting changes
     useEffect(() => {

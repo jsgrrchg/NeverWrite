@@ -416,6 +416,41 @@ describe("Editor", () => {
         expect(screen.getAllByDisplayValue("Updated title")).toHaveLength(2);
     });
 
+    it("allows inserting spaces while editing text properties", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Frontmatter title",
+                content: "---\ntitle: Frontmatter title\n---\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        await act(async () => {
+            fireEvent.click(screen.getByRole("button", { name: "Properties" }));
+        });
+
+        const view = getEditorView();
+        const propertyInput = screen.getAllByDisplayValue(
+            "Frontmatter title",
+        )[1];
+
+        await act(async () => {
+            fireEvent.change(propertyInput, {
+                target: { value: "Frontmatter title " },
+            });
+        });
+
+        expect((propertyInput as HTMLInputElement).value).toBe(
+            "Frontmatter title ",
+        );
+        expect(view.state.doc.toString()).toContain(
+            'title: "Frontmatter title "',
+        );
+    });
+
     it("does not underline markdown headings in source mode", async () => {
         setEditorTabs([
             {
@@ -2952,5 +2987,68 @@ describe("Editor", () => {
 
         expect(view.state.doc.toString()).toBe("[[/src/main.ts]]");
         expect(screen.queryByText("main.ts")).not.toBeInTheDocument();
+    });
+
+    it("does not leak edits from one note tab into a different note tab", async () => {
+        vi.useFakeTimers();
+        mockInvoke().mockImplementation(async (command, args) => {
+            if (command === "save_note") {
+                const payload = args as { noteId: string; content: string };
+                return {
+                    id: payload.noteId,
+                    path: `${payload.noteId}.md`,
+                    title: payload.noteId.endsWith("/a") ? "A" : "B",
+                    content: payload.content,
+                };
+            }
+            return undefined;
+        });
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    noteId: "notes/a",
+                    title: "A",
+                    content: "Alpha",
+                },
+                {
+                    id: "tab-b",
+                    noteId: "notes/b",
+                    title: "B",
+                    content: "Beta",
+                },
+            ],
+            "tab-a",
+        );
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: view.state.doc.length,
+                    to: view.state.doc.length,
+                    insert: " edited",
+                },
+            });
+        });
+
+        await act(async () => {
+            vi.advanceTimersByTime(300);
+            await flushPromises();
+        });
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-b");
+            await flushPromises();
+        });
+
+        expect(getEditorView().state.doc.toString()).toBe("Beta");
+        const tabB = useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === "tab-b");
+        expect(tabB && "content" in tabB ? tabB.content : null).toBe("Beta");
+        expect(useEditorStore.getState().dirtyTabIds.has("tab-b")).toBe(false);
     });
 });

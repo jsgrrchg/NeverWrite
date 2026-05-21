@@ -12,9 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::{
     AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
     FileSystemCapabilities, Implementation, InitializeRequest, LoadSessionRequest, LogoutRequest,
-    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
+    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
     SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -24,13 +25,14 @@ use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
     AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
     AiMessageStartedPayload, AiModeOption, AiModelOption, AiPermissionOptionPayload,
-    AiPermissionRequestPayload, AiRuntimeBinarySource, AiRuntimeConnectionPayload,
-    AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus, AiSession, AiSessionErrorPayload,
-    AiSessionStatus, AiStatusEventPayload, AiTokenUsageCostPayload, AiTokenUsagePayload,
-    AiToolActivityActionPayload, AiToolActivityPayload, ToolDiffState,
-    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
-    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
+    AiPermissionRequestPayload, AiPlanEntryPayload, AiPlanUpdatePayload, AiRuntimeBinarySource,
+    AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
+    AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
+    AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
+    AiToolActivityPayload, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
+    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
+    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT,
     AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT,
     AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
@@ -150,6 +152,7 @@ struct AiRuntimeSetupPayload {
     #[serde(default)]
     gateway_headers: Option<AiSecretPatch>,
     anthropic_base_url: Option<String>,
+    anthropic_bedrock_base_url: Option<String>,
     #[serde(default)]
     anthropic_custom_headers: Option<AiSecretPatch>,
     #[serde(default)]
@@ -2622,6 +2625,12 @@ impl NativeAcpClient {
                 }
                 self.handle_subagent_lifecycle_breadcrumb(&session_id, meta.as_ref());
             }
+            SessionUpdate::Plan(plan) => {
+                self.emit(
+                    AI_PLAN_UPDATED_EVENT,
+                    map_plan_update(&session_id, plan, meta.as_ref()),
+                );
+            }
             SessionUpdate::UsageUpdate(update) => {
                 self.emit(
                     AI_TOKEN_USAGE_EVENT,
@@ -3564,6 +3573,46 @@ fn map_tool_call(
     }
 }
 
+fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanUpdatePayload {
+    AiPlanUpdatePayload {
+        session_id: session_id.to_string(),
+        // ACP plans do not carry IDs; use the stable app session ID so streamed updates replace
+        // the active plan instead of creating a new plan message for each notification.
+        plan_id: session_id.to_string(),
+        title: meta.and_then(|meta| meta_string(meta, "title")),
+        detail: meta.and_then(|meta| {
+            meta_string(meta, "detail").or_else(|| meta_string(meta, "explanation"))
+        }),
+        entries: plan
+            .entries
+            .into_iter()
+            .map(|entry| AiPlanEntryPayload {
+                content: entry.content,
+                priority: plan_entry_priority_label(&entry.priority).to_string(),
+                status: plan_entry_status_label(&entry.status).to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn plan_entry_priority_label(priority: &PlanEntryPriority) -> &'static str {
+    match priority {
+        PlanEntryPriority::High => "high",
+        PlanEntryPriority::Medium => "medium",
+        PlanEntryPriority::Low => "low",
+        _ => "medium",
+    }
+}
+
+fn plan_entry_status_label(status: &PlanEntryStatus) -> &'static str {
+    match status {
+        PlanEntryStatus::Pending => "pending",
+        PlanEntryStatus::InProgress => "in_progress",
+        PlanEntryStatus::Completed => "completed",
+        _ => "pending",
+    }
+}
+
 fn merged_session_notification_meta(args: &SessionNotification) -> Option<Meta> {
     let mut merged = args.meta.clone().unwrap_or_default();
     if let Some(update_meta) = session_update_meta(&args.update) {
@@ -3582,6 +3631,7 @@ fn session_update_meta(update: &SessionUpdate) -> Option<&Meta> {
         | SessionUpdate::AgentThoughtChunk(chunk) => chunk.meta.as_ref(),
         SessionUpdate::ToolCall(tool_call) => tool_call.meta.as_ref(),
         SessionUpdate::ToolCallUpdate(update) => update.meta.as_ref(),
+        SessionUpdate::Plan(plan) => plan.meta.as_ref(),
         SessionUpdate::CurrentModeUpdate(update) => update.meta.as_ref(),
         SessionUpdate::ConfigOptionUpdate(update) => update.meta.as_ref(),
         SessionUpdate::SessionInfoUpdate(update) => update.meta.as_ref(),
@@ -4240,6 +4290,20 @@ fn acp_process_spec(
                 gemini_cli_auth_type(method).to_string(),
             );
         }
+        if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
+            env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
+            env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
+                .or_default();
+        }
+    }
+    if runtime_id == CLAUDE_RUNTIME_ID
+        && env
+            .get("ANTHROPIC_BEDROCK_BASE_URL")
+            .is_some_and(|value| !value.is_empty())
+    {
+        env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
+        env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
+            .or_default();
     }
     Ok(AcpProcessSpec {
         program,
@@ -4635,6 +4699,10 @@ fn inherited_auth_method(runtime_id: &str, include_persisted: bool) -> Option<St
             .or_else(|| {
                 env_secret_present("ANTHROPIC_API_KEY").then(|| "anthropic-api-key".to_string())
             })
+            .or_else(|| {
+                env_secret_present("ANTHROPIC_BEDROCK_BASE_URL")
+                    .then(|| "gateway-bedrock".to_string())
+            })
             .or_else(|| env_secret_present("ANTHROPIC_BASE_URL").then(|| "gateway".to_string()))
             .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
         GEMINI_RUNTIME_ID => env_secret_present("GEMINI_API_KEY")
@@ -4754,7 +4822,17 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .env
             .get("KILO_API_KEY")
             .is_some_and(|value| !value.is_empty()),
-        "gateway" => setup.has_gateway_config,
+        "gateway" => {
+            setup.has_gateway_config
+                && !setup
+                    .env
+                    .get("ANTHROPIC_BEDROCK_BASE_URL")
+                    .is_some_and(|value| !value.is_empty())
+        }
+        "gateway-bedrock" => setup
+            .env
+            .get("ANTHROPIC_BEDROCK_BASE_URL")
+            .is_some_and(|value| !value.is_empty()),
         _ => false,
     }
 }
@@ -4768,6 +4846,7 @@ fn is_local_auth_method(method_id: &str) -> bool {
             | "use_gemini"
             | "kilo-api-key"
             | "gateway"
+            | "gateway-bedrock"
     )
 }
 
@@ -4786,8 +4865,11 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
                     .then(|| "openai-api-key".to_string())
             }),
         CLAUDE_RUNTIME_ID => setup
-            .has_gateway_config
-            .then(|| "gateway".to_string())
+            .env
+            .get("ANTHROPIC_BEDROCK_BASE_URL")
+            .is_some_and(|value| !value.is_empty())
+            .then(|| "gateway-bedrock".to_string())
+            .or_else(|| setup.has_gateway_config.then(|| "gateway".to_string()))
             .or_else(|| {
                 setup
                     .env
@@ -4823,10 +4905,9 @@ fn has_local_auth_config(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
 }
 
 fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) {
-    setup.has_gateway_url = setup
-        .env
-        .get("ANTHROPIC_BASE_URL")
-        .is_some_and(|value| !value.is_empty());
+    setup.has_gateway_url = ["ANTHROPIC_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL"]
+        .into_iter()
+        .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()));
     setup.has_gateway_config = runtime_id == CLAUDE_RUNTIME_ID
         && (setup.has_gateway_url
             || setup
@@ -4849,6 +4930,9 @@ fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_CUSTOM_HEADERS",
         "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "AWS_BEARER_TOKEN_BEDROCK",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
         "KILO_API_KEY",
@@ -4973,13 +5057,19 @@ fn default_claude_terminal_auth_method() -> &'static str {
 
 fn claude_auth_method_ids_for_environment(is_remote: bool) -> Vec<&'static str> {
     if is_remote {
-        vec!["claude-login", "anthropic-api-key", "gateway"]
+        vec![
+            "claude-login",
+            "anthropic-api-key",
+            "gateway",
+            "gateway-bedrock",
+        ]
     } else {
         vec![
             "claude-ai-login",
             "console-login",
             "anthropic-api-key",
             "gateway",
+            "gateway-bedrock",
         ]
     }
 }
@@ -4989,6 +5079,11 @@ fn claude_auth_methods_for_environment(is_remote: bool) -> Vec<AiAuthMethod> {
         id: "gateway".to_string(),
         name: "Custom gateway".to_string(),
         description: "Use a custom Anthropic-compatible gateway.".to_string(),
+    };
+    let bedrock_gateway = AiAuthMethod {
+        id: "gateway-bedrock".to_string(),
+        name: "Bedrock gateway".to_string(),
+        description: "Use a custom Bedrock-compatible Claude gateway.".to_string(),
     };
 
     if is_remote {
@@ -5006,6 +5101,7 @@ fn claude_auth_methods_for_environment(is_remote: bool) -> Vec<AiAuthMethod> {
                 description: "Use an Anthropic API key stored locally.".to_string(),
             },
             gateway,
+            bedrock_gateway,
         ];
     }
 
@@ -5026,6 +5122,7 @@ fn claude_auth_methods_for_environment(is_remote: bool) -> Vec<AiAuthMethod> {
             description: "Use an Anthropic API key stored locally.".to_string(),
         },
         gateway,
+        bedrock_gateway,
     ]
 }
 
@@ -5069,8 +5166,21 @@ fn update_auth_state(
     runtime_id: &str,
     input: AiRuntimeSetupPayload,
 ) -> Result<(), String> {
-    let gateway_url_touched =
+    let anthropic_gateway_url_touched =
         input.gateway_base_url.is_some() || input.anthropic_base_url.is_some();
+    let bedrock_gateway_url_touched = input.anthropic_bedrock_base_url.is_some();
+    let gateway_url_touched = anthropic_gateway_url_touched || bedrock_gateway_url_touched;
+    let gateway_auth_method = if bedrock_gateway_url_touched
+        || (!anthropic_gateway_url_touched
+            && setup
+                .env
+                .get("ANTHROPIC_BEDROCK_BASE_URL")
+                .is_some_and(|value| !value.is_empty()))
+    {
+        "gateway-bedrock"
+    } else {
+        "gateway"
+    };
     let gateway_headers_patch = input
         .anthropic_custom_headers
         .clone()
@@ -5084,7 +5194,14 @@ fn update_auth_state(
         .as_ref()
         .or(input.anthropic_base_url.as_ref())
         .and_then(|value| normalize_optional_string(value.clone()));
+    let bedrock_gateway_base_url = input
+        .anthropic_bedrock_base_url
+        .as_ref()
+        .and_then(|value| normalize_optional_string(value.clone()));
     if let Some(value) = gateway_base_url.as_deref() {
+        validate_claude_gateway_url(value)?;
+    }
+    if let Some(value) = bedrock_gateway_base_url.as_deref() {
         validate_claude_gateway_url(value)?;
     }
 
@@ -5104,20 +5221,45 @@ fn update_auth_state(
         }
         if let Some(patch) = input.anthropic_auth_token.clone() {
             let auth_method = if gateway_url_touched || gateway_headers_patch.is_some() {
-                "gateway"
+                gateway_auth_method
             } else {
                 "console-login"
             };
             touched_auth |= apply_secret_patch(setup, "ANTHROPIC_AUTH_TOKEN", patch, auth_method);
         }
         if let Some(patch) = gateway_headers_patch {
-            touched_auth |= apply_secret_patch(setup, "ANTHROPIC_CUSTOM_HEADERS", patch, "gateway");
+            touched_auth |= apply_secret_patch(
+                setup,
+                "ANTHROPIC_CUSTOM_HEADERS",
+                patch,
+                gateway_auth_method,
+            );
         }
-        if gateway_url_touched {
+        if anthropic_gateway_url_touched {
             if let Some(value) = gateway_base_url {
                 setup.env.insert("ANTHROPIC_BASE_URL".to_string(), value);
+                setup.env.remove("ANTHROPIC_BEDROCK_BASE_URL");
+                setup.env.remove("CLAUDE_CODE_USE_BEDROCK");
+                setup.env.remove("AWS_BEARER_TOKEN_BEDROCK");
             } else {
                 setup.env.remove("ANTHROPIC_BASE_URL");
+            }
+            touched_auth = true;
+        }
+        if bedrock_gateway_url_touched {
+            if let Some(value) = bedrock_gateway_base_url {
+                setup
+                    .env
+                    .insert("ANTHROPIC_BEDROCK_BASE_URL".to_string(), value);
+                setup
+                    .env
+                    .insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
+                setup.env.remove("ANTHROPIC_BASE_URL");
+                setup.env.remove("ANTHROPIC_AUTH_TOKEN");
+            } else {
+                setup.env.remove("ANTHROPIC_BEDROCK_BASE_URL");
+                setup.env.remove("CLAUDE_CODE_USE_BEDROCK");
+                setup.env.remove("AWS_BEARER_TOKEN_BEDROCK");
             }
             touched_auth = true;
         }
@@ -5159,7 +5301,7 @@ fn update_auth_state(
 
     refresh_runtime_setup_flags(runtime_id, setup);
     if setup.has_gateway_config && gateway_config_touched {
-        setup.auth_method = Some("gateway".to_string());
+        setup.auth_method = Some(gateway_auth_method.to_string());
         touched_auth = true;
     }
     if touched_auth {
@@ -5836,7 +5978,7 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, SessionConfigOption,
+        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, PlanEntry, SessionConfigOption,
         SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
         SessionModelState, SessionNotification, SessionUpdate, ToolCallContent, ToolCallId,
         ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -5899,6 +6041,107 @@ mod tests {
     const CODEX_ACP_SUBAGENT_WAITING_END_EVENT: &str = "waiting_end";
     const PARENT_RUNTIME_SESSION_ID: &str = "parent-runtime-session-id";
     const CHILD_RUNTIME_SESSION_ID: &str = "child-runtime-session-id";
+
+    #[test]
+    fn session_plan_update_emits_plan_event_without_tool_activity() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(
+            client.session_notification(
+                SessionNotification::new(
+                    "runtime-session-1",
+                    SessionUpdate::Plan(
+                        Plan::new(vec![
+                            PlanEntry::new(
+                                "Inspect ACP plan stream",
+                                PlanEntryPriority::High,
+                                PlanEntryStatus::Completed,
+                            ),
+                            PlanEntry::new(
+                                "Bridge plan updates to the UI",
+                                PlanEntryPriority::Medium,
+                                PlanEntryStatus::InProgress,
+                            ),
+                            PlanEntry::new(
+                                "Verify change-control events stay isolated",
+                                PlanEntryPriority::Low,
+                                PlanEntryStatus::Pending,
+                            ),
+                        ])
+                        .meta(Meta::from_iter([
+                            ("title".to_string(), json!("Execution plan")),
+                            (
+                                "detail".to_string(),
+                                json!("Plan streamed from ACP notification"),
+                            ),
+                        ])),
+                    ),
+                )
+                .meta(Meta::from_iter([(
+                    "detail".to_string(),
+                    json!("Notification detail should be overwritten"),
+                )])),
+            ),
+        )
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("plan update event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_PLAN_UPDATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("runtime-session-1")
+        );
+        assert_eq!(
+            payload.get("plan_id").and_then(Value::as_str),
+            Some("runtime-session-1")
+        );
+        assert_eq!(
+            payload.get("title").and_then(Value::as_str),
+            Some("Execution plan")
+        );
+        assert_eq!(
+            payload.get("detail").and_then(Value::as_str),
+            Some("Plan streamed from ACP notification")
+        );
+        assert_eq!(
+            payload
+                .pointer("/entries/0/content")
+                .and_then(Value::as_str),
+            Some("Inspect ACP plan stream")
+        );
+        assert_eq!(
+            payload
+                .pointer("/entries/0/priority")
+                .and_then(Value::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            payload.pointer("/entries/0/status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            payload.pointer("/entries/1/status").and_then(Value::as_str),
+            Some("in_progress")
+        );
+        assert_eq!(
+            payload
+                .pointer("/entries/2/priority")
+                .and_then(Value::as_str),
+            Some("low")
+        );
+        assert!(payload.get("diffs").is_none());
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
 
     fn test_native_ai_with_secret_store(
         path: PathBuf,
@@ -7139,6 +7382,52 @@ mod tests {
     }
 
     #[test]
+    fn setup_uses_bedrock_gateway_auth_method_for_bedrock_gateway_url() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+
+        let status = ai
+            .update_setup(&json!({
+                "runtimeId": CLAUDE_RUNTIME_ID,
+                "input": {
+                    "anthropic_bedrock_base_url": "https://bedrock-gateway.example",
+                    "anthropic_custom_headers": {
+                        "action": "set",
+                        "value": "x-api-key: test-token"
+                    }
+                }
+            }))
+            .expect("Bedrock gateway setup should update");
+
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("gateway-bedrock")
+        );
+        assert_eq!(
+            status.get("has_gateway_config").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let state = ai.inner.lock().unwrap();
+        let setup = state
+            .setup
+            .get(CLAUDE_RUNTIME_ID)
+            .expect("Claude setup should be stored");
+        assert_eq!(
+            setup
+                .env
+                .get("ANTHROPIC_BEDROCK_BASE_URL")
+                .map(String::as_str),
+            Some("https://bedrock-gateway.example")
+        );
+        assert_eq!(
+            setup.env.get("CLAUDE_CODE_USE_BEDROCK").map(String::as_str),
+            Some("1")
+        );
+        assert!(!setup.env.contains_key("ANTHROPIC_BASE_URL"));
+    }
+
+    #[test]
     fn setup_accepts_anthropic_api_key_auth() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
@@ -8295,7 +8584,8 @@ mod tests {
                 "claude-ai-login",
                 "console-login",
                 "anthropic-api-key",
-                "gateway"
+                "gateway",
+                "gateway-bedrock"
             ]
         );
 
@@ -8311,7 +8601,12 @@ mod tests {
         let method_ids = claude_auth_method_ids_for_environment(true);
         assert_eq!(
             method_ids,
-            vec!["claude-login", "anthropic-api-key", "gateway"]
+            vec![
+                "claude-login",
+                "anthropic-api-key",
+                "gateway",
+                "gateway-bedrock"
+            ]
         );
 
         let methods = claude_auth_methods_for_environment(true)

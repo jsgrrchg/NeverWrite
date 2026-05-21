@@ -130,6 +130,12 @@ function createDefaultProviders() {
                     description:
                         "Use a custom Anthropic-compatible gateway just for NeverWrite.",
                 },
+                {
+                    id: "gateway-bedrock",
+                    name: "Bedrock gateway",
+                    description:
+                        "Use a custom Bedrock-compatible gateway just for NeverWrite.",
+                },
             ],
         }),
     };
@@ -287,6 +293,48 @@ describe("AIProvidersSettings", () => {
         );
     });
 
+    it("submits Claude Bedrock gateway settings through provider settings", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Claude");
+        fireEvent.click(getButtonFromText("Bedrock gateway"));
+
+        fireEvent.change(screen.getByPlaceholderText("Gateway base URL"), {
+            target: { value: "https://bedrock-gateway.example" },
+        });
+        fireEvent.change(
+            screen.getByPlaceholderText(/Headers, one per line/),
+            {
+                target: { value: "x-api-key: bedrock-secret" },
+            },
+        );
+
+        expect(
+            screen.queryByPlaceholderText("Auth token (optional)"),
+        ).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Save gateway" }));
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "claude-acp",
+                    anthropicBaseUrl: undefined,
+                    anthropicBedrockBaseUrl: "https://bedrock-gateway.example",
+                    anthropicCustomHeaders: {
+                        action: "set",
+                        value: "x-api-key: bedrock-secret",
+                    },
+                    anthropicAuthToken: { action: "unchanged" },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
+            { methodId: "gateway-bedrock", runtimeId: "claude-acp" },
+            null,
+        );
+    });
+
     it("clears stored Claude gateway settings from the live provider settings", async () => {
         const providers = createDefaultProviders();
         providers.statuses["claude-acp"] = {
@@ -308,6 +356,7 @@ describe("AIProvidersSettings", () => {
                 expect.objectContaining({
                     runtimeId: "claude-acp",
                     anthropicBaseUrl: "",
+                    anthropicBedrockBaseUrl: "",
                     anthropicCustomHeaders: { action: "clear" },
                     anthropicAuthToken: { action: "clear" },
                 }),

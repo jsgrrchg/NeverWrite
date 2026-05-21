@@ -81,6 +81,16 @@ function createChatSession(sessionId: string, title: string) {
     };
 }
 
+function createNoteTab(id: string, title: string) {
+    return {
+        id,
+        kind: "note" as const,
+        noteId: `notes/${id}`,
+        title,
+        content: title,
+    };
+}
+
 describe("EditorPaneBar", () => {
     beforeEach(() => {
         if (typeof window.PointerEvent === "undefined") {
@@ -217,6 +227,195 @@ describe("EditorPaneBar", () => {
         expect(
             screen.queryByRole("button", { name: "Move to Pane 2" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("closes other tabs only in the pane that opened the tab context menu", async () => {
+        const user = userEvent.setup();
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        createNoteTab("tab-a", "Alpha"),
+                        createNoteTab("tab-c", "Gamma"),
+                        createNoteTab("tab-d", "Delta"),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        createNoteTab("tab-b", "Beta"),
+                        createNoteTab("tab-e", "Epsilon"),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "Close Others" }),
+        );
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .panes.find((pane) => pane.id === "primary")
+                    ?.tabs.map((tab) => tab.id),
+            ).toEqual(["tab-c"]);
+        });
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b", "tab-e"]);
+    });
+
+    it("closes tabs to the right only in the pane that opened the tab context menu", async () => {
+        const user = userEvent.setup();
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        createNoteTab("tab-a", "Alpha"),
+                        createNoteTab("tab-c", "Gamma"),
+                        createNoteTab("tab-d", "Delta"),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        createNoteTab("tab-b", "Beta"),
+                        createNoteTab("tab-e", "Epsilon"),
+                    ],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-c"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Close Tabs to the Right",
+            }),
+        );
+
+        await waitFor(() => {
+            expect(
+                useEditorStore
+                    .getState()
+                    .panes.find((pane) => pane.id === "primary")
+                    ?.tabs.map((tab) => tab.id),
+            ).toEqual(["tab-a", "tab-c"]);
+        });
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b", "tab-e"]);
+    });
+
+    it("keeps all tabs open when close others confirmation is cancelled", async () => {
+        const user = userEvent.setup();
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        createNoteTab("tab-a", "Alpha"),
+                        {
+                            id: "tab-chat",
+                            kind: "ai-chat",
+                            sessionId: "session-busy",
+                            title: "Chat",
+                        },
+                        createNoteTab("tab-c", "Gamma"),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [createNoteTab("tab-b", "Beta")],
+                    activeTabId: "tab-b",
+                },
+            ],
+            "primary",
+        );
+        useChatStore.setState({
+            sessionsById: {
+                "session-busy": {
+                    ...createChatSession("session-busy", "Busy agent"),
+                    status: "streaming",
+                },
+            },
+        });
+        vi.mocked(confirm).mockResolvedValue(false);
+
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+        await user.click(
+            await screen.findByRole("button", { name: "Close Others" }),
+        );
+
+        await waitFor(() => {
+            expect(confirm).toHaveBeenCalledTimes(1);
+        });
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "primary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-a", "tab-chat", "tab-c"]);
+        expect(
+            useEditorStore
+                .getState()
+                .panes.find((pane) => pane.id === "secondary")
+                ?.tabs.map((tab) => tab.id),
+        ).toEqual(["tab-b"]);
+    });
+
+    it("disables pane tab bulk-close actions when they do not apply", async () => {
+        renderComponent(<EditorPaneBar paneId="primary" isFocused />);
+
+        const tabButton = document.querySelector(
+            '[data-pane-tab-id="tab-a"]',
+        ) as HTMLElement | null;
+        expect(tabButton).not.toBeNull();
+        fireEvent.contextMenu(tabButton!);
+
+        expect(
+            await screen.findByRole("button", { name: "Close Others" }),
+        ).toBeDisabled();
+        expect(
+            await screen.findByRole("button", {
+                name: "Close Tabs to the Right",
+            }),
+        ).toBeDisabled();
     });
 
     it("pins a tab per pane and renders it as icon-only chrome", async () => {

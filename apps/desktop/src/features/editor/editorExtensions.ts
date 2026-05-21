@@ -6,12 +6,8 @@ import {
     lineNumbers,
 } from "@codemirror/view";
 import { Compartment, RangeSetBuilder } from "@codemirror/state";
-import {
-    syntaxTree,
-    syntaxHighlighting,
-    defaultHighlightStyle,
-} from "@codemirror/language";
-import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
+import { syntaxTree, syntaxHighlighting } from "@codemirror/language";
+import { buildSyntaxHighlightStyle } from "./extensions/syntaxTheme";
 import type {
     EditorFontFamily,
     SpellcheckLanguage,
@@ -145,7 +141,11 @@ export const baseTheme = EditorView.theme({
     },
 });
 
-// Compartment for syntax highlighting (switches between dark/light)
+// Compartment for syntax highlighting. Theme changes flow through
+// `--code-*` CSS vars and CodeMirror repaints automatically, so this
+// compartment exists only to keep the extension graph consistent with the
+// other compartments and as a hook in case the extension grows tab- or
+// language-dependent in the future.
 export const syntaxCompartment = new Compartment();
 // Compartment for the live preview extension (reconfigured when vault changes)
 export const livePreviewCompartment = new Compartment();
@@ -204,12 +204,13 @@ const sourceHeadingDecorationExtension = ViewPlugin.fromClass(
     },
 );
 
-export function getSyntaxExtension(isDark: boolean) {
-    // Only switch syntax highlighting colors, not the full editor theme
+// Syntax highlighting reads `--code-*` CSS vars, so it does NOT depend on
+// `isDark` or the active theme name. Theme switches propagate through
+// `applyThemeColors` updating the CSS vars; CodeMirror repaints
+// automatically without reconfiguring the compartment.
+export function getSyntaxExtension() {
     return [
-        syntaxHighlighting(
-            isDark ? oneDarkHighlightStyle : defaultHighlightStyle,
-        ),
+        syntaxHighlighting(buildSyntaxHighlightStyle()),
         sourceHeadingDecorationExtension,
     ];
 }
@@ -328,6 +329,8 @@ export function getEditorFontFamily(fontFamily: EditorFontFamily) {
             return '"JetBrains Mono", "SFMono-Regular", "Fira Code", Menlo, Monaco, Consolas, monospace';
         case "jetbrains":
             return '"JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace';
+        case "fliege-mono":
+            return '"Fliege Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
         case "geist-mono":
             return '"Geist Mono", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
         case "ibm-plex-mono":

@@ -34,6 +34,45 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.2.7] - 2026-05-19
+
+### Added
+
+- Added keyboard navigation for the file tree, including Next File and Previous File shortcuts (`Cmd/Ctrl+Shift+Down` and `Cmd/Ctrl+Shift+Up`) that can move through files inside collapsed folders.
+- Added a New Terminal shortcut (`Cmd+R` on macOS, `Ctrl+R` on Windows/Linux), available from the app menu and shortcut settings.
+- Added Fliege Mono as an editor font option.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to upstream `0.35.0`, including the `0.34.0` gateway and authorization compatibility updates.
+- Polished app chrome and core controls with more tactile hover, press, focus, and open states across sidebar tabs, agent controls, settings controls, the vault switcher, tab close buttons, and the chat composer.
+- Changed the expanded chat composer so it collapses after sending and keeps its action row stable during queued sends or stop actions.
+
+### Fixed
+
+- Fixed frontmatter property editing so values keep their intended spaces.
+- Fixed live preview rendering around tables, inline markup boundaries, and empty list items so caret placement, marker alignment, and spacing remain stable while editing.
+- Fixed YouTube embeds opened in theater mode so their video identity is recognized correctly.
+- Fixed restored AI chat sessions so transcript hydration preserves usable conversation history.
+- Fixed the agent sidebar drag lifecycle so thread dragging, previews, and cleanup behave consistently.
+
+## [0.2.6] - 2026-05-15
+
+### Added
+
+- Added per-theme syntax highlighting for CodeMirror source mode, live preview markup, chat code blocks, and static diff/code rendering, with shared `--code-*` CSS variables so theme changes stay consistent across editor surfaces.
+- Added a compact searchable Move to Folder destination picker for notes, PDFs, generic files, folders, and mixed selections from the file-tree context menu.
+- Added pane-scoped tab context menu actions for `Close Others` and `Close Tabs to the Right`, including active-agent close confirmation and disabled states when the actions do not apply.
+
+### Changed
+
+- Updated Developer Mode settings copy to describe terminal tabs in the editor workspace instead of the old bottom terminal panel. Thanks to @mvanhorn.
+- Added a README notice about Claude subscription usage in NeverWrite starting June 15, 2026.
+
+### Fixed
+
+- Fixed Move to Folder behavior so context menu moves and drag/drop moves share the same move executor and support notes, PDFs, generic files, folders, and mixed selections consistently.
+
 ## [0.2.5] - 2026-05-12
 
 **Security note:** NeverWrite's repository was audited for the May 2026 **Mini Shai-Hulud** npm supply-chain attack and no exposure was found. The repo does not contain the known malware indicators, does not depend on the affected TanStack/Mistral/UiPath/Squawk package sets, and its own GitHub workflows do not use the risky `pull_request_target` plus trusted-publishing/OIDC pattern involved in the attack. **Cloning the repository and updating the app through this channel is safe**.

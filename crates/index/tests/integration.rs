@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use neverwrite_index::VaultIndex;
 use neverwrite_types::{
-    AdvancedSearchParams, NoteDocument, NoteId, NotePath, PdfDocument, SearchTermParam, TextRange,
-    WikiLink,
+    AdvancedSearchFileScope, AdvancedSearchParams, NoteDocument, NoteId, NotePath, PdfDocument,
+    SearchTermParam, TextRange, VaultEntryDto, WikiLink,
 };
 use neverwrite_vault::Vault;
 
@@ -47,6 +47,18 @@ fn make_search_params(query: &str, prefer_file_name: bool) -> AdvancedSearchPara
         sort_by: "relevance".to_string(),
         sort_asc: false,
         prefer_file_name,
+        file_scope: AdvancedSearchFileScope::default(),
+    }
+}
+
+fn make_search_params_with_scope(
+    query: &str,
+    prefer_file_name: bool,
+    file_scope: AdvancedSearchFileScope,
+) -> AdvancedSearchParams {
+    AdvancedSearchParams {
+        file_scope,
+        ..make_search_params(query, prefer_file_name)
     }
 }
 
@@ -58,6 +70,10 @@ fn make_empty_temp_vault(name: &str) -> (Vault, PathBuf) {
     let root = std::env::temp_dir().join(format!("neverwrite-index-{name}-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
     (Vault { root: root.clone() }, root)
+}
+
+fn discover_entries(vault: &Vault) -> Vec<VaultEntryDto> {
+    vault.discover_vault_entries().unwrap()
 }
 
 fn build_sample_index() -> VaultIndex {
@@ -347,13 +363,13 @@ fn advanced_search_prefers_file_name_before_title_when_file_oriented() {
     let (vault, root) = make_empty_temp_vault("advanced-search-file-oriented-rank");
     let params = make_search_params("diagnostico", true);
 
-    let results = index.advanced_search(&params, &vault);
+    let results = index.advanced_search(&params, &vault, &[]);
     let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
 
     assert_eq!(ids, vec!["docs/diagnostico", "docs/roadmap"]);
 
     let extension_params = make_search_params("diagnostico.md", true);
-    let extension_results = index.advanced_search(&extension_params, &vault);
+    let extension_results = index.advanced_search(&extension_params, &vault, &[]);
     let extension_ids: Vec<&str> = extension_results
         .iter()
         .map(|result| result.id.as_str())
@@ -375,10 +391,124 @@ fn advanced_search_keeps_title_as_file_oriented_fallback() {
     let (vault, root) = make_empty_temp_vault("advanced-search-title-fallback");
     let params = make_search_params("strategy", true);
 
-    let results = index.advanced_search(&params, &vault);
+    let results = index.advanced_search(&params, &vault, &[]);
     let ids: Vec<&str> = results.iter().map(|result| result.id.as_str()).collect();
 
     assert_eq!(ids, vec!["docs/roadmap"]);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn advanced_search_respects_curated_file_scope() {
+    let index = VaultIndex::build(vec![]);
+    let (vault, root) = make_empty_temp_vault("advanced-search-curated-scope");
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(root.join("docs/data.csv"), "name,value\nalice,1").unwrap();
+    std::fs::write(root.join("docs/diagram.excalidraw"), "{}").unwrap();
+    std::fs::write(root.join("docs/config.toml"), "enabled = true").unwrap();
+    let entries = discover_entries(&vault);
+
+    let curated_params = make_search_params_with_scope(
+        "data",
+        false,
+        AdvancedSearchFileScope {
+            mode: "notes_only".to_string(),
+            extension_filter: vec![],
+        },
+    );
+    let curated_results = index.advanced_search(&curated_params, &vault, &entries);
+    let curated_ids: Vec<&str> = curated_results
+        .iter()
+        .map(|result| result.id.as_str())
+        .collect();
+
+    assert_eq!(curated_ids, vec!["docs/data.csv"]);
+
+    let map_params = make_search_params_with_scope(
+        "diagram",
+        false,
+        AdvancedSearchFileScope {
+            mode: "notes_only".to_string(),
+            extension_filter: vec![],
+        },
+    );
+    let map_results = index.advanced_search(&map_params, &vault, &entries);
+    let map_ids: Vec<&str> = map_results
+        .iter()
+        .map(|result| result.id.as_str())
+        .collect();
+
+    assert_eq!(map_ids, vec!["docs/diagram.excalidraw"]);
+
+    let hidden_params = make_search_params_with_scope(
+        "config",
+        true,
+        AdvancedSearchFileScope {
+            mode: "notes_only".to_string(),
+            extension_filter: vec![],
+        },
+    );
+    let hidden_results = index.advanced_search(&hidden_params, &vault, &entries);
+
+    assert!(hidden_results.is_empty());
+
+    let all_files_params = make_search_params_with_scope(
+        "config",
+        true,
+        AdvancedSearchFileScope {
+            mode: "all_files".to_string(),
+            extension_filter: vec![],
+        },
+    );
+    let all_files_results = index.advanced_search(&all_files_params, &vault, &entries);
+    let all_files_ids: Vec<&str> = all_files_results
+        .iter()
+        .map(|result| result.id.as_str())
+        .collect();
+
+    assert_eq!(all_files_ids, vec!["docs/config.toml"]);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn advanced_search_respects_extension_allowlist_scope() {
+    let index = VaultIndex::build(vec![make_note("docs/data", "Data Note", vec![], vec![])]);
+    let (vault, root) = make_empty_temp_vault("advanced-search-allowlist-scope");
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(root.join("docs/data.csv"), "name,value\nalice,1").unwrap();
+    std::fs::write(root.join("docs/config.toml"), "enabled = true").unwrap();
+    let entries = discover_entries(&vault);
+
+    let csv_params = make_search_params_with_scope(
+        "data",
+        true,
+        AdvancedSearchFileScope {
+            mode: "all_files".to_string(),
+            extension_filter: vec!["csv".to_string()],
+        },
+    );
+    let csv_results = index.advanced_search(&csv_params, &vault, &entries);
+    let csv_ids: Vec<&str> = csv_results
+        .iter()
+        .map(|result| result.id.as_str())
+        .collect();
+
+    assert_eq!(csv_ids, vec!["docs/data.csv"]);
+
+    let md_params = make_search_params_with_scope(
+        "data",
+        true,
+        AdvancedSearchFileScope {
+            mode: "all_files".to_string(),
+            extension_filter: vec!["md".to_string()],
+        },
+    );
+    let md_results = index.advanced_search(&md_params, &vault, &entries);
+    let md_ids: Vec<&str> = md_results.iter().map(|result| result.id.as_str()).collect();
+
+    assert_eq!(md_ids, vec!["docs/data"]);
 
     std::fs::remove_dir_all(root).unwrap();
 }

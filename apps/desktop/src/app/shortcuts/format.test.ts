@@ -19,6 +19,8 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("new_agent", "windows")).toBe(
             "Ctrl+Shift+N",
         );
+        expect(formatShortcutAction("new_terminal", "macos")).toBe("⌘R");
+        expect(formatShortcutAction("new_terminal", "windows")).toBe("Ctrl+R");
         expect(formatShortcutAction("zoom_in", "macos")).toBe("⌘=");
         expect(formatShortcutAction("zoom_out", "windows")).toBe("Ctrl+-");
         expect(formatShortcutAction("reset_zoom", "macos")).toBe("⌘0");
@@ -30,6 +32,10 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("find_in_note", "windows")).toBe("Ctrl+F");
         expect(formatShortcutAction("go_back", "windows")).toBe("Ctrl+[");
         expect(formatShortcutAction("go_forward", "macos")).toBe("⌘]");
+        expect(formatShortcutAction("next_file", "macos")).toBe("⌘⇧Arrow Down");
+        expect(formatShortcutAction("previous_file", "windows")).toBe(
+            "Ctrl+Shift+Arrow Up",
+        );
         expect(formatShortcutAction("heading_1", "windows")).toBe("Ctrl+1");
         expect(formatShortcutAction("remove_heading", "windows")).toBe(
             "Ctrl+Shift+0",
@@ -59,6 +65,13 @@ describe("shortcut registry formatting", () => {
                 shortcut: "Ctrl+Shift+N",
             },
         );
+        expect(
+            entries.find((entry) => entry.id === "new_terminal"),
+        ).toMatchObject({
+            label: "New Terminal",
+            category: "Developer",
+            shortcut: "Ctrl+R",
+        });
         expect(entries.find((entry) => entry.id === "zoom_in")).toMatchObject({
             label: "Zoom In",
             category: "View",
@@ -71,6 +84,13 @@ describe("shortcut registry formatting", () => {
             category: "Editor",
             shortcut: "Ctrl+F",
         });
+        expect(entries.find((entry) => entry.id === "next_file")).toMatchObject(
+            {
+                label: "Next File",
+                category: "Navigation",
+                shortcut: "Ctrl+Shift+Arrow Down",
+            },
+        );
         expect(
             entries.find((entry) => entry.id === "remove_heading"),
         ).toMatchObject({
@@ -239,6 +259,24 @@ describe("shortcut registry matching", () => {
         );
         expect(
             matchesShortcutAction(windowsEvent, "new_agent", "windows"),
+        ).toBe(true);
+    });
+
+    it("matches new terminal on both platforms", () => {
+        const macEvent = new KeyboardEvent("keydown", {
+            key: "R",
+            metaKey: true,
+        });
+        const windowsEvent = new KeyboardEvent("keydown", {
+            key: "r",
+            ctrlKey: true,
+        });
+
+        expect(matchesShortcutAction(macEvent, "new_terminal", "macos")).toBe(
+            true,
+        );
+        expect(
+            matchesShortcutAction(windowsEvent, "new_terminal", "windows"),
         ).toBe(true);
     });
 

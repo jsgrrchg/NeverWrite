@@ -401,6 +401,75 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         },
         [closeTab],
     );
+    const closeTabIdsWithProtection = useCallback(async (tabIds: string[]) => {
+        const currentTabs = selectEditorWorkspaceTabs(useEditorStore.getState());
+        const tabsToClose = tabIds
+            .map(
+                (tabId) =>
+                    currentTabs.find((candidate) => candidate.id === tabId) ??
+                    null,
+            )
+            .filter((tab): tab is (typeof currentTabs)[number] => tab !== null);
+
+        if (tabsToClose.length === 0) {
+            return;
+        }
+
+        const affected = findActiveSessionsAffectedByClose(
+            tabsToClose,
+            useChatStore.getState().sessionsById,
+        );
+        const confirmationMessage =
+            getCloseTabsConfirmationMessage(affected);
+        if (
+            confirmationMessage !== null &&
+            !(await confirm(confirmationMessage))
+        ) {
+            return;
+        }
+
+        for (const tabId of tabIds) {
+            useEditorStore.getState().closeTab(tabId, {
+                reason: "bulk-user",
+            });
+        }
+    }, []);
+    const closeOtherTabsInPane = useCallback(
+        async (tabId: string) => {
+            const currentPane = selectEditorPaneState(
+                useEditorStore.getState(),
+                paneId,
+            );
+            const tabIds = currentPane.tabs
+                .filter((tab) => tab.id !== tabId)
+                .map((tab) => tab.id);
+
+            await closeTabIdsWithProtection(tabIds);
+        },
+        [closeTabIdsWithProtection, paneId],
+    );
+    const closeTabsToTheRightInPane = useCallback(
+        async (tabId: string) => {
+            const currentPane = selectEditorPaneState(
+                useEditorStore.getState(),
+                paneId,
+            );
+            const tabIndex = currentPane.tabs.findIndex(
+                (tab) => tab.id === tabId,
+            );
+            if (tabIndex === -1) {
+                return;
+            }
+
+            const tabIds = currentPane.tabs
+                .slice(tabIndex + 1)
+                .map((tab) => tab.id)
+                .reverse();
+
+            await closeTabIdsWithProtection(tabIds);
+        },
+        [closeTabIdsWithProtection, paneId],
+    );
 
     return (
         <>
@@ -719,6 +788,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                                         width: 20,
                                                         height: 20,
                                                         color: "var(--text-secondary)",
+                                                        // Match UnifiedBar tab close: sit closer to the
+                                                        // right edge of the tab.
+                                                        marginRight: -6,
                                                     }}
                                                 >
                                                     <svg
@@ -857,6 +929,9 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                         const targetTabPinned = pinnedTabIdSet.has(
                             targetTab.id,
                         );
+                        const targetTabIndex = pane.tabs.findIndex(
+                            (candidate) => candidate.id === targetTab.id,
+                        );
 
                         const entries: ContextMenuEntry[] = [
                             {
@@ -868,6 +943,22 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 label: "Close",
                                 action: () =>
                                     void requestCloseTab(targetTab.id),
+                            },
+                            {
+                                label: "Close Others",
+                                disabled: pane.tabs.length <= 1,
+                                action: () =>
+                                    void closeOtherTabsInPane(targetTab.id),
+                            },
+                            {
+                                label: "Close Tabs to the Right",
+                                disabled:
+                                    targetTabIndex === -1 ||
+                                    targetTabIndex >= pane.tabs.length - 1,
+                                action: () =>
+                                    void closeTabsToTheRightInPane(
+                                        targetTab.id,
+                                    ),
                             },
                         ];
 

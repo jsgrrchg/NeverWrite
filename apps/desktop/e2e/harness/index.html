@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <title>NeverWrite live-preview harness</title>
+        <style>
+            :root {
+                --text-primary: #1a1a1a;
+                --text-secondary: #6a6a6a;
+                --bg-primary: #ffffff;
+                --bg-secondary: #f4f4f4;
+                --bg-tertiary: #e8e8e8;
+                --bg-elevated: #ffffff;
+                --accent: #2563eb;
+                --border: #d4d4d4;
+                --highlight-bg: #fff3a0;
+                --highlight-text: #1a1a1a;
+                --selection-bg: #b3d4fc;
+                --text-input-line-height: 1.5;
+            }
+            html,
+            body {
+                margin: 0;
+                padding: 0;
+                font-family:
+                    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                    monospace;
+                font-size: 16px;
+                background: var(--bg-primary);
+                color: var(--text-primary);
+            }
+            #editor {
+                width: 800px;
+                margin: 40px;
+                border: 1px solid var(--border);
+            }
+            .cm-editor {
+                font-family: inherit;
+                font-size: inherit;
+            }
+            .cm-editor.cm-focused {
+                outline: none;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="editor"></div>
+        <script>
+            // The renderer's runtime module throws at module load if
+            // window.neverwriteElectron is missing. The harness only needs
+            // CodeMirror + the live-preview extensions, so we provide a
+            // permissive stub here (synchronous, before any module loads).
+            window.neverwriteElectron = new Proxy(
+                {},
+                {
+                    get() {
+                        return () => Promise.resolve(null);
+                    },
+                },
+            );
+            window.neverwriteWindowLabel = "harness";
+        </script>
+        <script type="module" src="./main.ts"></script>
+    </body>
+</html>

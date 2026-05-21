@@ -15,11 +15,14 @@ export type ShortcutActionId =
     | "open_vault"
     | "new_note"
     | "new_agent"
+    | "new_terminal"
     | "new_tab"
     | "close_tab"
     | "reopen_closed_tab"
     | "next_tab"
     | "previous_tab"
+    | "next_file"
+    | "previous_file"
     | "go_back"
     | "go_forward"
     | "toggle_left_sidebar"
@@ -122,6 +125,15 @@ const shortcutDefinitions = [
         },
     },
     {
+        id: "new_terminal",
+        label: "New Terminal",
+        category: "Developer",
+        bindings: {
+            macos: [{ key: "r", modifiers: ["meta"] }],
+            windows: [{ key: "r", modifiers: ["ctrl"] }],
+        },
+    },
+    {
         id: "new_tab",
         label: "New Tab",
         category: "Editor",
@@ -167,6 +179,24 @@ const shortcutDefinitions = [
         },
         aliases: {
             macos: [{ key: "tab", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "next_file",
+        label: "Next File",
+        category: "Navigation",
+        bindings: {
+            macos: [{ key: "ArrowDown", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "ArrowDown", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "previous_file",
+        label: "Previous File",
+        category: "Navigation",
+        bindings: {
+            macos: [{ key: "ArrowUp", modifiers: ["meta", "shift"] }],
+            windows: [{ key: "ArrowUp", modifiers: ["ctrl", "shift"] }],
         },
     },
     {
@@ -403,11 +433,14 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "search_in_vault",
     "next_tab",
     "previous_tab",
+    "next_file",
+    "previous_file",
     "go_back",
     "go_forward",
     "open_vault",
     "new_note",
     "new_agent",
+    "new_terminal",
     "new_tab",
     "reopen_closed_tab",
     "find_in_note",
@@ -439,6 +472,10 @@ function normalizeShortcutKey(key: string): string {
 function formatShortcutKey(key: string): string {
     const normalized = normalizeShortcutKey(key);
     if (normalized === "tab") return "Tab";
+    if (normalized === "arrowup") return "Arrow Up";
+    if (normalized === "arrowdown") return "Arrow Down";
+    if (normalized === "arrowleft") return "Arrow Left";
+    if (normalized === "arrowright") return "Arrow Right";
     if (normalized.length === 1) return normalized.toUpperCase();
     return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }

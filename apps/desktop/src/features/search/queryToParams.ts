@@ -20,6 +20,11 @@ interface PropertyFilterParam {
     is_regex: boolean;
 }
 
+interface AdvancedSearchFileScope {
+    mode: "notes_only" | "all_files";
+    extension_filter: string[];
+}
+
 export interface AdvancedSearchParams {
     terms: SearchTermParam[];
     tag_filters: SearchTermParam[];
@@ -30,10 +35,12 @@ export interface AdvancedSearchParams {
     sort_by: string;
     sort_asc: boolean;
     prefer_file_name: boolean;
+    file_scope: AdvancedSearchFileScope;
 }
 
 interface AdvancedSearchOptions {
     preferFileName?: boolean;
+    fileScope?: AdvancedSearchFileScope;
 }
 
 export function toAdvancedSearchParams(
@@ -52,6 +59,10 @@ export function toAdvancedSearchParams(
         sort_by: sortBy,
         sort_asc: sortAsc,
         prefer_file_name: options.preferFileName ?? false,
+        file_scope: options.fileScope ?? {
+            mode: "all_files",
+            extension_filter: [],
+        },
     };
 
     for (const token of parsed.tokens) {

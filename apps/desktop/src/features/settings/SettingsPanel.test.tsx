@@ -202,6 +202,32 @@ describe("SettingsPanel", () => {
         expect(screen.getByDisplayValue("750")).toBeInTheDocument();
     });
 
+    it("lets users edit the file tree extension filter as chips", async () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Developers" }));
+
+        const input = screen.getByRole("textbox", {
+            name: "Add file extension",
+        });
+        fireEvent.change(input, { target: { value: ".MD, csv" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+
+        await waitFor(() => {
+            expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual(
+                ["md", "csv"],
+            );
+        });
+        expect(screen.getByText(".md")).toBeInTheDocument();
+        expect(screen.getByText(".csv")).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Remove .md" }));
+
+        expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([
+            "csv",
+        ]);
+    });
+
     it("renders and persists app zoom as a percentage stepper", async () => {
         localStorage.setItem(APP_ZOOM_STORAGE_KEY, "1.1");
 
@@ -511,10 +537,15 @@ describe("SettingsPanel", () => {
         expect(
             screen.getByRole("button", { name: "JetBrains Mono" }),
         ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Fliege Mono" }),
+        ).toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole("button", { name: "Geist Mono" }));
+        fireEvent.click(screen.getByRole("button", { name: "Fliege Mono" }));
 
-        expect(useSettingsStore.getState().editorFontFamily).toBe("geist-mono");
+        expect(useSettingsStore.getState().editorFontFamily).toBe(
+            "fliege-mono",
+        );
     });
 
     it("renders and persists the inline review toggle in AI settings", () => {

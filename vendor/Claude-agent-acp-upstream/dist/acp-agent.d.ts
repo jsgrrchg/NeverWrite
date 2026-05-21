@@ -3,6 +3,7 @@ import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
+import { TaskState } from "./tools.js";
 import { Pushable } from "./utils.js";
 export declare const CLAUDE_CONFIG_DIR: string;
 /**
@@ -46,6 +47,9 @@ type Session = {
      *  DEFAULT_CONTEXT_WINDOW, refreshed from each result's modelUsage, and
      *  invalidated when the user switches the session's model. */
     contextWindowSize: number;
+    /** Accumulated task list for the session, keyed by task ID. Task IDs are
+     *  per-session, so this state must not be shared across sessions. */
+    taskState: TaskState;
 };
 type BackgroundTerminal = {
     handle: TerminalHandle;
@@ -107,6 +111,9 @@ type GatewayAuthMeta = {
         headers: Record<string, string>;
     };
 };
+type GatewayAuthRequest = AuthenticateRequest & {
+    _meta?: GatewayAuthMeta;
+};
 /**
  * Extra metadata that the agent provides for each tool_call / tool_update update.
  */
@@ -164,7 +171,7 @@ export declare class ClaudeAcpAgent implements Agent {
     };
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
-    gatewayAuthMeta?: GatewayAuthMeta;
+    gatewayAuthRequest?: GatewayAuthRequest;
     constructor(client: AgentSideConnection, logger?: Logger);
     initialize(request: InitializeRequest): Promise<InitializeResponse>;
     newSession(params: NewSessionRequest): Promise<NewSessionResponse>;
@@ -205,10 +212,12 @@ export declare function toAcpNotifications(content: string | ContentBlockParam[]
     clientCapabilities?: ClientCapabilities;
     parentToolUseId?: string | null;
     cwd?: string;
+    taskState?: TaskState;
 }): SessionNotification[];
 export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AgentSideConnection, logger: Logger, options?: {
     clientCapabilities?: ClientCapabilities;
     cwd?: string;
+    taskState?: TaskState;
 }): SessionNotification[];
 export declare function runAcp(): {
     connection: AgentSideConnection;

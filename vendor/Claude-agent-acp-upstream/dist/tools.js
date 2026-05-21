@@ -234,6 +234,36 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
                 content: [],
             };
         }
+        case "TaskCreate": {
+            const input = toolUse.input;
+            return {
+                title: input?.subject ? `Create task: ${input.subject}` : "Create task",
+                kind: "think",
+                content: [],
+            };
+        }
+        case "TaskUpdate": {
+            const input = toolUse.input;
+            return {
+                title: input?.subject ? `Update task: ${input.subject}` : "Update task",
+                kind: "think",
+                content: [],
+            };
+        }
+        case "TaskList": {
+            return {
+                title: "List tasks",
+                kind: "think",
+                content: [],
+            };
+        }
+        case "TaskGet": {
+            return {
+                title: "Get task",
+                kind: "think",
+                content: [],
+            };
+        }
         case "ExitPlanMode": {
             const planInput = toolUse.input;
             return {
@@ -483,6 +513,82 @@ export function planEntries(input) {
         priority: "medium",
     }));
 }
+/**
+ * Best-effort parse of a TaskCreate tool_result content into the structured
+ * TaskCreateOutput. The SDK delivers tool outputs either as a string or as
+ * an array of TextBlockParam-like blocks containing JSON text; try both.
+ */
+export function parseTaskCreateOutput(content) {
+    const tryParse = (text) => {
+        try {
+            const parsed = JSON.parse(text);
+            if (parsed &&
+                typeof parsed === "object" &&
+                parsed.task &&
+                typeof parsed.task.id === "string") {
+                return parsed;
+            }
+        }
+        catch {
+            // ignore
+        }
+        return undefined;
+    };
+    if (typeof content === "string") {
+        return tryParse(content);
+    }
+    if (Array.isArray(content)) {
+        for (const block of content) {
+            if (block && typeof block === "object" && "type" in block && block.type === "text") {
+                const text = block.text;
+                if (typeof text === "string") {
+                    const parsed = tryParse(text);
+                    if (parsed)
+                        return parsed;
+                }
+            }
+        }
+    }
+    return undefined;
+}
+export function applyTaskCreate(state, input, output) {
+    const taskId = output?.task?.id;
+    if (!taskId || !input)
+        return;
+    state.set(taskId, {
+        subject: input.subject,
+        status: "pending",
+        activeForm: input.activeForm,
+        description: input.description,
+    });
+}
+export function applyTaskUpdate(state, input) {
+    if (!input?.taskId)
+        return;
+    if (input.status === "deleted") {
+        state.delete(input.taskId);
+        return;
+    }
+    const existing = state.get(input.taskId);
+    // Without a subject from either the existing entry or the update payload,
+    // we'd produce a plan entry with empty `content` — drop the update.
+    const subject = input.subject ?? existing?.subject;
+    if (!subject)
+        return;
+    state.set(input.taskId, {
+        subject,
+        status: input.status ?? existing?.status ?? "pending",
+        activeForm: input.activeForm ?? existing?.activeForm,
+        description: input.description ?? existing?.description,
+    });
+}
+export function taskStateToPlanEntries(state) {
+    return Array.from(state.values()).map((task) => ({
+        content: task.subject,
+        status: task.status,
+        priority: "medium",
+    }));
+}
 export function markdownEscape(text) {
     let escape = "```";
     for (const [m] of text.matchAll(/^```+/gm)) {
@@ -565,6 +671,43 @@ export const createPostToolUseHook = (logger = console, options) => async (input
                 delete toolUseCallbacks[toolUseID];
             }
         }
+    }
+    return { continue: true };
+};
+/**
+ * Hook callback for `TaskCreated` / `TaskCompleted` events. The SDK fires
+ * these for both user-facing TaskCreate tool calls and subagent task
+ * creation, giving us `task_id` + `task_subject` without having to parse
+ * tool_result payloads.
+ *
+ * Populating `taskState` from the hook means a later `TaskUpdate` (which
+ * typically only carries `taskId` + `status`) finds an existing entry with
+ * a real subject, instead of synthesizing a placeholder with empty content.
+ */
+export const createTaskHook = (options) => async (input) => {
+    const taskId = "task_id" in input && typeof input.task_id === "string" ? input.task_id : undefined;
+    if (!taskId)
+        return { continue: true };
+    if (input.hook_event_name === "TaskCreated") {
+        if (!input.task_subject)
+            return { continue: true };
+        if (options.taskState.has(taskId))
+            return { continue: true };
+        options.taskState.set(taskId, {
+            subject: input.task_subject,
+            status: "pending",
+            description: input.task_description,
+        });
+        if (options.onChange)
+            await options.onChange();
+    }
+    else if (input.hook_event_name === "TaskCompleted") {
+        const existing = options.taskState.get(taskId);
+        if (!existing || existing.status === "completed")
+            return { continue: true };
+        options.taskState.set(taskId, { ...existing, status: "completed" });
+        if (options.onChange)
+            await options.onChange();
     }
     return { continue: true };
 };

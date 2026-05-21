@@ -64,6 +64,50 @@ export function setVaultEntries(
     }));
 }
 
+export function buildVaultFileEntry(
+    path: string,
+    options:
+        | string
+        | null
+        | {
+              kind?: VaultEntryDto["kind"];
+              mimeType?: string | null;
+              size?: number;
+              isImageLike?: boolean | null;
+              isTextLike?: boolean | null;
+          } = {},
+): VaultEntryDto {
+    const fileName = path.split("/").pop() ?? path;
+    const dotIndex = fileName.lastIndexOf(".");
+    const entryOptions =
+        typeof options === "string" || options === null
+            ? { mimeType: options }
+            : options;
+
+    const entry: VaultEntryDto = {
+        id: path,
+        path: `/vault/${path}`,
+        relative_path: path,
+        title: dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName,
+        file_name: fileName,
+        extension: dotIndex > 0 ? fileName.slice(dotIndex + 1) : "",
+        kind: entryOptions.kind ?? "file",
+        modified_at: 1,
+        created_at: 1,
+        size: entryOptions.size ?? 1,
+        mime_type: entryOptions.mimeType ?? "text/plain",
+    };
+
+    if (entryOptions.isImageLike !== undefined) {
+        entry.is_image_like = entryOptions.isImageLike;
+    }
+    if (entryOptions.isTextLike !== undefined) {
+        entry.is_text_like = entryOptions.isTextLike;
+    }
+
+    return entry;
+}
+
 export function setCommands(
     commands: Command[],
     activeModal: "command-palette" | "quick-switcher" | null,

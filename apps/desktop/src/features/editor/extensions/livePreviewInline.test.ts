@@ -231,12 +231,28 @@ describe("createInlineLivePreviewPlugin", () => {
 
         const decorations = collectDecorations(view, plugin);
 
-        expect(hasHiddenRange(decorations, 0, 1)).toBe(true);
+        expect(hasHiddenRange(decorations, 0, 2)).toBe(true);
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-li-line"),
             ),
         ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("collapses the full prefix for an active nested empty list item", () => {
+        const doc = "- parent\n    - ";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 2)).toBe(true);
+        expect(hasHiddenRange(decorations, 9, doc.length)).toBe(true);
 
         view.destroy();
         parent.remove();
@@ -352,8 +368,8 @@ describe("createInlineLivePreviewPlugin", () => {
 
         const decorations = collectDecorations(view, plugin);
 
-        expect(hasHiddenRange(decorations, 0, 1)).toBe(true);
-        expect(hasHiddenRange(decorations, 2, 5)).toBe(true);
+        expect(hasHiddenRange(decorations, 0, 2)).toBe(true);
+        expect(hasHiddenRange(decorations, 2, doc.length)).toBe(true);
         expect(
             decorations.some((deco) =>
                 deco.className.split(" ").includes("cm-lp-task-line"),
@@ -579,6 +595,31 @@ describe("createInlineLivePreviewPlugin", () => {
         expect(hasHiddenRange(decorations, 13, 15, "cm-lp-hidden-inline")).toBe(
             false,
         );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("reveals emphasis delimiters when the caret is at the closing boundary", () => {
+        const doc = "*Texto en cursiva para revisar contraste.*";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const decorations = collectDecorations(view, plugin);
+
+        expect(hasHiddenRange(decorations, 0, 1, "cm-lp-hidden-inline")).toBe(
+            false,
+        );
+        expect(
+            hasHiddenRange(
+                decorations,
+                doc.length - 1,
+                doc.length,
+                "cm-lp-hidden-inline",
+            ),
+        ).toBe(false);
 
         view.destroy();
         parent.remove();
