@@ -228,12 +228,14 @@ describe("SettingsPanel", () => {
         ]);
     });
 
-    it("does not render a developer toggle for the first-class terminal", () => {
+    it("does not render obsolete developer toggles", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
         fireEvent.click(screen.getByRole("button", { name: "Developers" }));
 
-        expect(screen.getByText("Enable Developer Mode")).toBeInTheDocument();
+        expect(
+            screen.queryByText(["Enable", "Developer", "Mode"].join(" ")),
+        ).not.toBeInTheDocument();
         expect(
             screen.queryByText(["Enable", "Integrated", "Terminal"].join(" ")),
         ).not.toBeInTheDocument();

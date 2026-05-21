@@ -81,7 +81,7 @@ Section contents:
 - **Font size** — number input, range 8–24. Check whether a number input control already exists in the settings component library before building a new one.
 - **Optimize for Claude Code** — toggle. Label: "Fullscreen rendering (experimental)". Hint: "Sets CLAUDE_CODE_NO_FLICKER=1. Improves rendering but disables scrollback. Only applies to new terminals." Wired to `claudeCodeOptimized`.
 
-The Developer section keeps `developerModeEnabled` only for low-level developer-facing tools. Do not reintroduce a terminal enablement toggle there.
+Do not reintroduce a Developer settings toggle for terminal availability. Terminal tabs are always part of the workspace.
 
 ---
 

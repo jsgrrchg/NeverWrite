@@ -813,7 +813,6 @@ describe("UnifiedBar tab strip drop", () => {
             },
         ]);
         setVaultEntries([]);
-        useSettingsStore.setState({ developerModeEnabled: false });
 
         const { UnifiedBar } = await import("./UnifiedBar");
         const { container } = renderComponent(<UnifiedBar windowMode="main" />);
@@ -854,7 +853,6 @@ describe("UnifiedBar tab strip drop", () => {
                 content: "alpha",
             },
         ]);
-        useSettingsStore.setState({ developerModeEnabled: false });
 
         const { UnifiedBar } = await import("./UnifiedBar");
         const { container } = renderComponent(<UnifiedBar windowMode="main" />);

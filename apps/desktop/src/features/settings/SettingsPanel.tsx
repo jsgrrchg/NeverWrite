@@ -3294,23 +3294,12 @@ function DevelopersSettings({
     searchQuery: SettingsSearchQuery;
 }) {
     const {
-        developerModeEnabled,
         lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
         fileTreeExtensionFilter,
         setSetting,
     } = useSettingsStore();
-    const showDeveloperMode = sectionHasSettingsSearchMatches(
-        searchQuery,
-        "Developer Mode",
-        [
-            [
-                "Enable Developer Mode",
-                "Show low-level developer-facing tools and diagnostics.",
-            ],
-        ],
-    );
     const showEditor = sectionHasSettingsSearchMatches(searchQuery, "Editor", [
         ["Line wrapping", "Wrap long lines to fit the editor width."],
     ]);
@@ -3339,30 +3328,12 @@ function DevelopersSettings({
         ],
     );
 
-    if (!showDeveloperMode && !showEditor && !showFileTree) {
+    if (!showEditor && !showFileTree) {
         return <EmptyPanelSearchResult />;
     }
 
     return (
         <div>
-            {showDeveloperMode ? (
-                <SectionLabel>Developer Mode</SectionLabel>
-            ) : null}
-            <SearchableRow
-                searchQuery={searchQuery}
-                section="Developer Mode"
-                label="Enable Developer Mode"
-                description="Show low-level developer-facing tools and diagnostics."
-                control={
-                    <Toggle
-                        value={developerModeEnabled}
-                        onChange={(value) =>
-                            setSetting("developerModeEnabled", value)
-                        }
-                    />
-                }
-            />
-
             {showEditor ? <SectionLabel>Editor</SectionLabel> : null}
             <SearchableRow
                 searchQuery={searchQuery}
@@ -4161,8 +4132,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "monospace",
     ],
     developers: [
-        "Developer Mode",
-        "Enable Developer Mode",
         "Editor",
         "Line wrapping",
         "File Tree",
