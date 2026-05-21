@@ -127,6 +127,7 @@ impl VaultIndex {
         &self,
         params: &AdvancedSearchParams,
         vault: &Vault,
+        vault_entries: &[VaultEntryDto],
     ) -> Vec<AdvancedSearchResultDto> {
         let file_scope = FileScopeMatcher::new(&params.file_scope);
         // Start with all notes as candidates
@@ -353,9 +354,9 @@ impl VaultIndex {
             && params.property_filters.is_empty()
             && params.content_searches.is_empty()
         {
-            let generic_entries = vault.discover_vault_entries().unwrap_or_default();
-
-            for entry in generic_entries
+            // Use the runtime's cached vault entries; advanced search is called
+            // from debounced UI flows and must not walk the vault per query.
+            for entry in vault_entries
                 .iter()
                 .filter(|entry| entry.kind == "file" && file_scope.allows_entry(entry))
             {

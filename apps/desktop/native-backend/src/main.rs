@@ -1820,7 +1820,11 @@ impl NativeBackend {
         )
         .map_err(|error| error.to_string())?;
         let state = self.state(&args)?;
-        Ok(json!(state.index.advanced_search(&params, &state.vault)))
+        Ok(json!(state.index.advanced_search(
+            &params,
+            &state.vault,
+            &state.entries
+        )))
     }
 
     fn get_graph_snapshot(&mut self, args: Value) -> Result<Value, String> {
