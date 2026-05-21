@@ -177,14 +177,10 @@ describe("App note window", () => {
         expect(useEditorStore.getState().focusedPaneId).toBe("primary");
     });
 
-    it("opens workspace terminals from the developer terminal command", async () => {
+    it("opens workspace terminals from the terminal command", async () => {
         detachedWindowMock.label = "main";
         detachedWindowMock.mode = "main";
         window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
 
         renderComponent(<App />);
         await flushPromises();
@@ -197,7 +193,7 @@ describe("App note window", () => {
         ).toBe(true);
 
         await act(async () => {
-            useCommandStore.getState().execute("developer:new-terminal-tab");
+            useCommandStore.getState().execute("workspace:new-terminal-tab");
             await Promise.resolve();
         });
         await flushPromises();
@@ -214,10 +210,6 @@ describe("App note window", () => {
         detachedWindowMock.label = "main";
         detachedWindowMock.mode = "main";
         window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
 
         renderComponent(<App />);
         await flushPromises();
@@ -244,34 +236,6 @@ describe("App note window", () => {
         expect(activeTab && isTerminalTab(activeTab)).toBe(true);
     });
 
-    it("does not open workspace terminals from the shortcut when disabled", async () => {
-        detachedWindowMock.label = "main";
-        detachedWindowMock.mode = "main";
-        window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: false,
-        });
-
-        renderComponent(<App />);
-        await flushPromises();
-
-        const platform = getDesktopPlatform();
-
-        await act(async () => {
-            window.dispatchEvent(
-                new KeyboardEvent("keydown", {
-                    key: "r",
-                    metaKey: platform === "macos",
-                    ctrlKey: platform !== "macos",
-                }),
-            );
-            await Promise.resolve();
-        });
-        await flushPromises();
-
-        expect(useEditorStore.getState().tabs.some(isTerminalTab)).toBe(false);
-    });
 
     it("starts workspace terminal runtimes inside detached note windows", async () => {
         mockInvoke().mockResolvedValue({
@@ -308,6 +272,7 @@ describe("App note window", () => {
                     cwd: "/vault",
                     cols: 120,
                     rows: 24,
+                    extraEnv: {},
                 },
             },
         );
@@ -323,10 +288,6 @@ describe("App note window", () => {
         detachedWindowMock.label = "main";
         detachedWindowMock.mode = "main";
         window.history.replaceState({}, "", "/");
-        useSettingsStore.setState({
-            developerModeEnabled: true,
-            developerTerminalEnabled: true,
-        });
         const restartSpy = vi
             .spyOn(useTerminalRuntimeStore.getState(), "restart")
             .mockResolvedValue(undefined);

@@ -21,6 +21,8 @@ import {
 } from "./chatPaneMovement";
 import { useChatStore } from "./store/chatStore";
 import { useAiChatEventBridge } from "./useAiChatEventBridge";
+import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
+import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
 
 function hasVisibleAiComposerDropZone(targetSessionId?: string) {
     const selector = targetSessionId
@@ -308,6 +310,14 @@ export function AIChatWorkspaceHost({
             const detail = (event as CustomEvent<FileTreeNoteDragDetail>)
                 .detail;
             if (detail.phase !== "attach") return;
+
+            if (
+                useChatStore.getState().getDefaultNewChatRuntimeId() ===
+                CLAUDE_TERMINAL_RUNTIME_ID
+            ) {
+                void openClaudeCodeTerminalWithContext(detail);
+                return;
+            }
 
             void createNewChatInWorkspace().then((sessionId) => {
                 if (!sessionId) return;

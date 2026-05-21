@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { openUrl } from "@neverwrite/runtime";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     aiGetEnvironmentDiagnostics,
@@ -15,9 +16,16 @@ import {
     isIntegratedTerminalAuthMethod,
 } from "../ai/utils/authMethods";
 import {
+    CLAUDE_TERMINAL_RUNTIME_ID,
     getRuntimeDisplayName,
     PROVIDER_CATALOG,
 } from "../ai/utils/runtimeMetadata";
+import {
+    CLAUDE_TERMINAL_DESCRIPTOR,
+    buildClaudeTerminalSetupStatus,
+} from "../ai/utils/claudeTerminalRuntime";
+import { checkClaudeCodeInstalled } from "../terminal/claudeCodeTerminal";
+import { useChatStore } from "../ai/store/chatStore";
 import { getClaudeGatewayUrlValidationMessage } from "../ai/utils/claudeGatewayUrl";
 import {
     EMPTY_SEARCH_QUERY,
@@ -827,6 +835,8 @@ export function AIProvidersSettings({
     searchQuery?: SettingsSearchQuery;
 }) {
     const vaultPath = useVaultStore((s) => s.vaultPath);
+    const selectedRuntimeId = useChatStore((s) => s.selectedRuntimeId);
+    const setSelectedRuntime = useChatStore((s) => s.setSelectedRuntime);
     const [runtimes, setRuntimes] = useState<AIRuntimeDescriptor[]>([]);
     const [setupStatusMap, setSetupStatusMap] = useState<
         Record<string, AIRuntimeSetupStatus>
@@ -894,7 +904,6 @@ export function AIProvidersSettings({
             try {
                 const descriptors = await aiListRuntimes();
                 if (cancelled) return;
-                setRuntimes(descriptors);
 
                 const results = await Promise.allSettled(
                     descriptors.map((d) => aiGetSetupStatus(d.runtime.id)),
@@ -916,6 +925,20 @@ export function AIProvidersSettings({
                     }
                 });
 
+                // Inject Claude Code CLI as a first-class runtime.
+                const claudeFound = await checkClaudeCodeInstalled();
+                if (cancelled) return;
+
+                statuses[CLAUDE_TERMINAL_RUNTIME_ID] =
+                    buildClaudeTerminalSetupStatus(claudeFound);
+
+                // Only include Claude Code in the INSTALLED list if the binary is
+                // present; otherwise it will appear in ALL with an Install button.
+                const allDescriptors = claudeFound
+                    ? [...descriptors, CLAUDE_TERMINAL_DESCRIPTOR]
+                    : descriptors;
+
+                setRuntimes(allDescriptors);
                 setSetupStatusMap(statuses);
                 setErrorMap(errors);
             } catch {
@@ -1189,8 +1212,125 @@ export function AIProvidersSettings({
 
     /* ── Render ── */
 
+    // Providers available to be set as default (binary/auth ready).
+    const selectableProviders = PROVIDER_CATALOG.filter(
+        (p) => setupStatusMap[p.id]?.authReady === true,
+    );
+    const showDefaultSection =
+        !isLoading &&
+        selectableProviders.length > 0 &&
+        matchesSettingsSearch(
+            searchQuery,
+            "Default agent",
+            "Default",
+            "Agent",
+            "Provider",
+            "Claude Code",
+            ...selectableProviders.flatMap((p) => [p.name, p.id]),
+        );
+
     return (
         <>
+            {/* ── Default agent ── */}
+            {showDefaultSection && (
+                <>
+                    <div
+                        style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            color: "var(--text-secondary)",
+                            paddingBottom: 6,
+                        }}
+                    >
+                        Default agent
+                    </div>
+                    <div
+                        style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            overflow: "hidden",
+                            marginBottom: 24,
+                        }}
+                    >
+                        <div
+                            style={{
+                                padding: "14px 14px 10px",
+                                backgroundColor: "var(--bg-secondary)",
+                            }}
+                        >
+                            <p
+                                style={{
+                                    fontSize: 12,
+                                    color: "var(--text-secondary)",
+                                    margin: "0 0 12px",
+                                    lineHeight: 1.5,
+                                }}
+                            >
+                                The default agent opens when you start a new chat
+                                or use{" "}
+                                <strong style={{ color: "var(--text-primary)" }}>
+                                    Add to chat
+                                </strong>{" "}
+                                from the file tree. Select{" "}
+                                <strong style={{ color: "var(--text-primary)" }}>
+                                    Claude Code
+                                </strong>{" "}
+                                to route notes and files directly into a terminal
+                                session — no API key required.
+                            </p>
+                            <select
+                                value={selectedRuntimeId ?? ""}
+                                onChange={(e) =>
+                                    setSelectedRuntime(
+                                        e.target.value || null,
+                                    )
+                                }
+                                style={{
+                                    width: "100%",
+                                    padding: "7px 10px",
+                                    fontSize: 12,
+                                    fontFamily: "inherit",
+                                    borderRadius: 6,
+                                    border: "1px solid var(--border)",
+                                    backgroundColor: "var(--bg-primary)",
+                                    color: "var(--text-primary)",
+                                    cursor: "pointer",
+                                    outline: "none",
+                                }}
+                            >
+                                <option value="">
+                                    Automatic (first connected provider)
+                                </option>
+                                {selectableProviders.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                        {p.name}
+                                        {p.id === CLAUDE_TERMINAL_RUNTIME_ID
+                                            ? " — terminal (no API key)"
+                                            : ""}
+                                    </option>
+                                ))}
+                            </select>
+                            {selectedRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID && (
+                                <p
+                                    style={{
+                                        fontSize: 11,
+                                        color: "var(--text-secondary)",
+                                        margin: "8px 0 0",
+                                        lineHeight: 1.4,
+                                    }}
+                                >
+                                    Claude Code will open in a new terminal tab.
+                                    Attached files appear as @mentions in the
+                                    input — add your question and press Enter.
+                                </p>
+                            )}
+                        </div>
+                    </div>
+                </>
+            )}
+
             {/* ── Installed ── */}
             {showInstalledSection ? (
                 <>
@@ -1227,7 +1367,11 @@ export function AIProvidersSettings({
                             </div>
                         ) : (
                             filteredInstalledProviders.map((provider, i) => {
-                                const isExpanded = expandedId === provider.id;
+                                const isTerminalRuntime =
+                                    provider.id === CLAUDE_TERMINAL_RUNTIME_ID;
+                                const isExpanded =
+                                    !isTerminalRuntime &&
+                                    expandedId === provider.id;
                                 const isSaving = savingId === provider.id;
                                 const connected =
                                     provider.setupStatus?.authReady === true;
@@ -1254,29 +1398,51 @@ export function AIProvidersSettings({
                                         >
                                             {/* Header row */}
                                             <div
-                                                role="button"
-                                                aria-expanded={isExpanded}
-                                                tabIndex={0}
-                                                onClick={() =>
-                                                    setExpandedId((prev) =>
-                                                        prev === provider.id
-                                                            ? null
-                                                            : provider.id,
-                                                    )
+                                                role={
+                                                    isTerminalRuntime
+                                                        ? undefined
+                                                        : "button"
                                                 }
-                                                onKeyDown={(e) => {
-                                                    if (
-                                                        e.key === "Enter" ||
-                                                        e.key === " "
-                                                    ) {
-                                                        e.preventDefault();
-                                                        setExpandedId((prev) =>
-                                                            prev === provider.id
-                                                                ? null
-                                                                : provider.id,
-                                                        );
-                                                    }
-                                                }}
+                                                aria-expanded={
+                                                    isTerminalRuntime
+                                                        ? undefined
+                                                        : isExpanded
+                                                }
+                                                tabIndex={
+                                                    isTerminalRuntime ? -1 : 0
+                                                }
+                                                onClick={
+                                                    isTerminalRuntime
+                                                        ? undefined
+                                                        : () =>
+                                                              setExpandedId(
+                                                                  (prev) =>
+                                                                      prev ===
+                                                                      provider.id
+                                                                          ? null
+                                                                          : provider.id,
+                                                              )
+                                                }
+                                                onKeyDown={
+                                                    isTerminalRuntime
+                                                        ? undefined
+                                                        : (e) => {
+                                                              if (
+                                                                  e.key ===
+                                                                      "Enter" ||
+                                                                  e.key === " "
+                                                              ) {
+                                                                  e.preventDefault();
+                                                                  setExpandedId(
+                                                                      (prev) =>
+                                                                          prev ===
+                                                                          provider.id
+                                                                              ? null
+                                                                              : provider.id,
+                                                                  );
+                                                              }
+                                                          }
+                                                }
                                                 style={{
                                                     display: "flex",
                                                     alignItems: "center",
@@ -1284,7 +1450,9 @@ export function AIProvidersSettings({
                                                         "space-between",
                                                     height: 48,
                                                     padding: "0 14px",
-                                                    cursor: "pointer",
+                                                    cursor: isTerminalRuntime
+                                                        ? "default"
+                                                        : "pointer",
                                                 }}
                                             >
                                                 <div
@@ -1294,16 +1462,21 @@ export function AIProvidersSettings({
                                                         gap: 10,
                                                     }}
                                                 >
-                                                    <span
-                                                        style={{
-                                                            fontSize: 10,
-                                                            color: "var(--text-secondary)",
-                                                            width: 10,
-                                                            textAlign: "center",
-                                                        }}
-                                                    >
-                                                        {isExpanded ? "▾" : "▸"}
-                                                    </span>
+                                                    {!isTerminalRuntime && (
+                                                        <span
+                                                            style={{
+                                                                fontSize: 10,
+                                                                color: "var(--text-secondary)",
+                                                                width: 10,
+                                                                textAlign:
+                                                                    "center",
+                                                            }}
+                                                        >
+                                                            {isExpanded
+                                                                ? "▾"
+                                                                : "▸"}
+                                                        </span>
+                                                    )}
                                                     <div
                                                         style={{
                                                             width: 8,
@@ -1351,14 +1524,85 @@ export function AIProvidersSettings({
                                                             : "#ef4444",
                                                     }}
                                                 >
-                                                    {connected
-                                                        ? "Connected"
-                                                        : "Not configured"}
+                                                    {isTerminalRuntime
+                                                        ? "Ready"
+                                                        : connected
+                                                          ? "Connected"
+                                                          : "Not configured"}
                                                 </div>
                                             </div>
 
-                                            {/* Expanded content */}
-                                            {isExpanded &&
+                                            {/* Claude Code note */}
+                                            {isTerminalRuntime && (
+                                                <div
+                                                    style={{
+                                                        padding:
+                                                            "8px 14px 10px",
+                                                        fontSize: 11,
+                                                        color: "var(--text-secondary)",
+                                                        borderTop:
+                                                            "1px solid var(--border)",
+                                                    }}
+                                                >
+                                                    Model, skip permissions,
+                                                    max turns, and other Claude
+                                                    Code options are in{" "}
+                                                    <strong
+                                                        style={{
+                                                            color: "var(--text-primary)",
+                                                        }}
+                                                    >
+                                                        Settings → Terminal
+                                                    </strong>
+                                                    .
+                                                </div>
+                                            )}
+
+                                            {/* Expanded content — not shown for terminal runtime */}
+                                            {!isTerminalRuntime &&
+                                                isExpanded &&
+                                                provider.id === "claude-acp" && (
+                                                    <div
+                                                        style={{
+                                                            padding:
+                                                                "10px 14px",
+                                                            fontSize: 11,
+                                                            color: "var(--text-secondary)",
+                                                            borderTop:
+                                                                "1px solid var(--border)",
+                                                            lineHeight: 1.5,
+                                                        }}
+                                                    >
+                                                        <strong
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                            }}
+                                                        >
+                                                            Claude subscription
+                                                        </strong>{" "}
+                                                        authentication only
+                                                        works with{" "}
+                                                        <strong
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                            }}
+                                                        >
+                                                            Claude Code
+                                                        </strong>{" "}
+                                                        in the terminal. To use
+                                                        this provider, configure
+                                                        an{" "}
+                                                        <strong
+                                                            style={{
+                                                                color: "var(--text-primary)",
+                                                            }}
+                                                        >
+                                                            Anthropic API key
+                                                        </strong>{" "}
+                                                        below.
+                                                    </div>
+                                                )}
+                                            {!isTerminalRuntime && isExpanded &&
                                                 (provider.setupStatus ? (
                                                     <ProviderExpandedPanel
                                                         setupStatus={
@@ -1777,6 +2021,16 @@ export function AIProvidersSettings({
                                         ) : (
                                             <button
                                                 type="button"
+                                                onClick={() => {
+                                                    if (
+                                                        provider.id ===
+                                                        CLAUDE_TERMINAL_RUNTIME_ID
+                                                    ) {
+                                                        void openUrl(
+                                                            "https://claude.ai/code",
+                                                        );
+                                                    }
+                                                }}
                                                 style={{
                                                     padding: "4px 10px",
                                                     borderRadius: 6,

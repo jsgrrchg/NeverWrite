@@ -1,11 +1,12 @@
 import { invoke } from "@neverwrite/runtime";
 import { listen } from "@neverwrite/runtime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useVaultStore } from "../../../app/store/vaultStore";
+import { useSettingsStore } from "../../app/store/settingsStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import {
     safeStorageGetItem,
     safeStorageSetItem,
-} from "../../../app/utils/safeStorage";
+} from "../../app/utils/safeStorage";
 import {
     appendTerminalRawOutput,
     normalizePersistedTerminalRawOutput,
@@ -380,6 +381,11 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
         async (tabId: string, input?: TerminalSessionCreateInput) => {
             const requestVersion = bumpTabSessionVersion(tabId);
             try {
+                const { claudeCodeOptimized } = useSettingsStore.getState();
+                const extraEnv: Record<string, string> = {
+                    ...(claudeCodeOptimized && { CLAUDE_CODE_NO_FLICKER: "1" }),
+                    ...input?.extraEnv,
+                };
                 const next = await invoke<TerminalSessionSnapshot>(
                     "devtools_create_terminal_session",
                     {
@@ -387,6 +393,7 @@ export function useTerminalTabs(enabled: boolean): UseTerminalTabsResult {
                             cwd: input?.cwd ?? vaultPath,
                             cols: input?.cols,
                             rows: input?.rows,
+                            extraEnv,
                         },
                     },
                 );

@@ -13,7 +13,7 @@ import {
     type TerminalErrorEventPayload,
     type TerminalOutputEventPayload,
     type TerminalSessionSnapshot,
-} from "../devtools/terminal/terminalTypes";
+} from "./terminalTypes";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";

@@ -127,7 +127,7 @@ const shortcutDefinitions = [
     {
         id: "new_terminal",
         label: "New Terminal",
-        category: "Developer",
+        category: "Workspace",
         bindings: {
             macos: [{ key: "r", modifiers: ["meta"] }],
             windows: [{ key: "r", modifiers: ["ctrl"] }],

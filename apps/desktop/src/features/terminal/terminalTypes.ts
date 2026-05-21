@@ -31,6 +31,7 @@ export interface TerminalSessionCreateInput {
     cwd?: string | null;
     cols?: number;
     rows?: number;
+    extraEnv?: Record<string, string>;
 }
 
 export const DEV_TERMINAL_OUTPUT_EVENT = "devtools://terminal-output";
