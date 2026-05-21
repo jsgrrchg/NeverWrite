@@ -50,9 +50,11 @@ const AGENT_SIDEBAR_DROP_SOURCE_PANE_ID = "__agents-sidebar__";
 
 function resolveFileTreeFolderAtPoint(x: number, y: number): string | null {
     const els = document.elementsFromPoint(x, y);
-    const folderEl = els.find((el) => el.hasAttribute("data-folder-path"));
-    if (!folderEl) return null;
-    return folderEl.getAttribute("data-folder-path") ?? null;
+    for (const el of els) {
+        const folderEl = el.closest("[data-folder-path]");
+        if (folderEl) return folderEl.getAttribute("data-folder-path") ?? null;
+    }
+    return null;
 }
 
 async function copyExternalFilesToVaultFolder(

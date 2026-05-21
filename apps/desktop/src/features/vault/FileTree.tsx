@@ -1234,6 +1234,7 @@ const FlatTreeRowView = memo(
                     role="button"
                     tabIndex={0}
                     data-note-id={entry.id}
+                    data-folder-path={getParentPath(entry.relative_path)}
                     data-selected={isSelected ? "true" : "false"}
                     data-active={isActive ? "true" : "false"}
                     data-keyboard-focus={hasKeyboardCursor ? "true" : "false"}
@@ -1363,6 +1364,7 @@ const FlatTreeRowView = memo(
                 <div
                     role="button"
                     tabIndex={0}
+                    data-folder-path={getParentPath(entry.relative_path)}
                     data-file-path={entry.relative_path}
                     data-selected={isSelected ? "true" : "false"}
                     data-active={isActive ? "true" : "false"}
