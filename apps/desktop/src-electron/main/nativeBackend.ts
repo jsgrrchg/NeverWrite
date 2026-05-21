@@ -24,6 +24,7 @@ const SUPPORTED_COMMANDS = new Set([
     "read_vault_file",
     "save_vault_file",
     "save_vault_binary_file",
+    "copy_external_file_to_vault",
     "read_note",
     "save_note",
     "create_note",

@@ -67,6 +67,7 @@ async function copyExternalFilesToVaultFolder(
             }),
         ),
     );
+    let copiedCount = 0;
     for (let i = 0; i < results.length; i++) {
         const result = results[i];
         if (result?.status === "rejected") {
@@ -75,8 +76,11 @@ async function copyExternalFilesToVaultFolder(
                 `Failed to copy file into vault: ${sourcePaths[i]}`,
                 result.reason,
             );
+        } else if (result?.status === "fulfilled") {
+            copiedCount += 1;
         }
     }
+    return copiedCount;
 }
 
 function getAppWindow() {
@@ -233,6 +237,9 @@ export function MultiPaneWorkspace() {
     const leafPaneIds = useEditorStore(useShallow(selectLeafPaneIds));
     const layoutTree = useEditorStore((state) => state.layoutTree);
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const refreshVaultStructure = useVaultStore(
+        (state) => state.refreshStructure,
+    );
     const focusPane = useEditorStore((state) => state.focusPane);
     const resizePaneSplit = useEditorStore((state) => state.resizePaneSplit);
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -435,7 +442,14 @@ export function MultiPaneWorkspace() {
                     : null;
 
                 if (fileTreeFolder !== null) {
-                    void copyExternalFilesToVaultFolder(paths, fileTreeFolder);
+                    void copyExternalFilesToVaultFolder(
+                        paths,
+                        fileTreeFolder,
+                    ).then((copiedCount) => {
+                        if (copiedCount > 0) {
+                            void refreshVaultStructure();
+                        }
+                    });
                     return;
                 }
 
@@ -459,7 +473,7 @@ export function MultiPaneWorkspace() {
             dispatchCrossPaneTabDropPreview(null);
             unlisten?.();
         };
-    }, []);
+    }, [refreshVaultStructure]);
 
     useEffect(() => {
         const handleTreeDrag = (event: Event) => {
