@@ -7228,6 +7228,57 @@ describe("chatStore", () => {
         });
     });
 
+    it("does not freeze a later non-trackable tool card from an earlier tracked edit on the same file", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-earlier-tracked",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "tracked old",
+                    new_text: "tracked new",
+                },
+            ],
+        });
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-later-untracked-preview",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "opaque old",
+                    new_text: "opaque preview",
+                    reversible: false,
+                },
+            ],
+        });
+
+        const laterMessage =
+            useChatStore.getState().sessionsById[activeSessionId]!.messages.find(
+                (message) => message.id === "tool:tool-later-untracked-preview",
+            );
+        expect(laterMessage?.reviewDiffs).toEqual(laterMessage?.diffs);
+        expect(laterMessage?.reviewDiffs?.[0]).toMatchObject({
+            path: "/notes/file.md",
+            old_text: "opaque old",
+            new_text: "opaque preview",
+            reversible: false,
+        });
+    });
+
     it("keeps earlier agent hunks rejectable when the user edits the file and the agent edits it again later", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command) => {

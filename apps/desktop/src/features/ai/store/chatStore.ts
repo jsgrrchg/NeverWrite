@@ -4106,12 +4106,15 @@ function freezeMessageReviewDiffs(
     session: AIChatSession,
     messageDiffs: AIFileDiff[] | undefined,
     vaultPath: string | null,
+    deriveFromActionLog: boolean,
 ) {
     if (!messageDiffs || messageDiffs.length === 0) {
         return undefined;
     }
 
-    return deriveMessageReviewDiffs(session, messageDiffs, vaultPath);
+    return deriveFromActionLog
+        ? deriveMessageReviewDiffs(session, messageDiffs, vaultPath)
+        : messageDiffs;
 }
 
 function summarizeTrackedFileForDebug(file: TrackedFile | null | undefined) {
@@ -8037,6 +8040,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     consolidated,
                     messageDiffs,
                     reviewVaultPath,
+                    false,
                 );
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
@@ -8068,6 +8072,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         consolidated,
                         messageDiffs,
                         reviewVaultPath,
+                        true,
                     );
                 }
 
@@ -8297,6 +8302,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     sessionWithBuffer,
                     messageDiffs,
                     reviewVaultPath,
+                    false,
                 );
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
@@ -8322,6 +8328,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionWithBuffer,
                         messageDiffs,
                         reviewVaultPath,
+                        true,
                     );
                 }
 
