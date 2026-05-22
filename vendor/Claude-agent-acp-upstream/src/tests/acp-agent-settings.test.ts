@@ -222,7 +222,9 @@ describe("ClaudeAcpAgent settings", () => {
     });
 
     // Bad model is ignored at the usage site; falls back to the first SDK model.
-    expect(setModelSpy).toHaveBeenCalledWith("claude-sonnet-4-6");
+    // No setModel call is needed because no override was applied — the SDK is
+    // already on its own default.
+    expect(setModelSpy).not.toHaveBeenCalled();
     expect(response.models.currentModelId).toBe("claude-sonnet-4-6");
   });
 
@@ -578,6 +580,68 @@ describe("ClaudeAcpAgent settings", () => {
       expect(setModelSpy).toHaveBeenCalledWith("claude-haiku-4-5");
       expect(response.models.currentModelId).toBe("claude-haiku-4-5");
     });
+
+    it("does not inherit display info across mismatched model family versions", async () => {
+      // https://github.com/agentclientprotocol/claude-agent-acp/issues/639:
+      // when the SDK's `opus` alias resolves to Opus 4.7, an allowlist entry
+      // of `claude-opus-4-6` (or `claude-opus-4-6[1m]`) used to substring-match
+      // `opus` and inherit the "Opus 4.7" display info. With version-aware
+      // matching, these entries fall back to showing their literal ID rather
+      // than a misleading newer name.
+      await fs.promises.writeFile(
+        path.join(tempDir, "settings.json"),
+        JSON.stringify({
+          availableModels: [
+            "claude-opus-4-6",
+            "claude-opus-4-6[1m]",
+            "claude-opus-4-7",
+            "claude-opus-4-7[1m]",
+          ],
+        }),
+      );
+
+      const projectDir = path.join(tempDir, "project");
+      await fs.promises.mkdir(projectDir, { recursive: true });
+
+      mockQueryWithModels([
+        { value: "default", displayName: "Default", description: "Default model" },
+        {
+          value: "opus",
+          displayName: "Opus 4.7",
+          description: "Claude Opus 4.7 — complex tasks, higher cost",
+        },
+        {
+          value: "opus[1m]",
+          displayName: "Opus 4.7 (1M context)",
+          description: "Opus 4.7 with 1M context",
+        },
+      ]);
+
+      const { ClaudeAcpAgent } = await import("../acp-agent.js");
+      const agent: ClaudeAcpAgentType = new ClaudeAcpAgent(createMockClient());
+
+      const response = await (agent as any).createSession({
+        cwd: projectDir,
+        mcpServers: [],
+        _meta: { disableBuiltInTools: true },
+      });
+
+      const modelOption = response.configOptions.find((o: any) => o.id === "model");
+      const byValue: Record<string, { name: string; description?: string }> = {};
+      for (const opt of modelOption.options) {
+        byValue[opt.value] = { name: opt.name, description: opt.description };
+      }
+
+      // 4-6 entries must NOT inherit the 4.7 SDK alias display info.
+      expect(byValue["claude-opus-4-6"].name).toBe("claude-opus-4-6");
+      expect(byValue["claude-opus-4-6"].description).toBe("");
+      expect(byValue["claude-opus-4-6[1m]"].name).toBe("claude-opus-4-6[1m]");
+      expect(byValue["claude-opus-4-6[1m]"].description).toBe("");
+
+      // 4-7 entries continue to inherit display info from a 4.7 SDK alias.
+      expect(byValue["claude-opus-4-7"].name).toBe("Opus 4.7");
+      expect(byValue["claude-opus-4-7[1m]"].name).toMatch(/Opus 4\.7/);
+    });
   });
 
   it("resolves model aliases like opus[1m] to the correct model", async () => {
@@ -624,5 +688,95 @@ describe("ClaudeAcpAgent settings", () => {
 
     expect(setModelSpy).toHaveBeenCalledWith("claude-opus-4-6-1m");
     expect(response.models.currentModelId).toBe("claude-opus-4-6-1m");
+  });
+
+  it("skips the initial setModel when the resolved value matches the SDK's model list verbatim", async () => {
+    // Covers the launcher case from PR #646: the launcher bakes the model into
+    // ANTHROPIC_MODEL, the SDK already starts on that model, and a second
+    // setModel call would be a redundant round-trip (and on some launcher
+    // setups, more fragile than launch-time selection).
+    const originalEnv = process.env.ANTHROPIC_MODEL;
+    process.env.ANTHROPIC_MODEL = "claude-opus-4-6";
+
+    const projectDir = path.join(tempDir, "project");
+    await fs.promises.mkdir(projectDir, { recursive: true });
+
+    const setModelSpy = vi.fn();
+    querySpy.mockImplementation(() => {
+      return {
+        initializationResult: async () => ({
+          models: [
+            { value: "default", displayName: "Default", description: "" },
+            { value: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", description: "" },
+            { value: "claude-opus-4-6", displayName: "Claude Opus 4.6", description: "" },
+          ],
+        }),
+        setModel: setModelSpy,
+        supportedCommands: async () => [],
+      } as any;
+    });
+
+    try {
+      const { ClaudeAcpAgent } = await import("../acp-agent.js");
+      const agent: ClaudeAcpAgentType = new ClaudeAcpAgent(createMockClient());
+
+      const response = await (agent as any).createSession({
+        cwd: projectDir,
+        mcpServers: [],
+        _meta: { disableBuiltInTools: true },
+      });
+
+      expect(setModelSpy).not.toHaveBeenCalled();
+      expect(response.models.currentModelId).toBe("claude-opus-4-6");
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.ANTHROPIC_MODEL;
+      } else {
+        process.env.ANTHROPIC_MODEL = originalEnv;
+      }
+    }
+  });
+
+  it("still calls setModel when the allowlist synthesizes a value the SDK has not surfaced", async () => {
+    // The allowlist may rewrite a model's `value` to the user's literal ID
+    // (e.g., `claude-haiku-4-5`) even when the SDK only exposed an alias
+    // (`haiku`). In that case the SDK has not independently arrived at the
+    // user's preferred ID, so we must sync via setModel.
+    await fs.promises.writeFile(
+      path.join(tempDir, "settings.json"),
+      JSON.stringify({
+        availableModels: ["claude-haiku-4-5"],
+        model: "claude-haiku-4-5",
+      }),
+    );
+
+    const projectDir = path.join(tempDir, "project");
+    await fs.promises.mkdir(projectDir, { recursive: true });
+
+    const setModelSpy = vi.fn();
+    querySpy.mockImplementation(() => {
+      return {
+        initializationResult: async () => ({
+          models: [
+            { value: "default", displayName: "Default", description: "" },
+            { value: "haiku", displayName: "Haiku", description: "Fast" },
+          ],
+        }),
+        setModel: setModelSpy,
+        supportedCommands: async () => [],
+      } as any;
+    });
+
+    const { ClaudeAcpAgent } = await import("../acp-agent.js");
+    const agent: ClaudeAcpAgentType = new ClaudeAcpAgent(createMockClient());
+
+    const response = await (agent as any).createSession({
+      cwd: projectDir,
+      mcpServers: [],
+      _meta: { disableBuiltInTools: true },
+    });
+
+    expect(setModelSpy).toHaveBeenCalledWith("claude-haiku-4-5");
+    expect(response.models.currentModelId).toBe("claude-haiku-4-5");
   });
 });

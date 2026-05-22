@@ -191,6 +191,7 @@ struct AiAuthTerminalResizeInput {
 struct AiRuntimeSessionInput {
     runtime_id: String,
     session_id: String,
+    additional_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1144,7 +1145,9 @@ impl NativeAi {
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
         let created = start_acp_session(
             spec,
-            AcpSessionStartMode::New,
+            AcpSessionStartMode::New {
+                additional_directories: additional_roots.clone(),
+            },
             self.event_tx.clone(),
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
@@ -1181,7 +1184,9 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiRuntimeSessionInput = input_from_args(args)?;
-        let session = new_session_with_id(&input.runtime_id, input.session_id)?;
+        let additional_roots = normalize_additional_roots(input.additional_roots)?;
+        let mut session = new_session_with_id(&input.runtime_id, input.session_id)?;
+        session.additional_roots = additional_roots_to_strings(&additional_roots);
         let mut state = self
             .inner
             .lock()
@@ -1191,7 +1196,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots: vec![],
+                additional_roots,
                 runtime_handle: None,
                 active_turn_id: None,
             },
@@ -1208,6 +1213,7 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiRuntimeSessionInput = input_from_args(args)?;
+        let additional_roots = normalize_additional_roots(input.additional_roots)?;
         if !runtime_supports_native_resume(&input.runtime_id) {
             return Err(format!(
                 "AI runtime '{}' does not support native session resume.",
@@ -1234,6 +1240,7 @@ impl NativeAi {
             spec,
             AcpSessionStartMode::Load {
                 session_id: input.session_id,
+                additional_directories: additional_roots.clone(),
             },
             self.event_tx.clone(),
             Arc::clone(&self.inner),
@@ -1253,7 +1260,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots: vec![],
+                additional_roots,
                 runtime_handle: Some(handle),
                 active_turn_id: None,
             },
@@ -1271,7 +1278,9 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiRuntimeSessionInput = input_from_args(args)?;
-        let session = new_session(&input.runtime_id)?;
+        let additional_roots = normalize_additional_roots(input.additional_roots)?;
+        let mut session = new_session(&input.runtime_id)?;
+        session.additional_roots = additional_roots_to_strings(&additional_roots);
         let mut state = self
             .inner
             .lock()
@@ -1281,7 +1290,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots: vec![],
+                additional_roots,
                 runtime_handle: None,
                 active_turn_id: None,
             },
@@ -1826,8 +1835,27 @@ struct CreatedAcpSession {
 
 #[derive(Debug, Clone)]
 enum AcpSessionStartMode {
-    New,
-    Load { session_id: String },
+    New {
+        additional_directories: Vec<PathBuf>,
+    },
+    Load {
+        session_id: String,
+        additional_directories: Vec<PathBuf>,
+    },
+}
+
+impl AcpSessionStartMode {
+    fn additional_directories(&self) -> &[PathBuf] {
+        match self {
+            AcpSessionStartMode::New {
+                additional_directories,
+            }
+            | AcpSessionStartMode::Load {
+                additional_directories,
+                ..
+            } => additional_directories,
+        }
+    }
 }
 
 struct AcpSessionStartResponse {
@@ -2966,13 +2994,15 @@ async fn run_acp_actor_inner(
                     return Err(agent_client_protocol::Error::internal_error().data(message));
                 }
             };
-            let session = session_from_acp_response(
+            let mut session = session_from_acp_response(
                 &spec.runtime_id,
                 response.session_id,
                 response.models,
                 response.modes,
                 response.config_options,
             );
+            session.additional_roots =
+                additional_roots_to_strings(start_mode.additional_directories());
             client
                 .tool_diffs
                 .register_session_cwd(&session.session_id, spec.cwd.clone());
@@ -3026,9 +3056,15 @@ async fn start_acp_runtime_session(
 ) -> Result<AcpSessionStartResponse, agent_client_protocol::Error> {
     let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
     match start_mode {
-        AcpSessionStartMode::New => {
+        AcpSessionStartMode::New {
+            additional_directories,
+        } => {
             let response = connection
-                .send_request(NewSessionRequest::new(cwd))
+                .send_request(new_session_request(
+                    &spec.runtime_id,
+                    cwd,
+                    additional_directories,
+                ))
                 .block_task()
                 .await?;
             Ok(AcpSessionStartResponse {
@@ -3038,12 +3074,18 @@ async fn start_acp_runtime_session(
                 config_options: response.config_options,
             })
         }
-        AcpSessionStartMode::Load { session_id } => {
+        AcpSessionStartMode::Load {
+            session_id,
+            additional_directories,
+        } => {
             let response = connection
-                .send_request(LoadSessionRequest::new(
-                    SessionId::new(session_id.clone()),
-                    cwd,
-                ))
+                .send_request(
+                    LoadSessionRequest::new(SessionId::new(session_id.clone()), cwd)
+                        .additional_directories(additional_wire_paths(
+                            &spec.runtime_id,
+                            additional_directories,
+                        )),
+                )
                 .block_task()
                 .await?;
             Ok(AcpSessionStartResponse {
@@ -3054,6 +3096,22 @@ async fn start_acp_runtime_session(
             })
         }
     }
+}
+
+fn new_session_request(
+    runtime_id: &str,
+    cwd: PathBuf,
+    additional_directories: &[PathBuf],
+) -> NewSessionRequest {
+    NewSessionRequest::new(cwd)
+        .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+}
+
+fn additional_wire_paths(runtime_id: &str, additional_directories: &[PathBuf]) -> Vec<PathBuf> {
+    additional_directories
+        .iter()
+        .map(|path| acp_session_wire_path(runtime_id, path))
+        .collect()
 }
 
 async fn handle_acp_command(
@@ -3240,6 +3298,7 @@ fn session_from_acp_response(
         models,
         modes,
         config_options,
+        additional_roots: vec![],
     }
 }
 
@@ -4173,6 +4232,7 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         models,
         modes,
         config_options,
+        additional_roots: vec![],
     })
 }
 
@@ -5515,6 +5575,13 @@ fn normalize_additional_roots(raw_roots: Option<Vec<String>>) -> Result<Vec<Path
         .collect()
 }
 
+fn additional_roots_to_strings(additional_roots: &[PathBuf]) -> Vec<String> {
+    additional_roots
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect()
+}
+
 fn input_from_args<T: for<'de> Deserialize<'de>>(args: &Value) -> Result<T, String> {
     serde_json::from_value(args.get("input").cloned().unwrap_or_else(|| args.clone()))
         .map_err(|error| error.to_string())
@@ -5772,10 +5839,14 @@ fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> boo
 }
 
 fn acp_session_wire_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
+    acp_session_wire_path(runtime_id, cwd)
+}
+
+fn acp_session_wire_path(runtime_id: &str, path: &Path) -> PathBuf {
     if runtime_id == GEMINI_RUNTIME_ID {
-        return PathBuf::from(normalize_path_for_node_acp(cwd));
+        return PathBuf::from(normalize_path_for_node_acp(path));
     }
-    cwd.to_path_buf()
+    path.to_path_buf()
 }
 
 fn acp_process_launch_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
@@ -6017,6 +6088,50 @@ mod tests {
             .build()
             .unwrap()
             .block_on(future)
+    }
+
+    #[test]
+    fn new_session_request_serializes_additional_directories() {
+        let request = new_session_request(
+            CLAUDE_RUNTIME_ID,
+            PathBuf::from("/vault"),
+            &[
+                PathBuf::from("/external/project"),
+                PathBuf::from("/external/notes"),
+            ],
+        );
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "cwd": "/vault",
+                "additionalDirectories": ["/external/project", "/external/notes"],
+                "mcpServers": [],
+            })
+        );
+    }
+
+    #[test]
+    fn load_session_request_serializes_additional_directories() {
+        let request = LoadSessionRequest::new("claude-session-1", "/vault").additional_directories(
+            additional_wire_paths(
+                CLAUDE_RUNTIME_ID,
+                &[
+                    PathBuf::from("/external/project"),
+                    PathBuf::from("/external/notes"),
+                ],
+            ),
+        );
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "mcpServers": [],
+                "cwd": "/vault",
+                "additionalDirectories": ["/external/project", "/external/notes"],
+                "sessionId": "claude-session-1",
+            })
+        );
     }
 
     const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";

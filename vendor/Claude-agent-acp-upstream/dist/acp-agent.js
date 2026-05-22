@@ -1,5 +1,5 @@
 import { AgentSideConnection, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
-import { getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
+import { deleteSession, getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -324,10 +324,12 @@ export class ClaudeAcpAgent {
                 },
                 loadSession: true,
                 sessionCapabilities: {
+                    additionalDirectories: {},
+                    close: {},
+                    delete: {},
                     fork: {},
                     list: {},
                     resume: {},
-                    close: {},
                 },
             },
             agentInfo: {
@@ -356,6 +358,7 @@ export class ClaudeAcpAgent {
         const response = await this.createSession({
             cwd: params.cwd,
             mcpServers: params.mcpServers ?? [],
+            additionalDirectories: params.additionalDirectories,
             _meta: params._meta,
         }, {
             resume: params.sessionId,
@@ -453,6 +456,7 @@ export class ClaudeAcpAgent {
         }
         session.promptRunning = true;
         let handedOff = false;
+        let errored = false;
         let stopReason = "end_turn";
         try {
             while (true) {
@@ -530,8 +534,48 @@ export class ClaudeAcpAgent {
                             }
                             case "session_state_changed": {
                                 if (message.state === "idle") {
+                                    if (session.cancelled) {
+                                        stopReason = "cancelled";
+                                    }
                                     return { stopReason, usage: sessionUsage(session) };
                                 }
+                                break;
+                            }
+                            case "memory_recall": {
+                                const isSynthesis = message.mode === "synthesize";
+                                const locations = isSynthesis
+                                    ? []
+                                    : message.memories.map((m) => ({ path: m.path }));
+                                const content = isSynthesis
+                                    ? message.memories
+                                        .filter((m) => typeof m.content === "string")
+                                        .map((m) => ({
+                                        type: "content",
+                                        content: { type: "text", text: m.content },
+                                    }))
+                                    : [];
+                                const count = message.memories.length;
+                                const title = isSynthesis
+                                    ? "Recalled synthesized memory"
+                                    : `Recalled ${count} ${count === 1 ? "memory" : "memories"}`;
+                                await this.client.sessionUpdate({
+                                    sessionId: message.session_id,
+                                    update: {
+                                        sessionUpdate: "tool_call",
+                                        toolCallId: message.uuid,
+                                        title,
+                                        kind: "read",
+                                        status: "completed",
+                                        ...(locations.length > 0 && { locations }),
+                                        ...(content.length > 0 && { content }),
+                                        _meta: {
+                                            claudeCode: {
+                                                toolName: "memory_recall",
+                                                toolResponse: { mode: message.mode },
+                                            },
+                                        },
+                                    },
+                                });
                                 break;
                             }
                             case "hook_started":
@@ -544,7 +588,6 @@ export class ClaudeAcpAgent {
                             case "task_updated":
                             case "elicitation_complete":
                             case "plugin_install":
-                            case "memory_recall":
                             case "notification":
                             case "api_retry":
                             case "mirror_error":
@@ -752,29 +795,26 @@ export class ClaudeAcpAgent {
                                 lastAssistantError = message.error;
                             }
                         }
-                        // Slash commands like /compact can generate invalid output... doesn't match
-                        // their own docs: https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-slash-commands#%2Fcompact-compact-conversation-history
-                        //
-                        // Strip local-command marker tags from the content and render whatever
-                        // real prose remains, so that custom slash commands / user-defined
-                        // skills (whose bodies arrive wrapped in <command-*> / <local-command-stdout>
-                        // markers) and built-in commands that emit textual output reach the UI.
-                        // Previously this branch dropped every message containing a stdout
-                        // marker, which silently swallowed every successful skill invocation
-                        // and any built-in command that emits output through these tags.
-                        // strip-and-render is safe because stripLocalCommandMetadata returns
-                        // null when nothing renderable remains (e.g. pure-marker /compact
-                        // payloads), so the no-render no-op path is preserved for those cases.
-                        //
-                        // Refs zed-industries/claude-code-acp#624, #642.
+                        // Strip <command-*>/<local-command-stdout> markers and render any
+                        // remaining prose. Skill bodies and built-in slash commands (e.g.
+                        // /usage, /status, /model) arrive wrapped in these tags; pure-marker
+                        // payloads (e.g. /compact's malformed output) strip to null and are
+                        // skipped. Mirrors the replay path at replaySessionHistory.
                         if (typeof message.message.content === "string" &&
                             message.message.content.includes("<local-command-stdout>")) {
-                            this.logger.log(message.message.content);
                             const stripped = stripLocalCommandMetadata(message.message.content);
                             if (typeof stripped === "string") {
-                                for (const notification of toAcpNotifications(stripped, message.message.role, params.sessionId, this.toolUseCache, this.client, this.logger)) {
+                                for (const notification of toAcpNotifications(stripped, message.message.role, params.sessionId, this.toolUseCache, this.client, this.logger, {
+                                    clientCapabilities: this.clientCapabilities,
+                                    parentToolUseId: message.parent_tool_use_id,
+                                    cwd: session.cwd,
+                                    taskState: session.taskState,
+                                })) {
                                     await this.client.sessionUpdate(notification);
                                 }
+                            }
+                            else {
+                                this.logger.log(message.message.content);
                             }
                             break;
                         }
@@ -827,6 +867,30 @@ export class ClaudeAcpAgent {
             throw new Error("Session did not end in result");
         }
         catch (error) {
+            errored = true;
+            // A failed turn typically leaves a trailing `session_state_changed: idle`
+            // (and possibly more) in the query iterator. If we don't drain it here,
+            // the next prompt's first `query.next()` consumes that stale idle and
+            // short-circuits to end_turn with zero usage
+            // Bounded so a misbehaving SDK can't hang the next prompt indefinitely.
+            try {
+                await session.query.interrupt();
+                const MAX_DRAIN = 100;
+                for (let i = 0; i < MAX_DRAIN; i++) {
+                    const { value: m, done } = await session.query.next();
+                    if (done || !m)
+                        break;
+                    if (m.type === "system" && m.subtype === "session_state_changed" && m.state === "idle") {
+                        break;
+                    }
+                    if (i === MAX_DRAIN - 1) {
+                        this.logger.error(`Session ${params.sessionId}: drained ${MAX_DRAIN} messages after error without observing idle`);
+                    }
+                }
+            }
+            catch (drainErr) {
+                this.logger.error(`Session ${params.sessionId}: failed to drain query after prompt error:`, drainErr);
+            }
             if (error instanceof RequestError || !(error instanceof Error)) {
                 throw error;
             }
@@ -847,10 +911,20 @@ export class ClaudeAcpAgent {
         finally {
             if (!handedOff) {
                 session.promptRunning = false;
-                // This usually should not happen, but in case the loop finishes
-                // without claude sending all message replays, we resolve the
-                // next pending prompt call to ensure no prompts get stuck.
-                if (session.pendingMessages.size > 0) {
+                if (errored) {
+                    // The query stream was just drained — handing pending prompts off
+                    // onto it would let them race with the recovery. Cancel them so
+                    // each waiting prompt() returns stopReason: "cancelled" and the
+                    // client can decide whether to retry.
+                    for (const pending of session.pendingMessages.values()) {
+                        pending.resolve(true);
+                    }
+                    session.pendingMessages.clear();
+                }
+                else if (session.pendingMessages.size > 0) {
+                    // This usually should not happen, but in case the loop finishes
+                    // without claude sending all message replays, we resolve the
+                    // next pending prompt call to ensure no prompts get stuck.
                     const next = [...session.pendingMessages.entries()].sort((a, b) => a[1].order - b[1].order)[0];
                     if (next) {
                         next[1].resolve(false);
@@ -894,6 +968,15 @@ export class ClaudeAcpAgent {
             throw new Error("Session not found");
         }
         await this.teardownSession(params.sessionId);
+        return {};
+    }
+    async unstable_deleteSession(params) {
+        // Tear down any active in-memory state first so the on-disk file isn't
+        // recreated by an outstanding query writing to it.
+        if (this.sessions[params.sessionId]) {
+            await this.teardownSession(params.sessionId);
+        }
+        await deleteSession(params.sessionId);
         return {};
     }
     async unstable_setSessionModel(params) {
@@ -1255,7 +1338,7 @@ export class ClaudeAcpAgent {
             const newEffort = typeof newEffortOpt?.currentValue === "string" ? newEffortOpt.currentValue : undefined;
             if (newEffort !== currentEffort) {
                 await session.query.applyFlagSettings({
-                    effortLevel: newEffort,
+                    effortLevel: toSdkEffortLevel(newEffort),
                 });
             }
             // Emit current_mode_update only after session.modes AND
@@ -1278,7 +1361,7 @@ export class ClaudeAcpAgent {
             session.configOptions = session.configOptions.map((o) => o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o);
             if (configId === "effort") {
                 await session.query.applyFlagSettings({
-                    effortLevel: value,
+                    effortLevel: toSdkEffortLevel(value),
                 });
             }
         }
@@ -1303,6 +1386,7 @@ export class ClaudeAcpAgent {
         const response = await this.createSession({
             cwd: params.cwd,
             mcpServers: params.mcpServers ?? [],
+            additionalDirectories: params.additionalDirectories,
             _meta: params._meta,
         }, {
             resume: params.sessionId,
@@ -1345,7 +1429,7 @@ export class ClaudeAcpAgent {
                             : undefined,
                     };
                 }
-                else {
+                else if (!("type" in server)) {
                     // Stdio type MCP server (with or without explicit type field)
                     mcpServers[server.name] = {
                         type: "stdio",
@@ -1501,9 +1585,14 @@ export class ClaudeAcpAgent {
             ...creationOpts,
             abortController,
         };
+        // Prefer the official ACP `additionalDirectories` field. Fall back to the
+        // legacy `_meta.additionalRoots` extension for clients that haven't been
+        // updated yet. Either source is merged with directories supplied via
+        // `_meta.claudeCode.options.additionalDirectories` (SDK pass-through).
+        const acpAdditionalDirectories = params.additionalDirectories ?? sessionMeta?.additionalRoots ?? [];
         options.additionalDirectories = [
             ...(userProvidedOptions?.additionalDirectories ?? []),
-            ...(sessionMeta?.additionalRoots ?? []),
+            ...acpAdditionalDirectories,
         ];
         if (creationOpts?.resume === undefined || creationOpts?.forkSession) {
             // Set our own session id if not resuming an existing session.
@@ -1544,7 +1633,7 @@ export class ClaudeAcpAgent {
         const allowedModels = Array.isArray(settingsAvailableModels)
             ? applyAvailableModelsAllowlist(initializationResult.models, settingsAvailableModels)
             : initializationResult.models;
-        const models = await getAvailableModels(q, allowedModels, settingsManager, this.logger);
+        const models = await getAvailableModels(q, allowedModels, initializationResult.models, settingsManager, this.logger);
         // Gate `auto` (and future model-specific modes) on the resolved model's
         // `ModelInfo`. See `buildAvailableModes` for the canonical SDK signal.
         const currentModelInfo = allowedModels.find((m) => m.value === models.currentModelId);
@@ -1583,7 +1672,9 @@ export class ClaudeAcpAgent {
         const configOptions = buildConfigOptions(modes, models, allowedModels, settingsManager.getSettings().effortLevel);
         // Apply the initial effort level to the SDK so it matches the UI default
         const initialEffort = configOptions.find((o) => o.id === "effort");
-        if (initialEffort && typeof initialEffort.currentValue === "string") {
+        if (initialEffort &&
+            typeof initialEffort.currentValue === "string" &&
+            initialEffort.currentValue !== "default") {
             await q.applyFlagSettings({
                 effortLevel: initialEffort.currentValue,
             });
@@ -1699,7 +1790,7 @@ function createEnvForGateway(request) {
     return {
         ANTHROPIC_BASE_URL: request._meta.gateway.baseUrl,
         ANTHROPIC_CUSTOM_HEADERS: customHeaders,
-        ANTHROPIC_AUTH_TOKEN: "", // Must be specified to bypass claude login requirement
+        ANTHROPIC_AUTH_TOKEN: " ", // Must be specified to bypass claude login requirement
     };
 }
 /**
@@ -1744,6 +1835,15 @@ function buildAvailableModes(modelInfo) {
     }
     return modes;
 }
+// Translate a UI effort value into the flag-layer payload. The SDK
+// shallow-merges `applyFlagSettings`, drops `undefined` during JSON transport,
+// and only clears a key when an explicit `null` is sent — see
+// `applyFlagSettings` in @anthropic-ai/claude-agent-sdk. Mapping both the
+// `"default"` sentinel and `undefined` (effort option absent for the model) to
+// `null` ensures any previously-applied flag is actually cleared.
+function toSdkEffortLevel(value) {
+    return value === undefined || value === "default" ? null : value;
+}
 function buildConfigOptions(modes, models, modelInfos, currentEffortLevel) {
     const options = [
         {
@@ -1779,23 +1879,18 @@ function buildConfigOptions(modes, models, modelInfos, currentEffortLevel) {
         ? (currentModelInfo.supportedEffortLevels ?? [])
         : [];
     if (supportedLevels.length > 0) {
-        const effortOptions = supportedLevels.map((level) => ({
-            value: level,
-            name: level
-                .split(/[_-]/)
-                .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : part))
-                .join(" "),
-        }));
-        // Keep the current level if valid, otherwise prefer xhigh (Claude Code's
-        // recommended default for capable models), then high (the API default).
-        const includes = (l) => supportedLevels.includes(l);
-        const validEffort = currentEffortLevel && includes(currentEffortLevel)
-            ? currentEffortLevel
-            : includes("xhigh")
-                ? "xhigh"
-                : includes("high")
-                    ? "high"
-                    : supportedLevels[0];
+        const effortOptions = [
+            { value: "default", name: "Default" },
+            ...supportedLevels.map((level) => ({
+                value: level,
+                name: level
+                    .split(/[_-]/)
+                    .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : part))
+                    .join(" "),
+            })),
+        ];
+        const includes = (l) => l === "default" || supportedLevels.includes(l);
+        const validEffort = currentEffortLevel && includes(currentEffortLevel) ? currentEffortLevel : "default";
         options.push({
             id: "effort",
             name: "Effort",
@@ -1811,6 +1906,25 @@ function buildConfigOptions(modes, models, modelInfos, currentEffortLevel) {
 // Claude Code CLI persists display strings like "opus[1m]" in settings,
 // but the SDK model list uses IDs like "claude-opus-4-6-1m".
 const MODEL_CONTEXT_HINT_PATTERN = /\[(\d+m)\]$/i;
+// Captures a model family version such as `4-6` or `4.7` so we can keep
+// `claude-opus-4-6` from being copied onto the SDK's `opus` alias when that
+// alias currently resolves to a different family version (e.g. Opus 4.7).
+const MODEL_FAMILY_VERSION_PATTERN = /\b(\d+)[-.](\d+)\b/;
+function extractModelFamilyVersion(s) {
+    const match = s.match(MODEL_FAMILY_VERSION_PATTERN);
+    return match ? `${match[1]}.${match[2]}` : null;
+}
+function modelVersionsCompatible(preference, candidate) {
+    const preferred = extractModelFamilyVersion(preference);
+    if (!preferred)
+        return true;
+    const candidateVersion = extractModelFamilyVersion(candidate.value) ??
+        extractModelFamilyVersion(candidate.displayName) ??
+        extractModelFamilyVersion(candidate.description);
+    if (!candidateVersion)
+        return true;
+    return preferred === candidateVersion;
+}
 function tokenizeModelPreference(model) {
     const lower = model.trim().toLowerCase();
     const contextHint = lower.match(MODEL_CONTEXT_HINT_PATTERN)?.[1]?.toLowerCase();
@@ -1851,6 +1965,8 @@ function resolveModelPreference(models, preference) {
         return directMatch;
     // Substring match
     const includesMatch = models.find((model) => {
+        if (!modelVersionsCompatible(trimmed, model))
+            return false;
         const value = model.value.toLowerCase();
         const display = model.displayName.toLowerCase();
         return value.includes(lower) || display.includes(lower) || lower.includes(value);
@@ -1864,6 +1980,8 @@ function resolveModelPreference(models, preference) {
     let bestMatch = null;
     let bestScore = 0;
     for (const model of models) {
+        if (!modelVersionsCompatible(trimmed, model))
+            continue;
         const score = scoreModelMatch(model, tokens, contextHint);
         if (0 < score && (!bestMatch || bestScore < score)) {
             bestMatch = model;
@@ -1926,9 +2044,10 @@ function applyAvailableModelsAllowlist(sdkModels, allowlist) {
     }
     return result;
 }
-async function getAvailableModels(query, models, settingsManager, logger) {
+async function getAvailableModels(query, models, sdkModels, settingsManager, logger) {
     const settings = settingsManager.getSettings();
     let currentModel = models[0];
+    let resolvedFromInput;
     // Model priority (highest to lowest):
     // 1. ANTHROPIC_MODEL environment variable
     // 2. settings.model (user configuration)
@@ -1937,15 +2056,32 @@ async function getAvailableModels(query, models, settingsManager, logger) {
         const match = resolveModelPreference(models, process.env.ANTHROPIC_MODEL);
         if (match) {
             currentModel = match;
+            resolvedFromInput = process.env.ANTHROPIC_MODEL;
         }
     }
-    else {
+    else if (typeof settings.model === "string") {
         const match = resolveSettingsModel(models, settings.model, logger);
         if (match) {
             currentModel = match;
+            resolvedFromInput = settings.model;
         }
     }
-    await query.setModel(currentModel.value);
+    // Skip the setModel round-trip when we can prove the SDK has already landed
+    // on the same model. Two cases qualify:
+    //  (a) No override applied — currentModel stayed at models[0]; the SDK is on
+    //      its own default and we have nothing to sync.
+    //  (b) The resolver returned the user's input verbatim AND that value exists
+    //      in the SDK's original model list — meaning no fuzzy match or
+    //      allowlist rewrite was involved, and the SDK (which reads the same
+    //      ANTHROPIC_MODEL / settings.json) will have arrived at the same entry.
+    // Anything else (fuzzy match, allowlist-synthesized value, alias) gets a
+    // setModel call so we don't drift from the user's intended pin.
+    const sdkSawSameValue = sdkModels.some((m) => m.value === currentModel.value);
+    const skipSetModel = resolvedFromInput === undefined ||
+        (currentModel.value === resolvedFromInput && sdkSawSameValue);
+    if (!skipSetModel) {
+        await query.setModel(currentModel.value);
+    }
     return {
         availableModels: models.map((model) => ({
             modelId: model.value,
@@ -1957,6 +2093,7 @@ async function getAvailableModels(query, models, settingsManager, logger) {
 }
 function getAvailableSlashCommands(commands) {
     const UNSUPPORTED_COMMANDS = [
+        "clear",
         "cost",
         "keybindings-help",
         "login",

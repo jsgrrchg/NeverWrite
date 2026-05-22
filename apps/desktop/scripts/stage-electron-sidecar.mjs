@@ -125,7 +125,11 @@ async function readJson(filePath) {
     return JSON.parse(await fs.readFile(filePath, "utf8"));
 }
 
-async function missingClaudeRuntimePackages(sourceDir, targetTriple) {
+async function missingClaudeRuntimePackages(
+    sourceDir,
+    targetTriple,
+    packageLock,
+) {
     const requiredPackages = [
         ...CLAUDE_RUNTIME_DEPENDENCIES,
         ...requiredClaudePlatformPackages(targetTriple),
@@ -133,14 +137,19 @@ async function missingClaudeRuntimePackages(sourceDir, targetTriple) {
     const missing = [];
 
     for (const packageName of requiredPackages) {
-        if (
-            !(await pathExists(
-                path.join(
-                    packageDirectory(sourceDir, packageName),
-                    "package.json",
-                ),
-            ))
-        ) {
+        const packageJsonPath = path.join(
+            packageDirectory(sourceDir, packageName),
+            "package.json",
+        );
+        if (!(await pathExists(packageJsonPath))) {
+            missing.push(packageName);
+            continue;
+        }
+
+        const lockedVersion =
+            packageLock.packages?.[`node_modules/${packageName}`]?.version;
+        const installedVersion = (await readJson(packageJsonPath)).version;
+        if (lockedVersion && installedVersion !== lockedVersion) {
             missing.push(packageName);
         }
     }
@@ -165,21 +174,20 @@ async function installClaudeRuntimeDependencies(sourceDir, targetTriple) {
         }
     }
 
-    let missing = await missingClaudeRuntimePackages(sourceDir, targetTriple);
-    if (missing.length > 0) {
-        console.log(
-            `Installing Claude embedded runtime production dependencies (${missing.join(", ")} missing).`,
-        );
-        await run("npm", ["ci", "--omit=dev", "--include=optional"], sourceDir);
-    }
+    const packageLock = await readJson(packageLockPath);
+    console.log("Installing Claude embedded runtime production dependencies.");
+    await run("npm", ["ci", "--omit=dev", "--include=optional"], sourceDir);
 
-    missing = await missingClaudeRuntimePackages(sourceDir, targetTriple);
+    let missing = await missingClaudeRuntimePackages(
+        sourceDir,
+        targetTriple,
+        packageLock,
+    );
     const platformPackages = requiredClaudePlatformPackages(targetTriple);
     const missingPlatformPackages = missing.filter((packageName) =>
         platformPackages.includes(packageName),
     );
     if (missingPlatformPackages.length > 0) {
-        const packageLock = await readJson(packageLockPath);
         const packagesToInstall = missingPlatformPackages.map((packageName) => {
             const version =
                 packageLock.packages?.[`node_modules/${packageName}`]?.version;
@@ -207,10 +215,14 @@ async function installClaudeRuntimeDependencies(sourceDir, targetTriple) {
         );
     }
 
-    missing = await missingClaudeRuntimePackages(sourceDir, targetTriple);
+    missing = await missingClaudeRuntimePackages(
+        sourceDir,
+        targetTriple,
+        packageLock,
+    );
     if (missing.length > 0) {
         throw new Error(
-            `Claude embedded runtime is missing production dependencies after install: ${missing.join(", ")}`,
+            `Claude embedded runtime is missing or has stale production dependencies after install: ${missing.join(", ")}`,
         );
     }
 }

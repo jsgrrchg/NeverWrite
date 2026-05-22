@@ -65,8 +65,9 @@ const MOCK_CONFIG_OPTIONS = [
     description: "Available effort levels for this model",
     type: "select",
     category: "effort",
-    currentValue: "high",
+    currentValue: "default",
     options: [
+      { value: "default", name: "Default" },
       { value: "low", name: "Low" },
       { value: "medium", name: "Medium" },
       { value: "high", name: "High" },
@@ -445,7 +446,7 @@ describe("session config options", () => {
         (o: any) => o.id === "effort",
       );
       expect(effortOption).toBeUndefined();
-      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: undefined });
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
     });
 
     it("clamps effort in config_option_update when new model has different supported levels", async () => {
@@ -483,8 +484,8 @@ describe("session config options", () => {
         (o: any) => o.id === "effort",
       );
       expect(effortOption).toBeDefined();
-      expect(effortOption.currentValue).toBe("high");
-      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "high" });
+      expect(effortOption.currentValue).toBe("default");
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
     });
 
     it("preserves effort in config_option_update when new model supports same level", async () => {
@@ -555,6 +556,31 @@ describe("session config options", () => {
       });
 
       expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "low" });
+    });
+
+    it("calls applyFlagSettings with null effortLevel for 'default'", async () => {
+      // Set effort to a non-default value first
+      const session = (agent as unknown as { sessions: Record<string, any> }).sessions[SESSION_ID];
+      const effortOpt = session.configOptions.find((o: any) => o.id === "effort");
+      if (effortOpt) effortOpt.currentValue = "high";
+
+      await agent.setSessionConfigOption({
+        sessionId: SESSION_ID,
+        configId: "effort",
+        value: "default",
+      });
+
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
+
+      // The SDK's applyFlagSettings travels over a JSON pipe and only clears a
+      // flag-layer key when an explicit `null` is sent — `undefined` is
+      // dropped during JSON.stringify, which would leave the previous effort
+      // override in place. Round-trip the call args through JSON to make sure
+      // the key actually reaches the SDK.
+      const calls = applyFlagSettingsSpy.mock.calls;
+      const lastCallArgs = calls[calls.length - 1]?.[0];
+      const serialized = JSON.parse(JSON.stringify(lastCallArgs));
+      expect(serialized).toHaveProperty("effortLevel", null);
     });
 
     it("updates effort currentValue in returned configOptions", async () => {
@@ -663,7 +689,7 @@ describe("session config options", () => {
         value: "claude-sonnet-4-6",
       });
 
-      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: undefined });
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
     });
 
     it("adds effort option when switching to a model that supports effort", async () => {
@@ -696,8 +722,8 @@ describe("session config options", () => {
 
       const effortOption = response.configOptions.find((o) => o.id === "effort");
       expect(effortOption).toBeDefined();
-      // No previous effort, so defaults to "high" (the API default)
-      expect(effortOption?.currentValue).toBe("high");
+      // No previous effort, so defaults to "default" (no effort override)
+      expect(effortOption?.currentValue).toBe("default");
     });
 
     it("clamps effort to valid value when new model has different supported levels", async () => {
@@ -731,10 +757,10 @@ describe("session config options", () => {
 
       const effortOption = response.configOptions.find((o) => o.id === "effort");
       expect(effortOption).toBeDefined();
-      // "max" is not in sonnet's levels, so should fall back to "high" (the API default)
-      expect(effortOption?.currentValue).toBe("high");
-      // SDK should be told about the clamped value
-      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: "high" });
+      // "max" is not in sonnet's levels, so should fall back to "default" (no effort override)
+      expect(effortOption?.currentValue).toBe("default");
+      // SDK should be told to clear the effort override
+      expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
     });
 
     it("preserves effort value when new model supports the same level", async () => {

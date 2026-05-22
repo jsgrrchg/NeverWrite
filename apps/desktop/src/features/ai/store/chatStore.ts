@@ -4774,6 +4774,8 @@ function applyPersistedHistoryMetadata(
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
             customTitle: history.custom_title ?? null,
+            additionalRoots:
+                history.additional_roots ?? nextSession.additionalRoots ?? [],
             persistedPreview: history.preview ?? null,
             persistedMessageCount,
             loadedPersistedMessageStart,
@@ -4801,6 +4803,7 @@ function applyPersistedHistoryPage(
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
+        additional_roots: session.additionalRoots ?? [],
         created_at: session.persistedCreatedAt ?? 0,
         updated_at: session.persistedUpdatedAt ?? 0,
         start_index: page.start_index,
@@ -4882,6 +4885,7 @@ function createPersistedSession(
             runtimeSessionId: null,
             vaultPath,
             runtimeId,
+            additionalRoots: history.additional_roots ?? [],
             modelId: history.model_id,
             modeId: history.mode_id,
             status: "idle",
@@ -5440,6 +5444,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
+        additional_roots: session.additionalRoots ?? [],
         models: hasCatalog
             ? session.models.map((model) => ({
                   id: model.id,
@@ -8552,6 +8557,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let resumedSession = await aiCreateSession(
                     latestSession.runtimeId,
                     vaultPath,
+                    latestSession.additionalRoots ?? null,
                 );
                 const resumedModelConfig = getModelConfigOption(resumedSession);
 
@@ -8672,6 +8678,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             latestSession.runtimeId,
                             historySessionId,
                             vaultPath,
+                            latestSession.additionalRoots ?? null,
                         );
                     } catch (nativeResumeError) {
                         const nativeResumeMessage = getAiErrorMessage(
@@ -8763,6 +8770,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 null,
                             messages: [],
                             attachments: latestSession.attachments,
+                            additionalRoots:
+                                resumedSession.additionalRoots ??
+                                latestSession.additionalRoots ??
+                                [],
                             effortsByModel:
                                 resumedSession.effortsByModel ??
                                 latestSession.effortsByModel ??

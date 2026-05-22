@@ -104,6 +104,8 @@ pub struct AiSession {
     pub models: Vec<AiModelOption>,
     pub modes: Vec<AiModeOption>,
     pub config_options: Vec<AiConfigOption>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_roots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

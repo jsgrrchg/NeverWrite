@@ -332,6 +332,7 @@ export interface AIChatSession {
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
     runtimeId: string;
+    additionalRoots?: string[];
     modelId: string;
     modeId: string;
     models: AIModelOption[];
@@ -383,6 +384,7 @@ export interface AIBackendSessionPayload {
     model_id: string;
     mode_id: string;
     status: AIChatSessionStatus;
+    additional_roots?: string[];
     efforts_by_model?: Record<string, string[]>;
     models: AIBackendRuntimeDescriptorPayload["models"];
     modes: AIBackendRuntimeDescriptorPayload["modes"];
@@ -653,6 +655,7 @@ export interface PersistedSessionHistory {
     models?: AIBackendRuntimeDescriptorPayload["models"];
     modes?: AIBackendRuntimeDescriptorPayload["modes"];
     config_options?: AIBackendSessionPayload["config_options"];
+    additional_roots?: string[];
     created_at: number;
     updated_at: number;
     start_index?: number;
