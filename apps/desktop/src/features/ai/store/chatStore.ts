@@ -108,6 +108,7 @@ import {
     type AIChatMessage,
     type AIChatMessageKind,
     type AIFileDiff,
+    type AIFileDiffHunk,
     type AIChatNoteSummary,
     type AIChatRole,
     type AIChatSession,
@@ -3777,6 +3778,118 @@ function replaceTextExactlyOnce(
     );
 }
 
+function countLinesBeforeOffset(text: string, offset: number) {
+    if (offset <= 0) return 0;
+    let lineCount = 0;
+    const boundedOffset = Math.min(offset, text.length);
+    for (let index = 0; index < boundedOffset; index += 1) {
+        if (text.charCodeAt(index) === 10) {
+            lineCount += 1;
+        }
+    }
+    return lineCount;
+}
+
+function getHunkSideLines(
+    hunk: AIFileDiffHunk,
+    side: "old" | "new",
+): string[] {
+    return hunk.lines
+        .filter((line) =>
+            side === "old" ? line.type !== "add" : line.type !== "remove",
+        )
+        .map((line) => line.text);
+}
+
+function hunkSideMatchesText(
+    text: string,
+    hunk: AIFileDiffHunk,
+    side: "old" | "new",
+) {
+    const expectedLines = getHunkSideLines(hunk, side);
+    if (expectedLines.length === 0) {
+        return true;
+    }
+
+    const start = side === "old" ? hunk.old_start : hunk.new_start;
+    if (start <= 0) {
+        return false;
+    }
+
+    const actualLines = text.split("\n").slice(start - 1);
+    return expectedLines.every((line, index) => actualLines[index] === line);
+}
+
+function hunkMatchesTexts(
+    hunk: AIFileDiffHunk,
+    oldText: string,
+    newText: string,
+) {
+    return (
+        hunkSideMatchesText(oldText, hunk, "old") &&
+        hunkSideMatchesText(newText, hunk, "new")
+    );
+}
+
+function shiftHunkStarts(
+    hunk: AIFileDiffHunk,
+    oldLineOffset: number,
+    newLineOffset: number,
+): AIFileDiffHunk {
+    return {
+        ...hunk,
+        old_start: hunk.old_start > 0 ? hunk.old_start + oldLineOffset : 0,
+        new_start: hunk.new_start > 0 ? hunk.new_start + newLineOffset : 0,
+    };
+}
+
+function normalizeFragmentHunksToSnapshot(
+    diff: AIFileDiff,
+    oldSnapshot: string,
+    newSnapshot: string,
+    fragmentOffset: number,
+): AIFileDiff {
+    if (!diff.hunks || diff.hunks.length === 0) {
+        return diff;
+    }
+
+    const oldLineOffset = countLinesBeforeOffset(oldSnapshot, fragmentOffset);
+    if (oldLineOffset === 0) {
+        return diff;
+    }
+
+    const newLineOffset = countLinesBeforeOffset(newSnapshot, fragmentOffset);
+    const rebasedHunks: AIFileDiffHunk[] = [];
+
+    for (const hunk of diff.hunks) {
+        if (hunkMatchesTexts(hunk, oldSnapshot, newSnapshot)) {
+            rebasedHunks.push(hunk);
+            continue;
+        }
+
+        const rebased = shiftHunkStarts(hunk, oldLineOffset, newLineOffset);
+        if (hunkMatchesTexts(rebased, oldSnapshot, newSnapshot)) {
+            rebasedHunks.push(rebased);
+            continue;
+        }
+
+        // A fragment hunk that cannot be reconciled with the full snapshot is
+        // less trustworthy than the snapshot itself. Dropping it lets the diff
+        // renderer derive correct file-relative line numbers from old/new text.
+        return {
+            ...diff,
+            hunks: undefined,
+        };
+    }
+
+    return {
+        ...diff,
+        old_text: oldSnapshot,
+        new_text: newSnapshot,
+        hunks: rebasedHunks,
+    };
+}
+
 function findTrackedFileForIncomingDiff(
     files: Record<string, TrackedFile>,
     diff: AIFileDiff,
@@ -3873,6 +3986,7 @@ function normalizeIncomingTrackedDiff(
             continue;
         }
 
+        const fragmentOffset = candidate.indexOf(canonicalDiff.old_text);
         const reconstructed = replaceTextExactlyOnce(
             candidate,
             canonicalDiff.old_text,
@@ -3882,7 +3996,7 @@ function normalizeIncomingTrackedDiff(
             continue;
         }
 
-        return {
+        const normalizedDiff = {
             ...canonicalDiff,
             old_text: candidate,
             kind:
@@ -3897,6 +4011,13 @@ function normalizeIncomingTrackedDiff(
                       : reconstructed,
             reversible: true,
         };
+
+        return normalizeFragmentHunksToSnapshot(
+            normalizedDiff,
+            candidate,
+            normalizedDiff.new_text ?? "",
+            fragmentOffset,
+        );
     }
 
     return canonicalDiff;
@@ -3995,16 +4116,15 @@ function consolidateActionLogDiffs(
     diffs: AIFileDiff[],
     workCycleId: string | null | undefined,
     timestamp = Date.now(),
+    options?: { normalized?: boolean },
 ): AIChatSession {
     if (!workCycleId || diffs.length === 0) return session;
     const actionLog = session.actionLog ?? emptyActionLogState();
     const currentFiles = getTrackedFilesForSession(actionLog);
     const vaultPath = session.vaultPath ?? useVaultStore.getState().vaultPath;
-    const normalizedDiffs = normalizeIncomingTrackedDiffs(
-        currentFiles,
-        diffs,
-        vaultPath,
-    );
+    const normalizedDiffs = options?.normalized
+        ? diffs
+        : normalizeIncomingTrackedDiffs(currentFiles, diffs, vaultPath);
     const nextFiles = consolidateTrackedFiles(
         currentFiles,
         normalizedDiffs,
@@ -7821,34 +7941,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     Boolean(workCycleId);
 
                 const messageId = `tool:${payload.tool_call_id}`;
-                const nextMessage: AIChatMessage = {
-                    id: messageId,
-                    role: "assistant",
-                    kind: "tool",
-                    title: payload.title,
-                    content: payload.summary ?? payload.title,
-                    timestamp: eventTimestamp,
-                    workCycleId: nextSession.activeWorkCycleId,
-                    diffs: payload.diffs,
-                    toolAction: payload.action ?? null,
-                    meta: {
-                        tool: payload.kind,
-                        status: payload.status,
-                        target: payload.target ?? null,
-                    },
-                };
 
                 // Consolidate diffs into ActionLog synchronously from the
                 // accumulated tracked-file state. Delayed precomputed patches
                 // are not allowed to rewrite the domain state.
                 let consolidated = nextSession;
+                let messageDiffs = payload.diffs;
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
+                    const currentFiles = getTrackedFilesForSession(
+                        consolidated.actionLog,
+                    );
+                    const vaultPath =
+                        consolidated.vaultPath ??
+                        useVaultStore.getState().vaultPath;
+                    messageDiffs = normalizeIncomingTrackedDiffs(
+                        currentFiles,
+                        payload.diffs ?? [],
+                        vaultPath,
+                    );
                     consolidated = consolidateActionLogDiffs(
                         consolidated,
-                        payload.diffs ?? [],
+                        messageDiffs,
                         workCycleId,
                         eventTimestamp,
+                        { normalized: true },
                     );
                     if (!isSessionBusy(nextSession)) {
                         consolidated = finalizeActionLogForWorkCycle(
@@ -7857,6 +7974,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         );
                     }
                 }
+
+                const nextMessage: AIChatMessage = {
+                    id: messageId,
+                    role: "assistant",
+                    kind: "tool",
+                    title: payload.title,
+                    content: payload.summary ?? payload.title,
+                    timestamp: eventTimestamp,
+                    workCycleId: nextSession.activeWorkCycleId,
+                    diffs: messageDiffs,
+                    toolAction: payload.action ?? null,
+                    meta: {
+                        tool: payload.kind,
+                        status: payload.status,
+                        target: payload.target ?? null,
+                    },
+                };
 
                 return {
                     sessionsById: {
@@ -8058,13 +8192,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     payload.diffs.some(diffCanBeTracked) &&
                     Boolean(workCycleId);
                 let sessionWithBuffer = nextSession;
+                let messageDiffs = payload.diffs;
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
+                    const currentFiles = getTrackedFilesForSession(
+                        sessionWithBuffer.actionLog,
+                    );
+                    const vaultPath =
+                        sessionWithBuffer.vaultPath ??
+                        useVaultStore.getState().vaultPath;
+                    messageDiffs = normalizeIncomingTrackedDiffs(
+                        currentFiles,
+                        payload.diffs,
+                        vaultPath,
+                    );
                     sessionWithBuffer = consolidateActionLogDiffs(
                         sessionWithBuffer,
-                        payload.diffs,
+                        messageDiffs,
                         workCycleId,
                         eventTimestamp,
+                        { normalized: true },
                     );
                 }
 
@@ -8079,7 +8226,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     workCycleId: nextSession.activeWorkCycleId,
                     permissionRequestId: payload.request_id,
                     permissionOptions: payload.options,
-                    diffs: payload.diffs.length > 0 ? payload.diffs : undefined,
+                    diffs: messageDiffs.length > 0 ? messageDiffs : undefined,
                     meta: {
                         status: "pending",
                         target: payload.target ?? null,

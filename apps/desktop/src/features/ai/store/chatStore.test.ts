@@ -6251,6 +6251,98 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("stores chat tool fragment hunks with file-relative line numbers", async () => {
+        const oldLines = Array.from(
+            { length: 1180 },
+            (_, index) => `line ${index + 1}`,
+        );
+        oldLines[1176] = "old target";
+        const oldText = oldLines.join("\n");
+        const newLines = [...oldLines];
+        newLines[1176] = "new target";
+        const newText = newLines.join("\n");
+
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "file",
+                    relativePath: "posts/article.md",
+                    path: "/vault/posts/article.md",
+                    title: "article.md",
+                    content: oldText,
+                    mimeType: "text/markdown",
+                    viewer: "text",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-fragment-hunk-lines",
+            title: "Edit article.md",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/posts/article.md",
+            diffs: [
+                {
+                    path: "/vault/posts/article.md",
+                    kind: "update",
+                    old_text: "old target",
+                    new_text: "new target",
+                    reversible: true,
+                    hunks: [
+                        {
+                            old_start: 1,
+                            old_count: 1,
+                            new_start: 1,
+                            new_count: 1,
+                            lines: [
+                                { type: "remove", text: "old target" },
+                                { type: "add", text: "new target" },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+
+        const message =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .messages.find(
+                    (item) => item.id === "tool:tool-fragment-hunk-lines",
+                );
+        const diff = message?.diffs?.[0];
+
+        expect(diff).toMatchObject({
+            old_text: oldText,
+            new_text: newText,
+        });
+        expect(diff?.hunks?.[0]).toMatchObject({
+            old_start: 1177,
+            new_start: 1177,
+        });
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            {
+                diffBase: oldText,
+                currentText: newText,
+            },
+        ]);
+    });
+
     it("treats fragmentary delete diffs as inline updates when the file still has content", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
