@@ -225,6 +225,13 @@ impl ToolDiffState {
                 );
                 return;
             }
+            if incoming_quality == DiffCacheQuality::Anchored
+                && existing_quality >= DiffCacheQuality::ReliableSnapshot
+            {
+                // If we cannot safely attach the anchored metadata onto the
+                // canonical snapshot, keep the existing full-text diff intact.
+                return;
+            }
 
             // Exact anchored hunks are review metadata and must not be blocked
             // by an earlier weaker diff, but full-text snapshots still own the
@@ -1295,6 +1302,76 @@ mod tests {
         let hunks = diffs[0].hunks.as_ref().unwrap();
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].lines.len(), 4);
+    }
+
+    #[test]
+    fn unmatched_claude_structured_patch_update_preserves_cached_full_snapshot() {
+        let state = ToolDiffState::default();
+        state.register_file_baseline(
+            "session-1",
+            "src/app.ts",
+            "header\nalpha\nold\nomega\nfooter".to_string(),
+        );
+
+        let initial = ToolCall::new(ToolCallId::from("tool-write"), "Write app.ts")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(serde_json::json!({
+                "file_path": "src/app.ts",
+                "content": "header\nalpha\nnew\nomega\nfooter",
+            }));
+        let initial = state.upsert_tool_call("session-1", initial);
+        let initial_diffs = state.normalized_diffs_for_tool_call("session-1", &initial);
+        assert_eq!(
+            initial_diffs[0].old_text.as_deref(),
+            Some("header\nalpha\nold\nomega\nfooter")
+        );
+        assert!(initial_diffs[0].hunks.is_none());
+
+        let mut update = ToolCallUpdate::new(
+            "tool-write",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::Diff(
+                    Diff::new("src/app.ts", "different\nsnippet").old_text("different\nsource"),
+                )]),
+        );
+        update.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Write",
+                "toolResponse": {
+                    "filePath": "src/app.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 20,
+                            "oldLines": 2,
+                            "newStart": 20,
+                            "newLines": 2,
+                            "lines": [
+                                " different",
+                                "-source",
+                                "+snippet"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+
+        let completed = state.apply_tool_update("session-1", update).unwrap();
+        let diffs = state.normalized_diffs_for_tool_call("session-1", &completed);
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some("header\nalpha\nold\nomega\nfooter")
+        );
+        assert_eq!(
+            diffs[0].new_text.as_deref(),
+            Some("header\nalpha\nnew\nomega\nfooter")
+        );
+        assert!(diffs[0].hunks.is_none());
     }
 
     #[test]
