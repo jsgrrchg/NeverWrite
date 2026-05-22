@@ -88,7 +88,6 @@ import {
     type ReviewHunkId,
     resolveReviewHunkIdsToExactSpans,
 } from "../diff/reviewProjectionIndex";
-import { deriveChatChangeReviewDiffs } from "../diff/chatChangeReviewModel";
 import {
     type EditorTarget,
     resolveEditorTargetForTrackedPath,
@@ -4086,35 +4085,12 @@ function normalizeIncomingTrackedDiffs(
     );
 }
 
-function deriveMessageReviewDiffs(
-    session: AIChatSession,
-    messageDiffs: AIFileDiff[] | undefined,
-    vaultPath: string | null,
-) {
-    if (!messageDiffs || messageDiffs.length === 0 || !session.actionLog) {
-        return messageDiffs;
-    }
-
-    return deriveChatChangeReviewDiffs(
-        messageDiffs,
-        Object.values(getTrackedFilesForSession(session.actionLog)),
-        vaultPath,
-    );
-}
-
-function freezeMessageReviewDiffs(
-    session: AIChatSession,
-    messageDiffs: AIFileDiff[] | undefined,
-    vaultPath: string | null,
-    deriveFromActionLog: boolean,
-) {
+function freezeMessageReviewDiffs(messageDiffs: AIFileDiff[] | undefined) {
     if (!messageDiffs || messageDiffs.length === 0) {
         return undefined;
     }
 
-    return deriveFromActionLog
-        ? deriveMessageReviewDiffs(session, messageDiffs, vaultPath)
-        : messageDiffs;
+    return messageDiffs;
 }
 
 function summarizeTrackedFileForDebug(file: TrackedFile | null | undefined) {
@@ -8036,12 +8012,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let reviewVaultPath =
                     consolidated.vaultPath ??
                     useVaultStore.getState().vaultPath;
-                let reviewDiffs = freezeMessageReviewDiffs(
-                    consolidated,
-                    messageDiffs,
-                    reviewVaultPath,
-                    false,
-                );
+                let reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
                     const currentFiles = getTrackedFilesForSession(
@@ -8068,12 +8039,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             workCycleId,
                         );
                     }
-                    reviewDiffs = freezeMessageReviewDiffs(
-                        consolidated,
-                        messageDiffs,
-                        reviewVaultPath,
-                        true,
-                    );
+                    reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 }
 
                 const nextMessage: AIChatMessage = {
@@ -8298,12 +8264,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let reviewVaultPath =
                     sessionWithBuffer.vaultPath ??
                     useVaultStore.getState().vaultPath;
-                let reviewDiffs = freezeMessageReviewDiffs(
-                    sessionWithBuffer,
-                    messageDiffs,
-                    reviewVaultPath,
-                    false,
-                );
+                let reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
                     const currentFiles = getTrackedFilesForSession(
@@ -8324,12 +8285,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         eventTimestamp,
                         { normalized: true },
                     );
-                    reviewDiffs = freezeMessageReviewDiffs(
-                        sessionWithBuffer,
-                        messageDiffs,
-                        reviewVaultPath,
-                        true,
-                    );
+                    reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 }
 
                 const messageId = `permission:${payload.request_id}`;

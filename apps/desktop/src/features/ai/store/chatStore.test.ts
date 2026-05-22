@@ -7175,6 +7175,15 @@ describe("chatStore", () => {
             old_text: "original",
             new_text: "first edit",
         });
+        const secondMessage =
+            useChatStore.getState().sessionsById[activeSessionId]!.messages.find(
+                (message) => message.id === "tool:tool-cycle-b",
+            );
+        expect(secondMessage?.reviewDiffs?.[0]).toMatchObject({
+            path: "/notes/file.md",
+            old_text: "first edit",
+            new_text: "second edit",
+        });
     });
 
     it("freezes non-trackable tool diff cards before later tracked edits touch the same file", async () => {

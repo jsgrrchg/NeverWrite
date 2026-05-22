@@ -617,8 +617,8 @@ fn build_claude_structured_patch_hunks_by_content_index(
             .find_map(|(index, candidate)| {
                 if used_candidate_indexes.contains(&index)
                     || candidate.path != path
-                    || candidate.old_text.as_deref() != old_text
-                    || candidate.new_text != diff.new_text
+                    || !claude_old_text_matches(candidate.old_text.as_deref(), old_text)
+                    || !claude_new_text_matches(&candidate.new_text, &diff.new_text)
                 {
                     return None;
                 }
@@ -742,7 +742,7 @@ fn claude_structured_patch_hunk_to_diff_texts(
     let mut new_text = Vec::new();
 
     for line in &hunk.lines {
-        if line == CLAUDE_NO_NEWLINE_MARKER {
+        if claude_marker_text_matches(line) {
             continue;
         }
 
@@ -766,6 +766,36 @@ fn claude_structured_patch_hunk_to_diff_texts(
     Some(((!old_text.is_empty()).then_some(old_text), new_text))
 }
 
+fn claude_marker_text_matches(line: &str) -> bool {
+    line == CLAUDE_NO_NEWLINE_MARKER
+        || line
+            == CLAUDE_NO_NEWLINE_MARKER
+                .strip_prefix('\\')
+                .unwrap_or(CLAUDE_NO_NEWLINE_MARKER)
+}
+
+fn strip_claude_no_newline_marker_lines(text: &str) -> String {
+    text.split('\n')
+        .filter(|line| !claude_marker_text_matches(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_claude_old_text(text: Option<&str>) -> Option<String> {
+    let normalized = strip_claude_no_newline_marker_lines(text?);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn claude_old_text_matches(candidate: Option<&str>, actual: Option<&str>) -> bool {
+    candidate == actual || normalize_claude_old_text(candidate) == normalize_claude_old_text(actual)
+}
+
+fn claude_new_text_matches(candidate: &str, actual: &str) -> bool {
+    candidate == actual
+        || strip_claude_no_newline_marker_lines(candidate)
+            == strip_claude_no_newline_marker_lines(actual)
+}
+
 fn claude_structured_patch_to_ai_diff_hunks(
     structured_patch: &[ClaudeStructuredPatchHunk],
 ) -> Option<Vec<AiFileDiffHunkPayload>> {
@@ -776,7 +806,7 @@ fn claude_structured_patch_to_ai_diff_hunks(
                 .lines
                 .iter()
                 .filter_map(|raw_line| {
-                    if raw_line == CLAUDE_NO_NEWLINE_MARKER {
+                    if claude_marker_text_matches(raw_line) {
                         return None;
                     }
 
@@ -1241,6 +1271,47 @@ mod tests {
             .status(ToolCallStatus::Completed)
             .content(vec![ToolCallContent::Diff(
                 Diff::new("src/app.ts", "new").old_text("old"),
+            )]);
+        call.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "src/app.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 1,
+                            "oldLines": 1,
+                            "newStart": 1,
+                            "newLines": 1,
+                            "lines": [
+                                "-old",
+                                "+new",
+                                "\\ No newline at end of file"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+
+        let diffs = collect_tool_call_diffs(&call, None);
+
+        let hunk = diffs[0].hunks.as_ref().unwrap().first().unwrap();
+        assert_eq!((hunk.old_start, hunk.new_start), (1, 1));
+        assert_eq!(hunk.lines.len(), 2);
+        assert_eq!(hunk.lines[0].text, "old");
+        assert_eq!(hunk.lines[1].text, "new");
+    }
+
+    #[test]
+    fn claude_structured_patch_matches_content_diff_with_stripped_no_newline_marker() {
+        let mut call = ToolCall::new(ToolCallId::from("tool-1"), "Edit file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("src/app.ts", "new\n No newline at end of file")
+                    .old_text("old\n No newline at end of file"),
             )]);
         call.meta = Some(Meta::from_iter([(
             CLAUDE_CODE_META_KEY.to_string(),
