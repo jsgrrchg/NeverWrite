@@ -517,7 +517,7 @@ describe("AIReviewView", () => {
         ).toBeInTheDocument();
     });
 
-    it("restores persisted expansion and scroll anchor state when reopening the same review session", async () => {
+    it("restores persisted expansion, wide mode, and scroll state when reopening the same review session", async () => {
         const sessionId = "sess-review-persist";
         const file = makeTrackedFile({
             identityKey: "persist-1",
@@ -544,6 +544,11 @@ describe("AIReviewView", () => {
                 screen.queryByRole("button", { name: "Reject hunk 1" }),
             ).not.toBeInTheDocument();
 
+            fireEvent.click(screen.getByRole("button", { name: "Wide" }));
+            expect(
+                screen.getByRole("button", { name: "Center" }),
+            ).toBeInTheDocument();
+
             const scrollContainer = screen.getByTestId(
                 "ai-review-scroll-container",
             );
@@ -562,6 +567,7 @@ describe("AIReviewView", () => {
             ).toMatchObject({
                 expandedIdentityKeys: [],
                 scrollTop: 196,
+                wideMode: true,
             });
 
             firstRender.unmount();
@@ -572,6 +578,60 @@ describe("AIReviewView", () => {
             expect(
                 screen.getByRole("button", { name: "Expand" }),
             ).toBeInTheDocument();
+            expect(
+                screen.getByRole("button", { name: "Center" }),
+            ).toBeInTheDocument();
+            await waitFor(() => {
+                expect(
+                    screen.getByTestId("ai-review-scroll-container").scrollTop,
+                ).toBe(196);
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("flushes pending scroll persistence when the review tab unmounts before the debounce fires", () => {
+        const sessionId = "sess-review-scroll-flush";
+        const file = makeTrackedFile({
+            identityKey: "persist-flush-1",
+            path: "/vault/notes/persist-flush.md",
+            originPath: "/vault/notes/persist-flush.md",
+            diffBase: "line a\nline b\nline c",
+            currentText: "line a\nline B\nline c",
+        });
+
+        setupReviewTab(sessionId);
+        useChatStore.setState({
+            sessionsById: {
+                [sessionId]: makeSession(sessionId, [file]),
+            },
+            activeSessionId: sessionId,
+        });
+
+        vi.useFakeTimers();
+        try {
+            const view = renderComponent(<AIReviewView />);
+            const scrollContainer = screen.getByTestId(
+                "ai-review-scroll-container",
+            );
+            Object.defineProperty(scrollContainer, "scrollTop", {
+                configurable: true,
+                writable: true,
+                value: 321,
+            });
+            fireEvent.scroll(scrollContainer);
+
+            view.unmount();
+
+            expect(
+                readPersistedReviewViewState(
+                    useVaultStore.getState().vaultPath,
+                    sessionId,
+                ),
+            ).toMatchObject({
+                scrollTop: 321,
+            });
         } finally {
             vi.useRealTimers();
         }
