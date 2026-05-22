@@ -742,7 +742,7 @@ fn claude_structured_patch_hunk_to_diff_texts(
     let mut new_text = Vec::new();
 
     for line in &hunk.lines {
-        if claude_marker_text_matches(line) {
+        if claude_structured_patch_marker_matches(line) {
             continue;
         }
 
@@ -766,8 +766,12 @@ fn claude_structured_patch_hunk_to_diff_texts(
     Some(((!old_text.is_empty()).then_some(old_text), new_text))
 }
 
-fn claude_marker_text_matches(line: &str) -> bool {
+fn claude_structured_patch_marker_matches(line: &str) -> bool {
     line == CLAUDE_NO_NEWLINE_MARKER
+}
+
+fn claude_diff_text_marker_matches(line: &str) -> bool {
+    claude_structured_patch_marker_matches(line)
         || line
             == CLAUDE_NO_NEWLINE_MARKER
                 .strip_prefix('\\')
@@ -776,7 +780,7 @@ fn claude_marker_text_matches(line: &str) -> bool {
 
 fn strip_claude_no_newline_marker_lines(text: &str) -> String {
     text.split('\n')
-        .filter(|line| !claude_marker_text_matches(line))
+        .filter(|line| !claude_diff_text_marker_matches(line))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -806,7 +810,7 @@ fn claude_structured_patch_to_ai_diff_hunks(
                 .lines
                 .iter()
                 .filter_map(|raw_line| {
-                    if claude_marker_text_matches(raw_line) {
+                    if claude_structured_patch_marker_matches(raw_line) {
                         return None;
                     }
 
@@ -1343,6 +1347,48 @@ mod tests {
         assert_eq!(hunk.lines.len(), 2);
         assert_eq!(hunk.lines[0].text, "old");
         assert_eq!(hunk.lines[1].text, "new");
+    }
+
+    #[test]
+    fn claude_structured_patch_preserves_context_line_named_like_no_newline_marker() {
+        let mut call = ToolCall::new(ToolCallId::from("tool-1"), "Edit file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("src/app.ts", "No newline at end of file\nnew")
+                    .old_text("No newline at end of file\nold"),
+            )]);
+        call.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "src/app.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 1,
+                            "oldLines": 2,
+                            "newStart": 1,
+                            "newLines": 2,
+                            "lines": [
+                                " No newline at end of file",
+                                "-old",
+                                "+new"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+
+        let diffs = collect_tool_call_diffs(&call, None);
+
+        let hunk = diffs[0].hunks.as_ref().unwrap().first().unwrap();
+        assert_eq!(hunk.lines.len(), 3);
+        assert_eq!(hunk.lines[0].r#type, "context");
+        assert_eq!(hunk.lines[0].text, "No newline at end of file");
+        assert_eq!(hunk.lines[1].text, "old");
+        assert_eq!(hunk.lines[2].text, "new");
     }
 
     #[test]
