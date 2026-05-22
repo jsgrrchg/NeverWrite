@@ -39,6 +39,8 @@ pub struct PersistedMessage {
     pub permission_options: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diffs: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_diffs: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input_request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1678,6 +1680,7 @@ mod tests {
                     permission_request_id: None,
                     permission_options: None,
                     diffs: None,
+                    review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
                     plan_entries: None,
@@ -1695,6 +1698,7 @@ mod tests {
                     permission_request_id: None,
                     permission_options: None,
                     diffs: None,
+                    review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
                     plan_entries: None,
@@ -2143,6 +2147,7 @@ mod tests {
                     permission_request_id: None,
                     permission_options: None,
                     diffs: None,
+                    review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
                     plan_entries: None,
@@ -2160,6 +2165,7 @@ mod tests {
                     permission_request_id: None,
                     permission_options: None,
                     diffs: None,
+                    review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
                     plan_entries: None,
@@ -2366,6 +2372,7 @@ mod tests {
             permission_request_id: None,
             permission_options: None,
             diffs: None,
+            review_diffs: None,
             user_input_request_id: None,
             user_input_questions: None,
             plan_entries: None,
@@ -2404,6 +2411,14 @@ mod tests {
                     "new_text": "new line"
                 }
             ])),
+            review_diffs: Some(serde_json::json!([
+                {
+                    "path": "/vault/src/watcher.rs",
+                    "kind": "update",
+                    "old_text": "old line",
+                    "new_text": "review line"
+                }
+            ])),
             user_input_request_id: None,
             user_input_questions: None,
             plan_entries: None,
@@ -2423,6 +2438,7 @@ mod tests {
             permission_request_id: None,
             permission_options: None,
             diffs: None,
+            review_diffs: None,
             user_input_request_id: Some("input-1".to_string()),
             user_input_questions: Some(serde_json::json!([
                 {
@@ -2448,6 +2464,7 @@ mod tests {
             permission_request_id: None,
             permission_options: None,
             diffs: None,
+            review_diffs: None,
             user_input_request_id: None,
             user_input_questions: None,
             plan_entries: Some(serde_json::json!([
