@@ -265,7 +265,10 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
             return keys;
         })(),
     });
-    const [wideMode, setWideMode] = useState(false);
+    const [wideMode, setWideMode] = useState(
+        () => persistedState?.wideMode ?? false,
+    );
+    const wideModeRef = useRef(wideMode);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const persistedAnchorRef = useRef<PersistedReviewAnchor | null>(
         initialAnchor,
@@ -277,6 +280,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     const scrollPersistTimerRef = useRef<number | null>(null);
     const storageRefreshTimerRef = useRef<number | null>(null);
     const pendingScrollTopRef = useRef<number | null>(null);
+    const latestScrollTopRef = useRef(persistedState?.scrollTop ?? 0);
     const persistViewState = useCallback(
         (nextScrollTop?: number) => {
             const persisted = persistReviewViewState(
@@ -287,8 +291,8 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                     scrollTop:
                         nextScrollTop ??
                         scrollContainerRef.current?.scrollTop ??
-                        persistedState?.scrollTop ??
-                        0,
+                        latestScrollTopRef.current,
+                    wideMode: wideModeRef.current,
                     anchor: persistedAnchorRef.current,
                 },
                 {
@@ -309,12 +313,19 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
     );
 
     const flushScheduledScrollPersist = useCallback(() => {
+        const pendingScrollTop = pendingScrollTopRef.current;
         if (scrollPersistTimerRef.current != null) {
             window.clearTimeout(scrollPersistTimerRef.current);
             scrollPersistTimerRef.current = null;
         }
         pendingScrollTopRef.current = null;
-    }, []);
+        if (pendingScrollTop != null) {
+            latestScrollTopRef.current = pendingScrollTop;
+            persistViewState(pendingScrollTop);
+            return true;
+        }
+        return false;
+    }, [persistViewState]);
 
     const schedulePersistedStateRefresh = useCallback(() => {
         if (storageRefreshTimerRef.current != null) {
@@ -329,6 +340,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
 
     const schedulePersistFromScroll = useCallback(
         (scrollTop: number) => {
+            latestScrollTopRef.current = scrollTop;
             pendingScrollTopRef.current = scrollTop;
             if (scrollPersistTimerRef.current != null) {
                 return;
@@ -342,6 +354,17 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         },
         [persistViewState],
     );
+
+    const toggleWideMode = useCallback(() => {
+        const nextWideMode = !wideModeRef.current;
+        wideModeRef.current = nextWideMode;
+        setWideMode(nextWideMode);
+        persistViewState();
+    }, [persistViewState]);
+
+    useEffect(() => {
+        wideModeRef.current = wideMode;
+    }, [wideMode]);
 
     useEffect(() => {
         if (persistedState?.updatedAt) {
@@ -405,7 +428,8 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         }
 
         restoreAppliedRef.current = true;
-        if (persistedState?.scrollTop) {
+        if (persistedState?.scrollTop != null) {
+            latestScrollTopRef.current = persistedState.scrollTop;
             container.scrollTop = persistedState.scrollTop;
         }
 
@@ -464,12 +488,14 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
 
     useEffect(
         () => () => {
-            flushScheduledScrollPersist();
+            const flushedPendingScroll = flushScheduledScrollPersist();
             if (storageRefreshTimerRef.current != null) {
                 window.clearTimeout(storageRefreshTimerRef.current);
                 storageRefreshTimerRef.current = null;
             }
-            persistViewState();
+            if (!flushedPendingScroll) {
+                persistViewState();
+            }
         },
         [flushScheduledScrollPersist, persistViewState],
     );
@@ -560,7 +586,7 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
                             </button>
                             <button
                                 type="button"
-                                onClick={() => setWideMode((prev) => !prev)}
+                                onClick={toggleWideMode}
                                 className="review-action-btn rounded-sm px-2 py-0.5"
                                 style={{
                                     ...getNeutralButtonStyle(),

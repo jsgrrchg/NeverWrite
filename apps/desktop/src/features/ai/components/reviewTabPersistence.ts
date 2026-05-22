@@ -28,6 +28,7 @@ export interface PersistedReviewViewState {
     version: number;
     expandedIdentityKeys: string[];
     scrollTop: number;
+    wideMode: boolean;
     anchor: PersistedReviewAnchor | null;
     writerId?: string;
     updatedAt: number;
@@ -94,6 +95,7 @@ function persistedReviewStateSemanticallyEqual(
             right.expandedIdentityKeys,
         ) &&
         left.scrollTop === right.scrollTop &&
+        left.wideMode === right.wideMode &&
         anchorsEqual(left.anchor, right.anchor)
     );
 }
@@ -266,6 +268,7 @@ function normalizePersistedState(
             (entry): entry is string => typeof entry === "string",
         ),
         scrollTop: Math.max(0, scrollTop),
+        wideMode: (raw as { wideMode?: unknown }).wideMode === true,
         anchor: normalizeAnchor((raw as { anchor?: unknown }).anchor),
         writerId: typeof writerId === "string" ? writerId : undefined,
         updatedAt,
@@ -295,6 +298,7 @@ export function persistReviewViewState(
     next: {
         expandedIdentityKeys: Iterable<string>;
         scrollTop: number;
+        wideMode?: boolean;
         anchor: PersistedReviewAnchor | null;
     },
     options?: {
@@ -311,6 +315,7 @@ export function persistReviewViewState(
             0,
             Number.isFinite(next.scrollTop) ? next.scrollTop : 0,
         ),
+        wideMode: next.wideMode === true,
         anchor: next.anchor,
         writerId: options?.writerId,
         updatedAt: Date.now(),
@@ -331,6 +336,7 @@ export function persistReviewViewState(
                       ]),
                   ],
                   scrollTop: existing.scrollTop,
+                  wideMode: existing.wideMode,
                   anchor: existing.anchor,
               }
             : requested;
