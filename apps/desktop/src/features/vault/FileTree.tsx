@@ -62,8 +62,10 @@ import {
 import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "../../components/icons/FolderTypeIcon";
 import {
+    EXTERNAL_FILE_TREE_DRAG_EVENT,
     emitFileTreeAttachToNewChat,
     emitFileTreeNoteDrag,
+    type ExternalFileTreeDragDetail,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
 import { getPreferredWorkspaceChatSessionId } from "../ai/chatWorkspaceSelectors";
@@ -1232,6 +1234,7 @@ const FlatTreeRowView = memo(
                     role="button"
                     tabIndex={0}
                     data-note-id={entry.id}
+                    data-folder-path={getParentPath(entry.relative_path)}
                     data-selected={isSelected ? "true" : "false"}
                     data-active={isActive ? "true" : "false"}
                     data-keyboard-focus={hasKeyboardCursor ? "true" : "false"}
@@ -1361,6 +1364,7 @@ const FlatTreeRowView = memo(
                 <div
                     role="button"
                     tabIndex={0}
+                    data-folder-path={getParentPath(entry.relative_path)}
                     data-file-path={entry.relative_path}
                     data-selected={isSelected ? "true" : "false"}
                     data-active={isActive ? "true" : "false"}
@@ -3094,6 +3098,20 @@ export function FileTree() {
         getDragTargetFolder,
         resetDragState,
     ]);
+
+    useEffect(() => {
+        const handler = (event: Event) => {
+            if (dragStateRef.current) return;
+            const { phase, folderPath } = (
+                event as CustomEvent<ExternalFileTreeDragDetail>
+            ).detail;
+            setDragOverPath(phase === "over" ? folderPath : null);
+        };
+        window.addEventListener(EXTERNAL_FILE_TREE_DRAG_EVENT, handler);
+        return () => {
+            window.removeEventListener(EXTERNAL_FILE_TREE_DRAG_EVENT, handler);
+        };
+    }, []);
 
     const handleToggleFolder = (path: string) => {
         setExpandedFolders((prev) => {

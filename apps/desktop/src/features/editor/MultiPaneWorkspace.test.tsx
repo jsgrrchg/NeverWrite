@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import {
     flushPromises,
     getMockCurrentWebview,
@@ -204,6 +204,10 @@ describe("MultiPaneWorkspace", () => {
                 y: 40,
             }),
         });
+        Object.defineProperty(document, "elementsFromPoint", {
+            configurable: true,
+            value: vi.fn(() => []),
+        });
     });
 
     it("focuses the clicked pane", () => {
@@ -322,6 +326,113 @@ describe("MultiPaneWorkspace", () => {
             title: "reference.txt",
         });
         expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+    });
+
+    it("copies external files into the hovered file-tree folder", async () => {
+        const originalRefreshStructure =
+            useVaultStore.getState().refreshStructure;
+        const refreshStructure = vi.fn(async () => {});
+        useVaultStore.setState({ refreshStructure });
+        mockInvoke().mockResolvedValue({
+            relative_path: "Projects/draft.pdf",
+            path: "/vaults/main/Projects/draft.pdf",
+            file_name: "draft.pdf",
+            mime_type: "application/pdf",
+        });
+        const folder = document.createElement("div");
+        folder.setAttribute("data-folder-path", "Projects");
+        vi.mocked(document.elementsFromPoint).mockReturnValue([folder]);
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const dragDropListener = onDragDropEventMock.mock.calls.at(-1)?.[0] as
+            | ((event: {
+                  payload: {
+                      type: "drop";
+                      position: { x: number; y: number };
+                      paths: string[];
+                  };
+              }) => void)
+            | undefined;
+        expect(dragDropListener).toBeTypeOf("function");
+
+        await act(async () => {
+            dragDropListener?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 24, y: 48 },
+                    paths: ["/Users/jfg/Desktop/draft.pdf"],
+                },
+            });
+            await flushPromises();
+        });
+
+        expect(mockInvoke()).toHaveBeenCalledWith("copy_external_file_to_vault", {
+            sourcePath: "/Users/jfg/Desktop/draft.pdf",
+            targetFolder: "Projects",
+            vaultPath: "/vaults/main",
+        });
+        await waitFor(() => {
+            expect(refreshStructure).toHaveBeenCalledTimes(1);
+        });
+        expect(useEditorStore.getState().panes.flatMap((pane) => pane.tabs)).toEqual(
+            [],
+        );
+        useVaultStore.setState({ refreshStructure: originalRefreshStructure });
+    });
+
+    it("copies external files into the parent folder when hovering a file row", async () => {
+        const originalRefreshStructure =
+            useVaultStore.getState().refreshStructure;
+        const refreshStructure = vi.fn(async () => {});
+        useVaultStore.setState({ refreshStructure });
+        mockInvoke().mockResolvedValue({
+            relative_path: "Projects/assets/draft.pdf",
+            path: "/vaults/main/Projects/assets/draft.pdf",
+            file_name: "draft.pdf",
+            mime_type: "application/pdf",
+        });
+        const fileRow = document.createElement("div");
+        fileRow.setAttribute("data-folder-path", "Projects/assets");
+        const fileLabel = document.createElement("span");
+        fileRow.append(fileLabel);
+        vi.mocked(document.elementsFromPoint).mockReturnValue([fileLabel]);
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const dragDropListener = onDragDropEventMock.mock.calls.at(-1)?.[0] as
+            | ((event: {
+                  payload: {
+                      type: "drop";
+                      position: { x: number; y: number };
+                      paths: string[];
+                  };
+              }) => void)
+            | undefined;
+        expect(dragDropListener).toBeTypeOf("function");
+
+        await act(async () => {
+            dragDropListener?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 24, y: 48 },
+                    paths: ["/Users/jfg/Desktop/draft.pdf"],
+                },
+            });
+            await flushPromises();
+        });
+
+        expect(mockInvoke()).toHaveBeenCalledWith("copy_external_file_to_vault", {
+            sourcePath: "/Users/jfg/Desktop/draft.pdf",
+            targetFolder: "Projects/assets",
+            vaultPath: "/vaults/main",
+        });
+        await waitFor(() => {
+            expect(refreshStructure).toHaveBeenCalledTimes(1);
+        });
+        useVaultStore.setState({ refreshStructure: originalRefreshStructure });
     });
 
     it("does not open a pane tab when the drop lands over the composer zone", async () => {

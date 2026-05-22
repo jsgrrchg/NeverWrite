@@ -2452,6 +2452,7 @@ describe("FileTree", () => {
         });
 
         const row = getFileRow("photo");
+        expect(row).toHaveAttribute("data-folder-path", "assets");
         expect(row).toHaveAttribute("data-selected", "true");
         expect(row).toHaveAttribute("data-active", "true");
     });
@@ -2495,10 +2496,9 @@ describe("FileTree", () => {
 
         expect(await screen.findByText("design")).toBeInTheDocument();
         const row = await screen.findByText("Blueprint");
-        expect(row.closest('[role="button"]')).toHaveAttribute(
-            "data-active",
-            "true",
-        );
+        const button = row.closest('[role="button"]');
+        expect(button).toHaveAttribute("data-folder-path", "docs/design");
+        expect(button).toHaveAttribute("data-active", "true");
     });
 
     it("reveals the active generic file tab in nested folders", async () => {
@@ -2545,6 +2545,7 @@ describe("FileTree", () => {
 
         expect(await screen.findByText("images")).toBeInTheDocument();
         const row = getFileRow("Photo");
+        expect(row).toHaveAttribute("data-folder-path", "assets/images");
         expect(row).toHaveAttribute("data-active", "true");
     });
 
