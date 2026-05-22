@@ -64,6 +64,7 @@ import {
 } from "./editedFilesBufferModel";
 import {
     applyNonConflictingEdits,
+    buildPatchFromTexts,
     computeRestoreAction,
     consolidateTrackedFiles,
     emptyActionLogState,
@@ -109,6 +110,7 @@ import {
     type AIChatMessageKind,
     type AIFileDiff,
     type AIFileDiffHunk,
+    type AIFileDiffHunkLine,
     type AIChatNoteSummary,
     type AIChatRole,
     type AIChatSession,
@@ -3843,6 +3845,49 @@ function shiftHunkStarts(
     };
 }
 
+function deriveSnapshotDiffHunks(diff: AIFileDiff): AIFileDiffHunk[] {
+    if (
+        typeof diff.old_text !== "string" ||
+        typeof diff.new_text !== "string"
+    ) {
+        return [];
+    }
+
+    const patch = buildPatchFromTexts(diff.old_text, diff.new_text);
+    if (patchIsEmpty(patch)) {
+        return [];
+    }
+
+    const oldLines = diff.old_text.split("\n");
+    const newLines = diff.new_text.split("\n");
+    return patch.edits.map((edit) => {
+        const lines: AIFileDiffHunkLine[] = [];
+        for (let index = edit.oldStart; index < edit.oldEnd; index += 1) {
+            lines.push({ type: "remove", text: oldLines[index] ?? "" });
+        }
+        for (let index = edit.newStart; index < edit.newEnd; index += 1) {
+            lines.push({ type: "add", text: newLines[index] ?? "" });
+        }
+
+        return {
+            old_start: edit.oldStart + 1,
+            old_count: edit.oldEnd - edit.oldStart,
+            new_start: edit.newStart + 1,
+            new_count: edit.newEnd - edit.newStart,
+            lines,
+        };
+    });
+}
+
+function withDerivedSnapshotDiffHunks(diff: AIFileDiff): AIFileDiff {
+    if (diff.hunks && diff.hunks.length > 0) {
+        return diff;
+    }
+
+    const hunks = deriveSnapshotDiffHunks(diff);
+    return hunks.length > 0 ? { ...diff, hunks } : diff;
+}
+
 function normalizeFragmentHunksToSnapshot(
     diff: AIFileDiff,
     oldFragment: string,
@@ -3852,7 +3897,7 @@ function normalizeFragmentHunksToSnapshot(
     fragmentOffset: number,
 ): AIFileDiff {
     if (!diff.hunks || diff.hunks.length === 0) {
-        return diff;
+        return withDerivedSnapshotDiffHunks(diff);
     }
 
     const oldLineOffset = countLinesBeforeOffset(oldSnapshot, fragmentOffset);
@@ -3879,12 +3924,12 @@ function normalizeFragmentHunksToSnapshot(
         }
 
         // A fragment hunk that cannot be reconciled with the full snapshot is
-        // less trustworthy than the snapshot itself. Dropping it lets the diff
-        // renderer derive correct file-relative line numbers from old/new text.
-        return {
+        // less trustworthy than the snapshot itself. Re-derive display hunks
+        // from the normalized snapshot so large-file previews stay anchored.
+        return withDerivedSnapshotDiffHunks({
             ...diff,
             hunks: undefined,
-        };
+        });
     }
 
     return {

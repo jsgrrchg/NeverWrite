@@ -6348,6 +6348,84 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("derives chat tool hunks for normalized large fragment diffs", async () => {
+        const oldLines = Array.from(
+            { length: 1200 },
+            (_, index) => `line ${index + 1}`,
+        );
+        oldLines[1094] = "paragraph to remove";
+        const oldText = oldLines.join("\n");
+        const newLines = oldLines.filter((_, index) => index !== 1094);
+        const newText = newLines.join("\n");
+
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+        useEditorStore.setState({
+            tabs: [
+                {
+                    id: "tab-1",
+                    kind: "file",
+                    relativePath: "posts/article.md",
+                    path: "/vault/posts/article.md",
+                    title: "article.md",
+                    content: oldText,
+                    mimeType: "text/markdown",
+                    viewer: "text",
+                    history: [],
+                    historyIndex: 0,
+                },
+            ],
+            activeTabId: "tab-1",
+            activationHistory: ["tab-1"],
+            tabNavigationHistory: ["tab-1"],
+            tabNavigationIndex: 0,
+        });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-fragment-derived-hunk",
+            title: "Edit article.md",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/posts/article.md",
+            diffs: [
+                {
+                    path: "/vault/posts/article.md",
+                    kind: "update",
+                    old_text: "paragraph to remove\n",
+                    new_text: "",
+                    reversible: true,
+                },
+            ],
+        });
+
+        const message =
+            useChatStore.getState().sessionsById[activeSessionId]!
+                .messages.find(
+                    (item) => item.id === "tool:tool-fragment-derived-hunk",
+                );
+        const diff = message?.diffs?.[0];
+
+        expect(diff).toMatchObject({
+            old_text: oldText,
+            new_text: newText,
+        });
+        expect(diff?.hunks).toEqual([
+            {
+                old_start: 1095,
+                old_count: 1,
+                new_start: 1095,
+                new_count: 0,
+                lines: [{ type: "remove", text: "paragraph to remove" }],
+            },
+        ]);
+    });
+
     it("treats fragmentary delete diffs as inline updates when the file still has content", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
