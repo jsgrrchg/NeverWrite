@@ -23,6 +23,7 @@ import { MarkdownContent } from "./MarkdownContent";
 import type { ChatPillMetrics } from "./chatPillMetrics";
 import type { ChatPillVariant } from "./chatPillPalette";
 import { useChatStore } from "../store/chatStore";
+import { selectVisibleTrackedFiles } from "../store/editedFilesBufferModel";
 import {
     resolveChatRowUiSessionId,
     useChatRowUiStore,
@@ -34,6 +35,7 @@ import {
     formatDiffStat,
     getFileNameFromPath,
 } from "../diff/reviewDiff";
+import { deriveChatChangeReviewDiffs } from "../diff/chatChangeReviewModel";
 import { decodeSerializedPillValue } from "../composerParts";
 import { DiffZoomControls } from "./DiffZoomControls";
 import { EditedFileDiffPreview } from "./editedFilesPresentation";
@@ -44,6 +46,7 @@ import {
 } from "../chatFileNavigation";
 import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { buildCodexGeneratedImagePreviewUrl } from "../../../app/utils/filePreviewUrl";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 
@@ -2278,7 +2281,20 @@ function ChangeReviewPanel({
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
     readOnly?: boolean;
 }) {
-    const diffs = message.diffs ?? [];
+    const messageDiffs = message.diffs ?? [];
+    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const trackedFiles = useChatStore((state) =>
+        selectVisibleTrackedFiles(state, sessionId ?? null),
+    );
+    const diffs = useMemo(
+        () =>
+            deriveChatChangeReviewDiffs(
+                messageDiffs,
+                trackedFiles,
+                vaultPath,
+            ),
+        [messageDiffs, trackedFiles, vaultPath],
+    );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
     const lineWrapping = useSettingsStore((state) => state.lineWrapping);
