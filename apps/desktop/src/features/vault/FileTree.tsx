@@ -3173,7 +3173,8 @@ export function FileTree() {
 
     const selectRowRange = useCallback(
         (targetKey: string, append: boolean) => {
-            const anchorKey = lastClickedRowKeyRef.current;
+            const anchorKey =
+                lastClickedRowKeyRef.current ?? keyboardCursorKey;
             if (!anchorKey) {
                 return false;
             }
@@ -3201,7 +3202,7 @@ export function FileTree() {
             }
             return true;
         },
-        [applySelectionState, extendSelectionState],
+        [applySelectionState, extendSelectionState, keyboardCursorKey],
     );
 
     const handleFolderClick = useCallback(
