@@ -22,8 +22,11 @@ import {
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     FILE_TREE_NOTE_DRAG_EVENT,
+    emitExternalFileTreeDrag,
     type FileTreeNoteDragDetail,
 } from "../ai/dragEvents";
+import { vaultInvoke } from "../../app/utils/vaultInvoke";
+import { logError } from "../../app/utils/runtimeLog";
 import {
     AGENT_SIDEBAR_DRAG_EVENT,
     type AgentSidebarDragDetail,
@@ -45,6 +48,43 @@ import {
 } from "./workspaceTabDropPreview";
 
 const AGENT_SIDEBAR_DROP_SOURCE_PANE_ID = "__agents-sidebar__";
+
+function resolveFileTreeFolderAtPoint(x: number, y: number): string | null {
+    const els = document.elementsFromPoint(x, y);
+    for (const el of els) {
+        const folderEl = el.closest("[data-folder-path]");
+        if (folderEl) return folderEl.getAttribute("data-folder-path") ?? null;
+    }
+    return null;
+}
+
+async function copyExternalFilesToVaultFolder(
+    sourcePaths: string[],
+    targetFolder: string,
+) {
+    const results = await Promise.allSettled(
+        sourcePaths.map((sourcePath) =>
+            vaultInvoke("copy_external_file_to_vault", {
+                sourcePath,
+                targetFolder,
+            }),
+        ),
+    );
+    let copiedCount = 0;
+    for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        if (result?.status === "rejected") {
+            logError(
+                "file-tree",
+                `Failed to copy file into vault: ${sourcePaths[i]}`,
+                result.reason,
+            );
+        } else if (result?.status === "fulfilled") {
+            copiedCount += 1;
+        }
+    }
+    return copiedCount;
+}
 
 function getAppWindow() {
     return getCurrentWindow();
@@ -200,6 +240,9 @@ export function MultiPaneWorkspace() {
     const leafPaneIds = useEditorStore(useShallow(selectLeafPaneIds));
     const layoutTree = useEditorStore((state) => state.layoutTree);
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const refreshVaultStructure = useVaultStore(
+        (state) => state.refreshStructure,
+    );
     const focusPane = useEditorStore((state) => state.focusPane);
     const resizePaneSplit = useEditorStore((state) => state.resizePaneSplit);
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -375,6 +418,13 @@ export function MultiPaneWorkspace() {
                             getWorkspaceFileDropPaneId(target.target),
                         );
                     }
+                    const folderPath = position
+                        ? resolveFileTreeFolderAtPoint(
+                              position.x,
+                              position.y,
+                          )
+                        : null;
+                    emitExternalFileTreeDrag({ phase: "over", folderPath });
                     return;
                 }
 
@@ -382,17 +432,35 @@ export function MultiPaneWorkspace() {
                     setExternalFileDropPaneId(null);
                 }
                 dispatchCrossPaneTabDropPreview(null);
+                emitExternalFileTreeDrag({ phase: "cancel", folderPath: null });
 
-                if (
-                    type !== "drop" ||
-                    !isWorkspaceFileDropTarget(target.target)
-                ) {
+                if (type !== "drop") {
                     return;
                 }
 
                 const paths =
                     (event.payload as { paths?: string[] }).paths ?? [];
                 if (paths.length === 0) {
+                    return;
+                }
+
+                const fileTreeFolder = position
+                    ? resolveFileTreeFolderAtPoint(position.x, position.y)
+                    : null;
+
+                if (fileTreeFolder !== null) {
+                    void copyExternalFilesToVaultFolder(
+                        paths,
+                        fileTreeFolder,
+                    ).then((copiedCount) => {
+                        if (copiedCount > 0) {
+                            void refreshVaultStructure();
+                        }
+                    });
+                    return;
+                }
+
+                if (!isWorkspaceFileDropTarget(target.target)) {
                     return;
                 }
 
@@ -412,7 +480,7 @@ export function MultiPaneWorkspace() {
             dispatchCrossPaneTabDropPreview(null);
             unlisten?.();
         };
-    }, []);
+    }, [refreshVaultStructure]);
 
     useEffect(() => {
         const handleTreeDrag = (event: Event) => {
