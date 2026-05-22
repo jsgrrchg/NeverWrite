@@ -7125,6 +7125,15 @@ describe("chatStore", () => {
                 },
             ],
         });
+        const firstMessageBeforeCycleB =
+            useChatStore.getState().sessionsById[activeSessionId]!.messages.find(
+                (message) => message.id === "tool:tool-cycle-a",
+            );
+        expect(firstMessageBeforeCycleB?.reviewDiffs?.[0]).toMatchObject({
+            path: "/notes/file.md",
+            old_text: "original",
+            new_text: "first edit",
+        });
 
         // Start cycle B
         useChatStore.getState().setComposerParts(createTextParts("Next turn"));
@@ -7157,6 +7166,15 @@ describe("chatStore", () => {
                 currentText: "second edit",
             },
         ]);
+        const firstMessageAfterCycleB =
+            useChatStore.getState().sessionsById[activeSessionId]!.messages.find(
+                (message) => message.id === "tool:tool-cycle-a",
+            );
+        expect(firstMessageAfterCycleB?.reviewDiffs?.[0]).toMatchObject({
+            path: "/notes/file.md",
+            old_text: "original",
+            new_text: "first edit",
+        });
     });
 
     it("keeps earlier agent hunks rejectable when the user edits the file and the agent edits it again later", async () => {

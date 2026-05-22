@@ -2282,18 +2282,16 @@ function ChangeReviewPanel({
     readOnly?: boolean;
 }) {
     const messageDiffs = message.diffs ?? [];
+    const messageReviewDiffs = message.reviewDiffs;
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const trackedFiles = useChatStore((state) =>
         selectVisibleTrackedFiles(state, sessionId ?? null),
     );
     const diffs = useMemo(
         () =>
-            deriveChatChangeReviewDiffs(
-                messageDiffs,
-                trackedFiles,
-                vaultPath,
-            ),
-        [messageDiffs, trackedFiles, vaultPath],
+            messageReviewDiffs ??
+            deriveChatChangeReviewDiffs(messageDiffs, trackedFiles, vaultPath),
+        [messageDiffs, messageReviewDiffs, trackedFiles, vaultPath],
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);

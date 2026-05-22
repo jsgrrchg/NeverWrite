@@ -310,6 +310,7 @@ export interface AIChatMessage {
     permissionRequestId?: string;
     permissionOptions?: AIPermissionOption[];
     diffs?: AIFileDiff[];
+    reviewDiffs?: AIFileDiff[];
     userInputRequestId?: string;
     userInputQuestions?: AIUserInputQuestion[];
     planEntries?: AIPlanEntry[];
@@ -634,6 +635,7 @@ export interface PersistedMessage {
     permission_request_id?: string;
     permission_options?: AIPermissionOption[];
     diffs?: AIFileDiff[];
+    review_diffs?: AIFileDiff[];
     user_input_request_id?: string;
     user_input_questions?: AIUserInputQuestion[];
     plan_entries?: AIPlanEntry[];

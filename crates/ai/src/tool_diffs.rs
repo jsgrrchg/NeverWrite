@@ -742,6 +742,10 @@ fn claude_structured_patch_hunk_to_diff_texts(
     let mut new_text = Vec::new();
 
     for line in &hunk.lines {
+        if line == CLAUDE_NO_NEWLINE_MARKER {
+            continue;
+        }
+
         if let Some(text) = line.strip_prefix('-') {
             old_text.push(text.to_string());
         } else if let Some(text) = line.strip_prefix('+') {
@@ -1228,6 +1232,46 @@ mod tests {
         assert_eq!((hunk.old_count, hunk.new_count), (0, 1));
         assert_eq!(hunk.lines[0].r#type, "add");
         assert_eq!(hunk.lines[0].text, "first line");
+    }
+
+    #[test]
+    fn claude_structured_patch_ignores_no_newline_marker_when_matching_content_diff() {
+        let mut call = ToolCall::new(ToolCallId::from("tool-1"), "Edit file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("src/app.ts", "new").old_text("old"),
+            )]);
+        call.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "src/app.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 1,
+                            "oldLines": 1,
+                            "newStart": 1,
+                            "newLines": 1,
+                            "lines": [
+                                "-old",
+                                "+new",
+                                "\\ No newline at end of file"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+
+        let diffs = collect_tool_call_diffs(&call, None);
+
+        let hunk = diffs[0].hunks.as_ref().unwrap().first().unwrap();
+        assert_eq!((hunk.old_start, hunk.new_start), (1, 1));
+        assert_eq!(hunk.lines.len(), 2);
+        assert_eq!(hunk.lines[0].text, "old");
+        assert_eq!(hunk.lines[1].text, "new");
     }
 
     #[test]

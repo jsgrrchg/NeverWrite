@@ -88,6 +88,7 @@ import {
     type ReviewHunkId,
     resolveReviewHunkIdsToExactSpans,
 } from "../diff/reviewProjectionIndex";
+import { deriveChatChangeReviewDiffs } from "../diff/chatChangeReviewModel";
 import {
     type EditorTarget,
     resolveEditorTargetForTrackedPath,
@@ -4085,6 +4086,22 @@ function normalizeIncomingTrackedDiffs(
     );
 }
 
+function deriveMessageReviewDiffs(
+    session: AIChatSession,
+    messageDiffs: AIFileDiff[] | undefined,
+    vaultPath: string | null,
+) {
+    if (!messageDiffs || messageDiffs.length === 0 || !session.actionLog) {
+        return messageDiffs;
+    }
+
+    return deriveChatChangeReviewDiffs(
+        messageDiffs,
+        Object.values(getTrackedFilesForSession(session.actionLog)),
+        vaultPath,
+    );
+}
+
 function summarizeTrackedFileForDebug(file: TrackedFile | null | undefined) {
     if (!file) {
         return null;
@@ -5406,6 +5423,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             permission_request_id: m.permissionRequestId,
             permission_options: m.permissionOptions,
             diffs: m.diffs,
+            review_diffs: m.reviewDiffs,
             user_input_request_id: m.userInputRequestId,
             user_input_questions: m.userInputQuestions,
             plan_entries: m.planEntries,
@@ -5794,6 +5812,7 @@ function restoreMessagesFromHistory(
         permissionRequestId: m.permission_request_id,
         permissionOptions: m.permission_options,
         diffs: m.diffs,
+        reviewDiffs: m.review_diffs,
         userInputRequestId: m.user_input_request_id,
         userInputQuestions: m.user_input_questions,
         planEntries: m.plan_entries,
@@ -7999,6 +8018,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 // are not allowed to rewrite the domain state.
                 let consolidated = nextSession;
                 let messageDiffs = payload.diffs;
+                let reviewDiffs: AIFileDiff[] | undefined;
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
                     const currentFiles = getTrackedFilesForSession(
@@ -8025,6 +8045,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             workCycleId,
                         );
                     }
+                    reviewDiffs = deriveMessageReviewDiffs(
+                        consolidated,
+                        messageDiffs,
+                        vaultPath,
+                    );
                 }
 
                 const nextMessage: AIChatMessage = {
@@ -8036,6 +8061,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     timestamp: eventTimestamp,
                     workCycleId: nextSession.activeWorkCycleId,
                     diffs: messageDiffs,
+                    reviewDiffs,
                     toolAction: payload.action ?? null,
                     meta: {
                         tool: payload.kind,
@@ -8245,6 +8271,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     Boolean(workCycleId);
                 let sessionWithBuffer = nextSession;
                 let messageDiffs = payload.diffs;
+                let reviewDiffs: AIFileDiff[] | undefined;
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
                     const currentFiles = getTrackedFilesForSession(
@@ -8265,6 +8292,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         eventTimestamp,
                         { normalized: true },
                     );
+                    reviewDiffs = deriveMessageReviewDiffs(
+                        sessionWithBuffer,
+                        messageDiffs,
+                        vaultPath,
+                    );
                 }
 
                 const messageId = `permission:${payload.request_id}`;
@@ -8279,6 +8311,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     permissionRequestId: payload.request_id,
                     permissionOptions: payload.options,
                     diffs: messageDiffs.length > 0 ? messageDiffs : undefined,
+                    reviewDiffs,
                     meta: {
                         status: "pending",
                         target: payload.target ?? null,
