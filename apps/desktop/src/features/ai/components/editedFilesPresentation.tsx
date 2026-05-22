@@ -438,6 +438,55 @@ function getDiffLineTextStyles(lineWrapping: boolean) {
     };
 }
 
+function compactExactDiffContext(
+    lines: DiffLine[],
+    contextLines: number | undefined,
+) {
+    if (contextLines == null || contextLines < 0) {
+        return lines;
+    }
+
+    const clampedContextLines = Math.floor(contextLines);
+    const changedIndexesByHunk = new Map<number, number[]>();
+    lines.forEach((line, index) => {
+        if (
+            line.hunkIndex == null ||
+            line.type === "context" ||
+            line.type === "separator"
+        ) {
+            return;
+        }
+
+        const changedIndexes = changedIndexesByHunk.get(line.hunkIndex) ?? [];
+        changedIndexes.push(index);
+        changedIndexesByHunk.set(line.hunkIndex, changedIndexes);
+    });
+
+    if (changedIndexesByHunk.size === 0) {
+        return lines;
+    }
+
+    return lines.filter((line, index) => {
+        if (
+            line.hunkIndex == null ||
+            line.type !== "context" ||
+            !line.exact
+        ) {
+            return true;
+        }
+
+        const changedIndexes = changedIndexesByHunk.get(line.hunkIndex);
+        if (!changedIndexes) {
+            return false;
+        }
+
+        return changedIndexes.some(
+            (changedIndex) =>
+                Math.abs(changedIndex - index) <= clampedContextLines,
+        );
+    });
+}
+
 export function DiffLineView({
     line,
     compactLineNumbers = false,
@@ -686,6 +735,7 @@ export function EditedFileDiffPreview({
     emptyLabel = "Path-only change",
     showWhenEmpty = true,
     compactLineNumbers = false,
+    compactContextLines,
     file,
     reviewHunks,
     onResolveReviewHunks,
@@ -698,6 +748,7 @@ export function EditedFileDiffPreview({
     emptyLabel?: string;
     showWhenEmpty?: boolean;
     compactLineNumbers?: boolean;
+    compactContextLines?: number;
     file?: TrackedFile;
     reviewHunks?: ReviewHunk[];
     onResolveReviewHunks?: (
@@ -708,8 +759,14 @@ export function EditedFileDiffPreview({
     ) => void | Promise<void>;
 }) {
     const lines = useMemo(
-        () => (expanded ? computeDiffLines(diff) : []),
-        [diff, expanded],
+        () =>
+            expanded
+                ? compactExactDiffContext(
+                      computeDiffLines(diff),
+                      compactContextLines,
+                  )
+                : [],
+        [compactContextLines, diff, expanded],
     );
     const languageSupport = useCodeLanguageSupport(
         file?.path ?? diff.path,

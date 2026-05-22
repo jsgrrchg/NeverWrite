@@ -352,11 +352,10 @@ describe("AIChatMessageItem tool diffs", () => {
 
         fireEvent.click(screen.getByRole("button", { name: /watcher.rs/i }));
 
-        expect(screen.getAllByText("12").length).toBeGreaterThanOrEqual(1);
         expect(screen.getAllByText("13").length).toBeGreaterThanOrEqual(1);
         expect(screen.queryByText("+ old line")).not.toBeInTheDocument();
         expect(screen.queryByText("- new line")).not.toBeInTheDocument();
-        expect(screen.getByText("shared line")).toBeInTheDocument();
+        expect(screen.queryByText("shared line")).not.toBeInTheDocument();
         expect(screen.getByText("old line")).toBeInTheDocument();
         expect(screen.getByText("new line")).toBeInTheDocument();
     });
@@ -782,7 +781,9 @@ describe("AIChatMessageItem tool diffs", () => {
 
         fireEvent.click(screen.getByRole("button", { name: /exact.md/i }));
 
-        expect(screen.getAllByText("101")).toHaveLength(1);
+        expect(screen.queryByText("alpha")).not.toBeInTheDocument();
+        expect(screen.queryByText("101")).not.toBeInTheDocument();
+        expect(screen.getAllByText("102")).toHaveLength(2);
         expect(screen.getByText("before")).toBeInTheDocument();
         expect(screen.getByText("after")).toBeInTheDocument();
     });

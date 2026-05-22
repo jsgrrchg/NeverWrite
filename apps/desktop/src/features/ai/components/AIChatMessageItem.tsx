@@ -1964,6 +1964,7 @@ function ChangeReviewFileRow({
                         testId={`diff-content:${diff.path}`}
                         showWhenEmpty={false}
                         compactLineNumbers
+                        compactContextLines={0}
                     />
                 </ResizableDiffContainer>
             )}
@@ -2614,6 +2615,7 @@ function ChangeReviewPanel({
                         testId={`diff-content:${singleDiff.path}`}
                         showWhenEmpty={false}
                         compactLineNumbers
+                        compactContextLines={0}
                     />
                 </ResizableDiffContainer>
             )}
