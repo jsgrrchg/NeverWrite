@@ -6256,7 +6256,10 @@ describe("chatStore", () => {
             { length: 1180 },
             (_, index) => `line ${index + 1}`,
         );
+        oldLines[1] = "old target";
+        oldLines[1175] = "unique context before target";
         oldLines[1176] = "old target";
+        oldLines[1177] = "unique context after target";
         const oldText = oldLines.join("\n");
         const newLines = [...oldLines];
         newLines[1176] = "new target";
@@ -6301,14 +6304,16 @@ describe("chatStore", () => {
                 {
                     path: "/vault/posts/article.md",
                     kind: "update",
-                    old_text: "old target",
-                    new_text: "new target",
+                    old_text:
+                        "unique context before target\nold target\nunique context after target",
+                    new_text:
+                        "unique context before target\nnew target\nunique context after target",
                     reversible: true,
                     hunks: [
                         {
-                            old_start: 1,
+                            old_start: 2,
                             old_count: 1,
-                            new_start: 1,
+                            new_start: 2,
                             new_count: 1,
                             lines: [
                                 { type: "remove", text: "old target" },

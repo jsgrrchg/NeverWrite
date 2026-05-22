@@ -3845,6 +3845,8 @@ function shiftHunkStarts(
 
 function normalizeFragmentHunksToSnapshot(
     diff: AIFileDiff,
+    oldFragment: string,
+    newFragment: string,
     oldSnapshot: string,
     newSnapshot: string,
     fragmentOffset: number,
@@ -3862,14 +3864,17 @@ function normalizeFragmentHunksToSnapshot(
     const rebasedHunks: AIFileDiffHunk[] = [];
 
     for (const hunk of diff.hunks) {
-        if (hunkMatchesTexts(hunk, oldSnapshot, newSnapshot)) {
-            rebasedHunks.push(hunk);
+        const rebased = shiftHunkStarts(hunk, oldLineOffset, newLineOffset);
+        if (
+            hunkMatchesTexts(hunk, oldFragment, newFragment) &&
+            hunkMatchesTexts(rebased, oldSnapshot, newSnapshot)
+        ) {
+            rebasedHunks.push(rebased);
             continue;
         }
 
-        const rebased = shiftHunkStarts(hunk, oldLineOffset, newLineOffset);
-        if (hunkMatchesTexts(rebased, oldSnapshot, newSnapshot)) {
-            rebasedHunks.push(rebased);
+        if (hunkMatchesTexts(hunk, oldSnapshot, newSnapshot)) {
+            rebasedHunks.push(hunk);
             continue;
         }
 
@@ -4014,6 +4019,8 @@ function normalizeIncomingTrackedDiff(
 
         return normalizeFragmentHunksToSnapshot(
             normalizedDiff,
+            canonicalDiff.old_text,
+            nextFragment,
             candidate,
             normalizedDiff.new_text ?? "",
             fragmentOffset,
