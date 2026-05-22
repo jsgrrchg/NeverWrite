@@ -193,10 +193,17 @@ impl ToolDiffState {
             return;
         };
 
+        let key = call_key(session_id, tool_call_id);
+        let diffs = vec![diff];
         if let Ok(mut guard) = self.write_diffs.lock() {
-            guard
-                .entry(call_key(session_id, tool_call_id))
-                .or_insert(vec![diff]);
+            let Some(existing) = guard.get(&key).cloned() else {
+                guard.insert(key, diffs);
+                return;
+            };
+
+            if let Some(merged) = reconcile_cached_diffs(&existing, &diffs) {
+                guard.insert(key, merged);
+            }
         }
     }
 
@@ -209,38 +216,13 @@ impl ToolDiffState {
 
         let key = call_key(session_id, &tool_call.tool_call_id.0);
         if let Ok(mut guard) = self.write_diffs.lock() {
-            let incoming_quality = diff_cache_quality(&diffs);
             let Some(existing) = guard.get(&key).cloned() else {
                 guard.insert(key, diffs);
                 return;
             };
-            let existing_quality = diff_cache_quality(&existing);
 
-            if incoming_quality == DiffCacheQuality::Anchored
-                && should_merge_anchored_diffs_into_cached(&existing, &diffs)
-            {
-                guard.insert(
-                    key,
-                    merge_anchored_hunks_into_cached_diffs(&existing, &diffs),
-                );
-                return;
-            }
-            if incoming_quality == DiffCacheQuality::Anchored
-                && existing_quality >= DiffCacheQuality::ReliableSnapshot
-            {
-                // If we cannot safely attach the anchored metadata onto the
-                // canonical snapshot, keep the existing full-text diff intact.
-                return;
-            }
-
-            // Exact anchored hunks are review metadata and must not be blocked
-            // by an earlier weaker diff, but full-text snapshots still own the
-            // canonical old/new text used for accept/reject safety.
-            if incoming_quality > existing_quality
-                || (incoming_quality == DiffCacheQuality::Anchored
-                    && existing_quality == DiffCacheQuality::Anchored)
-            {
-                guard.insert(key, diffs);
+            if let Some(merged) = reconcile_cached_diffs(&existing, &diffs) {
+                guard.insert(key, merged);
             }
         }
     }
@@ -485,6 +467,49 @@ fn diff_payload_quality(diff: &AiFileDiffPayload) -> DiffCacheQuality {
     DiffCacheQuality::Weak
 }
 
+fn reconcile_cached_diffs(
+    existing: &[AiFileDiffPayload],
+    incoming: &[AiFileDiffPayload],
+) -> Option<Vec<AiFileDiffPayload>> {
+    let incoming_quality = diff_cache_quality(incoming);
+    let existing_quality = diff_cache_quality(existing);
+
+    if incoming_quality == DiffCacheQuality::ReliableSnapshot
+        && existing_quality == DiffCacheQuality::Anchored
+    {
+        // Full snapshots are the canonical accept/reject text. Existing exact
+        // hunks are presentation metadata, so keep them only when they still
+        // match inside the incoming snapshot.
+        return Some(merge_anchored_hunks_into_cached_diffs(incoming, existing));
+    }
+
+    if incoming_quality == DiffCacheQuality::Anchored
+        && should_merge_anchored_diffs_into_cached(existing, incoming)
+    {
+        return Some(merge_anchored_hunks_into_cached_diffs(existing, incoming));
+    }
+
+    if incoming_quality == DiffCacheQuality::Anchored
+        && existing_quality >= DiffCacheQuality::ReliableSnapshot
+    {
+        // If we cannot safely attach the anchored metadata onto the canonical
+        // snapshot, keep the existing full-text diff intact.
+        return None;
+    }
+
+    // Exact anchored hunks are review metadata and must not be blocked by an
+    // earlier weaker diff, but full-text snapshots still own the canonical
+    // old/new text used for accept/reject safety.
+    if incoming_quality > existing_quality
+        || (incoming_quality == DiffCacheQuality::Anchored
+            && existing_quality == DiffCacheQuality::Anchored)
+    {
+        return Some(incoming.to_vec());
+    }
+
+    None
+}
+
 fn merge_anchored_hunks_into_cached_diffs(
     cached: &[AiFileDiffPayload],
     anchored: &[AiFileDiffPayload],
@@ -676,9 +701,9 @@ fn read_claude_structured_patch_hunk(
     candidate: &serde_json::Value,
 ) -> Option<ClaudeStructuredPatchHunk> {
     let candidate = candidate.as_object()?;
-    let old_start = read_finite_usize(candidate.get("oldStart")?, 1)?;
+    let old_start = read_finite_usize(candidate.get("oldStart")?, 0)?;
     let old_lines = read_finite_usize(candidate.get("oldLines")?, 0)?;
-    let new_start = read_finite_usize(candidate.get("newStart")?, 1)?;
+    let new_start = read_finite_usize(candidate.get("newStart")?, 0)?;
     let new_lines = read_finite_usize(candidate.get("newLines")?, 0)?;
     let lines = candidate
         .get("lines")?
@@ -1034,7 +1059,10 @@ fn map_diff_payload(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use agent_client_protocol::schema::{
         Content, Diff, Meta, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
@@ -1043,12 +1071,15 @@ mod tests {
 
     use super::*;
 
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
     fn unique_temp_dir() -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("neverwrite-tool-diffs-{suffix}"))
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("neverwrite-tool-diffs-{suffix}-{counter}"))
     }
 
     #[test]
@@ -1161,6 +1192,101 @@ mod tests {
     }
 
     #[test]
+    fn claude_structured_patch_preserves_zero_start_lines_for_creation_hunks() {
+        let mut call = ToolCall::new(ToolCallId::from("tool-1"), "Write file")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(Diff::new(
+                "src/new.ts",
+                "first line",
+            ))]);
+        call.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Write",
+                "toolResponse": {
+                    "filePath": "src/new.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 0,
+                            "oldLines": 0,
+                            "newStart": 0,
+                            "newLines": 1,
+                            "lines": [
+                                "+first line"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+
+        let diffs = collect_tool_call_diffs(&call, None);
+
+        let hunk = diffs[0].hunks.as_ref().unwrap().first().unwrap();
+        assert_eq!((hunk.old_start, hunk.new_start), (0, 0));
+        assert_eq!((hunk.old_count, hunk.new_count), (0, 1));
+        assert_eq!(hunk.lines[0].r#type, "add");
+        assert_eq!(hunk.lines[0].text, "first line");
+    }
+
+    #[test]
+    fn claude_structured_patch_matches_multiple_identical_content_diffs_by_position() {
+        let mut call = ToolCall::new(ToolCallId::from("tool-1"), "Edit all matches")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![
+                ToolCallContent::Diff(Diff::new("src/app.ts", "newValue").old_text("oldValue")),
+                ToolCallContent::Diff(Diff::new("src/app.ts", "newValue").old_text("oldValue")),
+            ]);
+        call.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "src/app.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 3,
+                            "oldLines": 1,
+                            "newStart": 3,
+                            "newLines": 1,
+                            "lines": [
+                                "-oldValue",
+                                "+newValue"
+                            ]
+                        },
+                        {
+                            "oldStart": 15,
+                            "oldLines": 1,
+                            "newStart": 15,
+                            "newLines": 1,
+                            "lines": [
+                                "-oldValue",
+                                "+newValue"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+
+        let diffs = collect_tool_call_diffs(&call, None);
+
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(
+            diffs
+                .iter()
+                .map(|diff| {
+                    let hunk = diff.hunks.as_ref().unwrap().first().unwrap();
+                    (hunk.old_start, hunk.new_start)
+                })
+                .collect::<Vec<_>>(),
+            vec![(3, 3), (15, 15)]
+        );
+    }
+
+    #[test]
     fn claude_structured_patch_update_attaches_hunks_to_cached_snapshot_diff() {
         let state = ToolDiffState::default();
         state.register_file_baseline(
@@ -1230,6 +1356,78 @@ mod tests {
         );
         let hunk = diffs[0].hunks.as_ref().unwrap().first().unwrap();
         assert_eq!((hunk.old_start, hunk.new_start), (2, 2));
+    }
+
+    #[test]
+    fn reliable_snapshot_replaces_prior_anchored_snippet_and_preserves_hunks() {
+        let state = ToolDiffState::default();
+        state.register_file_baseline(
+            "session-1",
+            "src/app.ts",
+            "header\nalpha\nold\nomega\nfooter".to_string(),
+        );
+
+        let mut anchored = ToolCall::new(ToolCallId::from("tool-write"), "Write app.ts")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Diff(
+                Diff::new("src/app.ts", "alpha\nnew\nomega").old_text("alpha\nold\nomega"),
+            )]);
+        anchored.meta = Some(Meta::from_iter([(
+            CLAUDE_CODE_META_KEY.to_string(),
+            serde_json::json!({
+                "toolName": "Write",
+                "toolResponse": {
+                    "filePath": "src/app.ts",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 2,
+                            "oldLines": 3,
+                            "newStart": 2,
+                            "newLines": 3,
+                            "lines": [
+                                " alpha",
+                                "-old",
+                                "+new",
+                                " omega"
+                            ]
+                        }
+                    ]
+                }
+            }),
+        )]));
+        let anchored = state.upsert_tool_call("session-1", anchored);
+        let anchored_diffs = state.normalized_diffs_for_tool_call("session-1", &anchored);
+        assert_eq!(
+            anchored_diffs[0].old_text.as_deref(),
+            Some("alpha\nold\nomega")
+        );
+
+        let snapshot_update = ToolCallUpdate::new(
+            "tool-write",
+            ToolCallUpdateFields::new().raw_input(serde_json::json!({
+                "file_path": "src/app.ts",
+                "content": "header\nalpha\nnew\nomega\nfooter",
+            })),
+        );
+
+        let completed = state
+            .apply_tool_update("session-1", snapshot_update)
+            .unwrap();
+        let diffs = state.normalized_diffs_for_tool_call("session-1", &completed);
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some("header\nalpha\nold\nomega\nfooter")
+        );
+        assert_eq!(
+            diffs[0].new_text.as_deref(),
+            Some("header\nalpha\nnew\nomega\nfooter")
+        );
+        let hunks = diffs[0].hunks.as_ref().unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!((hunks[0].old_start, hunks[0].new_start), (2, 2));
     }
 
     #[test]
