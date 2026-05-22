@@ -4102,6 +4102,18 @@ function deriveMessageReviewDiffs(
     );
 }
 
+function freezeMessageReviewDiffs(
+    session: AIChatSession,
+    messageDiffs: AIFileDiff[] | undefined,
+    vaultPath: string | null,
+) {
+    if (!messageDiffs || messageDiffs.length === 0) {
+        return undefined;
+    }
+
+    return deriveMessageReviewDiffs(session, messageDiffs, vaultPath);
+}
+
 function summarizeTrackedFileForDebug(file: TrackedFile | null | undefined) {
     if (!file) {
         return null;
@@ -8018,19 +8030,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 // are not allowed to rewrite the domain state.
                 let consolidated = nextSession;
                 let messageDiffs = payload.diffs;
-                let reviewDiffs: AIFileDiff[] | undefined;
+                let reviewVaultPath =
+                    consolidated.vaultPath ??
+                    useVaultStore.getState().vaultPath;
+                let reviewDiffs = freezeMessageReviewDiffs(
+                    consolidated,
+                    messageDiffs,
+                    reviewVaultPath,
+                );
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
                     const currentFiles = getTrackedFilesForSession(
                         consolidated.actionLog,
                     );
-                    const vaultPath =
+                    reviewVaultPath =
                         consolidated.vaultPath ??
                         useVaultStore.getState().vaultPath;
                     messageDiffs = normalizeIncomingTrackedDiffs(
                         currentFiles,
                         payload.diffs ?? [],
-                        vaultPath,
+                        reviewVaultPath,
                     );
                     consolidated = consolidateActionLogDiffs(
                         consolidated,
@@ -8045,10 +8064,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             workCycleId,
                         );
                     }
-                    reviewDiffs = deriveMessageReviewDiffs(
+                    reviewDiffs = freezeMessageReviewDiffs(
                         consolidated,
                         messageDiffs,
-                        vaultPath,
+                        reviewVaultPath,
                     );
                 }
 
@@ -8271,19 +8290,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     Boolean(workCycleId);
                 let sessionWithBuffer = nextSession;
                 let messageDiffs = payload.diffs;
-                let reviewDiffs: AIFileDiff[] | undefined;
+                let reviewVaultPath =
+                    sessionWithBuffer.vaultPath ??
+                    useVaultStore.getState().vaultPath;
+                let reviewDiffs = freezeMessageReviewDiffs(
+                    sessionWithBuffer,
+                    messageDiffs,
+                    reviewVaultPath,
+                );
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
                     const currentFiles = getTrackedFilesForSession(
                         sessionWithBuffer.actionLog,
                     );
-                    const vaultPath =
+                    reviewVaultPath =
                         sessionWithBuffer.vaultPath ??
                         useVaultStore.getState().vaultPath;
                     messageDiffs = normalizeIncomingTrackedDiffs(
                         currentFiles,
                         payload.diffs,
-                        vaultPath,
+                        reviewVaultPath,
                     );
                     sessionWithBuffer = consolidateActionLogDiffs(
                         sessionWithBuffer,
@@ -8292,10 +8318,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         eventTimestamp,
                         { normalized: true },
                     );
-                    reviewDiffs = deriveMessageReviewDiffs(
+                    reviewDiffs = freezeMessageReviewDiffs(
                         sessionWithBuffer,
                         messageDiffs,
-                        vaultPath,
+                        reviewVaultPath,
                     );
                 }
 

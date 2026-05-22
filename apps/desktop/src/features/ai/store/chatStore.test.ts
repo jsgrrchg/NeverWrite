@@ -7177,6 +7177,57 @@ describe("chatStore", () => {
         });
     });
 
+    it("freezes non-trackable tool diff cards before later tracked edits touch the same file", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-untracked-preview",
+            title: "Edit file",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "opaque old",
+                    new_text: "opaque preview",
+                    reversible: false,
+                },
+            ],
+        });
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-later-tracked",
+            title: "Edit file again",
+            kind: "edit",
+            status: "completed",
+            diffs: [
+                {
+                    path: "/notes/file.md",
+                    kind: "update",
+                    old_text: "base",
+                    new_text: "later tracked edit",
+                },
+            ],
+        });
+
+        const firstMessage =
+            useChatStore.getState().sessionsById[activeSessionId]!.messages.find(
+                (message) => message.id === "tool:tool-untracked-preview",
+            );
+        expect(firstMessage?.reviewDiffs).toEqual(firstMessage?.diffs);
+        expect(firstMessage?.reviewDiffs?.[0]).toMatchObject({
+            path: "/notes/file.md",
+            old_text: "opaque old",
+            new_text: "opaque preview",
+            reversible: false,
+        });
+    });
+
     it("keeps earlier agent hunks rejectable when the user edits the file and the agent edits it again later", async () => {
         await useChatStore.getState().initialize();
         invokeMock.mockImplementation(async (command) => {
