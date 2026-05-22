@@ -10,6 +10,7 @@ import {
 } from "../../test/test-utils";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
 import { useEditorStore } from "../../app/store/editorStore";
+import { CLEAR_FILE_TREE_SELECTION_EVENT } from "../../app/utils/navigation";
 import {
     createInitialLayout,
     splitPane,
@@ -221,6 +222,33 @@ describe("MultiPaneWorkspace", () => {
         fireEvent.pointerDown(targetPane!, { pointerId: 1, button: 0 });
 
         expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+    });
+
+    it("requests file tree selection cleanup when a pane is clicked", () => {
+        const events: Event[] = [];
+        const handleClearSelection = (event: Event) => events.push(event);
+        window.addEventListener(
+            CLEAR_FILE_TREE_SELECTION_EVENT,
+            handleClearSelection,
+        );
+
+        try {
+            renderComponent(<MultiPaneWorkspace />);
+
+            const targetPane = screen
+                .getByTestId("pane-content-secondary")
+                .closest('[data-editor-pane-id="secondary"]');
+            expect(targetPane).not.toBeNull();
+
+            fireEvent.pointerDown(targetPane!, { pointerId: 1, button: 0 });
+
+            expect(events).toHaveLength(1);
+        } finally {
+            window.removeEventListener(
+                CLEAR_FILE_TREE_SELECTION_EVENT,
+                handleClearSelection,
+            );
+        }
     });
 
     it("opens a dragged vault file in the pane under the pointer", async () => {

@@ -20,6 +20,7 @@ import {
 import { useBookmarkStore } from "../../app/store/bookmarkStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { clearFileTreeSelection } from "../../app/utils/navigation";
 import { safeStorageSetItem } from "../../app/utils/safeStorage";
 import {
     buildVaultFileEntry as buildFileEntry,
@@ -727,6 +728,154 @@ describe("FileTree", () => {
         expect(
             await screen.findByText("Delete Selected Notes"),
         ).toBeInTheDocument();
+    });
+
+    it("clears explicit multi-selection when another pane requests it", async () => {
+        const user = userEvent.setup();
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/beta",
+                path: "/vault/notes/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+
+        fireEvent.click(getNoteRow("Alpha"), { metaKey: true });
+        fireEvent.click(getNoteRow("Beta"), { metaKey: true });
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Beta")).toHaveAttribute("data-selected", "true");
+
+        act(() => clearFileTreeSelection());
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "false");
+        expect(getNoteRow("Beta")).toHaveAttribute("data-selected", "false");
+    });
+
+    it("clears the active tree cursor highlight when another pane requests it", async () => {
+        const user = userEvent.setup();
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/beta",
+                path: "/vault/notes/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "notes/alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+
+        await waitFor(() => {
+            expect(getNoteRow("Alpha")).toHaveAttribute(
+                "data-keyboard-focus",
+                "true",
+            );
+        });
+
+        act(() => clearFileTreeSelection());
+
+        expect(getNoteRow("Alpha")).toHaveAttribute(
+            "data-keyboard-focus",
+            "false",
+        );
+
+        await user.click(getNoteRow("Beta"));
+
+        expect(getNoteRow("Beta")).toHaveAttribute(
+            "data-keyboard-focus",
+            "true",
+        );
+    });
+
+    it("uses the active tree cursor as the shift-click range anchor", async () => {
+        const user = userEvent.setup();
+        setVaultNotes([
+            {
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/beta",
+                path: "/vault/notes/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "notes/gamma",
+                path: "/vault/notes/gamma.md",
+                title: "Gamma",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-alpha",
+                    noteId: "notes/alpha",
+                    title: "Alpha",
+                    content: "Alpha",
+                },
+            ],
+            "tab-alpha",
+        );
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "notes");
+
+        await waitFor(() => {
+            expect(getNoteRow("Alpha")).toHaveAttribute(
+                "data-keyboard-focus",
+                "true",
+            );
+        });
+
+        fireEvent.click(getNoteRow("Gamma"), { shiftKey: true });
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Beta")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Gamma")).toHaveAttribute("data-selected", "true");
+
+        fireEvent.click(getNoteRow("Beta"), { shiftKey: true });
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Beta")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Gamma")).toHaveAttribute("data-selected", "false");
     });
 
     it("deletes all selected notes from the context menu", async () => {

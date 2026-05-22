@@ -21,7 +21,10 @@ import {
     shouldShowVaultEntryInFileTree,
 } from "../../app/utils/vaultEntries";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import { REVEAL_NOTE_IN_TREE_EVENT } from "../../app/utils/navigation";
+import {
+    CLEAR_FILE_TREE_SELECTION_EVENT,
+    REVEAL_NOTE_IN_TREE_EVENT,
+} from "../../app/utils/navigation";
 import {
     useVaultStore,
     type NoteDto,
@@ -2166,6 +2169,7 @@ export function FileTree() {
     const pendingRevealRef = useRef<string | null>(null);
     const lastClickedEntryPathRef = useRef<string | null>(null);
     const lastClickedRowKeyRef = useRef<string | null>(null);
+    const suppressActiveKeyboardCursorRef = useRef(false);
     const flatRowsRef = useRef<FlatTreeRow[]>([]);
     const displayRowsRef = useRef<FlatTreeRow[]>([]);
     const shortcutNavigableRowsRef = useRef<FlatTreeRow[]>([]);
@@ -2173,6 +2177,11 @@ export function FileTree() {
     const expandedFoldersVaultPathRef = useRef(vaultPath);
     const skipExpandedFoldersPersistRef = useRef(false);
     const restoredScrollVaultPathRef = useRef<string | null>(null);
+
+    const showTreeKeyboardCursor = useCallback((rowKey: string) => {
+        suppressActiveKeyboardCursorRef.current = false;
+        setKeyboardCursorKey(rowKey);
+    }, []);
     const suppressRevealActivePathRef = useRef<string | null>(null);
 
     // Virtualization state
@@ -2319,6 +2328,9 @@ export function FileTree() {
         );
 
         setKeyboardCursorKey((current) => {
+            if (suppressActiveKeyboardCursorRef.current) {
+                return current && visibleKeys.has(current) ? current : null;
+            }
             if (activeNoteId && visibleKeys.has(`note:${activeNoteId}`)) {
                 return `note:${activeNoteId}`;
             }
@@ -3161,7 +3173,8 @@ export function FileTree() {
 
     const selectRowRange = useCallback(
         (targetKey: string, append: boolean) => {
-            const anchorKey = lastClickedRowKeyRef.current;
+            const anchorKey =
+                lastClickedRowKeyRef.current ?? keyboardCursorKey;
             if (!anchorKey) {
                 return false;
             }
@@ -3187,9 +3200,10 @@ export function FileTree() {
             } else {
                 applySelectionState(selection);
             }
+            lastClickedRowKeyRef.current = anchorKey;
             return true;
         },
-        [applySelectionState, extendSelectionState],
+        [applySelectionState, extendSelectionState, keyboardCursorKey],
     );
 
     const handleFolderClick = useCallback(
@@ -3197,7 +3211,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(path);
             const rowKey = `folder:${path}`;
-            setKeyboardCursorKey(rowKey);
+            showTreeKeyboardCursor(rowKey);
 
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
@@ -3220,7 +3234,7 @@ export function FileTree() {
             lastClickedRowKeyRef.current = rowKey;
             handleToggleFolder(path);
         },
-        [selectRowRange],
+        [selectRowRange, showTreeKeyboardCursor],
     );
 
     const handleRevealToggle = () => {
@@ -3353,7 +3367,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(getParentPath(entry.relative_path));
             const rowKey = `entry:${entry.path}`;
-            setKeyboardCursorKey(rowKey);
+            showTreeKeyboardCursor(rowKey);
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
             }
@@ -3379,7 +3393,7 @@ export function FileTree() {
             lastClickedRowKeyRef.current = rowKey;
             openPdf(entry.id, entry.title, entry.path);
         },
-        [activeEntryPath, openPdf, selectRowRange],
+        [activeEntryPath, openPdf, selectRowRange, showTreeKeyboardCursor],
     );
 
     const handlePdfMouseDown = useCallback(
@@ -3472,7 +3486,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(getParentPath(entry.relative_path));
             const rowKey = `entry:${entry.path}`;
-            setKeyboardCursorKey(rowKey);
+            showTreeKeyboardCursor(rowKey);
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
             }
@@ -3498,7 +3512,7 @@ export function FileTree() {
             lastClickedRowKeyRef.current = rowKey;
             void openVaultFileEntry(entry);
         },
-        [activeEntryPath, selectRowRange],
+        [activeEntryPath, selectRowRange, showTreeKeyboardCursor],
     );
 
     const handleFileMouseDown = useCallback(
@@ -3593,6 +3607,36 @@ export function FileTree() {
             logError("file-tree", "Failed to move vault entry to trash", error);
         }
     }, []);
+
+    const clearTreeSelection = useCallback(() => {
+        if (
+            selectedRowCount === 0 &&
+            lastClickedRowKeyRef.current === null &&
+            keyboardCursorKey === null
+        ) {
+            return;
+        }
+
+        suppressActiveKeyboardCursorRef.current = true;
+        setSelectedNoteIds((prev) => (prev.size === 0 ? prev : new Set()));
+        setSelectedEntryPaths((prev) => (prev.size === 0 ? prev : new Set()));
+        setSelectedFolderPaths((prev) => (prev.size === 0 ? prev : new Set()));
+        setKeyboardCursorKey(null);
+        lastClickedRowKeyRef.current = null;
+    }, [keyboardCursorKey, selectedRowCount]);
+
+    useEffect(() => {
+        window.addEventListener(
+            CLEAR_FILE_TREE_SELECTION_EVENT,
+            clearTreeSelection,
+        );
+        return () => {
+            window.removeEventListener(
+                CLEAR_FILE_TREE_SELECTION_EVENT,
+                clearTreeSelection,
+            );
+        };
+    }, [clearTreeSelection]);
 
     const clearEntrySelection = useCallback(() => {
         setSelectedEntryPaths(new Set());
@@ -3708,7 +3752,7 @@ export function FileTree() {
             if (wasJustDraggingRef.current) return;
             setFocusedFolderPath(getParentPath(note.id));
             const rowKey = `note:${note.id}`;
-            setKeyboardCursorKey(rowKey);
+            showTreeKeyboardCursor(rowKey);
 
             if (modifiers.shift && selectRowRange(rowKey, modifiers.cmd)) {
                 return;
@@ -3730,7 +3774,7 @@ export function FileTree() {
             lastClickedRowKeyRef.current = rowKey;
             await openTreeNote(note);
         },
-        [clearEntrySelection, openTreeNote, selectRowRange],
+        [clearEntrySelection, openTreeNote, selectRowRange, showTreeKeyboardCursor],
     );
 
     const handleNoteAuxClick = useCallback(
@@ -4373,7 +4417,7 @@ export function FileTree() {
         const rowKey = getSelectableRowKey(row);
         if (!rowKey) return;
 
-        setKeyboardCursorKey(rowKey);
+        showTreeKeyboardCursor(rowKey);
         lastClickedRowKeyRef.current = rowKey;
 
         if (row.kind === "folder") {
@@ -4398,7 +4442,7 @@ export function FileTree() {
             setSelectedFolderPaths(new Set());
             lastClickedEntryPathRef.current = row.entry.path;
         }
-    }, [clearEntrySelection]);
+    }, [clearEntrySelection, showTreeKeyboardCursor]);
 
     const activateKeyboardRow = useCallback(
         (row: FlatTreeRow) => {
