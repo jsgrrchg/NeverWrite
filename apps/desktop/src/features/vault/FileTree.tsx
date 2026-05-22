@@ -3200,6 +3200,7 @@ export function FileTree() {
             } else {
                 applySelectionState(selection);
             }
+            lastClickedRowKeyRef.current = anchorKey;
             return true;
         },
         [applySelectionState, extendSelectionState, keyboardCursorKey],

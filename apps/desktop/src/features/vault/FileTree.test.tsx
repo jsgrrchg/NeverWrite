@@ -870,6 +870,12 @@ describe("FileTree", () => {
         expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
         expect(getNoteRow("Beta")).toHaveAttribute("data-selected", "true");
         expect(getNoteRow("Gamma")).toHaveAttribute("data-selected", "true");
+
+        fireEvent.click(getNoteRow("Beta"), { shiftKey: true });
+
+        expect(getNoteRow("Alpha")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Beta")).toHaveAttribute("data-selected", "true");
+        expect(getNoteRow("Gamma")).toHaveAttribute("data-selected", "false");
     });
 
     it("deletes all selected notes from the context menu", async () => {
