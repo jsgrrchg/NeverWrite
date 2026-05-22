@@ -217,7 +217,7 @@ impl ToolDiffState {
             let existing_quality = diff_cache_quality(&existing);
 
             if incoming_quality == DiffCacheQuality::Anchored
-                && existing_quality == DiffCacheQuality::ReliableSnapshot
+                && should_merge_anchored_diffs_into_cached(&existing, &diffs)
             {
                 guard.insert(
                     key,
@@ -497,13 +497,33 @@ fn merge_anchored_hunks_into_cached_diffs(
             continue;
         };
 
-        cached_diff
-            .hunks
-            .get_or_insert_with(Vec::new)
-            .extend(incoming_hunks.iter().cloned());
+        let merged_hunks =
+            merge_unique_hunks(cached_diff.hunks.as_deref().unwrap_or(&[]), incoming_hunks);
+        cached_diff.hunks = (!merged_hunks.is_empty()).then_some(merged_hunks);
     }
 
     next
+}
+
+fn should_merge_anchored_diffs_into_cached(
+    cached: &[AiFileDiffPayload],
+    anchored: &[AiFileDiffPayload],
+) -> bool {
+    anchored
+        .iter()
+        .filter(|incoming| {
+            incoming
+                .hunks
+                .as_ref()
+                .is_some_and(|hunks| !hunks.is_empty())
+        })
+        .all(|incoming| {
+            cached.iter().any(|candidate| {
+                candidate.path == incoming.path
+                    && candidate.previous_path == incoming.previous_path
+                    && cached_diff_contains_incoming_snippet(candidate, incoming)
+            })
+        })
 }
 
 fn cached_diff_contains_incoming_snippet(
@@ -522,6 +542,21 @@ fn cached_diff_contains_incoming_snippet(
     };
 
     old_matches && new_matches
+}
+
+fn merge_unique_hunks(
+    existing: &[AiFileDiffHunkPayload],
+    incoming: &[AiFileDiffHunkPayload],
+) -> Vec<AiFileDiffHunkPayload> {
+    let mut merged = existing.to_vec();
+
+    for hunk in incoming {
+        if !merged.iter().any(|candidate| candidate == hunk) {
+            merged.push(hunk.clone());
+        }
+    }
+
+    merged
 }
 
 fn build_claude_structured_patch_hunks_by_content_index(
@@ -1188,6 +1223,78 @@ mod tests {
         );
         let hunk = diffs[0].hunks.as_ref().unwrap().first().unwrap();
         assert_eq!((hunk.old_start, hunk.new_start), (2, 2));
+    }
+
+    #[test]
+    fn repeated_claude_structured_patch_updates_preserve_full_snapshot_and_deduplicate_hunks() {
+        let state = ToolDiffState::default();
+        state.register_file_baseline(
+            "session-1",
+            "src/app.ts",
+            "header\nalpha\nold\nomega\nfooter".to_string(),
+        );
+
+        let initial = ToolCall::new(ToolCallId::from("tool-write"), "Write app.ts")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(serde_json::json!({
+                "file_path": "src/app.ts",
+                "content": "header\nalpha\nnew\nomega\nfooter",
+            }));
+        state.upsert_tool_call("session-1", initial);
+
+        let make_update = || {
+            let mut update = ToolCallUpdate::new(
+                "tool-write",
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![ToolCallContent::Diff(
+                        Diff::new("src/app.ts", "alpha\nnew\nomega").old_text("alpha\nold\nomega"),
+                    )]),
+            );
+            update.meta = Some(Meta::from_iter([(
+                CLAUDE_CODE_META_KEY.to_string(),
+                serde_json::json!({
+                    "toolName": "Write",
+                    "toolResponse": {
+                        "filePath": "src/app.ts",
+                        "structuredPatch": [
+                            {
+                                "oldStart": 2,
+                                "oldLines": 3,
+                                "newStart": 2,
+                                "newLines": 3,
+                                "lines": [
+                                    " alpha",
+                                    "-old",
+                                    "+new",
+                                    " omega"
+                                ]
+                            }
+                        ]
+                    }
+                }),
+            )]));
+            update
+        };
+
+        let first = state.apply_tool_update("session-1", make_update()).unwrap();
+        let second = state.apply_tool_update("session-1", make_update()).unwrap();
+        let diffs = state.normalized_diffs_for_tool_call("session-1", &second);
+
+        assert_eq!(first.tool_call_id.0, second.tool_call_id.0);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(
+            diffs[0].old_text.as_deref(),
+            Some("header\nalpha\nold\nomega\nfooter")
+        );
+        assert_eq!(
+            diffs[0].new_text.as_deref(),
+            Some("header\nalpha\nnew\nomega\nfooter")
+        );
+        let hunks = diffs[0].hunks.as_ref().unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].lines.len(), 4);
     }
 
     #[test]
