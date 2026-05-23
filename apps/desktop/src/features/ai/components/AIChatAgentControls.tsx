@@ -33,6 +33,14 @@ interface DropdownFieldProps {
     onChange: (value: string) => void;
 }
 
+const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
+
+function shouldUseSearchableModelMenu(runtimeId?: string) {
+    return (
+        runtimeId !== undefined && SEARCHABLE_MODEL_RUNTIME_IDS.has(runtimeId)
+    );
+}
+
 function formatFallbackLabel(value: string) {
     if (value.trim().includes(" ")) {
         return value;
@@ -387,9 +395,9 @@ export function AIChatAgentControls({
                 disabled={disabled}
                 label="Model"
                 value={selectedModelId}
-                searchable={runtimeId === "kilo-acp"}
-                searchPlaceholder="Select a model..."
-                emptySearchMessage="No Kilo models match that search."
+                searchable={shouldUseSearchableModelMenu(runtimeId)}
+                searchPlaceholder="Search models..."
+                emptySearchMessage="No models match that search."
                 options={
                     modelConfig
                         ? mapConfigOption(modelConfig)

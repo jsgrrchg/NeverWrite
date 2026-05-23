@@ -182,7 +182,7 @@ describe("AIChatAgentControls", () => {
         );
     });
 
-    it("shows a model search field only for Kilo and filters results", () => {
+    it("shows a model search field for Kilo and filters results", () => {
         const onConfigOptionChange = vi.fn();
 
         renderComponent(
@@ -255,7 +255,85 @@ describe("AIChatAgentControls", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("does not show the model search field for non-Kilo runtimes", () => {
+    it("shows a model search field for OpenCode and filters Zen models", () => {
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="opencode-acp"
+                modelId="opencode/zen/qwen3.5-plus"
+                modeId="default"
+                effortsByModel={{}}
+                models={[]}
+                modes={[
+                    {
+                        id: "default",
+                        runtimeId: "opencode-acp",
+                        name: "Auto",
+                        description: "",
+                        disabled: false,
+                    },
+                ]}
+                configOptions={[
+                    {
+                        id: "model",
+                        runtimeId: "opencode-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "opencode/zen/qwen3.5-plus",
+                        options: [
+                            {
+                                value: "opencode/zen/qwen3.5-plus",
+                                label: "OpenCode Zen/Qwen3.5 Plus",
+                            },
+                            {
+                                value: "opencode/zen/gemini-3-flash",
+                                label: "OpenCode Zen/Gemini 3 Flash",
+                            },
+                            {
+                                value: "opencode/zen/claude-opus-4.7",
+                                label: "OpenCode Zen/Claude Opus 4.7",
+                            },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={onConfigOptionChange}
+            />,
+        );
+
+        fireEvent.click(screen.getByTitle("Model"));
+
+        const search = screen.getByLabelText("Model search");
+        expect(search).toBeInTheDocument();
+        expect(
+            screen.getByText("OpenCode Zen/Gemini 3 Flash"),
+        ).toBeInTheDocument();
+
+        fireEvent.change(search, { target: { value: "opus" } });
+
+        expect(
+            screen.getByText("OpenCode Zen/Claude Opus 4.7"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByText("OpenCode Zen/Gemini 3 Flash"),
+        ).not.toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", {
+                name: "OpenCode Zen/Claude Opus 4.7",
+            }),
+        );
+
+        expect(onConfigOptionChange).toHaveBeenCalledWith(
+            "model",
+            "opencode/zen/claude-opus-4.7",
+        );
+    });
+
+    it("does not show the model search field for non-searchable runtimes", () => {
         renderComponent(
             <AIChatAgentControls
                 runtimeId="codex-acp"
