@@ -15,6 +15,24 @@ export type AIRuntimeBinarySource =
     | "vendor"
     | "missing";
 
+/** Reason an approved additional root could not be re-resolved on disk. */
+export type DiscardedAdditionalRootReason =
+    | { kind: "not_found" }
+    | { kind: "not_a_directory" }
+    | { kind: "permission_denied" }
+    | { kind: "other"; message: string };
+
+export interface DiscardedAdditionalRoot {
+    raw: string;
+    reason: DiscardedAdditionalRootReason;
+}
+
+/** Wire shape (snake_case) as serialized by the Rust backend. */
+export interface DiscardedAdditionalRootPayload {
+    raw: string;
+    reason: DiscardedAdditionalRootReason;
+}
+
 export interface AIRuntimeConnectionState {
     status: AIRuntimeConnectionStatus;
     message: string | null;
@@ -332,6 +350,15 @@ export interface AIChatSession {
     isResumingSession?: boolean;
     effortsByModel?: Record<string, string[]>;
     runtimeId: string;
+    additionalRoots?: string[];
+    /**
+     * Roots the user previously approved that could not be re-resolved on
+     * disk when the session was (re)opened. Surfaced as an inline banner so
+     * powerusers see why an approved directory is no longer accessible.
+     */
+    discardedAdditionalRoots?: DiscardedAdditionalRoot[];
+    /** Session ids for which the discarded-roots banner has been dismissed. */
+    discardedRootsBannerDismissed?: boolean;
     modelId: string;
     modeId: string;
     models: AIModelOption[];
@@ -383,6 +410,8 @@ export interface AIBackendSessionPayload {
     model_id: string;
     mode_id: string;
     status: AIChatSessionStatus;
+    additional_roots?: string[];
+    discarded_additional_roots?: DiscardedAdditionalRootPayload[];
     efforts_by_model?: Record<string, string[]>;
     models: AIBackendRuntimeDescriptorPayload["models"];
     modes: AIBackendRuntimeDescriptorPayload["modes"];
@@ -653,6 +682,7 @@ export interface PersistedSessionHistory {
     models?: AIBackendRuntimeDescriptorPayload["models"];
     modes?: AIBackendRuntimeDescriptorPayload["modes"];
     config_options?: AIBackendSessionPayload["config_options"];
+    additional_roots?: string[];
     created_at: number;
     updated_at: number;
     start_index?: number;

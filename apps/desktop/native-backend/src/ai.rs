@@ -29,12 +29,12 @@ use neverwrite_ai::{
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
     AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
-    AiToolActivityPayload, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
-    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
-    AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
-    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT,
-    AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT,
-    AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AiToolActivityPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason, ToolDiffState,
+    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
+    AI_AUTH_TERMINAL_STARTED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
+    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
+    AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
+    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
     AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
     KILO_RUNTIME_ID,
@@ -191,6 +191,7 @@ struct AiAuthTerminalResizeInput {
 struct AiRuntimeSessionInput {
     runtime_id: String,
     session_id: String,
+    additional_roots: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1126,7 +1127,7 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiCreateSessionInput = input_from_args(args)?;
-        let additional_roots = normalize_additional_roots(input.additional_roots)?;
+        let normalized = normalize_additional_roots(input.additional_roots);
         let vault_root_for_spec = vault_root.clone().ok_or_else(|| {
             "An open vault is required to start an AI runtime session.".to_string()
         })?;
@@ -1144,7 +1145,9 @@ impl NativeAi {
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
         let created = start_acp_session(
             spec,
-            AcpSessionStartMode::New,
+            AcpSessionStartMode::New {
+                additional_directories: normalized.kept.clone(),
+            },
             self.event_tx.clone(),
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
@@ -1152,6 +1155,7 @@ impl NativeAi {
         )?;
         let mut session = created.session;
         let handle = created.handle;
+        session.discarded_additional_roots = normalized.discarded.clone();
 
         let mut state = self
             .inner
@@ -1163,7 +1167,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots,
+                additional_roots: normalized.kept,
                 runtime_handle: Some(handle),
                 active_turn_id: None,
             },
@@ -1181,7 +1185,10 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiRuntimeSessionInput = input_from_args(args)?;
-        let session = new_session_with_id(&input.runtime_id, input.session_id)?;
+        let normalized = normalize_additional_roots(input.additional_roots);
+        let mut session = new_session_with_id(&input.runtime_id, input.session_id)?;
+        session.additional_roots = additional_roots_to_strings(&normalized.kept);
+        session.discarded_additional_roots = normalized.discarded.clone();
         let mut state = self
             .inner
             .lock()
@@ -1191,7 +1198,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots: vec![],
+                additional_roots: normalized.kept,
                 runtime_handle: None,
                 active_turn_id: None,
             },
@@ -1208,6 +1215,7 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiRuntimeSessionInput = input_from_args(args)?;
+        let normalized = normalize_additional_roots(input.additional_roots);
         if !runtime_supports_native_resume(&input.runtime_id) {
             return Err(format!(
                 "AI runtime '{}' does not support native session resume.",
@@ -1234,6 +1242,7 @@ impl NativeAi {
             spec,
             AcpSessionStartMode::Load {
                 session_id: input.session_id,
+                additional_directories: normalized.kept.clone(),
             },
             self.event_tx.clone(),
             Arc::clone(&self.inner),
@@ -1242,6 +1251,7 @@ impl NativeAi {
         )?;
         let mut session = created.session;
         let handle = created.handle;
+        session.discarded_additional_roots = normalized.discarded.clone();
 
         let mut state = self
             .inner
@@ -1253,7 +1263,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots: vec![],
+                additional_roots: normalized.kept,
                 runtime_handle: Some(handle),
                 active_turn_id: None,
             },
@@ -1271,7 +1281,10 @@ impl NativeAi {
         vault_root: Option<PathBuf>,
     ) -> Result<Value, String> {
         let input: AiRuntimeSessionInput = input_from_args(args)?;
-        let session = new_session(&input.runtime_id)?;
+        let normalized = normalize_additional_roots(input.additional_roots);
+        let mut session = new_session(&input.runtime_id)?;
+        session.additional_roots = additional_roots_to_strings(&normalized.kept);
+        session.discarded_additional_roots = normalized.discarded.clone();
         let mut state = self
             .inner
             .lock()
@@ -1281,7 +1294,7 @@ impl NativeAi {
             ManagedAiSession {
                 session: session.clone(),
                 vault_root,
-                additional_roots: vec![],
+                additional_roots: normalized.kept,
                 runtime_handle: None,
                 active_turn_id: None,
             },
@@ -1826,8 +1839,27 @@ struct CreatedAcpSession {
 
 #[derive(Debug, Clone)]
 enum AcpSessionStartMode {
-    New,
-    Load { session_id: String },
+    New {
+        additional_directories: Vec<PathBuf>,
+    },
+    Load {
+        session_id: String,
+        additional_directories: Vec<PathBuf>,
+    },
+}
+
+impl AcpSessionStartMode {
+    fn additional_directories(&self) -> &[PathBuf] {
+        match self {
+            AcpSessionStartMode::New {
+                additional_directories,
+            }
+            | AcpSessionStartMode::Load {
+                additional_directories,
+                ..
+            } => additional_directories,
+        }
+    }
 }
 
 struct AcpSessionStartResponse {
@@ -2966,13 +2998,15 @@ async fn run_acp_actor_inner(
                     return Err(agent_client_protocol::Error::internal_error().data(message));
                 }
             };
-            let session = session_from_acp_response(
+            let mut session = session_from_acp_response(
                 &spec.runtime_id,
                 response.session_id,
                 response.models,
                 response.modes,
                 response.config_options,
             );
+            session.additional_roots =
+                additional_roots_to_strings(start_mode.additional_directories());
             client
                 .tool_diffs
                 .register_session_cwd(&session.session_id, spec.cwd.clone());
@@ -3026,9 +3060,15 @@ async fn start_acp_runtime_session(
 ) -> Result<AcpSessionStartResponse, agent_client_protocol::Error> {
     let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
     match start_mode {
-        AcpSessionStartMode::New => {
+        AcpSessionStartMode::New {
+            additional_directories,
+        } => {
             let response = connection
-                .send_request(NewSessionRequest::new(cwd))
+                .send_request(new_session_request(
+                    &spec.runtime_id,
+                    cwd,
+                    additional_directories,
+                ))
                 .block_task()
                 .await?;
             Ok(AcpSessionStartResponse {
@@ -3038,12 +3078,18 @@ async fn start_acp_runtime_session(
                 config_options: response.config_options,
             })
         }
-        AcpSessionStartMode::Load { session_id } => {
+        AcpSessionStartMode::Load {
+            session_id,
+            additional_directories,
+        } => {
             let response = connection
-                .send_request(LoadSessionRequest::new(
-                    SessionId::new(session_id.clone()),
-                    cwd,
-                ))
+                .send_request(
+                    LoadSessionRequest::new(SessionId::new(session_id.clone()), cwd)
+                        .additional_directories(additional_wire_paths(
+                            &spec.runtime_id,
+                            additional_directories,
+                        )),
+                )
                 .block_task()
                 .await?;
             Ok(AcpSessionStartResponse {
@@ -3054,6 +3100,22 @@ async fn start_acp_runtime_session(
             })
         }
     }
+}
+
+fn new_session_request(
+    runtime_id: &str,
+    cwd: PathBuf,
+    additional_directories: &[PathBuf],
+) -> NewSessionRequest {
+    NewSessionRequest::new(cwd)
+        .additional_directories(additional_wire_paths(runtime_id, additional_directories))
+}
+
+fn additional_wire_paths(runtime_id: &str, additional_directories: &[PathBuf]) -> Vec<PathBuf> {
+    additional_directories
+        .iter()
+        .map(|path| acp_session_wire_path(runtime_id, path))
+        .collect()
 }
 
 async fn handle_acp_command(
@@ -3240,6 +3302,8 @@ fn session_from_acp_response(
         models,
         modes,
         config_options,
+        additional_roots: vec![],
+        discarded_additional_roots: vec![],
     }
 }
 
@@ -4173,6 +4237,8 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         models,
         modes,
         config_options,
+        additional_roots: vec![],
+        discarded_additional_roots: vec![],
     })
 }
 
@@ -5502,16 +5568,60 @@ fn display_attachment_path(path: &Path, vault_root: Option<&Path>) -> String {
         .to_string()
 }
 
-fn normalize_additional_roots(raw_roots: Option<Vec<String>>) -> Result<Vec<PathBuf>, String> {
-    raw_roots
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct NormalizedAdditionalRoots {
+    kept: Vec<PathBuf>,
+    discarded: Vec<DiscardedAdditionalRoot>,
+}
+
+// Canonicalize each raw root. A path that no longer resolves on disk is
+// dropped from `kept` and reported in `discarded` instead of failing the
+// whole call, so a single broken root cannot make a persisted session
+// unloadable. Empty/whitespace entries are filtered silently (input-side
+// noise, not a disk-side problem worth surfacing).
+fn normalize_additional_roots(raw_roots: Option<Vec<String>>) -> NormalizedAdditionalRoots {
+    let mut result = NormalizedAdditionalRoots::default();
+    for raw in raw_roots
         .unwrap_or_default()
         .into_iter()
         .filter_map(normalize_optional_string)
-        .map(|raw| {
-            PathBuf::from(raw)
-                .canonicalize()
-                .map_err(|error| error.to_string())
-        })
+    {
+        match PathBuf::from(&raw).canonicalize() {
+            Ok(canonical) => {
+                if canonical.is_dir() {
+                    result.kept.push(canonical);
+                } else {
+                    result.discarded.push(DiscardedAdditionalRoot {
+                        raw,
+                        reason: DiscardedAdditionalRootReason::NotADirectory,
+                    });
+                }
+            }
+            Err(error) => {
+                result.discarded.push(DiscardedAdditionalRoot {
+                    raw,
+                    reason: classify_canonicalize_error(&error),
+                });
+            }
+        }
+    }
+    result
+}
+
+fn classify_canonicalize_error(error: &std::io::Error) -> DiscardedAdditionalRootReason {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => DiscardedAdditionalRootReason::NotFound,
+        std::io::ErrorKind::PermissionDenied => DiscardedAdditionalRootReason::PermissionDenied,
+        _ => DiscardedAdditionalRootReason::Other {
+            message: error.to_string(),
+        },
+    }
+}
+
+fn additional_roots_to_strings(additional_roots: &[PathBuf]) -> Vec<String> {
+    additional_roots
+        .iter()
+        .map(|path| path.display().to_string())
         .collect()
 }
 
@@ -5772,10 +5882,14 @@ fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> boo
 }
 
 fn acp_session_wire_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
+    acp_session_wire_path(runtime_id, cwd)
+}
+
+fn acp_session_wire_path(runtime_id: &str, path: &Path) -> PathBuf {
     if runtime_id == GEMINI_RUNTIME_ID {
-        return PathBuf::from(normalize_path_for_node_acp(cwd));
+        return PathBuf::from(normalize_path_for_node_acp(path));
     }
-    cwd.to_path_buf()
+    path.to_path_buf()
 }
 
 fn acp_process_launch_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
@@ -6017,6 +6131,166 @@ mod tests {
             .build()
             .unwrap()
             .block_on(future)
+    }
+
+    #[test]
+    fn normalize_additional_roots_returns_default_for_empty_input() {
+        let none = normalize_additional_roots(None);
+        assert!(none.kept.is_empty());
+        assert!(none.discarded.is_empty());
+
+        let empty = normalize_additional_roots(Some(vec![]));
+        assert!(empty.kept.is_empty());
+        assert!(empty.discarded.is_empty());
+    }
+
+    #[test]
+    fn normalize_additional_roots_keeps_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let raw = temp.path().to_string_lossy().to_string();
+        let normalized = normalize_additional_roots(Some(vec![raw]));
+        assert_eq!(normalized.kept.len(), 1);
+        assert_eq!(normalized.kept[0], temp.path().canonicalize().unwrap());
+        assert!(normalized.discarded.is_empty());
+    }
+
+    #[test]
+    fn normalize_additional_roots_discards_missing_path_as_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("does-not-exist");
+        let raw = missing.to_string_lossy().to_string();
+        let normalized = normalize_additional_roots(Some(vec![raw.clone()]));
+        assert!(normalized.kept.is_empty());
+        assert_eq!(normalized.discarded.len(), 1);
+        assert_eq!(normalized.discarded[0].raw, raw);
+        assert!(matches!(
+            normalized.discarded[0].reason,
+            DiscardedAdditionalRootReason::NotFound
+        ));
+    }
+
+    #[test]
+    fn normalize_additional_roots_discards_file_as_not_a_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("file.txt");
+        fs::write(&file_path, b"hi").unwrap();
+        let raw = file_path.to_string_lossy().to_string();
+        let normalized = normalize_additional_roots(Some(vec![raw.clone()]));
+        assert!(normalized.kept.is_empty());
+        assert_eq!(normalized.discarded.len(), 1);
+        assert_eq!(normalized.discarded[0].raw, raw);
+        assert!(matches!(
+            normalized.discarded[0].reason,
+            DiscardedAdditionalRootReason::NotADirectory
+        ));
+    }
+
+    #[test]
+    fn normalize_additional_roots_partitions_valid_and_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().to_string_lossy().to_string();
+        let missing = temp.path().join("missing").to_string_lossy().to_string();
+        let normalized = normalize_additional_roots(Some(vec![
+            good.clone(),
+            missing.clone(),
+            "   ".to_string(), // whitespace-only: filtered input-side, not reported
+            "".to_string(),
+        ]));
+        assert_eq!(normalized.kept.len(), 1);
+        assert_eq!(normalized.kept[0], temp.path().canonicalize().unwrap());
+        assert_eq!(normalized.discarded.len(), 1);
+        assert_eq!(normalized.discarded[0].raw, missing);
+        assert!(matches!(
+            normalized.discarded[0].reason,
+            DiscardedAdditionalRootReason::NotFound
+        ));
+    }
+
+    #[test]
+    fn normalize_additional_roots_treats_relative_missing_path_as_not_found() {
+        let normalized = normalize_additional_roots(Some(vec![
+            "./this/relative/path/does/not/exist".to_string(),
+        ]));
+        assert!(normalized.kept.is_empty());
+        assert_eq!(normalized.discarded.len(), 1);
+        assert!(matches!(
+            normalized.discarded[0].reason,
+            DiscardedAdditionalRootReason::NotFound
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalize_additional_roots_discards_broken_symlink_as_not_found() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let link = temp.path().join("dangling");
+        let target = temp.path().join("ghost");
+        symlink(&target, &link).unwrap();
+        let raw = link.to_string_lossy().to_string();
+        let normalized = normalize_additional_roots(Some(vec![raw.clone()]));
+        assert!(normalized.kept.is_empty());
+        assert_eq!(normalized.discarded.len(), 1);
+        assert_eq!(normalized.discarded[0].raw, raw);
+        assert!(matches!(
+            normalized.discarded[0].reason,
+            DiscardedAdditionalRootReason::NotFound
+        ));
+    }
+
+    #[test]
+    fn normalize_additional_roots_reports_all_when_every_root_is_broken() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a").to_string_lossy().to_string();
+        let b = temp.path().join("b").to_string_lossy().to_string();
+        let normalized = normalize_additional_roots(Some(vec![a.clone(), b.clone()]));
+        assert!(normalized.kept.is_empty());
+        assert_eq!(normalized.discarded.len(), 2);
+    }
+
+    #[test]
+    fn new_session_request_serializes_additional_directories() {
+        let request = new_session_request(
+            CLAUDE_RUNTIME_ID,
+            PathBuf::from("/vault"),
+            &[
+                PathBuf::from("/external/project"),
+                PathBuf::from("/external/notes"),
+            ],
+        );
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "cwd": "/vault",
+                "additionalDirectories": ["/external/project", "/external/notes"],
+                "mcpServers": [],
+            })
+        );
+    }
+
+    #[test]
+    fn load_session_request_serializes_additional_directories() {
+        let request = LoadSessionRequest::new("claude-session-1", "/vault").additional_directories(
+            additional_wire_paths(
+                CLAUDE_RUNTIME_ID,
+                &[
+                    PathBuf::from("/external/project"),
+                    PathBuf::from("/external/notes"),
+                ],
+            ),
+        );
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "mcpServers": [],
+                "cwd": "/vault",
+                "additionalDirectories": ["/external/project", "/external/notes"],
+                "sessionId": "claude-session-1",
+            })
+        );
     }
 
     const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";

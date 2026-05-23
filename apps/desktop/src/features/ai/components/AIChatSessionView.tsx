@@ -35,6 +35,7 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
+import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
 import {
     appendFileAttachmentPart,
@@ -443,6 +444,16 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 connection={displayedConnection}
                 runtimeName={activeRuntime?.runtime.name.replace(/ ACP$/, "")}
             />
+
+            {session && (session.discardedAdditionalRoots?.length ?? 0) > 0 ? (
+                <AIDiscardedRootsBanner
+                    roots={session.discardedAdditionalRoots ?? []}
+                    dismissed={session.discardedRootsBannerDismissed}
+                    onDismiss={() =>
+                        chatActions.dismissDiscardedRootsBanner(session.sessionId)
+                    }
+                />
+            ) : null}
 
             {!composerExpanded && (
                 <AIChatMessageList

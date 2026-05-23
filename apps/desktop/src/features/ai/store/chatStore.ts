@@ -1234,6 +1234,7 @@ interface ChatStore {
         options?: UpsertSessionOptions,
     ) => void;
     dismissMessage: (sessionId: string, messageId: string) => void;
+    dismissDiscardedRootsBanner: (sessionId: string) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
     applyRuntimeConnection: (payload: AIRuntimeConnectionPayload) => void;
     applyTokenUsage: (payload: AITokenUsagePayload) => void;
@@ -4774,6 +4775,8 @@ function applyPersistedHistoryMetadata(
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
             customTitle: history.custom_title ?? null,
+            additionalRoots:
+                history.additional_roots ?? nextSession.additionalRoots ?? [],
             persistedPreview: history.preview ?? null,
             persistedMessageCount,
             loadedPersistedMessageStart,
@@ -4801,6 +4804,7 @@ function applyPersistedHistoryPage(
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
+        additional_roots: session.additionalRoots ?? [],
         created_at: session.persistedCreatedAt ?? 0,
         updated_at: session.persistedUpdatedAt ?? 0,
         start_index: page.start_index,
@@ -4882,6 +4886,7 @@ function createPersistedSession(
             runtimeSessionId: null,
             vaultPath,
             runtimeId,
+            additionalRoots: history.additional_roots ?? [],
             modelId: history.model_id,
             modeId: history.mode_id,
             status: "idle",
@@ -5034,6 +5039,29 @@ function withUniqueAttachment(
     }
 
     return [...attachments, next];
+}
+
+function discardedRootsEqual(
+    a: AIChatSession["discardedAdditionalRoots"],
+    b: AIChatSession["discardedAdditionalRoots"],
+): boolean {
+    const left = a ?? [];
+    const right = b ?? [];
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+        const l = left[i];
+        const r = right[i];
+        if (l.raw !== r.raw) return false;
+        if (l.reason.kind !== r.reason.kind) return false;
+        if (
+            l.reason.kind === "other" &&
+            r.reason.kind === "other" &&
+            l.reason.message !== r.reason.message
+        ) {
+            return false;
+        }
+    }
+    return true;
 }
 
 function mergeSession(
@@ -5208,6 +5236,18 @@ function mergeSession(
             incoming.runtimeState ?? normalizedExisting.runtimeState ?? "live",
         status,
         attachments: normalizedExisting.attachments,
+        discardedAdditionalRoots:
+            incoming.discardedAdditionalRoots ??
+            normalizedExisting.discardedAdditionalRoots ??
+            [],
+        // Preserve the user's dismissal unless the set of discarded roots
+        // actually changed.
+        discardedRootsBannerDismissed: discardedRootsEqual(
+            incoming.discardedAdditionalRoots,
+            normalizedExisting.discardedAdditionalRoots,
+        )
+            ? (normalizedExisting.discardedRootsBannerDismissed ?? false)
+            : false,
     };
 
     return synchronizeSessionConfigSelections(
@@ -5440,6 +5480,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
+        additional_roots: session.additionalRoots ?? [],
         models: hasCatalog
             ? session.models.map((model) => ({
                   id: model.id,
@@ -7501,6 +7542,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        dismissDiscardedRootsBanner: (sessionId) => {
+            set((state) => {
+                const session = state.sessionsById[sessionId];
+                if (!session || session.discardedRootsBannerDismissed) {
+                    return state;
+                }
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [sessionId]: {
+                            ...session,
+                            discardedRootsBannerDismissed: true,
+                        },
+                    },
+                };
+            });
+        },
+
         applyRuntimeConnection: ({ runtime_id, status, message }) => {
             const affectedSessionIds: string[] = [];
             set((state) => {
@@ -8552,6 +8611,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let resumedSession = await aiCreateSession(
                     latestSession.runtimeId,
                     vaultPath,
+                    latestSession.additionalRoots ?? null,
                 );
                 const resumedModelConfig = getModelConfigOption(resumedSession);
 
@@ -8672,6 +8732,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             latestSession.runtimeId,
                             historySessionId,
                             vaultPath,
+                            latestSession.additionalRoots ?? null,
                         );
                     } catch (nativeResumeError) {
                         const nativeResumeMessage = getAiErrorMessage(
@@ -8763,6 +8824,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 null,
                             messages: [],
                             attachments: latestSession.attachments,
+                            additionalRoots:
+                                resumedSession.additionalRoots ??
+                                latestSession.additionalRoots ??
+                                [],
+                            // Discarded roots come fresh from the backend on
+                            // each reconnect — never fall back to the previous
+                            // session's stale set.
+                            discardedAdditionalRoots:
+                                resumedSession.discardedAdditionalRoots ?? [],
+                            discardedRootsBannerDismissed: false,
                             effortsByModel:
                                 resumedSession.effortsByModel ??
                                 latestSession.effortsByModel ??

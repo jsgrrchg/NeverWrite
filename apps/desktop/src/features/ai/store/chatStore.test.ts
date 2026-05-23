@@ -9626,7 +9626,7 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
             input: {
                 runtime_id: "codex-acp",
-                additional_roots: null,
+                additional_roots: [],
             },
             vaultPath: "/vault",
         });
@@ -10591,6 +10591,7 @@ describe("chatStore", () => {
             input: {
                 runtime_id: "claude-acp",
                 session_id: "history-claude-1",
+                additional_roots: [],
             },
             vaultPath: "/vault",
         });
@@ -10757,6 +10758,7 @@ describe("chatStore", () => {
         const replacementClaudeSessionPayload = {
             ...claudeSessionPayload,
             session_id: "claude-session-2",
+            additional_roots: ["/home/user/projects/NeverWrite"],
         };
 
         let createSessionCount = 0;
@@ -10838,6 +10840,238 @@ describe("chatStore", () => {
             vaultPath: "/vault",
             sessionId: "claude-session-1",
         });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command, args]) =>
+                    command === "ai_save_session_history" &&
+                    JSON.stringify(args).includes(
+                        "\"additional_roots\":[\"/home/user/projects/NeverWrite\"]",
+                    ),
+            ),
+        ).toBe(true);
+    });
+
+    it("reuses approved additionalRoots when reconnecting a persisted Claude session", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description: "Claude runtime embedded as an ACP sidecar.",
+                        capabilities: ["create_session", "attachments"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    status: "idle",
+                    runtimeId: "claude-acp",
+                    additionalRoots: ["/home/user/projects/NeverWrite"],
+                    modelId: "claude-sonnet",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+            selectedRuntimeId: "claude-acp",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "history-1",
+                    total_messages: 0,
+                    start_index: 0,
+                    end_index: 0,
+                    messages: [],
+                };
+            }
+            if (command === "ai_create_session") {
+                expect(args).toMatchObject({
+                    input: {
+                        runtime_id: "claude-acp",
+                        additional_roots: ["/home/user/projects/NeverWrite"],
+                    },
+                    vaultPath: "/vault",
+                });
+                return {
+                    ...sessionPayload,
+                    session_id: "claude-session-resumed",
+                    runtime_id: "claude-acp",
+                    model_id: "claude-sonnet",
+                    mode_id: "default",
+                    additional_roots: ["/home/user/projects/NeverWrite"],
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:history-1");
+
+        expect(resumedSessionId).toBe("claude-session-resumed");
+        expect(
+            useChatStore.getState().sessionsById["claude-session-resumed"]
+                ?.additionalRoots,
+        ).toEqual(["/home/user/projects/NeverWrite"]);
+    });
+
+    it("surfaces discarded additional roots from the backend and lets the user dismiss them once", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "claude-acp",
+                        name: "Claude ACP",
+                        description: "Claude runtime embedded as an ACP sidecar.",
+                        capabilities: ["create_session", "attachments"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                "persisted:history-discarded": {
+                    sessionId: "persisted:history-discarded",
+                    historySessionId: "history-discarded",
+                    status: "idle",
+                    runtimeId: "claude-acp",
+                    additionalRoots: ["/Volumes/USB/notes"],
+                    modelId: "claude-sonnet",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 0,
+                    loadedPersistedMessageStart: 0,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:history-discarded"],
+            activeSessionId: "persisted:history-discarded",
+            selectedRuntimeId: "claude-acp",
+        }));
+
+        const backendDiscarded = [
+            { raw: "/Volumes/USB/notes", reason: { kind: "not_found" } },
+        ];
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "history-discarded",
+                    total_messages: 0,
+                    start_index: 0,
+                    end_index: 0,
+                    messages: [],
+                };
+            }
+            if (command === "ai_create_session") {
+                return {
+                    ...sessionPayload,
+                    session_id: "claude-session-with-discards",
+                    runtime_id: "claude-acp",
+                    model_id: "claude-sonnet",
+                    mode_id: "default",
+                    additional_roots: [],
+                    discarded_additional_roots: backendDiscarded,
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const resumedSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:history-discarded");
+
+        expect(resumedSessionId).toBe("claude-session-with-discards");
+        const resumed =
+            useChatStore.getState().sessionsById["claude-session-with-discards"];
+        expect(resumed?.additionalRoots).toEqual([]);
+        expect(resumed?.discardedAdditionalRoots).toEqual(backendDiscarded);
+        expect(resumed?.discardedRootsBannerDismissed).toBe(false);
+
+        // Dismiss the banner — flag flips locally without touching the roots.
+        useChatStore
+            .getState()
+            .dismissDiscardedRootsBanner("claude-session-with-discards");
+        const dismissed =
+            useChatStore.getState().sessionsById["claude-session-with-discards"];
+        expect(dismissed?.discardedRootsBannerDismissed).toBe(true);
+        expect(dismissed?.discardedAdditionalRoots).toEqual(backendDiscarded);
+
+        // A backend session-updated event carrying the same discarded set must
+        // preserve the dismissal — we never re-show what the user already
+        // acknowledged.
+        useChatStore.getState().upsertSession({
+            ...(dismissed as AIChatSession),
+            // Simulate the bridge handing a freshly normalized payload — the
+            // dismissed flag is a client-only signal so it is absent here.
+            discardedRootsBannerDismissed: undefined,
+        });
+        const afterRedundantUpdate =
+            useChatStore.getState().sessionsById["claude-session-with-discards"];
+        expect(afterRedundantUpdate?.discardedRootsBannerDismissed).toBe(true);
+
+        // But if the backend reports a different set of discarded roots (e.g.
+        // a new external root the user just approved went stale), reset the
+        // dismissed flag so the user sees the new notice.
+        useChatStore.getState().upsertSession({
+            ...(afterRedundantUpdate as AIChatSession),
+            discardedAdditionalRoots: [
+                { raw: "/another/missing/path", reason: { kind: "not_found" } },
+            ],
+            discardedRootsBannerDismissed: undefined,
+        });
+        const afterChangedDiscards =
+            useChatStore.getState().sessionsById["claude-session-with-discards"];
+        expect(afterChangedDiscards?.discardedRootsBannerDismissed).toBe(false);
     });
 
     it("keeps the existing Claude session when the first file send stays inside the vault", async () => {

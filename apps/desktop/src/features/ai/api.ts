@@ -92,6 +92,9 @@ export function normalizeBackendSession(
         customTitle: session.title ?? null,
         persistedTitle: session.title ?? null,
         runtimeId: session.runtime_id,
+        additionalRoots: session.additional_roots ?? [],
+        // Client-only flag; never spread from backend payload.
+        discardedAdditionalRoots: session.discarded_additional_roots ?? [],
         modelId: session.model_id,
         modeId: session.mode_id,
         status: session.status,
@@ -445,6 +448,7 @@ export async function aiLoadRuntimeSession(
     runtimeId: string,
     sessionId: string,
     vaultPath: string | null,
+    additionalRoots?: string[] | null,
 ) {
     const session = await invoke<AIBackendSessionPayload>(
         "ai_load_runtime_session",
@@ -452,6 +456,7 @@ export async function aiLoadRuntimeSession(
             input: {
                 runtime_id: runtimeId,
                 session_id: sessionId,
+                additional_roots: additionalRoots ?? null,
             },
             vaultPath: vaultPath ?? null,
         },
@@ -463,6 +468,7 @@ export async function aiResumeRuntimeSession(
     runtimeId: string,
     sessionId: string,
     vaultPath: string | null,
+    additionalRoots?: string[] | null,
 ) {
     const session = await invoke<AIBackendSessionPayload>(
         "ai_resume_runtime_session",
@@ -470,6 +476,7 @@ export async function aiResumeRuntimeSession(
             input: {
                 runtime_id: runtimeId,
                 session_id: sessionId,
+                additional_roots: additionalRoots ?? null,
             },
             vaultPath: vaultPath ?? null,
         },
@@ -481,6 +488,7 @@ export async function aiForkRuntimeSession(
     runtimeId: string,
     sessionId: string,
     vaultPath: string | null,
+    additionalRoots?: string[] | null,
 ) {
     const session = await invoke<AIBackendSessionPayload>(
         "ai_fork_runtime_session",
@@ -488,6 +496,7 @@ export async function aiForkRuntimeSession(
             input: {
                 runtime_id: runtimeId,
                 session_id: sessionId,
+                additional_roots: additionalRoots ?? null,
             },
             vaultPath: vaultPath ?? null,
         },

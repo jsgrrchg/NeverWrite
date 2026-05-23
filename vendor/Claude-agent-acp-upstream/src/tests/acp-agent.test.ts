@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { spawn, spawnSync } from "child_process";
 import {
   Agent,
@@ -35,8 +35,16 @@ import {
   type SDKMessageFilter,
 } from "../acp-agent.js";
 import { Pushable } from "../utils.js";
-import { query, SDKAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
+import { deleteSession, query, SDKAssistantMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "crypto";
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
+  return {
+    ...actual,
+    deleteSession: vi.fn(),
+  };
+});
 import type {
   BetaToolResultBlockParam,
   BetaToolSearchToolResultBlockParam,
@@ -1888,6 +1896,94 @@ describe("session/close", () => {
   });
 });
 
+describe("session/delete", () => {
+  function createMockAgent() {
+    const mockClient = {
+      sessionUpdate: async () => {},
+    } as unknown as AgentSideConnection;
+    return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+  }
+
+  function injectSession(agent: ClaudeAcpAgent, sessionId: string) {
+    function* empty() {}
+    const gen = Object.assign(empty(), { interrupt: vi.fn(), close: vi.fn() });
+    agent.sessions[sessionId] = {
+      query: gen as any,
+      input: new Pushable(),
+      cancelled: false,
+      cwd: "/test",
+      sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+      modes: { currentModeId: "default", availableModes: [] },
+      models: { currentModelId: "default", availableModels: [] },
+      modelInfos: [],
+      settingsManager: { dispose: vi.fn() } as any,
+      accumulatedUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+      },
+      configOptions: [],
+      promptRunning: false,
+      pendingMessages: new Map(),
+      nextPendingOrder: 0,
+      abortController: new AbortController(),
+      emitRawSDKMessages: false,
+      contextWindowSize: 200000,
+      taskState: new Map(),
+    };
+    return agent.sessions[sessionId]!;
+  }
+
+  beforeEach(() => {
+    vi.mocked(deleteSession).mockReset();
+    vi.mocked(deleteSession).mockResolvedValue(undefined);
+  });
+
+  it("tears down the active session and deletes it from disk", async () => {
+    const agent = createMockAgent();
+    const session = injectSession(agent, "session-1");
+
+    const result = await agent.unstable_deleteSession({ sessionId: "session-1" });
+
+    expect(result).toEqual({});
+    expect(agent.sessions["session-1"]).toBeUndefined();
+    expect(session.query.interrupt).toHaveBeenCalled();
+    expect(session.settingsManager.dispose).toHaveBeenCalled();
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(deleteSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("deletes a session from disk that is not currently active", async () => {
+    const agent = createMockAgent();
+
+    const result = await agent.unstable_deleteSession({ sessionId: "not-active" });
+
+    expect(result).toEqual({});
+    expect(deleteSession).toHaveBeenCalledWith("not-active");
+  });
+
+  it("propagates errors from the SDK delete call", async () => {
+    const agent = createMockAgent();
+    vi.mocked(deleteSession).mockRejectedValueOnce(new Error("Session not found on disk"));
+
+    await expect(agent.unstable_deleteSession({ sessionId: "missing" })).rejects.toThrow(
+      "Session not found on disk",
+    );
+  });
+
+  it("does not affect other sessions when deleting one", async () => {
+    const agent = createMockAgent();
+    injectSession(agent, "session-a");
+    injectSession(agent, "session-b");
+
+    await agent.unstable_deleteSession({ sessionId: "session-a" });
+
+    expect(agent.sessions["session-a"]).toBeUndefined();
+    expect(agent.sessions["session-b"]).toBeDefined();
+  });
+});
+
 describe("getOrCreateSession param change detection", () => {
   function createMockAgent() {
     const mockClient = {
@@ -3418,5 +3514,361 @@ describe("result origin handling", () => {
     });
 
     expect(response.stopReason).toBe("max_tokens");
+  });
+});
+
+describe("memory_recall handling", () => {
+  function createMockAgentWithCapture() {
+    const updates: any[] = [];
+    const mockClient = {
+      sessionUpdate: async (notification: any) => {
+        updates.push(notification);
+      },
+    } as unknown as AgentSideConnection;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    return { agent, updates };
+  }
+
+  function injectSession(agent: ClaudeAcpAgent, messages: any[]) {
+    const input = new Pushable<any>();
+    async function* messageGenerator() {
+      const iter = input[Symbol.asyncIterator]();
+      const { value: userMessage, done } = await iter.next();
+      if (!done && userMessage) {
+        yield {
+          type: "user",
+          message: userMessage.message,
+          parent_tool_use_id: null,
+          uuid: userMessage.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+      }
+      yield* messages;
+    }
+    agent.sessions["test-session"] = {
+      query: messageGenerator() as any,
+      input,
+      cancelled: false,
+      cwd: "/test",
+      sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+      modes: { currentModeId: "default", availableModes: [] },
+      models: { currentModelId: "default", availableModels: [] },
+      modelInfos: [],
+      settingsManager: { dispose: vi.fn() } as any,
+      accumulatedUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+      },
+      configOptions: [],
+      promptRunning: false,
+      pendingMessages: new Map(),
+      nextPendingOrder: 0,
+      abortController: new AbortController(),
+      emitRawSDKMessages: false,
+      contextWindowSize: 200000,
+      taskState: new Map(),
+    };
+  }
+
+  function createResult() {
+    return {
+      type: "result" as const,
+      subtype: "success" as const,
+      stop_reason: "end_turn",
+      is_error: false,
+      result: "",
+      errors: [],
+      duration_ms: 0,
+      duration_api_ms: 0,
+      num_turns: 1,
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: "test-session",
+    };
+  }
+
+  it("emits a synthetic tool_call for select mode with one location per memory", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    const recallUuid = randomUUID();
+    injectSession(agent, [
+      {
+        type: "system",
+        subtype: "memory_recall",
+        mode: "select",
+        memories: [
+          { path: "/Users/test/.claude/memory/user_role.md", scope: "personal" },
+          { path: "/Users/test/.claude/memory/feedback_testing.md", scope: "personal" },
+          { path: "/Users/test/.claude/team/conventions.md", scope: "team" },
+        ],
+        uuid: recallUuid,
+        session_id: "test-session",
+      },
+      createResult(),
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    const toolCall = updates.find((u: any) => u.update?.sessionUpdate === "tool_call");
+    expect(toolCall).toBeDefined();
+    expect(toolCall.update).toMatchObject({
+      sessionUpdate: "tool_call",
+      toolCallId: recallUuid,
+      title: "Recalled 3 memories",
+      kind: "read",
+      status: "completed",
+      locations: [
+        { path: "/Users/test/.claude/memory/user_role.md" },
+        { path: "/Users/test/.claude/memory/feedback_testing.md" },
+        { path: "/Users/test/.claude/team/conventions.md" },
+      ],
+      _meta: {
+        claudeCode: { toolName: "memory_recall", toolResponse: { mode: "select" } },
+      },
+    });
+    expect(toolCall.update.content).toBeUndefined();
+  });
+
+  it("uses singular 'memory' in title when exactly one entry", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    injectSession(agent, [
+      {
+        type: "system",
+        subtype: "memory_recall",
+        mode: "select",
+        memories: [{ path: "/Users/test/.claude/memory/user_role.md", scope: "personal" }],
+        uuid: randomUUID(),
+        session_id: "test-session",
+      },
+      createResult(),
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    const toolCall = updates.find((u: any) => u.update?.sessionUpdate === "tool_call");
+    expect(toolCall.update.title).toBe("Recalled 1 memory");
+  });
+
+  it("emits synthesis content and no locations for synthesize mode", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    injectSession(agent, [
+      {
+        type: "system",
+        subtype: "memory_recall",
+        mode: "synthesize",
+        memories: [
+          {
+            path: "<synthesis:/Users/test/.claude/memory>",
+            scope: "personal",
+            content: "The user prefers terse responses and writes Go.",
+          },
+        ],
+        uuid: randomUUID(),
+        session_id: "test-session",
+      },
+      createResult(),
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    const toolCall = updates.find((u: any) => u.update?.sessionUpdate === "tool_call");
+    expect(toolCall).toBeDefined();
+    expect(toolCall.update.title).toBe("Recalled synthesized memory");
+    expect(toolCall.update.locations).toBeUndefined();
+    expect(toolCall.update.content).toEqual([
+      {
+        type: "content",
+        content: { type: "text", text: "The user prefers terse responses and writes Go." },
+      },
+    ]);
+    expect(toolCall.update._meta.claudeCode.toolResponse).toEqual({ mode: "synthesize" });
+  });
+});
+
+describe("post-error recovery", () => {
+  function createMockAgent() {
+    const mockClient = {
+      sessionUpdate: async () => {},
+    } as unknown as AgentSideConnection;
+    return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+  }
+
+  function createResultMessage(overrides: {
+    subtype: "success" | "error_during_execution";
+    stop_reason: string | null;
+    is_error: boolean;
+    result?: string;
+    errors?: string[];
+  }) {
+    return {
+      type: "result" as const,
+      subtype: overrides.subtype,
+      stop_reason: overrides.stop_reason,
+      is_error: overrides.is_error,
+      result: overrides.result ?? "",
+      errors: overrides.errors ?? [],
+      duration_ms: 0,
+      duration_api_ms: 0,
+      num_turns: 1,
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: "test-session",
+    };
+  }
+
+  // Two-turn generator: turn 1 yields the caller-supplied `firstTurn`
+  // messages (including a trailing idle that the drain must consume).
+  // Turn 2 yields a clean success + idle, used to verify the next prompt
+  // sees real messages rather than the stale idle.
+  function injectTwoTurnSession(agent: ClaudeAcpAgent, firstTurn: unknown[]) {
+    const input = new Pushable<any>();
+    const interrupt = vi.fn(async () => {});
+    const close = vi.fn();
+    async function* messageGenerator() {
+      const iter = input[Symbol.asyncIterator]();
+
+      const first = await iter.next();
+      if (!first.done && first.value) {
+        yield {
+          type: "user",
+          message: first.value.message,
+          parent_tool_use_id: null,
+          uuid: first.value.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+      }
+      yield* firstTurn;
+
+      const second = await iter.next();
+      if (!second.done && second.value) {
+        yield {
+          type: "user",
+          message: second.value.message,
+          parent_tool_use_id: null,
+          uuid: second.value.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+      }
+      yield createResultMessage({ subtype: "success", stop_reason: null, is_error: false });
+      yield { type: "system", subtype: "session_state_changed", state: "idle" };
+    }
+    const gen = Object.assign(messageGenerator(), { interrupt, close });
+    agent.sessions["test-session"] = {
+      query: gen as any,
+      input,
+      cancelled: false,
+      cwd: "/test",
+      sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+      modes: { currentModeId: "default", availableModes: [] },
+      models: { currentModelId: "default", availableModels: [] },
+      modelInfos: [],
+      settingsManager: { dispose: vi.fn() } as any,
+      accumulatedUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+      },
+      configOptions: [],
+      promptRunning: false,
+      pendingMessages: new Map(),
+      nextPendingOrder: 0,
+      abortController: new AbortController(),
+      emitRawSDKMessages: false,
+      contextWindowSize: 200000,
+      taskState: new Map(),
+    };
+    return { interrupt };
+  }
+
+  it("drains a failed turn's trailing idle so the next prompt is not short-circuited", async () => {
+    const agent = createMockAgent();
+    const { interrupt } = injectTwoTurnSession(agent, [
+      createResultMessage({
+        subtype: "success",
+        stop_reason: "end_turn",
+        is_error: true,
+        result: "boom",
+      }),
+      // Trailing idle from the failed turn. Without draining, the next
+      // prompt's first query.next() would consume this and short-circuit
+      // to end_turn with zero usage (issue #654).
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    await expect(
+      agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "first" }],
+      }),
+    ).rejects.toThrow();
+
+    expect(interrupt).toHaveBeenCalled();
+
+    const second = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "second" }],
+    });
+    expect(second.stopReason).toBe("end_turn");
+    expect(second.usage?.inputTokens).toBe(10);
+    expect(second.usage?.outputTokens).toBe(5);
+  });
+
+  it("cancels all queued pending prompts when a turn errors", async () => {
+    const agent = createMockAgent();
+    injectTwoTurnSession(agent, [
+      createResultMessage({
+        subtype: "success",
+        stop_reason: "end_turn",
+        is_error: true,
+        result: "boom",
+      }),
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    // Simulate two prompts already queued behind the running turn. Both
+    // resolvers should fire with `true` (cancelled) when the running
+    // prompt errors, and the map should be cleared.
+    const session = agent.sessions["test-session"];
+    let resolveA!: (cancelled: boolean) => void;
+    let resolveB!: (cancelled: boolean) => void;
+    const pendingA = new Promise<boolean>((r) => (resolveA = r));
+    const pendingB = new Promise<boolean>((r) => (resolveB = r));
+    session.pendingMessages.set("uuid-a", { resolve: resolveA, order: 0 });
+    session.pendingMessages.set("uuid-b", { resolve: resolveB, order: 1 });
+
+    await expect(
+      agent.prompt({
+        sessionId: "test-session",
+        prompt: [{ type: "text", text: "first" }],
+      }),
+    ).rejects.toThrow();
+
+    await expect(pendingA).resolves.toBe(true);
+    await expect(pendingB).resolves.toBe(true);
+    expect(session.pendingMessages.size).toBe(0);
   });
 });

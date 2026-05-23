@@ -104,6 +104,27 @@ pub struct AiSession {
     pub models: Vec<AiModelOption>,
     pub modes: Vec<AiModeOption>,
     pub config_options: Vec<AiConfigOption>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_roots: Vec<String>,
+    // Roots the user previously approved that could not be re-resolved on disk
+    // when the session was (re)opened. Not persisted — recomputed each load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub discarded_additional_roots: Vec<DiscardedAdditionalRoot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiscardedAdditionalRoot {
+    pub raw: String,
+    pub reason: DiscardedAdditionalRootReason,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiscardedAdditionalRootReason {
+    NotFound,
+    NotADirectory,
+    PermissionDenied,
+    Other { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

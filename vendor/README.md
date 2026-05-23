@@ -47,11 +47,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.33.1`
-  - upstream commit: `e0ea9d898a934c0388945f50b9720324932f697e`
-  - latest sync updated the Claude Agent SDK to `0.2.132` while keeping the ACP SDK at `0.21.0`
-  - latest sync also refreshed lockfile dependencies including `hono` `4.12.18`, `zod` `4.4.3`, `nanoid` `3.3.12`, and `tinyexec` `1.1.2`
-  - `dist/` is copied from the upstream working tree because the desktop packaging flow depends on it even though upstream does not track it in git
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.37.0`
+  - upstream commit: `36822c2b75b6e1cd5406a5ab40fe603fc380ee10`
+  - latest sync updated `@agentclientprotocol/sdk` to `0.22.1` and `@anthropic-ai/claude-agent-sdk` to `0.3.146`
+  - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 
 ## Current Codex Delta
 
