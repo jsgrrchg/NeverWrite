@@ -36,15 +36,20 @@ That means the directory is intentionally reproducible, but not yet minimal.
 ## Current Baselines
 
 - `codex-acp/`
-  - upstream baseline: `zed-industries/codex-acp` `0.12.0`
-  - synced against upstream commit `ee9418a65befdf08c3793d9a92dd4a083f545fcf`
-  - OpenAI Codex Rust crates: `rust-v0.124.0` (`e9fb49366c93a1478ec71cc41ecee415a197d036`)
-  - vendor ACP SDK: `agent-client-protocol` `0.11.1`
+  - upstream baseline: `zed-industries/codex-acp` `0.15.0`
+  - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
+  - latest upstream sync from `0.14.0` brought in 5 commits:
+    `d9bf1c1`, `0c2d828`, `8aef91b`, `f67ca5f`, `863d433`
+  - OpenAI Codex Rust crates: `rust-v0.133.0` (`9474e5cfc4494b0ba319352aa86ce436c59e65c8`)
+  - vendor ACP SDK: `agent-client-protocol` `0.12.1`
+  - upstream snapshot includes `vendor/codex-utils-pty/` plus the matching
+    `[patch."https://github.com/openai/codex"]` entry required by the OpenAI Codex crate graph
   - local NeverWrite delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/Cargo.toml`
     - `vendor/codex-acp/src/lib.rs`
     - `vendor/codex-acp/src/codex_agent.rs`
     - `vendor/codex-acp/src/prompt_args.rs`
+    - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
   - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.37.0`
@@ -64,11 +69,12 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 - custom slash-prompt expansion and Fast service-tier controls exposed to the desktop UI
 - session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
 - actor lifecycle behavior that does not keep the internal message channel alive after external senders disappear
+- subagent thread projection for collaboration events surfaced through the desktop ACP session
 
-When updating Codex again, treat `ee9418a` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
+When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
 The desktop backend and `crates/ai` are now aligned with
-`agent-client-protocol = 0.11.1`, matching the vendored Codex ACP runtime.
+`agent-client-protocol = 0.12.1`, matching the vendored Codex ACP runtime.
 The native backend tests cover the reconstructed diff, permission, and status
 metadata paths that NeverWrite depends on.
 

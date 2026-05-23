@@ -598,7 +598,9 @@ fn agent_status_label(status: &AgentStatus) -> String {
 mod tests {
     use super::*;
     use codex_protocol::{
-        config_types::ApprovalsReviewer, models::PermissionProfile, openai_models::ReasoningEffort,
+        config_types::{ApprovalsReviewer, CollaborationMode, ModeKind, Settings},
+        models::PermissionProfile,
+        openai_models::ReasoningEffort,
         protocol::AskForApproval,
     };
 
@@ -615,9 +617,20 @@ mod tests {
                 .expect("current dir should be available")
                 .try_into()
                 .expect("current dir should be absolute"),
+            workspace_roots: Vec::new(),
+            profile_workspace_roots: Vec::new(),
             ephemeral: false,
             reasoning_effort: Some(ReasoningEffort::High),
+            reasoning_summary: None,
             personality: None,
+            collaboration_mode: CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: "gpt-5.5".to_string(),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    developer_instructions: None,
+                },
+            },
             session_source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth: 1,
