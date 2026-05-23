@@ -213,14 +213,15 @@ function DropdownField({
                                 }}
                                 placeholder={searchPlaceholder}
                                 aria-label={`${label} search`}
-                                className="mt-0.5 w-full rounded-md px-1.5 py-0.5 text-[8px]"
+                                className="mt-0.5 w-full rounded px-1 py-0 text-[7px]"
                                 style={{
                                     color: "var(--text-primary)",
                                     backgroundColor: "var(--bg-primary)",
                                     border: "1px solid var(--border)",
+                                    height: 16,
                                     outline: "none",
-                                    minHeight: 22,
-                                    lineHeight: 1.1,
+                                    minHeight: 16,
+                                    lineHeight: "12px",
                                 }}
                             />
                         </div>
