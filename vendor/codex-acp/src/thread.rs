@@ -26,7 +26,7 @@ use agent_client_protocol::{
 use codex_apply_patch::parse_patch;
 use codex_core::{
     CodexThread,
-    config::{Config, set_project_trust_level},
+    config::{Config, PermissionProfileSnapshot, set_project_trust_level},
     review_format::format_review_findings_block,
     review_prompts::user_facing_hint,
 };
@@ -44,8 +44,8 @@ use codex_protocol::protocol::{
     McpToolCallEndEvent, ModelRerouteEvent, Op, PatchApplyBeginEvent, PatchApplyEndEvent,
     PatchApplyStatus, PlanDeltaEvent, ReasoningContentDeltaEvent, ReasoningRawContentDeltaEvent,
     ReviewDecision, ReviewOutputEvent, ReviewRequest, ReviewTarget, StreamErrorEvent,
-    TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent, TokenCountEvent,
-    TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
+    TerminalInteractionEvent, ThreadGoalStatus, ThreadGoalUpdatedEvent, ThreadSettingsOverrides,
+    TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
     ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
 };
 use codex_protocol::{
@@ -176,7 +176,7 @@ fn untrusted_read_only_mode_id(config: &Config) -> Option<SessionModeId> {
 }
 
 fn semantic_session_mode_id_for_permission_profile(config: &Config) -> Option<&'static str> {
-    let permission_profile = config.permissions.permission_profile.get();
+    let permission_profile = config.permissions.permission_profile();
 
     match permission_profile {
         PermissionProfile::Managed { .. } => {
@@ -212,7 +212,7 @@ fn current_session_mode_id(config: &Config) -> Option<SessionModeId> {
 
     if let Some(preset) = APPROVAL_PRESETS.iter().find(|preset| {
         approval_matches_current_config(preset, config)
-            && &preset.permission_profile == config.permissions.permission_profile.get()
+            && &preset.permission_profile == config.permissions.permission_profile()
     }) {
         return Some(SessionModeId::new(preset.id));
     }
@@ -337,6 +337,7 @@ enum ThreadMessage {
     },
     PermissionRequestResolved {
         submission_id: String,
+        interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
     },
@@ -528,21 +529,27 @@ impl SubmissionState {
     async fn handle_permission_request_resolved(
         &mut self,
         client: &SessionClient,
+        interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
     ) -> Result<(), Error> {
         match self {
             Self::Prompt(state) => {
                 state
-                    .handle_permission_request_resolved(client, request_key, response)
+                    .handle_permission_request_resolved(
+                        client,
+                        interaction_id,
+                        request_key,
+                        response,
+                    )
                     .await
             }
         }
     }
 
-    fn abort_pending_interactions(&mut self) {
+    fn detach_pending_interactions(&mut self) {
         let Self::Prompt(state) = self;
-        state.abort_pending_interactions();
+        state.detach_pending_interactions();
     }
 
     fn fail(&mut self, err: Error) {
@@ -564,8 +571,8 @@ struct ActiveCommand {
 }
 
 struct PendingPermissionInteraction {
+    id: u64,
     request: PendingPermissionRequest,
-    task: tokio::task::JoinHandle<()>,
 }
 
 enum PendingPermissionRequest {
@@ -875,6 +882,7 @@ struct PromptState {
     thread: Arc<dyn CodexThreadImpl>,
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
+    next_permission_interaction_id: u64,
     event_count: usize,
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
@@ -1035,6 +1043,8 @@ fn format_thread_goal_update(event: &ThreadGoalUpdatedEvent) -> String {
     let status = match event.goal.status {
         ThreadGoalStatus::Active => "active",
         ThreadGoalStatus::Paused => "paused",
+        ThreadGoalStatus::Blocked => "blocked",
+        ThreadGoalStatus::UsageLimited => "usage limited",
         ThreadGoalStatus::BudgetLimited => "budget limited",
         ThreadGoalStatus::Complete => "complete",
     };
@@ -1128,7 +1138,7 @@ fn format_permission_rule(permissions: &RequestPermissionProfile) -> Option<Stri
             file_system
                 .entries
                 .iter()
-                .filter(|entry| entry.access == FileSystemAccessMode::None),
+                .filter(|entry| entry.access == FileSystemAccessMode::Deny),
         );
         if !denies.is_empty() {
             parts.push(format!("deny {denies}"));
@@ -1437,6 +1447,7 @@ impl PromptState {
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
+            next_permission_interaction_id: 0,
             event_count: 0,
             response_tx: Some(response_tx),
             seen_message_deltas: false,
@@ -1459,6 +1470,7 @@ impl PromptState {
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
+            next_permission_interaction_id: 0,
             event_count: 0,
             response_tx: None,
             seen_message_deltas: false,
@@ -1482,36 +1494,37 @@ impl PromptState {
         tool_call: ToolCallUpdate,
         options: Vec<PermissionOption>,
     ) {
+        let interaction_id = self.next_permission_interaction_id;
+        self.next_permission_interaction_id = self.next_permission_interaction_id.wrapping_add(1);
         let client = client.clone();
         let resolution_tx = self.resolution_tx.clone();
         let submission_id = self.submission_id.clone();
         let resolved_request_key = request_key.clone();
-        let handle = tokio::spawn(async move {
+        drop(tokio::spawn(async move {
             let response = client.request_permission(tool_call, options).await;
             drop(
                 resolution_tx.send(ThreadMessage::PermissionRequestResolved {
                     submission_id,
+                    interaction_id,
                     request_key: resolved_request_key,
                     response,
                 }),
             );
-        });
+        }));
 
-        if let Some(interaction) = self.pending_permission_interactions.insert(
+        self.pending_permission_interactions.insert(
             request_key,
             PendingPermissionInteraction {
+                id: interaction_id,
                 request: pending_request,
-                task: handle,
             },
-        ) {
-            interaction.task.abort();
-        }
+        );
     }
 
-    fn abort_pending_interactions(&mut self) {
-        for (_, interaction) in self.pending_permission_interactions.drain() {
-            interaction.task.abort();
-        }
+    fn detach_pending_interactions(&mut self) {
+        // Keep detached permission request tasks running so ACP can route the
+        // client's required `Cancelled` response after session cancellation.
+        self.pending_permission_interactions.clear();
     }
 
     fn fail(&mut self, err: Error) {
@@ -1523,9 +1536,24 @@ impl PromptState {
     async fn handle_permission_request_resolved(
         &mut self,
         _client: &SessionClient,
+        interaction_id: u64,
         request_key: String,
         response: Result<RequestPermissionResponse, Error>,
     ) -> Result<(), Error> {
+        let Some(pending_interaction_id) = self
+            .pending_permission_interactions
+            .get(&request_key)
+            .map(|interaction| interaction.id)
+        else {
+            warn!("Ignoring permission response for unknown request key: {request_key}");
+            return Ok(());
+        };
+
+        if pending_interaction_id != interaction_id {
+            warn!("Ignoring stale permission response for request key: {request_key}");
+            return Ok(());
+        }
+
         let Some(interaction) = self.pending_permission_interactions.remove(&request_key) else {
             warn!("Ignoring permission response for unknown request key: {request_key}");
             return Ok(());
@@ -1871,6 +1899,7 @@ impl PromptState {
                 images: _,
                 text_elements: _,
                 local_images: _,
+                ..
             }) => {
                 info!("User message: {message:?}");
                 if self.project_user_messages {
@@ -2166,7 +2195,7 @@ impl PromptState {
                 client
                     .send_turn_lifecycle(CODEX_ACP_TURN_COMPLETE_EVENT_TYPE, Some(&turn_id))
                     .await;
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::EndTurn)).ok();
                 }
@@ -2198,7 +2227,7 @@ impl PromptState {
                 codex_error_info,
             }) => {
                 error!("Unhandled error during turn: {message} {codex_error_info:?}");
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx
                         .send(Err(Error::internal_error().data(
@@ -2216,7 +2245,7 @@ impl PromptState {
                 client
                     .send_turn_lifecycle(CODEX_ACP_TURN_ABORTED_EVENT_TYPE, turn_id.as_deref())
                     .await;
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
@@ -2226,7 +2255,7 @@ impl PromptState {
                 client
                     .send_turn_lifecycle(CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE, None)
                     .await;
-                self.abort_pending_interactions();
+                self.detach_pending_interactions();
                 if let Some(response_tx) = self.response_tx.take() {
                     response_tx.send(Ok(StopReason::Cancelled)).ok();
                 }
@@ -2382,7 +2411,7 @@ impl PromptState {
             | EventMsg::ThreadRolledBack(..)
             // we already have a way to diff the turn, so ignore
             | EventMsg::TurnDiff(..)
-            | EventMsg::SkillsUpdateAvailable
+            | EventMsg::ThreadSettingsApplied(..)
             | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..)
             | EventMsg::RealtimeConversationStarted(..)
@@ -2631,6 +2660,7 @@ impl PromptState {
             // grant_root doesn't seem to be set anywhere on the codex side
             grant_root: _,
             turn_id: _,
+            ..
         } = event;
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
         let request_key = patch_request_key(&call_id);
@@ -3861,15 +3891,21 @@ impl<A: Auth> ThreadActor<A> {
             }
             ThreadMessage::PermissionRequestResolved {
                 submission_id,
+                interaction_id,
                 request_key,
                 response,
             } => {
                 if let Some(submission) = self.submissions.get_mut(&submission_id) {
                     if let Err(err) = submission
-                        .handle_permission_request_resolved(&self.client, request_key, response)
+                        .handle_permission_request_resolved(
+                            &self.client,
+                            interaction_id,
+                            request_key,
+                            response,
+                        )
                         .await
                     {
-                        submission.abort_pending_interactions();
+                        submission.detach_pending_interactions();
                         submission.fail(err);
                     }
                     return;
@@ -3883,10 +3919,15 @@ impl<A: Auth> ThreadActor<A> {
                 };
 
                 if let Err(err) = projection
-                    .handle_permission_request_resolved(&self.client, request_key, response)
+                    .handle_permission_request_resolved(
+                        &self.client,
+                        interaction_id,
+                        request_key,
+                        response,
+                    )
                     .await
                 {
-                    projection.abort_pending_interactions();
+                    projection.detach_pending_interactions();
                     projection.fail(err);
                 }
             }
@@ -3995,7 +4036,7 @@ impl<A: Auth> ThreadActor<A> {
         self.config
             .service_tier
             .as_deref()
-            .and_then(|value| serde_json::from_value(value.into()).ok())
+            .and_then(ServiceTier::from_request_value)
     }
 
     fn fast_mode_available(&self) -> bool {
@@ -4208,19 +4249,12 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: Some(model_to_use.clone()),
-                effort: Some(effort_to_use),
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    model: Some(model_to_use.clone()),
+                    effort: Some(effort_to_use),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4256,19 +4290,11 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: None,
-                effort: Some(Some(effort)),
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    effort: Some(Some(effort)),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4290,24 +4316,16 @@ impl<A: Auth> ThreadActor<A> {
         };
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: None,
-                effort: None,
-                summary: None,
-                service_tier: Some(service_tier.map(|tier| tier.to_string())),
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(service_tier.map(|tier| tier.request_value().to_string())),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
 
-        self.config.service_tier = service_tier.map(|tier| tier.to_string());
+        self.config.service_tier = service_tier.map(|tier| tier.request_value().to_string());
 
         Ok(())
     }
@@ -4383,6 +4401,7 @@ impl<A: Auth> ThreadActor<A> {
                         }],
                         final_output_json_schema: None,
                         responsesapi_client_metadata: None,
+                        thread_settings: Default::default(),
                     }
                 }
                 "fast" => {
@@ -4510,6 +4529,7 @@ impl<A: Auth> ThreadActor<A> {
                             }],
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
+                            thread_settings: Default::default(),
                         }
                     } else {
                         op = Op::UserInput {
@@ -4517,6 +4537,7 @@ impl<A: Auth> ThreadActor<A> {
                             items,
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
+                            thread_settings: Default::default(),
                         }
                     }
                 }
@@ -4527,6 +4548,7 @@ impl<A: Auth> ThreadActor<A> {
                 items,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             }
         }
 
@@ -4558,19 +4580,14 @@ impl<A: Auth> ThreadActor<A> {
             .ok_or_else(Error::invalid_params)?;
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: Some(preset.approval),
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: Some(preset.permission_profile.clone()),
-                windows_sandbox_level: None,
-                model: None,
-                effort: None,
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    approval_policy: Some(preset.approval),
+                    permission_profile: Some(preset.permission_profile.clone()),
+                    active_permission_profile: active_profile_id_for_session_mode(preset.id)
+                        .map(ActivePermissionProfile::new),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4582,10 +4599,12 @@ impl<A: Auth> ThreadActor<A> {
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
         self.config
             .permissions
-            .set_permission_profile_with_active_profile(
+            .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
                 preset.permission_profile.clone(),
-                active_profile_id_for_session_mode(preset.id).map(ActivePermissionProfile::new),
-            )
+                ActivePermissionProfile::new(
+                    active_profile_id_for_session_mode(preset.id).unwrap_or(preset.id),
+                ),
+            ))
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
 
         if mode_trusts_project(preset.id) {
@@ -4622,19 +4641,12 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         self.thread
-            .submit(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                approvals_reviewer: None,
-                sandbox_policy: None,
-                permission_profile: None,
-                windows_sandbox_level: None,
-                model: Some(model_to_use.clone()),
-                effort: Some(effort_to_use),
-                summary: None,
-                service_tier: None,
-                collaboration_mode: None,
-                personality: None,
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    model: Some(model_to_use.clone()),
+                    effort: Some(effort_to_use),
+                    ..Default::default()
+                },
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
@@ -4646,7 +4658,7 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_cancel(&mut self) -> Result<(), Error> {
-        self.abort_pending_interactions();
+        self.detach_pending_interactions();
         self.thread
             .submit(Op::Interrupt)
             .await
@@ -4655,7 +4667,7 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_shutdown(&mut self) -> Result<(), Error> {
-        self.abort_pending_interactions();
+        self.detach_pending_interactions();
         self.thread
             .submit(Op::Shutdown)
             .await
@@ -4663,9 +4675,12 @@ impl<A: Auth> ThreadActor<A> {
         Ok(())
     }
 
-    fn abort_pending_interactions(&mut self) {
+    fn detach_pending_interactions(&mut self) {
         for submission in self.submissions.values_mut() {
-            submission.abort_pending_interactions();
+            submission.detach_pending_interactions();
+        }
+        for projection in self.event_projections.values_mut() {
+            projection.detach_pending_interactions();
         }
     }
 
@@ -5121,6 +5136,7 @@ fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
             }),
             ContentBlock::Image(image_block) => Some(UserInput::Image {
                 image_url: format!("data:{};base64,{}", image_block.mime_type, image_block.data),
+                detail: None,
             }),
             ContentBlock::ResourceLink(ResourceLink { name, uri, .. }) => Some(UserInput::Text {
                 text: format_uri_as_link(Some(name), uri),
@@ -6010,10 +6026,12 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            Op::OverrideTurnContext {
-                service_tier: Some(Some(tier)),
-                ..
-            } if tier == "fast"
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(Some(tier)),
+                    ..
+                },
+            } if tier == ServiceTier::Fast.request_value()
         ));
 
         Ok(())
@@ -6058,10 +6076,12 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(matches!(
             &ops[0],
-            Op::OverrideTurnContext {
-                service_tier: Some(Some(tier)),
-                ..
-            } if tier == "fast"
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(Some(tier)),
+                    ..
+                },
+            } if tier == ServiceTier::Fast.request_value()
         ));
 
         Ok(())
@@ -6134,16 +6154,20 @@ mod tests {
         assert_eq!(ops.len(), 2);
         assert!(matches!(
             &ops[0],
-            Op::OverrideTurnContext {
-                service_tier: Some(Some(tier)),
-                ..
-            } if tier == "fast"
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(Some(tier)),
+                    ..
+                },
+            } if tier == ServiceTier::Fast.request_value()
         ));
         assert!(matches!(
             &ops[1],
-            Op::OverrideTurnContext {
-                service_tier: Some(None),
-                ..
+            Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(None),
+                    ..
+                },
             }
         ));
 
@@ -6196,6 +6220,7 @@ mod tests {
                 environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             }],
             "ops don't match {ops:?}"
         );
@@ -6484,6 +6509,7 @@ mod tests {
                 environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             }],
             "ops don't match {ops:?}"
         );
@@ -7159,10 +7185,10 @@ mod tests {
                 .expect("approval policy should update");
             config
                 .permissions
-                .set_permission_profile_with_active_profile(
+                .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
                     preset.permission_profile.clone(),
-                    Some(ActivePermissionProfile::new(active_profile_id)),
-                )
+                    ActivePermissionProfile::new(active_profile_id),
+                ))
                 .expect("permission profile should update");
 
             assert_eq!(
@@ -7194,9 +7220,11 @@ mod tests {
         );
         assert!(matches!(
             conversation.ops.lock().unwrap().last(),
-            Some(Op::OverrideTurnContext {
-                permission_profile: Some(_),
-                ..
+            Some(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    permission_profile: Some(_),
+                    ..
+                },
             })
         ));
 
@@ -7661,7 +7689,7 @@ mod tests {
                             })
                             .unwrap();
                     }
-                    Op::OverrideTurnContext { .. } => {}
+                    Op::ThreadSettings { .. } => {}
                     _ => {
                         unimplemented!()
                     }
