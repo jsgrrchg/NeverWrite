@@ -88,6 +88,28 @@ function ChatProviderIcon({ runtimeId }: { readonly runtimeId: string }) {
         );
     }
 
+    if (runtimeId.includes("opencode")) {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                viewBox="0 0 300 300"
+                width={12}
+            >
+                <path
+                    d="M210 240H90V120H210V240Z"
+                    fill="currentColor"
+                    opacity="0.38"
+                />
+                <path
+                    d="M210 60H90V240H210V60ZM270 300H30V0H270V300Z"
+                    fill="currentColor"
+                />
+            </svg>
+        );
+    }
+
     return (
         <svg
             className="shrink-0 opacity-55"
