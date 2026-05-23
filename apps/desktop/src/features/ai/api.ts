@@ -93,6 +93,8 @@ export function normalizeBackendSession(
         persistedTitle: session.title ?? null,
         runtimeId: session.runtime_id,
         additionalRoots: session.additional_roots ?? [],
+        // Client-only flag; never spread from backend payload.
+        discardedAdditionalRoots: session.discarded_additional_roots ?? [],
         modelId: session.model_id,
         modeId: session.mode_id,
         status: session.status,

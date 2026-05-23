@@ -1234,6 +1234,7 @@ interface ChatStore {
         options?: UpsertSessionOptions,
     ) => void;
     dismissMessage: (sessionId: string, messageId: string) => void;
+    dismissDiscardedRootsBanner: (sessionId: string) => void;
     applySessionError: (payload: AISessionErrorPayload) => void;
     applyRuntimeConnection: (payload: AIRuntimeConnectionPayload) => void;
     applyTokenUsage: (payload: AITokenUsagePayload) => void;
@@ -5040,6 +5041,29 @@ function withUniqueAttachment(
     return [...attachments, next];
 }
 
+function discardedRootsEqual(
+    a: AIChatSession["discardedAdditionalRoots"],
+    b: AIChatSession["discardedAdditionalRoots"],
+): boolean {
+    const left = a ?? [];
+    const right = b ?? [];
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+        const l = left[i];
+        const r = right[i];
+        if (l.raw !== r.raw) return false;
+        if (l.reason.kind !== r.reason.kind) return false;
+        if (
+            l.reason.kind === "other" &&
+            r.reason.kind === "other" &&
+            l.reason.message !== r.reason.message
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 function mergeSession(
     existing: AIChatSession | undefined,
     incoming: AIChatSession,
@@ -5212,6 +5236,18 @@ function mergeSession(
             incoming.runtimeState ?? normalizedExisting.runtimeState ?? "live",
         status,
         attachments: normalizedExisting.attachments,
+        discardedAdditionalRoots:
+            incoming.discardedAdditionalRoots ??
+            normalizedExisting.discardedAdditionalRoots ??
+            [],
+        // Preserve the user's dismissal unless the set of discarded roots
+        // actually changed.
+        discardedRootsBannerDismissed: discardedRootsEqual(
+            incoming.discardedAdditionalRoots,
+            normalizedExisting.discardedAdditionalRoots,
+        )
+            ? (normalizedExisting.discardedRootsBannerDismissed ?? false)
+            : false,
     };
 
     return synchronizeSessionConfigSelections(
@@ -7506,6 +7542,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
+        dismissDiscardedRootsBanner: (sessionId) => {
+            set((state) => {
+                const session = state.sessionsById[sessionId];
+                if (!session || session.discardedRootsBannerDismissed) {
+                    return state;
+                }
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [sessionId]: {
+                            ...session,
+                            discardedRootsBannerDismissed: true,
+                        },
+                    },
+                };
+            });
+        },
+
         applyRuntimeConnection: ({ runtime_id, status, message }) => {
             const affectedSessionIds: string[] = [];
             set((state) => {
@@ -8774,6 +8828,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 resumedSession.additionalRoots ??
                                 latestSession.additionalRoots ??
                                 [],
+                            // Discarded roots come fresh from the backend on
+                            // each reconnect — never fall back to the previous
+                            // session's stale set.
+                            discardedAdditionalRoots:
+                                resumedSession.discardedAdditionalRoots ?? [],
+                            discardedRootsBannerDismissed: false,
                             effortsByModel:
                                 resumedSession.effortsByModel ??
                                 latestSession.effortsByModel ??
