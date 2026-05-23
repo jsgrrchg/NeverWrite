@@ -42,6 +42,9 @@ import type {
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
+const OPENCODE_RUNTIME_ID = "opencode-acp";
+const OPENCODE_AUTH_METHOD_ID = "opencode-login";
+
 function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message.trim()) return error.message;
     if (typeof error === "string" && error.trim()) return error;
@@ -83,6 +86,7 @@ function getShortMethodDesc(id: string): string {
         case "console-login":
         case "claude-login":
         case "kilo-login":
+        case OPENCODE_AUTH_METHOD_ID:
             return "Terminal sign-in";
         case "openai-api-key":
             return "OpenAI API key";
@@ -117,6 +121,8 @@ function getAuthHelpText(id: string): string {
             return "Opens a sign-in terminal inside the app.";
         case "kilo-login":
             return "Opens a Kilo sign-in terminal inside the app.";
+        case OPENCODE_AUTH_METHOD_ID:
+            return "Use providers and credentials configured by the OpenCode CLI.";
         case "openai-api-key":
             return `Store an OpenAI API key locally for ${APP_BRAND_NAME} only.`;
         case "codex-api-key":
@@ -156,6 +162,7 @@ function getActionLabel(
     if (isClaudeTerminalAuthMethodId(methodId)) return "Open sign-in terminal";
     if (methodId === "login_with_google") return "Open sign-in terminal";
     if (methodId === "kilo-login") return "Open sign-in terminal";
+    if (methodId === OPENCODE_AUTH_METHOD_ID) return "Open sign-in terminal";
     if (isApiKeyMethod(methodId)) {
         return status.authReady && status.authMethod === methodId
             ? "Replace key"
@@ -163,6 +170,16 @@ function getActionLabel(
     }
     if (isGatewayMethod(methodId)) return "Save gateway";
     return "Connect";
+}
+
+function getSecondaryAuthActionLabel(status: AIRuntimeSetupStatus): string {
+    return status.runtimeId === OPENCODE_RUNTIME_ID ? "Disconnect" : "Log Out";
+}
+
+function getLogoutErrorFallback(runtimeId: string): string {
+    return runtimeId === OPENCODE_RUNTIME_ID
+        ? "Failed to disconnect."
+        : "Failed to log out.";
 }
 
 function getDefaultMethodId(status: AIRuntimeSetupStatus): string {
@@ -193,11 +210,75 @@ const inputStyle: React.CSSProperties = {
 const unchangedSecretPatch: AISecretPatch = { action: "unchanged" };
 const clearSecretPatch: AISecretPatch = { action: "clear" };
 
+interface ProviderAuthInput {
+    runtimeId: string;
+    methodId: string;
+    customBinaryPath?: string;
+    codexApiKey: AISecretPatch;
+    openaiApiKey: AISecretPatch;
+    geminiApiKey: AISecretPatch;
+    kiloApiKey: AISecretPatch;
+    anthropicBaseUrl?: string;
+    anthropicBedrockBaseUrl?: string;
+    anthropicCustomHeaders: AISecretPatch;
+    anthropicAuthToken: AISecretPatch;
+    anthropicApiKey: AISecretPatch;
+}
+
 function setSecretPatch(value: string): AISecretPatch {
     return {
         action: "set",
         value,
     };
+}
+
+function supportsRuntimeBinaryOverride(runtimeId: string): boolean {
+    return runtimeId === OPENCODE_RUNTIME_ID;
+}
+
+function getRuntimeBinaryPlaceholder(runtimeId: string): string {
+    if (runtimeId === OPENCODE_RUNTIME_ID) {
+        return "Custom OpenCode runtime path, for example opencode";
+    }
+    return "Custom runtime path";
+}
+
+function getRuntimeBinaryHelpText(runtimeId: string): string {
+    if (runtimeId === OPENCODE_RUNTIME_ID) {
+        return "Leave empty to use opencode from PATH.";
+    }
+    return "Leave empty to use the bundled runtime or PATH.";
+}
+
+function getInitialCustomBinaryPath(status: AIRuntimeSetupStatus): string {
+    return status.hasCustomBinaryPath ? (status.binaryPath ?? "") : "";
+}
+
+function getPendingCustomBinaryPath(
+    status: AIRuntimeSetupStatus,
+    customBinaryPath: string,
+): string | undefined {
+    const initialPath = getInitialCustomBinaryPath(status).trim();
+    const nextPath = customBinaryPath.trim();
+    if (nextPath !== initialPath) {
+        return nextPath;
+    }
+    return undefined;
+}
+
+function hasPendingSetupUpdate(input: ProviderAuthInput): boolean {
+    return (
+        input.customBinaryPath !== undefined ||
+        input.codexApiKey.action !== "unchanged" ||
+        input.openaiApiKey.action !== "unchanged" ||
+        input.geminiApiKey.action !== "unchanged" ||
+        input.kiloApiKey.action !== "unchanged" ||
+        input.anthropicApiKey.action !== "unchanged" ||
+        input.anthropicBaseUrl !== undefined ||
+        input.anthropicBedrockBaseUrl !== undefined ||
+        input.anthropicCustomHeaders.action !== "unchanged" ||
+        input.anthropicAuthToken.action !== "unchanged"
+    );
 }
 
 function EmptyProviderSearchResult() {
@@ -232,6 +313,16 @@ function getProviderSearchValues(
         setupStatus?.binaryReady ? "Binary ready" : "Binary missing",
         setupStatus?.hasGatewayConfig ? "Custom gateway" : undefined,
         setupStatus?.hasGatewayUrl ? "Gateway URL" : undefined,
+        supportsRuntimeBinaryOverride(provider.id)
+            ? "Runtime binary"
+            : undefined,
+        supportsRuntimeBinaryOverride(provider.id)
+            ? getRuntimeBinaryPlaceholder(provider.id)
+            : undefined,
+        supportsRuntimeBinaryOverride(provider.id)
+            ? getRuntimeBinaryHelpText(provider.id)
+            : undefined,
+        provider.id === OPENCODE_RUNTIME_ID ? "opencode acp" : undefined,
         getMethodDisplayName(setupStatus),
         error,
         ...(setupStatus?.authMethods.flatMap((method) => [
@@ -427,19 +518,7 @@ function ProviderExpandedPanel({
     setupStatus: AIRuntimeSetupStatus;
     error: string | null;
     saving: boolean;
-    onAuth: (input: {
-        runtimeId: string;
-        methodId: string;
-        codexApiKey: AISecretPatch;
-        openaiApiKey: AISecretPatch;
-        geminiApiKey: AISecretPatch;
-        kiloApiKey: AISecretPatch;
-        anthropicBaseUrl?: string;
-        anthropicBedrockBaseUrl?: string;
-        anthropicCustomHeaders: AISecretPatch;
-        anthropicAuthToken: AISecretPatch;
-        anthropicApiKey: AISecretPatch;
-    }) => void;
+    onAuth: (input: ProviderAuthInput) => void;
     onClearGateway: () => void;
     onLogout: () => void;
 }) {
@@ -450,9 +529,18 @@ function ProviderExpandedPanel({
     const [gatewayUrl, setGatewayUrl] = useState("");
     const [gatewayHeaders, setGatewayHeaders] = useState("");
     const [gatewayToken, setGatewayToken] = useState("");
+    const [customBinaryPath, setCustomBinaryPath] = useState(() =>
+        getInitialCustomBinaryPath(setupStatus),
+    );
 
     const selectedMethod =
         setupStatus.authMethods.find((m) => m.id === selectedMethodId) ?? null;
+    const runtimeBinaryOverrideSupported = supportsRuntimeBinaryOverride(
+        setupStatus.runtimeId,
+    );
+    const pendingCustomBinaryPath = runtimeBinaryOverrideSupported
+        ? getPendingCustomBinaryPath(setupStatus, customBinaryPath)
+        : undefined;
     const apiKeySelected = isApiKeyMethod(selectedMethodId);
     const gatewaySelected = isGatewayMethod(selectedMethodId);
     const bedrockGatewaySelected = isBedrockGatewayMethod(selectedMethodId);
@@ -476,6 +564,7 @@ function ProviderExpandedPanel({
         onAuth({
             runtimeId: setupStatus.runtimeId,
             methodId: selectedMethodId,
+            customBinaryPath: pendingCustomBinaryPath,
             openaiApiKey: isOpenAi
                 ? setSecretPatch(apiKey)
                 : unchangedSecretPatch,
@@ -562,6 +651,46 @@ function ProviderExpandedPanel({
                             </button>
                         );
                     })}
+                </div>
+            )}
+
+            {/* Runtime binary override */}
+            {runtimeBinaryOverrideSupported && (
+                <div
+                    style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 6,
+                    }}
+                >
+                    <label
+                        htmlFor={`${setupStatus.runtimeId}-runtime-binary`}
+                        style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: "var(--text-primary)",
+                        }}
+                    >
+                        Runtime binary
+                    </label>
+                    <input
+                        id={`${setupStatus.runtimeId}-runtime-binary`}
+                        type="text"
+                        value={customBinaryPath}
+                        onChange={(e) => setCustomBinaryPath(e.target.value)}
+                        placeholder={getRuntimeBinaryPlaceholder(
+                            setupStatus.runtimeId,
+                        )}
+                        style={inputStyle}
+                    />
+                    <div
+                        style={{
+                            fontSize: 11,
+                            color: "var(--text-secondary)",
+                        }}
+                    >
+                        {getRuntimeBinaryHelpText(setupStatus.runtimeId)}
+                    </div>
                 </div>
             )}
 
@@ -738,7 +867,7 @@ function ProviderExpandedPanel({
                             opacity: saving ? 0.5 : 1,
                         }}
                     >
-                        Log Out
+                        {getSecondaryAuthActionLabel(setupStatus)}
                     </button>
                 ) : (
                     <div />
@@ -960,27 +1089,17 @@ export function AIProvidersSettings({
     /* ── Handlers ── */
 
     const handleAuth = useCallback(
-        async (input: {
-            runtimeId: string;
-            methodId: string;
-            customBinaryPath?: string;
-            codexApiKey: AISecretPatch;
-            openaiApiKey: AISecretPatch;
-            geminiApiKey: AISecretPatch;
-            kiloApiKey: AISecretPatch;
-            anthropicBaseUrl?: string;
-            anthropicBedrockBaseUrl?: string;
-            anthropicCustomHeaders: AISecretPatch;
-            anthropicAuthToken: AISecretPatch;
-            anthropicApiKey: AISecretPatch;
-        }) => {
+        async (input: ProviderAuthInput) => {
             const runtime = runtimes.find(
                 (r) => r.runtime.id === input.runtimeId,
             );
+            const terminalAuth = isIntegratedTerminalAuthMethod(
+                input.runtimeId,
+                input.methodId,
+            );
+            const needsPreflight = hasPendingSetupUpdate(input);
 
-            if (
-                isIntegratedTerminalAuthMethod(input.runtimeId, input.methodId)
-            ) {
+            if (terminalAuth && !needsPreflight) {
                 setAuthTerminalRequest({
                     runtimeId: input.runtimeId,
                     methodId: input.methodId,
@@ -995,18 +1114,7 @@ export function AIProvidersSettings({
 
             setSavingId(input.runtimeId);
             try {
-                if (
-                    input.customBinaryPath !== undefined ||
-                    input.codexApiKey.action !== "unchanged" ||
-                    input.openaiApiKey.action !== "unchanged" ||
-                    input.geminiApiKey.action !== "unchanged" ||
-                    input.kiloApiKey.action !== "unchanged" ||
-                    input.anthropicApiKey.action !== "unchanged" ||
-                    input.anthropicBaseUrl !== undefined ||
-                    input.anthropicBedrockBaseUrl !== undefined ||
-                    input.anthropicCustomHeaders.action !== "unchanged" ||
-                    input.anthropicAuthToken.action !== "unchanged"
-                ) {
+                if (needsPreflight) {
                     const preflight = await aiUpdateSetup({
                         runtimeId: input.runtimeId,
                         customBinaryPath: input.customBinaryPath,
@@ -1029,6 +1137,24 @@ export function AIProvidersSettings({
                         ...prev,
                         [input.runtimeId]: preflight,
                     }));
+                }
+
+                if (terminalAuth) {
+                    setAuthTerminalRequest({
+                        runtimeId: input.runtimeId,
+                        methodId: input.methodId,
+                        runtimeName: getRuntimeDisplayName(
+                            input.runtimeId,
+                            runtime?.runtime.name,
+                        ),
+                        customBinaryPath: input.customBinaryPath,
+                    });
+                    setErrorMap((prev) => {
+                        const next = { ...prev };
+                        delete next[input.runtimeId];
+                        return next;
+                    });
+                    return;
                 }
 
                 const status = await aiStartAuth(
@@ -1076,7 +1202,10 @@ export function AIProvidersSettings({
             } catch (error) {
                 setErrorMap((prev) => ({
                     ...prev,
-                    [runtimeId]: getErrorMessage(error, "Failed to log out."),
+                    [runtimeId]: getErrorMessage(
+                        error,
+                        getLogoutErrorFallback(runtimeId),
+                    ),
                 }));
             } finally {
                 setSavingId(null);

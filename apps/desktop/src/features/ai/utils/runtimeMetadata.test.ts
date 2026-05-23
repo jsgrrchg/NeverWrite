@@ -6,13 +6,18 @@ import {
 } from "./runtimeMetadata";
 
 describe("runtimeMetadata", () => {
-    it("includes Kilo in the provider catalog", () => {
+    it("includes native ACP runtimes in the provider catalog", () => {
         expect(PROVIDER_CATALOG).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({
                     id: "kilo-acp",
                     name: "Kilo",
                     company: "Kilo Code",
+                }),
+                expect.objectContaining({
+                    id: "opencode-acp",
+                    name: "OpenCode",
+                    company: "OpenCode",
                 }),
             ]),
         );
@@ -26,6 +31,14 @@ describe("runtimeMetadata", () => {
                     runtime: expect.objectContaining({
                         id: "kilo-acp",
                         name: "Kilo ACP",
+                    }),
+                }),
+                expect.objectContaining({
+                    runtime: expect.objectContaining({
+                        id: "opencode-acp",
+                        name: "OpenCode ACP",
+                        description:
+                            "OpenCode CLI running as a native ACP agent.",
                     }),
                 }),
             ]),
@@ -46,6 +59,7 @@ describe("runtimeMetadata", () => {
     it("normalizes runtime display names for the UI", () => {
         expect(getRuntimeDisplayName("kilo-acp", "Kilo ACP")).toBe("Kilo");
         expect(getRuntimeDisplayName("kilo-acp")).toBe("Kilo");
+        expect(getRuntimeDisplayName("opencode-acp")).toBe("OpenCode");
         expect(getRuntimeDisplayName(undefined, undefined)).toBe("Assistant");
     });
 });

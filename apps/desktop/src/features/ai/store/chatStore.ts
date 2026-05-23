@@ -1459,6 +1459,13 @@ function isAuthenticationErrorMessage(message: string) {
     return (
         normalized.includes("auth_required") ||
         normalized.includes("authentication required") ||
+        normalized.includes("auth required") ||
+        normalized.includes("missing api key") ||
+        normalized.includes("no provider configured") ||
+        normalized.includes("run opencode auth login") ||
+        normalized.includes("use /connect") ||
+        normalized.includes("unauthorized") ||
+        normalized.includes("401") ||
         normalized.includes("you were signed out") ||
         normalized.includes("reconnect in ai setup") ||
         normalized.includes("reconnect codex") ||

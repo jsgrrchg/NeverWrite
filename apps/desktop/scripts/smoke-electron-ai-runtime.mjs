@@ -344,6 +344,7 @@ async function main() {
       "claude-acp",
       "gemini-acp",
       "kilo-acp",
+      "opencode-acp",
     ]) {
       assert(
         runtimes.some((runtime) => runtime.runtime.id === runtimeId),

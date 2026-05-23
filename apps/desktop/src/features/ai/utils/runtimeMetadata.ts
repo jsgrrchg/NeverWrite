@@ -71,6 +71,21 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
             "list_sessions",
         ],
     },
+    {
+        id: "opencode-acp",
+        name: "OpenCode",
+        company: "OpenCode",
+        description: "OpenCode CLI running as a native ACP agent.",
+        capabilities: [
+            "attachments",
+            "permissions",
+            "plans",
+            "terminal_output",
+            "create_session",
+            "prompt_queueing",
+            "user_input",
+        ],
+    },
 ];
 
 export const PROVIDER_CATALOG = [

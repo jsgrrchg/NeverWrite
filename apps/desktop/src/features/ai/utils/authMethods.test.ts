@@ -18,6 +18,9 @@ describe("authMethods", () => {
         expect(isIntegratedTerminalAuthMethod("kilo-acp", "kilo-login")).toBe(
             true,
         );
+        expect(
+            isIntegratedTerminalAuthMethod("opencode-acp", "opencode-login"),
+        ).toBe(true);
     });
 
     it("rejects terminal auth methods for the wrong runtime", () => {
@@ -30,6 +33,9 @@ describe("authMethods", () => {
         expect(
             isIntegratedTerminalAuthMethod("codex-acp", "kilo-login"),
         ).toBe(false);
+        expect(
+            isIntegratedTerminalAuthMethod("kilo-acp", "opencode-login"),
+        ).toBe(false);
     });
 
     it("recognizes supported terminal auth method ids", () => {
@@ -38,6 +44,7 @@ describe("authMethods", () => {
             true,
         );
         expect(isIntegratedTerminalAuthMethodId("kilo-login")).toBe(true);
+        expect(isIntegratedTerminalAuthMethodId("opencode-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("openai-api-key")).toBe(false);
     });
 });

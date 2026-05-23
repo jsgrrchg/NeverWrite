@@ -143,6 +143,28 @@ function createDefaultProviders() {
     return { descriptors, statuses };
 }
 
+function addOpenCodeProvider(
+    providers: ReturnType<typeof createDefaultProviders>,
+    statusOverrides: Partial<AIRuntimeSetupStatus> = {},
+) {
+    providers.descriptors.push(
+        createRuntimeDescriptor("opencode-acp", "OpenCode ACP"),
+    );
+    providers.statuses["opencode-acp"] = createSetupStatus({
+        runtimeId: "opencode-acp",
+        binarySource: "env",
+        authMethods: [
+            {
+                id: "opencode-login",
+                name: "OpenCode auth",
+                description:
+                    "Use providers and credentials configured by the OpenCode CLI.",
+            },
+        ],
+        ...statusOverrides,
+    });
+}
+
 function mockProviders({
     descriptors,
     statuses,
@@ -221,7 +243,7 @@ function createDeferred<T>() {
 }
 
 async function openProvider(providerName: string) {
-    await screen.findByText(providerName);
+    await screen.findAllByText(providerName);
     const providerButton = screen
         .getAllByRole("button")
         .find((candidate) => candidate.textContent?.includes(providerName));
@@ -579,6 +601,113 @@ describe("AIProvidersSettings", () => {
                 methodId: "kilo-login",
                 vaultPath: null,
                 customBinaryPath: undefined,
+            });
+        });
+    });
+
+    it("lists OpenCode in the provider catalog before it is installed", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        expect((await screen.findAllByText("OpenCode")).length).toBeGreaterThan(
+            0,
+        );
+    });
+
+    it("opens integrated terminal auth for OpenCode without treating it as an API key", async () => {
+        const providers = createDefaultProviders();
+        addOpenCodeProvider(providers);
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("OpenCode");
+
+        expect(screen.getByText("OpenCode auth")).toBeInTheDocument();
+        expect(
+            screen.getByText(
+                "Use providers and credentials configured by the OpenCode CLI.",
+            ),
+        ).toBeInTheDocument();
+        expect(screen.queryByPlaceholderText("API key")).not.toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Open sign-in terminal" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledWith({
+                runtimeId: "opencode-acp",
+                methodId: "opencode-login",
+                vaultPath: null,
+                customBinaryPath: undefined,
+            });
+        });
+        expect(apiMocks.aiStartAuth).not.toHaveBeenCalledWith(
+            { methodId: "opencode-login", runtimeId: "opencode-acp" },
+            null,
+        );
+    });
+
+    it("preflights an OpenCode custom binary path before opening terminal auth", async () => {
+        const providers = createDefaultProviders();
+        addOpenCodeProvider(providers);
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("OpenCode");
+        fireEvent.change(screen.getByLabelText("Runtime binary"), {
+            target: { value: "/usr/local/bin/opencode" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Open sign-in terminal" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "opencode-acp",
+                    customBinaryPath: "/usr/local/bin/opencode",
+                    codexApiKey: { action: "unchanged" },
+                    openaiApiKey: { action: "unchanged" },
+                    geminiApiKey: { action: "unchanged" },
+                    kiloApiKey: { action: "unchanged" },
+                    anthropicApiKey: { action: "unchanged" },
+                }),
+            );
+            expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledWith({
+                runtimeId: "opencode-acp",
+                methodId: "opencode-login",
+                vaultPath: null,
+                customBinaryPath: "/usr/local/bin/opencode",
+            });
+        });
+
+        expect(
+            apiMocks.aiUpdateSetup.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+            apiMocks.aiStartAuthTerminalSession.mock.invocationCallOrder[0],
+        );
+    });
+
+    it("labels connected OpenCode auth as a local disconnect action", async () => {
+        const providers = createDefaultProviders();
+        addOpenCodeProvider(providers, {
+            authReady: true,
+            authMethod: "opencode-login",
+            onboardingRequired: false,
+        });
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("OpenCode");
+        fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+        await waitFor(() => {
+            expect(apiMocks.aiLogout).toHaveBeenCalledWith({
+                runtimeId: "opencode-acp",
+                vaultPath: null,
             });
         });
     });

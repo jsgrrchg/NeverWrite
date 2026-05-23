@@ -1859,6 +1859,69 @@ describe("chatStore", () => {
         });
     });
 
+    it("treats OpenCode auth guidance as an authentication error", () => {
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        ...runtimePayload[0].runtime,
+                        id: "opencode-acp",
+                        name: "OpenCode ACP",
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                "opencode-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "opencode-acp",
+                    authMethod: "opencode-login",
+                    authMethods: [
+                        {
+                            id: "opencode-login",
+                            name: "OpenCode login",
+                            description:
+                                "Open the OpenCode CLI sign-in flow in an integrated terminal.",
+                        },
+                    ],
+                },
+            },
+            sessionsById: {
+                "opencode-session-1": {
+                    sessionId: "opencode-session-1",
+                    historySessionId: "opencode-session-1",
+                    runtimeId: "opencode-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    status: "streaming",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: "opencode-acp",
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "opencode-session-1",
+            message: "Missing API key. Run `opencode auth login` or use /connect.",
+        });
+
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["opencode-acp"],
+        ).toMatchObject({
+            authReady: false,
+            authMethod: undefined,
+            onboardingRequired: true,
+            message: "You were signed out. Reconnect OpenCode to continue.",
+        });
+    });
+
     it("shows provider quota errors as provider limits", () => {
         useChatStore.setState({
             runtimes: [

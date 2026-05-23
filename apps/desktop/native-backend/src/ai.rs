@@ -37,7 +37,7 @@ use neverwrite_ai::{
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
     AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
-    KILO_RUNTIME_ID,
+    KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -92,6 +92,70 @@ const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
 const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
 const RUNTIME_SETUP_LOAD_ERROR_MESSAGE: &str = "Secure credential storage is unavailable. Reconnect this AI provider or configure an environment variable before starting a session.";
+const OPENCODE_AUTH_UNVERIFIED_MESSAGE: &str = "OpenCode auth is managed by the OpenCode CLI. NeverWrite could not verify local OpenCode credentials, but OpenCode may still use /connect, environment variables, or a project .env.";
+
+#[derive(Debug, Clone, Copy)]
+struct RuntimeDefinition {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    default_executable: &'static str,
+    bin_env_var: &'static str,
+    acp_args: &'static [&'static str],
+    supports_native_resume: bool,
+}
+
+const NO_ACP_ARGS: &[&str] = &[];
+const GEMINI_ACP_ARGS: &[&str] = &["--acp"];
+const SHELL_ACP_ARGS: &[&str] = &["acp"];
+
+const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
+    RuntimeDefinition {
+        id: CODEX_RUNTIME_ID,
+        name: "Codex",
+        description: "OpenAI Codex-compatible agent runtime.",
+        default_executable: "codex",
+        bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
+        acp_args: NO_ACP_ARGS,
+        supports_native_resume: true,
+    },
+    RuntimeDefinition {
+        id: CLAUDE_RUNTIME_ID,
+        name: "Claude",
+        description: "Claude ACP-compatible agent runtime.",
+        default_executable: "claude",
+        bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
+        acp_args: NO_ACP_ARGS,
+        supports_native_resume: false,
+    },
+    RuntimeDefinition {
+        id: GEMINI_RUNTIME_ID,
+        name: "Gemini",
+        description: "Gemini ACP-compatible agent runtime.",
+        default_executable: "gemini",
+        bin_env_var: "NEVERWRITE_GEMINI_ACP_BIN",
+        acp_args: GEMINI_ACP_ARGS,
+        supports_native_resume: false,
+    },
+    RuntimeDefinition {
+        id: KILO_RUNTIME_ID,
+        name: "Kilo",
+        description: "Kilo ACP-compatible agent runtime.",
+        default_executable: "kilo",
+        bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
+        acp_args: SHELL_ACP_ARGS,
+        supports_native_resume: false,
+    },
+    RuntimeDefinition {
+        id: OPENCODE_RUNTIME_ID,
+        name: "OpenCode",
+        description: "OpenCode ACP-compatible agent runtime.",
+        default_executable: "opencode",
+        bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
+        acp_args: SHELL_ACP_ARGS,
+        supports_native_resume: false,
+    },
+];
 
 #[derive(Debug, Clone)]
 struct TerminalExitMeta {
@@ -243,6 +307,7 @@ struct RuntimeSetupState {
     auth_ready: bool,
     auth_method: Option<String>,
     suppress_persisted_auth: bool,
+    auth_invalidated_at_ms: Option<u64>,
     has_gateway_config: bool,
     has_gateway_url: bool,
     message: Option<String>,
@@ -259,6 +324,8 @@ struct PersistedRuntimeSetupFile {
 struct PersistedRuntimeSetupState {
     custom_binary_path: Option<String>,
     auth_method: Option<String>,
+    #[serde(default)]
+    auth_invalidated_at_ms: Option<u64>,
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
@@ -451,15 +518,14 @@ impl RuntimeSetupStore {
                 auth_method: persisted_setup
                     .auth_method
                     .and_then(normalize_optional_string),
+                auth_invalidated_at_ms: persisted_setup.auth_invalidated_at_ms,
                 env,
                 ..RuntimeSetupState::default()
             };
             refresh_runtime_setup_flags(&runtime_id, &mut runtime_setup);
-            if !runtime_setup
-                .auth_method
-                .as_deref()
-                .is_some_and(|method| auth_method_has_local_config(&runtime_setup, method))
-            {
+            if !runtime_setup.auth_method.as_deref().is_some_and(|method| {
+                should_persist_auth_method(&runtime_id, &runtime_setup, method)
+            }) {
                 runtime_setup.auth_method =
                     local_auth_method_for_runtime(&runtime_id, &runtime_setup);
             }
@@ -583,10 +649,12 @@ impl PersistedRuntimeSetupState {
             .auth_method
             .clone()
             .and_then(normalize_optional_string)
-            .filter(|method| auth_method_has_local_config(setup, method));
+            .filter(|method| should_persist_auth_method(runtime_id, setup, method));
+        let auth_invalidated_at_ms = setup.auth_invalidated_at_ms;
 
         if custom_binary_path.is_none()
             && auth_method.is_none()
+            && auth_invalidated_at_ms.is_none()
             && env.is_empty()
             && secret_env_keys.is_empty()
         {
@@ -596,6 +664,7 @@ impl PersistedRuntimeSetupState {
         Ok(Some(Self {
             custom_binary_path,
             auth_method,
+            auth_invalidated_at_ms,
             env,
             secret_env_keys,
         }))
@@ -616,6 +685,7 @@ fn is_secret_runtime_env_key(key: &str) -> bool {
             | "ANTHROPIC_CUSTOM_HEADERS"
             | "GEMINI_API_KEY"
             | "GOOGLE_API_KEY"
+            | "OPENCODE_API_KEY"
             | "KILO_API_KEY"
     )
 }
@@ -935,9 +1005,12 @@ impl NativeAi {
                     "setup_status": setup_status,
                     "setup_error": setup_error,
                     "launch_program": default_executable_name(&runtime_id),
-                    "launch_args": [],
+                    "launch_args": runtime_definition(&runtime_id)
+                        .map(|definition| definition.acp_args.to_vec())
+                        .unwrap_or_default(),
                     "resolution_display": find_program_on_path(default_executable_name(&runtime_id))
                         .map(|path| path.display().to_string()),
+                    "auth": runtime_auth_diagnostics(&runtime_id),
                 })
             })
             .collect::<Vec<_>>();
@@ -1076,7 +1149,7 @@ impl NativeAi {
         }
 
         let setup = pending_setup.entry(runtime_id.clone()).or_default();
-        clear_runtime_auth_state(setup);
+        clear_runtime_auth_state(&runtime_id, setup);
         let status = setup_status_for(&runtime_id, setup.clone())?;
         self.setup_store.save(&pending_setup)?;
 
@@ -1523,7 +1596,7 @@ impl NativeAi {
         let cwd = resolve_auth_terminal_cwd(input.vault_path.as_deref())?;
         let launch_config =
             auth_terminal_launch_config(&input.runtime_id, &method_id, &setup, cwd)?;
-        mark_runtime_auth_pending(&self.inner, &input.runtime_id, &method_id);
+        self.persist_auth_terminal_pending_setup(&input.runtime_id, &method_id, setup)?;
         let snapshot = self.spawn_auth_terminal_session(
             session_id,
             launch_config,
@@ -1531,6 +1604,41 @@ impl NativeAi {
             input.rows.unwrap_or(AUTH_TERMINAL_DEFAULT_ROWS),
         )?;
         Ok(json!(snapshot))
+    }
+
+    fn persist_auth_terminal_pending_setup(
+        &self,
+        runtime_id: &str,
+        method_id: &str,
+        setup: RuntimeSetupState,
+    ) -> Result<(), String> {
+        let (mut pending_setup, setup_load_error) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            (state.setup.clone(), state.setup_load_error.clone())
+        };
+        if setup_load_error.is_some() {
+            pending_setup = self.setup_store.load().map_err(runtime_setup_load_error)?;
+        }
+
+        let pending = pending_setup.entry(runtime_id.to_string()).or_default();
+        *pending = setup;
+        pending.auth_method = Some(method_id.to_string());
+        pending.auth_ready = false;
+        pending.suppress_persisted_auth = false;
+        pending.auth_invalidated_at_ms = None;
+        pending.message = None;
+        self.setup_store.save(&pending_setup)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        state.setup = pending_setup;
+        state.setup_load_error = None;
+        Ok(())
     }
 
     pub(crate) fn write_auth_terminal_session(&self, args: &Value) -> Result<Value, String> {
@@ -4055,63 +4163,47 @@ fn reasoning_effort_label(effort: &str) -> String {
     }
 }
 
+fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
+    RUNTIME_DEFINITIONS
+        .iter()
+        .find(|definition| definition.id == runtime_id)
+}
+
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
-    [
-        (
-            CODEX_RUNTIME_ID,
-            "Codex",
-            "OpenAI Codex-compatible agent runtime.",
-            auth_method_ids(CODEX_RUNTIME_ID),
-        ),
-        (
-            CLAUDE_RUNTIME_ID,
-            "Claude",
-            "Claude ACP-compatible agent runtime.",
-            auth_method_ids(CLAUDE_RUNTIME_ID),
-        ),
-        (
-            GEMINI_RUNTIME_ID,
-            "Gemini",
-            "Gemini ACP-compatible agent runtime.",
-            auth_method_ids(GEMINI_RUNTIME_ID),
-        ),
-        (
-            KILO_RUNTIME_ID,
-            "Kilo",
-            "Kilo ACP-compatible agent runtime.",
-            auth_method_ids(KILO_RUNTIME_ID),
-        ),
-    ]
-    .into_iter()
-    .map(|(runtime_id, name, description, auth_methods)| {
-        let models = default_models(runtime_id);
-        let modes = default_modes(runtime_id);
-        let mut capabilities = vec![
-            "create_session".to_string(),
-            "prompt_queueing".to_string(),
-            "user_input".to_string(),
-        ];
-        if runtime_supports_native_resume(runtime_id) {
-            capabilities.push("resume_session".to_string());
-        }
-        AiRuntimeDescriptor {
-            runtime: AiRuntimeOption {
-                id: runtime_id.to_string(),
-                name: name.to_string(),
-                description: description.to_string(),
-                capabilities,
-            },
-            config_options: default_config_options(runtime_id, &models, &modes),
-            models,
-            modes,
-        }
-        .with_auth_capabilities(auth_methods)
-    })
-    .collect()
+    RUNTIME_DEFINITIONS
+        .iter()
+        .map(|definition| {
+            let runtime_id = definition.id;
+            let models = default_models(runtime_id);
+            let modes = default_modes(runtime_id);
+            let mut capabilities = vec![
+                "create_session".to_string(),
+                "prompt_queueing".to_string(),
+                "user_input".to_string(),
+            ];
+            if definition.supports_native_resume {
+                capabilities.push("resume_session".to_string());
+            }
+            AiRuntimeDescriptor {
+                runtime: AiRuntimeOption {
+                    id: runtime_id.to_string(),
+                    name: definition.name.to_string(),
+                    description: definition.description.to_string(),
+                    capabilities,
+                },
+                config_options: default_config_options(runtime_id, &models, &modes),
+                models,
+                modes,
+            }
+            .with_auth_capabilities(auth_method_ids(runtime_id))
+        })
+        .collect()
 }
 
 fn runtime_supports_native_resume(runtime_id: &str) -> bool {
-    matches!(runtime_id, CODEX_RUNTIME_ID)
+    runtime_definition(runtime_id)
+        .map(|definition| definition.supports_native_resume)
+        .unwrap_or(false)
 }
 
 trait RuntimeDescriptorAuthTags {
@@ -4246,7 +4338,7 @@ fn setup_status_for(
     runtime_id: &str,
     setup: RuntimeSetupState,
 ) -> Result<AiRuntimeSetupStatus, String> {
-    let inherited_auth_method = inherited_auth_method(runtime_id, !setup.suppress_persisted_auth);
+    let inherited_auth_method = inherited_auth_method_for_setup(runtime_id, &setup);
     setup_status_for_with_inherited_auth(runtime_id, setup, inherited_auth_method)
 }
 
@@ -4276,6 +4368,9 @@ fn setup_status_for_with_inherited_auth(
         setup.message
     } else if auth_ready {
         None
+    } else if runtime_id == OPENCODE_RUNTIME_ID && auth_method.as_deref() == Some("opencode-login")
+    {
+        Some(OPENCODE_AUTH_UNVERIFIED_MESSAGE.to_string())
     } else {
         setup.message
     };
@@ -4333,6 +4428,35 @@ fn setup_load_error_status_for(
     status.onboarding_required = true;
     status.message = Some(visible_message);
     Ok(status)
+}
+
+fn runtime_auth_diagnostics(runtime_id: &str) -> Value {
+    if runtime_id != OPENCODE_RUNTIME_ID {
+        return Value::Null;
+    }
+
+    let env = opencode_env_auth_keys()
+        .iter()
+        .map(|key| ((*key).to_string(), json!(env_secret_present(key))))
+        .collect::<serde_json::Map<_, _>>();
+    let auth_store = home_dir()
+        .map(|home| {
+            opencode_auth_file_candidates(&home)
+                .into_iter()
+                .map(|path| {
+                    json!({
+                        "path": path.display().to_string(),
+                        "status": opencode_auth_file_status(&path),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "environment": env,
+        "auth_store": auth_store,
+    })
 }
 
 fn acp_process_spec(
@@ -4445,6 +4569,15 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
         };
     }
 
+    if let Some(path) = resolve_macos_homebrew_runtime_fallback(runtime_id) {
+        return ResolvedAcpCommand {
+            display: Some(path.display().to_string()),
+            program: Some(path),
+            args: Vec::new(),
+            source: AiRuntimeBinarySource::Env,
+        };
+    }
+
     ResolvedAcpCommand {
         program: None,
         args: Vec::new(),
@@ -4518,11 +4651,28 @@ fn runtime_binary_name(base: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn resolve_macos_homebrew_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
+    if runtime_id != OPENCODE_RUNTIME_ID {
+        return None;
+    }
+    ["/opt/homebrew/bin", "/usr/local/bin"]
+        .into_iter()
+        .map(|entry| PathBuf::from(entry).join(default_executable_name(runtime_id)))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_macos_homebrew_runtime_fallback(_runtime_id: &str) -> Option<PathBuf> {
+    None
+}
+
 fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
     match runtime_id {
         CLAUDE_RUNTIME_ID => default_claude_terminal_auth_method(),
         GEMINI_RUNTIME_ID => "login_with_google",
         KILO_RUNTIME_ID => "kilo-login",
+        OPENCODE_RUNTIME_ID => "opencode-login",
         _ => "terminal-login",
     }
 }
@@ -4584,6 +4734,10 @@ fn auth_terminal_launch_config(
         (KILO_RUNTIME_ID, "kilo-login") => {
             args.extend(["auth".to_string(), "login".to_string()]);
             "Kilo Login".to_string()
+        }
+        (OPENCODE_RUNTIME_ID, "opencode-login") => {
+            args.extend(["auth".to_string(), "login".to_string()]);
+            "OpenCode Login".to_string()
         }
         _ => {
             return Err(format!(
@@ -4732,34 +4886,46 @@ fn with_runtime_args(runtime_id: &str, mut resolved: ResolvedAcpCommand) -> Reso
     if resolved.program.is_none() {
         return resolved;
     }
-    match runtime_id {
-        GEMINI_RUNTIME_ID if !resolved.args.iter().any(|arg| arg == "--acp") => {
-            resolved.args.push("--acp".to_string());
+    if let Some(definition) = runtime_definition(runtime_id) {
+        for arg in definition.acp_args {
+            if !resolved.args.iter().any(|existing| existing == arg) {
+                resolved.args.push((*arg).to_string());
+            }
         }
-        KILO_RUNTIME_ID if !resolved.args.iter().any(|arg| arg == "acp") => {
-            resolved.args.push("acp".to_string());
-        }
-        _ => {}
     }
     resolved
 }
 
 fn runtime_bin_env_var(runtime_id: &str) -> &'static str {
-    match runtime_id {
-        CODEX_RUNTIME_ID => "NEVERWRITE_CODEX_ACP_BIN",
-        CLAUDE_RUNTIME_ID => "NEVERWRITE_CLAUDE_ACP_BIN",
-        GEMINI_RUNTIME_ID => "NEVERWRITE_GEMINI_ACP_BIN",
-        KILO_RUNTIME_ID => "NEVERWRITE_KILO_ACP_BIN",
-        _ => "NEVERWRITE_AI_ACP_BIN",
-    }
+    runtime_definition(runtime_id)
+        .map(|definition| definition.bin_env_var)
+        .unwrap_or("NEVERWRITE_AI_ACP_BIN")
 }
 
-fn inherited_auth_method(runtime_id: &str, include_persisted: bool) -> Option<String> {
+fn inherited_auth_method_for_setup(runtime_id: &str, setup: &RuntimeSetupState) -> Option<String> {
+    inherited_auth_method(
+        runtime_id,
+        !setup.suppress_persisted_auth,
+        setup.auth_invalidated_at_ms,
+    )
+}
+
+fn inherited_auth_method(
+    runtime_id: &str,
+    include_persisted: bool,
+    auth_invalidated_at_ms: Option<u64>,
+) -> Option<String> {
     match runtime_id {
         CODEX_RUNTIME_ID => env_secret_present("CODEX_API_KEY")
             .then(|| "codex-api-key".to_string())
             .or_else(|| env_secret_present("OPENAI_API_KEY").then(|| "openai-api-key".to_string()))
-            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
+            .or_else(|| {
+                inherited_persisted_auth_method(
+                    runtime_id,
+                    include_persisted,
+                    auth_invalidated_at_ms,
+                )
+            }),
         CLAUDE_RUNTIME_ID => env_secret_present("ANTHROPIC_AUTH_TOKEN")
             .then(|| "console-login".to_string())
             .or_else(|| {
@@ -4770,33 +4936,82 @@ fn inherited_auth_method(runtime_id: &str, include_persisted: bool) -> Option<St
                     .then(|| "gateway-bedrock".to_string())
             })
             .or_else(|| env_secret_present("ANTHROPIC_BASE_URL").then(|| "gateway".to_string()))
-            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
+            .or_else(|| {
+                inherited_persisted_auth_method(
+                    runtime_id,
+                    include_persisted,
+                    auth_invalidated_at_ms,
+                )
+            }),
         GEMINI_RUNTIME_ID => env_secret_present("GEMINI_API_KEY")
             .then(|| "use_gemini".to_string())
             .or_else(|| env_secret_present("GOOGLE_API_KEY").then(|| "use_gemini".to_string()))
-            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
+            .or_else(|| {
+                inherited_persisted_auth_method(
+                    runtime_id,
+                    include_persisted,
+                    auth_invalidated_at_ms,
+                )
+            }),
         KILO_RUNTIME_ID => env_secret_present("KILO_API_KEY")
             .then(|| "kilo-api-key".to_string())
-            .or_else(|| inherited_persisted_auth_method(runtime_id, include_persisted)),
+            .or_else(|| {
+                inherited_persisted_auth_method(
+                    runtime_id,
+                    include_persisted,
+                    auth_invalidated_at_ms,
+                )
+            }),
+        OPENCODE_RUNTIME_ID => opencode_env_auth_present()
+            .then(|| "opencode-login".to_string())
+            .or_else(|| {
+                inherited_persisted_auth_method(
+                    runtime_id,
+                    include_persisted,
+                    auth_invalidated_at_ms,
+                )
+            }),
         _ => None,
     }
 }
 
-fn inherited_persisted_auth_method(runtime_id: &str, include_persisted: bool) -> Option<String> {
+fn inherited_persisted_auth_method(
+    runtime_id: &str,
+    include_persisted: bool,
+    auth_invalidated_at_ms: Option<u64>,
+) -> Option<String> {
     include_persisted
-        .then(|| persisted_cli_auth_method(runtime_id))
+        .then(|| persisted_cli_auth_method_with_invalidated_at(runtime_id, auth_invalidated_at_ms))
         .flatten()
 }
 
-fn persisted_cli_auth_method(runtime_id: &str) -> Option<String> {
+fn persisted_cli_auth_method_with_invalidated_at(
+    runtime_id: &str,
+    auth_invalidated_at_ms: Option<u64>,
+) -> Option<String> {
     let home = home_dir()?;
-    persisted_cli_auth_method_for_home(runtime_id, &home, is_claude_remote_environment())
+    persisted_cli_auth_method_for_home_with_invalidated_at(
+        runtime_id,
+        &home,
+        is_claude_remote_environment(),
+        auth_invalidated_at_ms,
+    )
 }
 
+#[cfg(test)]
 fn persisted_cli_auth_method_for_home(
     runtime_id: &str,
     home: &Path,
     is_claude_remote: bool,
+) -> Option<String> {
+    persisted_cli_auth_method_for_home_with_invalidated_at(runtime_id, home, is_claude_remote, None)
+}
+
+fn persisted_cli_auth_method_for_home_with_invalidated_at(
+    runtime_id: &str,
+    home: &Path,
+    is_claude_remote: bool,
+    auth_invalidated_at_ms: Option<u64>,
 ) -> Option<String> {
     match runtime_id {
         CODEX_RUNTIME_ID if non_empty_file_exists(&home.join(".codex").join("auth.json")) => {
@@ -4814,6 +5029,9 @@ fn persisted_cli_auth_method_for_home(
             .then(|| "login_with_google".to_string()),
         KILO_RUNTIME_ID if non_empty_file_exists_any(kilo_auth_file_candidates(home)) => {
             Some("kilo-login".to_string())
+        }
+        OPENCODE_RUNTIME_ID if active_opencode_auth_file_exists(home, auth_invalidated_at_ms) => {
+            Some("opencode-login".to_string())
         }
         _ => None,
     }
@@ -4847,6 +5065,102 @@ fn kilo_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
     }
 
     candidates
+}
+
+fn opencode_env_auth_keys() -> &'static [&'static str] {
+    &[
+        "OPENCODE_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "CODEX_API_KEY",
+    ]
+}
+
+fn opencode_env_auth_present() -> bool {
+    opencode_env_auth_keys()
+        .iter()
+        .any(|key| env_secret_present(key))
+}
+
+fn opencode_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
+        candidates.push(
+            PathBuf::from(xdg_data_home)
+                .join("opencode")
+                .join("auth.json"),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData").join("Local"))
+                .join("opencode")
+                .join("auth.json"),
+        );
+    }
+
+    candidates.push(
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json"),
+    );
+    candidates
+}
+
+fn active_opencode_auth_file_exists(home: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
+    opencode_auth_file_candidates(home)
+        .into_iter()
+        .any(|path| opencode_auth_file_is_active(&path, auth_invalidated_at_ms))
+}
+
+fn opencode_auth_file_status(path: &Path) -> &'static str {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        _ => return "missing",
+    };
+    if metadata.len() == 0 {
+        return "empty";
+    }
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    {
+        Some(Value::Object(object)) if !object.is_empty() => "active",
+        Some(Value::Array(array)) if !array.is_empty() => "active",
+        Some(_) => "inactive",
+        None => "invalid",
+    }
+}
+
+fn opencode_auth_file_is_active(path: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
+        _ => return false,
+    };
+    if let Some(invalidated_at_ms) = auth_invalidated_at_ms {
+        let Some(modified_at_ms) = metadata.modified().ok().and_then(system_time_epoch_ms) else {
+            return false;
+        };
+        if modified_at_ms <= invalidated_at_ms {
+            return false;
+        }
+    }
+
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    {
+        Some(Value::Object(object)) => !object.is_empty(),
+        Some(Value::Array(array)) => !array.is_empty(),
+        _ => false,
+    }
 }
 
 fn non_empty_file_exists_any(paths: impl IntoIterator<Item = PathBuf>) -> bool {
@@ -4901,6 +5215,22 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .is_some_and(|value| !value.is_empty()),
         _ => false,
     }
+}
+
+fn should_persist_auth_method(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+    method_id: &str,
+) -> bool {
+    auth_method_has_local_config(setup, method_id)
+        || is_persistable_external_auth_method(runtime_id, method_id)
+}
+
+fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
+    matches!(
+        (runtime_id, method_id),
+        (OPENCODE_RUNTIME_ID, "opencode-login")
+    )
 }
 
 fn is_local_auth_method(method_id: &str) -> bool {
@@ -4982,10 +5312,11 @@ fn refresh_runtime_setup_flags(runtime_id: &str, setup: &mut RuntimeSetupState) 
                 .is_some_and(|value| !value.is_empty()));
 }
 
-fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
+fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     setup.auth_ready = false;
     setup.auth_method = None;
     setup.suppress_persisted_auth = true;
+    setup.auth_invalidated_at_ms = (runtime_id == OPENCODE_RUNTIME_ID).then(current_epoch_ms);
     setup.has_gateway_config = false;
     setup.has_gateway_url = false;
     setup.message = None;
@@ -5001,6 +5332,7 @@ fn clear_runtime_auth_state(setup: &mut RuntimeSetupState) {
         "AWS_BEARER_TOKEN_BEDROCK",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
+        "OPENCODE_API_KEY",
         "KILO_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CLOUD_LOCATION",
@@ -5015,14 +5347,20 @@ fn env_secret_present(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn current_epoch_ms() -> u64 {
+    system_time_epoch_ms(SystemTime::now()).unwrap_or_default()
+}
+
+fn system_time_epoch_ms(time: SystemTime) -> Option<u64> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
 fn runtime_name(runtime_id: &str) -> &'static str {
-    match runtime_id {
-        CODEX_RUNTIME_ID => "Codex",
-        CLAUDE_RUNTIME_ID => "Claude",
-        GEMINI_RUNTIME_ID => "Gemini",
-        KILO_RUNTIME_ID => "Kilo",
-        _ => "AI",
-    }
+    runtime_definition(runtime_id)
+        .map(|definition| definition.name)
+        .unwrap_or("AI")
 }
 
 fn codex_vendor_binary_path() -> PathBuf {
@@ -5087,6 +5425,12 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
                 description: "Use a Kilo API key stored locally.".to_string(),
             },
         ],
+        OPENCODE_RUNTIME_ID => vec![AiAuthMethod {
+            id: "opencode-login".to_string(),
+            name: "OpenCode login".to_string(),
+            description: "Open the OpenCode CLI sign-in flow in an integrated terminal."
+                .to_string(),
+        }],
         _ => vec![],
     }
 }
@@ -5097,6 +5441,7 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
         CLAUDE_RUNTIME_ID => claude_auth_method_ids_for_environment(is_claude_remote_environment()),
         GEMINI_RUNTIME_ID => vec!["login_with_google", "use_gemini"],
         KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
+        OPENCODE_RUNTIME_ID => vec!["opencode-login"],
         _ => vec![],
     }
 }
@@ -5381,6 +5726,7 @@ fn update_auth_state(
             setup.auth_method = local_auth_method_for_runtime(runtime_id, setup);
         }
         setup.suppress_persisted_auth = false;
+        setup.auth_invalidated_at_ms = None;
         setup.message = None;
     }
     Ok(())
@@ -5647,9 +5993,10 @@ fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
 }
 
 fn validate_runtime_id(runtime_id: &str) -> Result<(), String> {
-    match runtime_id {
-        CODEX_RUNTIME_ID | CLAUDE_RUNTIME_ID | GEMINI_RUNTIME_ID | KILO_RUNTIME_ID => Ok(()),
-        other => Err(format!("Unsupported AI runtime: {other}")),
+    if runtime_definition(runtime_id).is_some() {
+        Ok(())
+    } else {
+        Err(format!("Unsupported AI runtime: {runtime_id}"))
     }
 }
 
@@ -5663,17 +6010,16 @@ fn normalize_optional_string(value: String) -> Option<String> {
 }
 
 fn default_executable_name(runtime_id: &str) -> &'static str {
-    match runtime_id {
-        CODEX_RUNTIME_ID => "codex",
-        CLAUDE_RUNTIME_ID => "claude",
-        GEMINI_RUNTIME_ID => "gemini",
-        KILO_RUNTIME_ID => "kilo",
-        _ => "unknown",
-    }
+    runtime_definition(runtime_id)
+        .map(|definition| definition.default_executable)
+        .unwrap_or("unknown")
 }
 
 fn diagnostic_executable_names() -> Vec<&'static str> {
-    vec!["codex", "claude", "gemini", "kilo"]
+    RUNTIME_DEFINITIONS
+        .iter()
+        .map(|definition| definition.default_executable)
+        .collect()
 }
 
 fn find_program_on_path(name: &str) -> Option<PathBuf> {
@@ -5877,6 +6223,13 @@ fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> boo
             buffer.contains("Authentication succeeded")
                 || buffer.contains("successfully signed in with Google")
         }
+        OPENCODE_RUNTIME_ID => {
+            let lower = buffer.to_ascii_lowercase();
+            lower.contains("authentication successful")
+                || lower.contains("login successful")
+                || lower.contains("successfully authenticated")
+                || lower.contains("successfully logged in")
+        }
         _ => false,
     }
 }
@@ -6005,6 +6358,7 @@ fn append_auth_terminal_buffer(buffer: &mut String, chunk: &str) {
     buffer.drain(..trim_to);
 }
 
+#[cfg(test)]
 fn mark_runtime_auth_pending(
     session_state: &Arc<Mutex<NativeAiInner>>,
     runtime_id: &str,
@@ -6015,6 +6369,7 @@ fn mark_runtime_auth_pending(
         setup.auth_method = Some(method_id.to_string());
         setup.auth_ready = false;
         setup.suppress_persisted_auth = false;
+        setup.auth_invalidated_at_ms = None;
         setup.message = None;
     }
 }
@@ -6029,6 +6384,7 @@ fn mark_runtime_auth_verified(
         setup.auth_method = Some(method_id.to_string());
         setup.auth_ready = true;
         setup.suppress_persisted_auth = false;
+        setup.auth_invalidated_at_ms = None;
         setup.message = None;
     }
 }
@@ -6628,6 +6984,7 @@ mod tests {
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(GEMINI_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
     }
 
     #[test]
@@ -8958,6 +9315,82 @@ mod tests {
     }
 
     #[test]
+    fn detects_active_persisted_opencode_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let opencode_dir = temp.path().join(".local").join("share").join("opencode");
+        fs::create_dir_all(&opencode_dir).unwrap();
+        fs::write(
+            opencode_dir.join("auth.json"),
+            r#"{"openai":{"token":"redacted"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(OPENCODE_RUNTIME_ID, temp.path(), false),
+            Some("opencode-login".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_inactive_or_invalid_opencode_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp
+            .path()
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+
+        for raw in ["", "{}", "[]", "not-json"] {
+            fs::write(&auth_file, raw).unwrap();
+            assert_eq!(
+                persisted_cli_auth_method_for_home(OPENCODE_RUNTIME_ID, temp.path(), false),
+                None,
+                "{raw:?} should not count as active OpenCode auth"
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_auth_invalidation_blocks_stale_auth_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp
+            .path()
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"[{"provider":"openai"}]"#).unwrap();
+        let modified_at_ms = fs::metadata(&auth_file)
+            .unwrap()
+            .modified()
+            .ok()
+            .and_then(system_time_epoch_ms)
+            .unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home_with_invalidated_at(
+                OPENCODE_RUNTIME_ID,
+                temp.path(),
+                false,
+                Some(modified_at_ms),
+            ),
+            None
+        );
+        assert_eq!(
+            persisted_cli_auth_method_for_home_with_invalidated_at(
+                OPENCODE_RUNTIME_ID,
+                temp.path(),
+                false,
+                Some(modified_at_ms.saturating_sub(1)),
+            ),
+            Some("opencode-login".to_string())
+        );
+    }
+
+    #[test]
     fn inherited_kilo_login_does_not_satisfy_selected_kilo_api_key() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
@@ -9020,6 +9453,26 @@ mod tests {
     }
 
     #[test]
+    fn auth_terminal_launch_config_uses_opencode_login_command() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            OPENCODE_RUNTIME_ID,
+            "opencode-login",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(config.args, vec!["auth".to_string(), "login".to_string()]);
+        assert_eq!(config.display_name, "OpenCode Login");
+    }
+
+    #[test]
     fn auth_terminal_launch_config_forces_gemini_google_login_method() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
@@ -9055,6 +9508,18 @@ mod tests {
         assert!(!auth_terminal_output_indicates_success(
             CLAUDE_RUNTIME_ID,
             "Authentication succeeded"
+        ));
+    }
+
+    #[test]
+    fn opencode_auth_terminal_success_output_is_detected_before_exit() {
+        assert!(auth_terminal_output_indicates_success(
+            OPENCODE_RUNTIME_ID,
+            "OpenCode login successful"
+        ));
+        assert!(!auth_terminal_output_indicates_success(
+            OPENCODE_RUNTIME_ID,
+            "OpenCode login required"
         ));
     }
 
@@ -9158,6 +9623,37 @@ mod tests {
             Some("kilo-api-key")
         );
         assert!(!status.to_string().contains("kilo-test-secret"));
+    }
+
+    #[test]
+    fn opencode_login_selection_persists_without_local_secret() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let store = RuntimeSetupStore::with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let mut setup = HashMap::new();
+        setup.insert(
+            OPENCODE_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("opencode-login".to_string()),
+                auth_invalidated_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+
+        store.save(&setup).unwrap();
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("opencode-login"));
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+
+        let loaded = store.load().unwrap();
+        let opencode = loaded
+            .get(OPENCODE_RUNTIME_ID)
+            .expect("OpenCode setup should reload");
+        assert_eq!(opencode.auth_method.as_deref(), Some("opencode-login"));
+        assert_eq!(opencode.auth_invalidated_at_ms, Some(123));
     }
 
     #[test]
@@ -9606,5 +10102,25 @@ mod tests {
             spec.env.get("KILO_API_KEY").map(String::as_str),
             Some("kilo-test-secret")
         );
+    }
+
+    #[test]
+    fn acp_process_spec_launches_opencode_with_acp_arg() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("opencode-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(
+            OPENCODE_RUNTIME_ID,
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("OpenCode ACP process spec should resolve");
+
+        assert_eq!(spec.args, vec!["acp".to_string()]);
+        assert_eq!(spec.runtime_id, OPENCODE_RUNTIME_ID);
     }
 }

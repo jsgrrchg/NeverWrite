@@ -22,7 +22,8 @@ and terminal-auth routing helpers are in
 | `codex-acp` | `codex-acp` | Yes. Staged as a sidecar binary. | ChatGPT account, OpenAI API key, Codex API key |
 | `claude-acp` | Claude ACP adapter | Yes. Staged as vendored JS plus embedded Node. | Claude subscription terminal login, Anthropic Console terminal login, Anthropic API key, custom Anthropic-compatible gateway |
 | `gemini-acp` | `gemini --acp` | No. Must be available from PATH or a configured binary override. | Google terminal login, Gemini API key |
-| `kilo-acp` | `kilo-acp acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
+| `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
+| `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
 
 Runtime descriptors returned by the backend currently use default `auto` model
 selection and `default` / `review` modes for every provider. The frontend falls
@@ -46,10 +47,11 @@ The provider-specific runtime binary overrides are:
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Claude |
 | `NEVERWRITE_GEMINI_ACP_BIN` | Gemini |
 | `NEVERWRITE_KILO_ACP_BIN` | Kilo |
+| `NEVERWRITE_OPENCODE_ACP_BIN` | OpenCode |
 
 The values may be absolute paths or command names resolvable on `PATH`. For
-Gemini and Kilo, NeverWrite appends the ACP arguments automatically:
-`gemini --acp` and `kilo-acp acp`.
+Gemini, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
+`gemini --acp`, `kilo acp`, and `opencode acp`.
 
 Packaged builds use `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR` internally to point
 the native backend at staged Electron resources. In normal app usage this is set
@@ -72,12 +74,13 @@ The backend also detects existing CLI auth files and environment secrets:
 | Claude | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_BEDROCK_BASE_URL`, or non-empty `~/.claude.json` |
 | Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or non-empty `~/.gemini/oauth_creds.json` |
 | Kilo | Non-empty Kilo auth file, including `~/.local/share/kilo/auth.json` on Unix-like systems |
+| OpenCode | `OPENCODE_API_KEY`, provider keys inherited by OpenCode, or active `opencode/auth.json` in the platform data directory |
 
 Codex ChatGPT auth is implemented through the ACP `authenticate` request and
 requires a resolved Codex runtime binary before NeverWrite marks it connected.
 Codex does not use the integrated auth terminal.
 
-Claude, Gemini, and Kilo expose integrated terminal auth methods. NeverWrite
+Claude, Gemini, Kilo, and OpenCode expose integrated terminal auth methods. NeverWrite
 starts the provider CLI in a PTY and marks auth pending before launch. A zero
 exit code marks the provider verified; Gemini can also be marked verified when
 the terminal output contains the success strings recognized by the backend.
@@ -144,10 +147,21 @@ fields for them.
 
 ### Kilo
 
-Use Kilo terminal login from the setup UI or pre-existing Kilo CLI auth. Kilo
-does not currently have a NeverWrite API-key setup path. Because Kilo is not
-bundled by default, install the CLI separately or configure
-`NEVERWRITE_KILO_ACP_BIN`.
+Use Kilo terminal login from the setup UI, a Kilo API key saved in the setup UI,
+or pre-existing Kilo CLI auth. Because Kilo is not bundled by default, install
+the CLI separately or configure `NEVERWRITE_KILO_ACP_BIN`.
+
+### OpenCode
+
+Use OpenCode terminal login from the setup UI, pre-existing OpenCode CLI auth, a
+provider key inherited by the OpenCode CLI, or `/connect` inside OpenCode.
+NeverWrite does not store OpenCode provider secrets in V1; auth remains owned by
+the OpenCode CLI. Disconnecting OpenCode clears NeverWrite's local selection and
+persists an invalidation marker, but it does not delete `opencode/auth.json`.
+
+Because OpenCode is not bundled by default, install the CLI separately or
+configure `NEVERWRITE_OPENCODE_ACP_BIN`. NeverWrite launches sessions as
+`opencode acp` and opens auth as `opencode auth login`.
 
 ## Environment Overrides
 
@@ -159,6 +173,7 @@ These `NEVERWRITE_*` variables are relevant to AI runtime setup and packaging:
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Runtime launch override for Claude in dev or local troubleshooting. |
 | `NEVERWRITE_GEMINI_ACP_BIN` | Runtime launch override for Gemini in dev or local troubleshooting. |
 | `NEVERWRITE_KILO_ACP_BIN` | Runtime launch override for Kilo in dev or local troubleshooting. |
+| `NEVERWRITE_OPENCODE_ACP_BIN` | Runtime launch override for OpenCode in dev or local troubleshooting. |
 | `NEVERWRITE_APP_DATA_DIR` | Overrides app data storage, including `ai/runtime-setup.json`; Electron sets this for the sidecar. |
 | `NEVERWRITE_AI_SECRET_STORE=memory` | Test/smoke-only opt-in for in-memory secrets when no OS keyring is available. Do not use for production persistence. |
 | `NEVERWRITE_NATIVE_BACKEND_PATH` | Forces Electron to use a specific native backend sidecar. Useful when testing a local sidecar build. |
@@ -255,7 +270,7 @@ Common fixes:
 - Set the provider-specific `NEVERWRITE_*_ACP_BIN` variable before launching the app.
 - Supply a custom binary path through `ai_update_setup` if you are exercising
   the backend API directly or a caller that exposes this field.
-- For Gemini or Kilo, install the CLI separately; they are not bundled in releases.
+- For Gemini, Kilo, or OpenCode, install the CLI separately; they are not bundled in releases.
 - For packaged Codex or Claude, check that `native-backend/binaries/` and
   `native-backend/embedded/` exist inside the packaged app resources.
 
@@ -272,12 +287,14 @@ reconnected or configured through environment variables.
 
 ### Provider Terminal Auth
 
-Integrated terminal auth is supported for Claude, Gemini, and Kilo. If terminal
+Integrated terminal auth is supported for Claude, Gemini, Kilo, and OpenCode. If terminal
 auth opens but the provider remains unready:
 
 - Confirm the terminal process exited successfully.
 - For Gemini, look for provider success output such as authentication succeeded
   or successful Google sign-in.
+- For OpenCode, confirm `opencode auth login` completed or use `/connect` in
+  OpenCode itself.
 - Reopen diagnostics and confirm the runtime launch command points to the CLI
   you expected.
 - Remember that Codex ChatGPT auth does not use the integrated auth terminal.
