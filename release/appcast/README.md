@@ -15,6 +15,7 @@ GitHub Pages publishes one feed per channel, platform, and architecture:
 ```text
 <channel>/<feed-target>/latest-mac.yml
 <channel>/<feed-target>/latest.yml
+<channel>/<feed-target>/latest-linux.yml
 ```
 
 Current feed targets:
@@ -24,12 +25,15 @@ Current feed targets:
 | `universal-apple-darwin` | `darwin-universal` | `latest-mac.yml` |
 | `aarch64-pc-windows-msvc` | `windows-arm64` | `latest.yml` |
 | `x86_64-pc-windows-msvc` | `windows-x64` | `latest.yml` |
+| `aarch64-unknown-linux-gnu` | `linux-arm64` | `latest-linux.yml` |
+| `x86_64-unknown-linux-gnu` | `linux-x64` | `latest-linux.yml` |
 
 Example published URLs:
 
 ```text
 https://jsgrrchg.github.io/NeverWrite/stable/darwin-universal/latest-mac.yml
 https://jsgrrchg.github.io/NeverWrite/stable/windows-x64/latest.yml
+https://jsgrrchg.github.io/NeverWrite/stable/linux-x64/latest-linux.yml
 ```
 
 The updater metadata always points back to versioned assets on `GitHub Releases`.
@@ -39,20 +43,29 @@ The updater metadata always points back to versioned assets on `GitHub Releases`
 Each build target uploads:
 
 - one manual installer for humans
+- optional additional manual installers, such as Linux `.deb` packages
 - one updater asset for `electron-updater`
 - one blockmap for differential updates
 
 Public naming remains stable per target:
 
-| Build target | Manual asset | Updater asset |
-| --- | --- | --- |
-| `universal-apple-darwin` | `NeverWrite_<version>_macOS_Universal.dmg` | `NeverWrite_<version>_macOS_Universal.zip` |
-| `aarch64-pc-windows-msvc` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` |
-| `x86_64-pc-windows-msvc` | `NeverWrite_<version>_Windows_x64_Setup.exe` | `NeverWrite_<version>_Windows_x64_Setup.exe` |
-| `x86_64-unknown-linux-gnu` | `NeverWrite-<version>-x64.AppImage` | `NeverWrite-<version>-x64.AppImage` |
-| `aarch64-unknown-linux-gnu` | `NeverWrite-<version>-arm64.AppImage` | `NeverWrite-<version>-arm64.AppImage` |
+| Build target | Manual asset | Additional manual asset | Updater asset |
+| --- | --- | --- | --- |
+| `universal-apple-darwin` | `NeverWrite_<version>_macOS_Universal.dmg` | _None_ | `NeverWrite_<version>_macOS_Universal.zip` |
+| `aarch64-pc-windows-msvc` | `NeverWrite_<version>_Windows_ARM64_Setup.exe` | _None_ | `NeverWrite_<version>_Windows_ARM64_Setup.exe` |
+| `x86_64-pc-windows-msvc` | `NeverWrite_<version>_Windows_x64_Setup.exe` | _None_ | `NeverWrite_<version>_Windows_x64_Setup.exe` |
+| `x86_64-unknown-linux-gnu` | `NeverWrite-<version>-x64.AppImage` | `NeverWrite-<version>-amd64.deb` | `NeverWrite-<version>-x64.AppImage` |
+| `aarch64-unknown-linux-gnu` | `NeverWrite-<version>-arm64.AppImage` | `NeverWrite-<version>-arm64.deb` | `NeverWrite-<version>-arm64.AppImage` |
 
 The architecture suffix is mandatory for Windows. macOS publishes a universal package and a single universal updater feed. We do not publish shared Windows `latest.yml` metadata for multiple architectures in the same directory because `electron-builder` would otherwise collide on Windows metadata names.
+
+For Ubuntu/Debian, the recommended manual installer is the `.deb` package:
+
+```bash
+sudo apt install ./NeverWrite-<version>-amd64.deb
+```
+
+The AppImage remains the portable Linux option and the only Linux package family wired to the in-app updater. Debian packages do not auto-update in this phase; users should install a newer `.deb` manually until an APT repository exists.
 
 ## Signing and notarization
 

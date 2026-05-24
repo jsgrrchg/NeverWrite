@@ -1,8 +1,10 @@
 import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     CANONICAL_RELEASE_REPO_SLUG,
+    buildDebianPackageAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    debianArchForBuildTarget,
     normalizeAppcastChannel,
     normalizeReleaseVersion,
 } from "./appcast-lib.mjs";
@@ -10,8 +12,10 @@ import {
 export {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     CANONICAL_RELEASE_REPO_SLUG,
+    buildDebianPackageAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    debianArchForBuildTarget,
     normalizeAppcastChannel,
     normalizeReleaseVersion,
 };

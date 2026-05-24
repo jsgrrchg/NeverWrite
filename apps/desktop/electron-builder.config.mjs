@@ -208,12 +208,23 @@ export default {
     },
     linux: {
         icon: path.join("build", "icons", "icon.png"),
-        target: ["AppImage"],
+        target: ["AppImage", "deb"],
         category: "Utility",
         executableName: "neverwrite",
         artifactName: "${productName}-${version}-${arch}.AppImage",
     },
     appImage: {
         artifactName: "${productName}-${version}-${arch}.AppImage",
+    },
+    deb: {
+        packageName: "neverwrite",
+        packageCategory: "utils",
+        priority: "optional",
+        maintainer: "NeverWrite Maintainers <jsgrrchg@users.noreply.github.com>",
+        synopsis: "AI-powered writing workspace",
+        description:
+            "NeverWrite is an AI-powered writing workspace for power users.",
+        artifactName: "${productName}-${version}-${arch}.deb",
+        publish: null,
     },
 };

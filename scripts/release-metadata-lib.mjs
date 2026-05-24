@@ -270,6 +270,37 @@ export function collectElectronBuildIssues(config) {
             'electron-builder.config.mjs linux.target must include "AppImage".',
         );
     }
+    if (!linuxTargets.has("deb")) {
+        issues.push(
+            'electron-builder.config.mjs linux.target must include "deb".',
+        );
+    }
+    if (linuxTargets.has("deb") || config.deb != null) {
+        if (config.deb?.packageName !== "neverwrite") {
+            issues.push(
+                'electron-builder.config.mjs deb.packageName must be "neverwrite".',
+            );
+        }
+        if (
+            typeof config.deb?.artifactName !== "string" ||
+            !config.deb.artifactName.endsWith(".deb") ||
+            !config.deb.artifactName.includes("${arch}")
+        ) {
+            issues.push(
+                'electron-builder.config.mjs deb.artifactName must include "${arch}" and end with ".deb".',
+            );
+        }
+        if (config.deb?.priority !== "optional") {
+            issues.push(
+                'electron-builder.config.mjs deb.priority must be "optional".',
+            );
+        }
+        if (config.deb?.publish !== null) {
+            issues.push(
+                "electron-builder.config.mjs deb.publish must be null because Debian packages are manual-only in this release phase.",
+            );
+        }
+    }
 
     return issues;
 }

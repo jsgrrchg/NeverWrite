@@ -41,6 +41,7 @@ import { ElectronAppUpdater } from "./updater";
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
 const originalArch = Object.getOwnPropertyDescriptor(process, "arch");
 const updaterEnvKeys = [
+    "APPIMAGE",
     "NEVERWRITE_UPDATER_ENDPOINT",
     "NEVERWRITE_UPDATER_BASE_URL",
     "NEVERWRITE_UPDATER_CHANNEL",
@@ -122,6 +123,7 @@ describe("ElectronAppUpdater configuration", () => {
 
     it("uses the Linux x64 AppImage feed in packaged Linux builds", () => {
         setRuntimePlatform("linux", "x64");
+        process.env.APPIMAGE = "/tmp/NeverWrite.AppImage";
 
         const status = new ElectronAppUpdater().getConfiguration();
 
@@ -135,6 +137,7 @@ describe("ElectronAppUpdater configuration", () => {
 
     it("uses the Linux ARM64 AppImage feed in packaged Linux builds", () => {
         setRuntimePlatform("linux", "arm64");
+        process.env.APPIMAGE = "/tmp/NeverWrite-arm64.AppImage";
 
         const status = new ElectronAppUpdater().getConfiguration();
 
@@ -143,6 +146,34 @@ describe("ElectronAppUpdater configuration", () => {
             endpoint:
                 "https://jsgrrchg.github.io/NeverWrite/stable/linux-arm64/latest-linux-arm64.yml",
             message: null,
+        });
+    });
+
+    it("disables the Linux x64 updater outside AppImage builds", () => {
+        setRuntimePlatform("linux", "x64");
+
+        const status = new ElectronAppUpdater().getConfiguration();
+
+        expect(status).toMatchObject({
+            enabled: false,
+            endpoint: null,
+            message:
+                "Updates for Debian packages are handled outside the app. Download the latest .deb from GitHub Releases.",
+            update: null,
+        });
+    });
+
+    it("disables the Linux ARM64 updater outside AppImage builds", () => {
+        setRuntimePlatform("linux", "arm64");
+
+        const status = new ElectronAppUpdater().getConfiguration();
+
+        expect(status).toMatchObject({
+            enabled: false,
+            endpoint: null,
+            message:
+                "Updates for Debian packages are handled outside the app. Download the latest .deb from GitHub Releases.",
+            update: null,
         });
     });
 });
