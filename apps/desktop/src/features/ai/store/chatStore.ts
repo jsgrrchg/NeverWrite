@@ -10634,6 +10634,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const nextRuntimeId =
                 runtimeId ??
                 getSelectableDefaultRuntimeId(
+                    get().defaultRuntimeId,
+                    runtimes,
+                    get().setupStatusByRuntimeId,
+                ) ??
+                getSelectableDefaultRuntimeId(
                     get().selectedRuntimeId,
                     runtimes,
                     get().setupStatusByRuntimeId,
