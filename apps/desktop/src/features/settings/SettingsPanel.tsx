@@ -3288,21 +3288,17 @@ function TerminalSettings({
     );
 }
 
-function DevelopersSettings({
+function FileTreeSettings({
     searchQuery,
 }: {
     searchQuery: SettingsSearchQuery;
 }) {
     const {
-        lineWrapping,
         fileTreeContentMode,
         fileTreeShowExtensions,
         fileTreeExtensionFilter,
         setSetting,
     } = useSettingsStore();
-    const showEditor = sectionHasSettingsSearchMatches(searchQuery, "Editor", [
-        ["Line wrapping", "Wrap long lines to fit the editor width."],
-    ]);
     const showFileTree = sectionHasSettingsSearchMatches(
         searchQuery,
         "File Tree",
@@ -3328,26 +3324,12 @@ function DevelopersSettings({
         ],
     );
 
-    if (!showEditor && !showFileTree) {
+    if (!showFileTree) {
         return <EmptyPanelSearchResult />;
     }
 
     return (
         <div>
-            {showEditor ? <SectionLabel>Editor</SectionLabel> : null}
-            <SearchableRow
-                searchQuery={searchQuery}
-                section="Editor"
-                label="Line wrapping"
-                description="Wrap long lines to fit the editor width."
-                control={
-                    <Toggle
-                        value={lineWrapping}
-                        onChange={(value) => setSetting("lineWrapping", value)}
-                    />
-                }
-            />
-
             {showFileTree ? <SectionLabel>File Tree</SectionLabel> : null}
             <SearchableRow
                 searchQuery={searchQuery}
@@ -3919,7 +3901,7 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
     },
     {
         id: "developers",
-        label: "Developers",
+        label: "File Tree",
         icon: (
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
                 <path
@@ -4030,7 +4012,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     spellcheck: "Languages and dictionary management",
     updates: "Manual update checks and appcast configuration",
     terminal: "Font, size, and shell environment settings",
-    developers: "Advanced developer-facing file tree options",
+    developers: "Control which vault files appear in the file tree and pickers",
     vault: "Current vault and recent history",
     shortcuts: "Keyboard shortcuts reference",
     ai_providers: "AI runtimes, authentication, and API keys",
@@ -4132,8 +4114,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "monospace",
     ],
     developers: [
-        "Editor",
-        "Line wrapping",
         "File Tree",
         "Show all vault files",
         "Show file extensions",
@@ -4802,7 +4782,7 @@ export function SettingsPanel({
                             )}
                         {filteredCategories.length > 0 &&
                             activeCategory === "developers" && (
-                                <DevelopersSettings
+                                <FileTreeSettings
                                     searchQuery={activeSearchQuery}
                                 />
                             )}

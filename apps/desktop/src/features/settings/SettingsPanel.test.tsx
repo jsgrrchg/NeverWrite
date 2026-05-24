@@ -205,7 +205,7 @@ describe("SettingsPanel", () => {
     it("lets users edit the file tree extension filter as chips", async () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
-        fireEvent.click(screen.getByRole("button", { name: "Developers" }));
+        fireEvent.click(screen.getByRole("button", { name: "File Tree" }));
 
         const input = screen.getByRole("textbox", {
             name: "Add file extension",
@@ -231,7 +231,7 @@ describe("SettingsPanel", () => {
     it("does not render obsolete developer toggles", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 
-        fireEvent.click(screen.getByRole("button", { name: "Developers" }));
+        fireEvent.click(screen.getByRole("button", { name: "File Tree" }));
 
         expect(
             screen.queryByText(["Enable", "Developer", "Mode"].join(" ")),
