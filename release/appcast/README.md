@@ -59,13 +59,35 @@ Public naming remains stable per target:
 
 The architecture suffix is mandatory for Windows. macOS publishes a universal package and a single universal updater feed. We do not publish shared Windows `latest.yml` metadata for multiple architectures in the same directory because `electron-builder` would otherwise collide on Windows metadata names.
 
-For Ubuntu/Debian, the recommended manual installer is the `.deb` package:
+For Ubuntu/Debian, the recommended installer is the `.deb` package:
 
 ```bash
 sudo apt install ./NeverWrite-<version>-amd64.deb
 ```
 
-The AppImage remains the portable Linux option and the only Linux package family wired to the in-app updater. Debian packages do not auto-update in this phase; users should install a newer `.deb` manually until an APT repository exists.
+Users who want future system updates should configure the signed NeverWrite APT
+repository instead:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://jsgrrchg.github.io/NeverWrite/apt/neverwrite-archive-keyring.asc \
+  | sudo tee /etc/apt/keyrings/neverwrite.asc >/dev/null
+sudo chmod 0644 /etc/apt/keyrings/neverwrite.asc
+sudo tee /etc/apt/sources.list.d/neverwrite.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://jsgrrchg.github.io/NeverWrite/apt
+Suites: stable
+Components: main
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/neverwrite.asc
+EOF
+sudo apt update
+sudo apt install neverwrite
+```
+
+The AppImage remains the portable Linux option and the only Linux package family
+wired to the in-app updater. Debian packages update through `apt` when the APT
+repository is configured.
 
 ## Signing and notarization
 
@@ -109,7 +131,7 @@ High-level flow:
 3. smoke the packaged native sidecar
 4. stage release assets and target metadata as internal workflow artifacts
 5. publish all release files to `GitHub Releases` after every target succeeds
-6. publish feeds to `gh-pages`
+6. publish feeds and the signed APT repository to `gh-pages`
 7. generate a platform validation pack
 
 ## Version readiness
