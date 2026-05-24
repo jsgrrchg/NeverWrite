@@ -964,8 +964,8 @@ export function AIProvidersSettings({
     searchQuery?: SettingsSearchQuery;
 }) {
     const vaultPath = useVaultStore((s) => s.vaultPath);
-    const selectedRuntimeId = useChatStore((s) => s.selectedRuntimeId);
-    const setSelectedRuntime = useChatStore((s) => s.setSelectedRuntime);
+    const defaultRuntimeId = useChatStore((s) => s.defaultRuntimeId);
+    const setDefaultRuntime = useChatStore((s) => s.setDefaultRuntime);
     const [runtimes, setRuntimes] = useState<AIRuntimeDescriptor[]>([]);
     const [setupStatusMap, setSetupStatusMap] = useState<
         Record<string, AIRuntimeSetupStatus>
@@ -1410,9 +1410,9 @@ export function AIProvidersSettings({
                                 session — no API key required.
                             </p>
                             <select
-                                value={selectedRuntimeId ?? ""}
+                                value={defaultRuntimeId ?? ""}
                                 onChange={(e) =>
-                                    setSelectedRuntime(
+                                    setDefaultRuntime(
                                         e.target.value || null,
                                     )
                                 }
@@ -1430,7 +1430,7 @@ export function AIProvidersSettings({
                                 }}
                             >
                                 <option value="">
-                                    Automatic (first connected provider)
+                                    Automatic (current or last used provider)
                                 </option>
                                 {selectableProviders.map((p) => (
                                     <option key={p.id} value={p.id}>
@@ -1441,7 +1441,7 @@ export function AIProvidersSettings({
                                     </option>
                                 ))}
                             </select>
-                            {selectedRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID && (
+                            {defaultRuntimeId === CLAUDE_TERMINAL_RUNTIME_ID && (
                                 <p
                                     style={{
                                         fontSize: 11,

@@ -1155,6 +1155,7 @@ interface ChatStore {
     sessionOrder: string[];
     activeSessionId: string | null;
     lastFocusedSessionId: string | null;
+    defaultRuntimeId: string | null;
     selectedRuntimeId: string | null;
     isInitializing: boolean;
     notePickerOpen: boolean;
@@ -1189,6 +1190,7 @@ interface ChatStore {
     ) => Promise<void>;
     syncAutoContextForVault: (vaultPath: string | null) => void;
     setSelectedRuntime: (runtimeId: string | null) => void;
+    setDefaultRuntime: (runtimeId: string | null) => void;
     getDefaultNewChatRuntimeId: () => string | null;
     refreshSetupStatus: (runtimeId?: string) => Promise<void>;
     saveSetup: (input: {
@@ -6639,6 +6641,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         sessionOrder: [],
         activeSessionId: null,
         lastFocusedSessionId: null,
+        defaultRuntimeId: null,
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,
@@ -6672,6 +6675,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         setSelectedRuntime: (runtimeId) => {
             set({ selectedRuntimeId: runtimeId });
+        },
+
+        setDefaultRuntime: (runtimeId) => {
+            set((state) => ({
+                defaultRuntimeId: runtimeId,
+                selectedRuntimeId: runtimeId ?? state.selectedRuntimeId,
+            }));
             saveAiPreferences({ defaultRuntimeId: runtimeId ?? undefined });
         },
 
@@ -6679,12 +6689,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const state = get();
             return (
                 getSelectableDefaultRuntimeId(
-                    state.selectedRuntimeId,
+                    state.defaultRuntimeId,
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 ) ??
                 getSelectableDefaultRuntimeId(
-                    loadAiPreferences().defaultRuntimeId,
+                    state.selectedRuntimeId,
                     state.runtimes,
                     state.setupStatusByRuntimeId,
                 ) ??
@@ -6757,7 +6767,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         runtimes,
                         setupStatusByRuntimeId,
                     );
-                const defaultRuntimeId =
+                const initialSelectedRuntimeId =
                     persistedRuntimeId ??
                     getImplicitDefaultAcpRuntimeId(
                         runtimes,
@@ -6766,7 +6776,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                 set({
                     runtimes,
-                    selectedRuntimeId: defaultRuntimeId,
+                    defaultRuntimeId: persistedRuntimeId,
+                    selectedRuntimeId: initialSelectedRuntimeId,
                     setupStatusByRuntimeId,
                     runtimeConnectionByRuntimeId,
                 });
@@ -6960,7 +6971,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 }
 
                 if (!get().activeSessionId && shouldCreateDefaultSession) {
-                    const runtimeId = defaultRuntimeId;
+                    const runtimeId = initialSelectedRuntimeId;
                     const setupStatus = getSetupStatusForRuntime(
                         setupStatusByRuntimeId,
                         runtimeId,
@@ -10944,15 +10955,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
             useChatTabsStore.getState().reset();
             _queueDrainLocks.clear();
             resetChatRowUiStore();
+            const state = get();
+            const defaultRuntimeId =
+                getSelectableDefaultRuntimeId(
+                    state.defaultRuntimeId,
+                    state.runtimes,
+                    state.setupStatusByRuntimeId,
+                ) ??
+                getDefaultRuntimeId(state.runtimes, state.setupStatusByRuntimeId);
             set({
                 sessionsById: {},
                 sessionOrder: [],
                 activeSessionId: null,
                 lastFocusedSessionId: null,
-                selectedRuntimeId: getDefaultRuntimeId(
-                    get().runtimes,
-                    get().setupStatusByRuntimeId,
-                ),
+                selectedRuntimeId: defaultRuntimeId,
                 composerPartsBySessionId: {},
                 queuedMessagesBySessionId: {},
                 queuedMessageEditBySessionId: {},
@@ -11510,6 +11526,7 @@ export function resetChatStore() {
         sessionOrder: [],
         activeSessionId: null,
         lastFocusedSessionId: null,
+        defaultRuntimeId: null,
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,

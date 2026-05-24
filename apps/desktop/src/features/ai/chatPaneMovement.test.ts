@@ -453,6 +453,60 @@ describe("createNewChatInWorkspace", () => {
         });
     });
 
+    it("uses an explicit default runtime before the focused workspace chat runtime", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            defaultRuntimeId: "codex-acp",
+            runtimes: [runtimeDescriptor, claudeRuntimeDescriptor],
+            selectedRuntimeId: "claude-acp",
+            setupStatusByRuntimeId: {
+                "codex-acp": readySetupStatusState,
+                "claude-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "claude-acp",
+                    authMethod: "claude-login",
+                },
+            },
+        }));
+        const claudeSession = createStoredSession(
+            "claude-session-existing",
+            "Claude chat",
+            "claude-acp",
+        );
+        seedChatSessions(claudeSession);
+        useEditorStore.getState().openChat(claudeSession.sessionId, {
+            title: "Claude chat",
+            paneId: "primary",
+        });
+
+        invokeMock.mockImplementation((command, args) => {
+            if (command === "ai_get_setup_status") {
+                expect(
+                    (args as { runtimeId?: string } | undefined)?.runtimeId,
+                ).toBe("codex-acp");
+                return Promise.resolve(setupStatusPayload);
+            }
+            if (command === "ai_create_session") {
+                expect(
+                    (
+                        args as
+                            | { input?: { runtime_id?: string } }
+                            | undefined
+                    )?.input?.runtime_id,
+                ).toBe("codex-acp");
+                return Promise.resolve(createdSessionPayload);
+            }
+            return Promise.reject(new Error(`Unexpected invoke: ${command}`));
+        });
+
+        const pendingSessionId = await createNewChatInWorkspace();
+
+        expect(pendingSessionId).toMatch(/^pending:/);
+        expect(
+            useChatStore.getState().sessionsById[pendingSessionId!]?.runtimeId,
+        ).toBe("codex-acp");
+    });
+
     it("does not create an ACP chat when the selected runtime is Claude Code terminal", async () => {
         useChatStore.setState((state) => ({
             ...state,
@@ -507,6 +561,32 @@ describe("createNewChatInWorkspace", () => {
         expect(newSession).toHaveBeenCalledWith("codex-acp", sessionId);
         expect(upsertSession).toHaveBeenCalled();
         expect(openChat).toHaveBeenCalled();
+    });
+
+    it("does not create an ACP chat when Claude Code is the explicit default runtime", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            defaultRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            runtimes: [runtimeDescriptor, claudeTerminalRuntimeDescriptor],
+            selectedRuntimeId: "codex-acp",
+            setupStatusByRuntimeId: {
+                "codex-acp": readySetupStatusState,
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    ...readySetupStatusState,
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                    authMethod: "claude-code",
+                },
+            },
+        }));
+        const newSession = vi.spyOn(useChatStore.getState(), "newSession");
+        const upsertSession = vi.spyOn(useChatStore.getState(), "upsertSession");
+        const openChat = vi.spyOn(useEditorStore.getState(), "openChat");
+
+        await expect(createNewChatInWorkspace()).resolves.toBeNull();
+
+        expect(newSession).not.toHaveBeenCalled();
+        expect(upsertSession).not.toHaveBeenCalled();
+        expect(openChat).not.toHaveBeenCalled();
     });
 
     it("does not create a pending chat when Claude Code terminal is the only ready runtime", async () => {

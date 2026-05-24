@@ -132,9 +132,31 @@ function getSessionRuntimeId(sessionId?: string | null) {
     return useChatStore.getState().sessionsById[sessionId]?.runtimeId ?? null;
 }
 
+function getExplicitDefaultRuntimeId() {
+    const state = useChatStore.getState();
+    const runtimeId = state.defaultRuntimeId;
+    if (!runtimeId) {
+        return null;
+    }
+    const runtime = state.runtimes.find(
+        (descriptor) => descriptor.runtime.id === runtimeId,
+    );
+    if (!runtime) {
+        return null;
+    }
+    return isRuntimeSetupReady(state.setupStatusByRuntimeId[runtimeId])
+        ? runtimeId
+        : null;
+}
+
 function resolveWorkspaceNewChatRuntimeId(runtimeId?: string) {
     if (runtimeId) {
         return runtimeId;
+    }
+
+    const explicitDefaultRuntimeId = getExplicitDefaultRuntimeId();
+    if (explicitDefaultRuntimeId) {
+        return explicitDefaultRuntimeId;
     }
 
     const chatState = useChatStore.getState();
