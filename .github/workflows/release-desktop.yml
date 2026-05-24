@@ -363,39 +363,11 @@ jobs:
               if: matrix.platform == 'linux'
               shell: bash
               run: |
-                  set -euo pipefail
-
-                  if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
-                    DEB_ARCH="amd64"
-                  elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-                    DEB_ARCH="arm64"
-                  else
-                    echo "Unsupported Linux target for Debian validation: ${{ matrix.target }}" >&2
-                    exit 1
-                  fi
-
-                  DEB_PATH="$RUNNER_TEMP/release-assets/NeverWrite-${{ needs.prepare.outputs.version }}-${DEB_ARCH}.deb"
-                  if [[ ! -f "$DEB_PATH" ]]; then
-                    echo "Missing staged Debian package: $DEB_PATH" >&2
-                    exit 1
-                  fi
-
-                  dpkg-deb --info "$DEB_PATH" | tee "$RUNNER_TEMP/deb-info.txt"
-                  dpkg-deb --contents "$DEB_PATH" | tee "$RUNNER_TEMP/deb-contents.txt"
-
-                  grep -Eq '^[[:space:]]*Package: neverwrite$' "$RUNNER_TEMP/deb-info.txt"
-                  grep -Eq "^[[:space:]]*Version: ${{ needs.prepare.outputs.version }}$" "$RUNNER_TEMP/deb-info.txt"
-                  grep -Eq "^[[:space:]]*Architecture: ${DEB_ARCH}$" "$RUNNER_TEMP/deb-info.txt"
-                  grep -Eq '/usr/bin/neverwrite$|/opt/NeverWrite/neverwrite$' "$RUNNER_TEMP/deb-contents.txt"
-                  grep -Eq '/usr/share/applications/.*\.desktop$' "$RUNNER_TEMP/deb-contents.txt"
-                  grep -Eq '/usr/share/icons/|/usr/share/pixmaps/' "$RUNNER_TEMP/deb-contents.txt"
-
-                  if [[ "${DEB_ARCH}" == "amd64" ]]; then
-                    sudo apt-get install -y "$DEB_PATH"
-                    dpkg-query -W -f='${Package} ${Architecture} ${Version}\n' neverwrite | grep -Eq "^neverwrite amd64 ${{ needs.prepare.outputs.version }}$"
-                    command -v neverwrite
-                    sudo apt-get remove -y neverwrite
-                  fi
+                  node apps/desktop/scripts/validate-linux-deb-package.mjs \
+                    --staged-assets-dir "$RUNNER_TEMP/release-assets" \
+                    --target ${{ matrix.target }} \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --install
 
             - name: Upload release asset artifact
               uses: actions/upload-artifact@v4

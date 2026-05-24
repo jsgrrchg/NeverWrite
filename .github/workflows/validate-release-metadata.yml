@@ -16,6 +16,7 @@ on:
             - apps/desktop/scripts/stage-electron-release-assets.mjs
             - apps/desktop/scripts/stage-electron-release-assets.test.mjs
             - apps/desktop/scripts/stage-electron-sidecar.mjs
+            - apps/desktop/scripts/validate-linux-deb-package.mjs
             - apps/desktop/scripts/verify-electron-bundle.mjs
             - apps/desktop/src-electron/**
             - apps/desktop/src/features/settings/SettingsPanel.test.tsx
@@ -71,6 +72,9 @@ jobs:
 
             - name: Run Electron release helper tests
               run: node --test apps/desktop/scripts/electron-builder-config.test.mjs apps/desktop/scripts/stage-electron-release-assets.test.mjs
+
+            - name: Check Debian package validation script
+              run: node --check apps/desktop/scripts/validate-linux-deb-package.mjs
 
             - name: Run platform validation tests
               run: node --test scripts/platform-validation.test.mjs
