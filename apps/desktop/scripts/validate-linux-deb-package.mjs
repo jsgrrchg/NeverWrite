@@ -7,6 +7,8 @@ import {
     debianArchForBuildTarget,
 } from "../../../scripts/electron-release-lib.mjs";
 
+const LARGE_COMMAND_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
+
 function parseArgs(argv) {
     const args = {
         stagedAssetsDir: null,
@@ -58,10 +60,11 @@ function parseArgs(argv) {
 function run(command, args, options = {}) {
     const result = spawnSync(command, args, {
         encoding: "utf8",
+        maxBuffer: options.maxBuffer,
         stdio: options.capture ? "pipe" : "inherit",
     });
 
-    if (options.capture) {
+    if (options.capture && options.echo !== false) {
         process.stdout.write(result.stdout ?? "");
         process.stderr.write(result.stderr ?? "");
     }
@@ -88,7 +91,13 @@ function escapeRegex(value) {
 
 function validatePackageMetadata({ debPath, debArch, version }) {
     const info = run("dpkg-deb", ["--info", debPath], { capture: true });
-    const contents = run("dpkg-deb", ["--contents", debPath], { capture: true });
+    const contents = run("dpkg-deb", ["--contents", debPath], {
+        capture: true,
+        echo: false,
+        // Large Electron packages can contain enough files to exceed Node's
+        // default spawnSync output buffer while listing package contents.
+        maxBuffer: LARGE_COMMAND_OUTPUT_MAX_BUFFER,
+    });
 
     assertMatches(info, /^[\t ]*Package: neverwrite$/m, "package name is not neverwrite");
     assertMatches(
