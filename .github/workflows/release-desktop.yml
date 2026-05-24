@@ -507,12 +507,41 @@ jobs:
                   path: ${{ runner.temp }}/web-clipper-assets
                   if-no-files-found: error
 
+    apt-repository-preflight:
+        name: Validate APT Repository Secrets
+        needs: prepare
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Validate APT signing configuration
+              shell: bash
+              env:
+                  APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+                  APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+                  APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+              run: |
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name}" ]]; then
+                      echo "Missing required GitHub Actions secret: ${name}" >&2
+                      exit 1
+                    fi
+                  done
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  trap 'rm -rf "$GNUPGHOME"' EXIT
+                  chmod 700 "$GNUPGHOME"
+
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+
     publish-release:
         name: Publish GitHub Release
         needs:
             - prepare
             - build-target
             - build-web-clipper
+            - apt-repository-preflight
         runs-on: ubuntu-latest
 
         steps:
@@ -819,12 +848,8 @@ jobs:
                       install -d -m 0755 /etc/apt/keyrings
                       cp /repo/neverwrite-archive-keyring.asc /etc/apt/keyrings/neverwrite.asc
                       chmod 0644 /etc/apt/keyrings/neverwrite.asc
-                      printf "%s\n" \
-                        "Types: deb" \
-                        "URIs: file:///repo" \
-                        "Suites: stable" \
-                        "Components: main" \
-                        "Signed-By: /etc/apt/keyrings/neverwrite.asc" \
+                      sed "s|^URIs: .*|URIs: file:///repo|" \
+                        /repo/neverwrite.sources.example \
                         >/etc/apt/sources.list.d/neverwrite.sources
                       apt-get update
                       apt-cache policy neverwrite
