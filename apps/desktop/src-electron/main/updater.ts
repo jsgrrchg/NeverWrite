@@ -66,6 +66,8 @@ const UPDATER_VERBOSE_LOG_ENV_VARS = [
     "NEVERWRITE_UPDATER_DEBUG",
 ];
 const DEFAULT_UPDATER_BASE_URL = "https://jsgrrchg.github.io/NeverWrite";
+const LINUX_DEBIAN_PACKAGE_UPDATER_MESSAGE =
+    "Updates for Debian packages are handled outside the app. Download the latest .deb from GitHub Releases.";
 
 function readFirstNonEmptyEnv(keys: readonly string[]) {
     for (const key of keys) {
@@ -257,6 +259,14 @@ function currentUpdaterRuntimeMode(): UpdaterRuntimeMode {
     return app.isPackaged ? "production" : "non-production";
 }
 
+function isSupportedLinuxUpdaterArch() {
+    return process.arch === "x64" || process.arch === "arm64";
+}
+
+function isRunningAsLinuxAppImage() {
+    return Boolean(process.env.APPIMAGE?.trim());
+}
+
 function resolveFeedTarget() {
     if (process.platform === "darwin") {
         return "darwin-universal";
@@ -265,7 +275,7 @@ function resolveFeedTarget() {
         return `windows-${process.arch}`;
     }
     if (process.platform === "linux") {
-        if (process.arch === "x64" || process.arch === "arm64") {
+        if (isSupportedLinuxUpdaterArch() && isRunningAsLinuxAppImage()) {
             return `linux-${process.arch}`;
         }
         return null;
@@ -281,12 +291,27 @@ function resolveMetadataFileName() {
         return "latest.yml";
     }
     if (process.platform === "linux") {
+        if (!isSupportedLinuxUpdaterArch() || !isRunningAsLinuxAppImage()) {
+            return null;
+        }
         if (process.arch === "arm64") {
             return "latest-linux-arm64.yml";
         }
         return "latest-linux.yml";
     }
     return null;
+}
+
+function resolveUnsupportedUpdaterMessage() {
+    if (
+        process.platform === "linux" &&
+        isSupportedLinuxUpdaterArch() &&
+        !isRunningAsLinuxAppImage()
+    ) {
+        return LINUX_DEBIAN_PACKAGE_UPDATER_MESSAGE;
+    }
+
+    return "Updater is only supported on macOS, Windows, and Linux AppImage x64/ARM64 builds.";
 }
 
 function buildUpdaterEndpoint(baseUrl: string, channel: string, feedTarget: string) {
@@ -342,8 +367,7 @@ function loadUpdaterRuntimeConfig(): UpdaterRuntimeConfig {
             runtimeMode,
             endpoint: null,
             endpointDisplay,
-            endpointError:
-                "Updater is only supported on macOS, Windows, and Linux AppImage x64/ARM64 builds.",
+            endpointError: resolveUnsupportedUpdaterMessage(),
             feedDirectoryUrl: null,
             feedTarget,
             metadataFileName,

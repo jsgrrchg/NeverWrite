@@ -4,10 +4,12 @@ import path from "node:path";
 import { parseDocument } from "yaml";
 
 import {
+    buildDebianPackageAssetName,
     buildElectronBlockmapAssetName,
     buildElectronUpdaterAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    debianArchForBuildTarget,
     feedTargetForBuildTarget,
     metadataFileNameForBuildTarget,
 } from "../../../scripts/electron-release-lib.mjs";
@@ -150,7 +152,7 @@ function feedAliasFileNamesForBuildTarget(buildTarget) {
     return [];
 }
 
-function collectArtifacts(distDir, buildTarget) {
+function collectArtifacts(distDir, buildTarget, version) {
     const metadataFileName = metadataFileNameForBuildTarget(buildTarget);
     const findFeedPath = () =>
         findSingleFile(
@@ -178,6 +180,7 @@ function collectArtifacts(distDir, buildTarget) {
                 (filePath) => filePath.endsWith(".zip.blockmap"),
                 "zip blockmap",
             ),
+            additionalManualArtifacts: [],
         };
     }
     if (buildTarget.endsWith("-unknown-linux-gnu")) {
@@ -199,12 +202,27 @@ function collectArtifacts(distDir, buildTarget) {
                       `${metadataFileName} feed`,
                   )
                 : findFeedPath();
+        const expectedDebAssetName = buildDebianPackageAssetName(
+            version,
+            buildTarget,
+        );
+        const debPackagePath = findSingleFile(
+            distDir,
+            (filePath) => path.basename(filePath) === expectedDebAssetName,
+            `${debianArchForBuildTarget(buildTarget)} Debian package named ${expectedDebAssetName}`,
+        );
 
         return {
             feedPath,
             manualAssetPath: appImagePath,
             updaterAssetPath: appImagePath,
             blockmapPath,
+            additionalManualArtifacts: [
+                {
+                    kind: "deb",
+                    sourcePath: debPackagePath,
+                },
+            ],
         };
     }
 
@@ -225,6 +243,7 @@ function collectArtifacts(distDir, buildTarget) {
         manualAssetPath: installerPath,
         updaterAssetPath: installerPath,
         blockmapPath,
+        additionalManualArtifacts: [],
     };
 }
 
@@ -365,12 +384,21 @@ function rewriteFeed({
     document.set("sha512", publishedAssetMetadata.updaterUrl.sha512);
     const files = document.get("files");
     if (files?.items) {
+        const retainedItems = [];
         for (const item of files.items) {
             const resolvedUrl = item?.has?.("url")
                 ? resolvePublishedAssetUrl(item.get("url"), publishedAssetUrls)
                 : item?.has?.("path")
                   ? resolvePublishedAssetUrl(item.get("path"), publishedAssetUrls)
                   : updaterUrl;
+            const originalUrl = item?.has?.("url")
+                ? item.get("url")
+                : item?.has?.("path")
+                  ? item.get("path")
+                  : null;
+            if (!shouldKeepFeedArtifact(originalUrl, buildTarget)) {
+                continue;
+            }
             const metadata =
                 publishedAssetMetadata[
                     metadataKeyForPublishedAssetUrl(
@@ -391,12 +419,20 @@ function rewriteFeed({
             if (item?.has?.("size")) {
                 item.set("size", metadata.size);
             }
+            retainedItems.push(item);
         }
+        files.items = retainedItems;
     }
     const packages = document.get("packages");
     if (packages?.items) {
+        const retainedPackages = [];
         for (const item of packages.items) {
             if (item?.value?.has("path")) {
+                if (
+                    !shouldKeepFeedArtifact(item.value.get("path"), buildTarget)
+                ) {
+                    continue;
+                }
                 item.value.set(
                     "path",
                     resolvePublishedAssetUrl(
@@ -405,8 +441,18 @@ function rewriteFeed({
                     ),
                 );
             }
+            retainedPackages.push(item);
+        }
+        packages.items = retainedPackages;
+        if (retainedPackages.length === 0) {
+            document.delete("packages");
         }
     }
+    ensureFeedHasDownloadableUpdaterFile(
+        document,
+        updaterUrl,
+        publishedAssetMetadata.updaterUrl,
+    );
 
     fs.writeFileSync(destinationFeedPath, document.toString(), "utf8");
     const feedAliasRelativePaths = copyFeedAliases(
@@ -423,6 +469,32 @@ function rewriteFeed({
         updaterUrl,
         feedAliasRelativePaths,
     };
+}
+
+function ensureFeedHasDownloadableUpdaterFile(document, updaterUrl, metadata) {
+    const files = document.get("files");
+    if (files?.items && files.items.length > 0) {
+        return;
+    }
+
+    document.set("files", [
+        {
+            url: updaterUrl,
+            sha512: metadata.sha512,
+            size: metadata.size,
+        },
+    ]);
+}
+
+function shouldKeepFeedArtifact(sourceValue, buildTarget) {
+    if (
+        buildTarget.endsWith("-unknown-linux-gnu") &&
+        typeof sourceValue === "string" &&
+        sourceValue.toLowerCase().endsWith(".deb")
+    ) {
+        return false;
+    }
+    return true;
 }
 
 function metadataKeyForPublishedAssetUrl(resolvedUrl, publishedAssetUrls) {
@@ -451,9 +523,34 @@ function resolvePublishedAssetUrl(sourceValue, publishedAssetUrls) {
     return publishedAssetUrls.updaterUrl;
 }
 
+function stageAdditionalManualAssets({
+    artifacts,
+    version,
+    target,
+    outputDir,
+}) {
+    return artifacts.additionalManualArtifacts.map((artifact) => {
+        if (artifact.kind !== "deb") {
+            throw new Error(
+                `Unsupported additional manual artifact kind "${artifact.kind}".`,
+            );
+        }
+
+        const assetName = buildDebianPackageAssetName(version, target);
+        const destinationPath = path.join(outputDir, assetName);
+        copyIfNeeded(artifact.sourcePath, destinationPath);
+
+        return {
+            kind: artifact.kind,
+            assetName,
+            sizeBytes: fileSizeInBytes(destinationPath),
+        };
+    });
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
-    const artifacts = collectArtifacts(args.distDir, args.target);
+    const artifacts = collectArtifacts(args.distDir, args.target, args.version);
 
     fs.mkdirSync(args.outputDir, { recursive: true });
 
@@ -486,6 +583,12 @@ function main() {
             path.join(args.outputDir, blockmapAssetName),
         );
     }
+    const additionalManualAssets = stageAdditionalManualAssets({
+        artifacts,
+        version: args.version,
+        target: args.target,
+        outputDir: args.outputDir,
+    });
 
     const metadata = {
         tag: args.tag,
@@ -512,6 +615,7 @@ function main() {
                 ? fileSizeInBytes(path.join(args.outputDir, blockmapAssetName))
                 : 0,
         updaterUrl: feed.updaterUrl,
+        additionalManualAssets,
     };
 
     fs.mkdirSync(path.dirname(args.metadataOut), { recursive: true });

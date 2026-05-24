@@ -6,6 +6,7 @@ import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     ELECTRON_BUILD_TARGETS,
     buildPublishedFeedUrl,
+    buildDebianPackageAssetName,
     describeBuildTarget,
     describeUpdaterArtifactKind,
     feedTargetForBuildTarget,
@@ -98,6 +99,72 @@ function ensureUniquePerField(entries, field) {
     }
 }
 
+function validateAdditionalManualAssets(entry, resolved) {
+    const assets = entry.additionalManualAssets ?? [];
+    if (!Array.isArray(assets)) {
+        throw new Error(
+            `Target metadata for ${resolved.buildTarget} additionalManualAssets must be an array when provided.`,
+        );
+    }
+
+    const names = new Set();
+    for (const asset of assets) {
+        if (!asset || typeof asset !== "object" || Array.isArray(asset)) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} has an invalid additional manual asset entry.`,
+            );
+        }
+        if (typeof asset.kind !== "string" || !asset.kind.trim()) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} additional manual assets must define kind.`,
+            );
+        }
+        if (typeof asset.assetName !== "string" || !asset.assetName.trim()) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} additional manual assets must define assetName.`,
+            );
+        }
+        if (
+            typeof asset.sizeBytes !== "number" ||
+            !Number.isFinite(asset.sizeBytes) ||
+            asset.sizeBytes <= 0
+        ) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} additional manual assets must define a positive sizeBytes.`,
+            );
+        }
+        if (names.has(asset.assetName)) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} duplicates additional manual asset ${asset.assetName}.`,
+            );
+        }
+        names.add(asset.assetName);
+    }
+
+    if (resolved.buildTarget.endsWith("-unknown-linux-gnu")) {
+        if (typeof entry.version !== "string" || !entry.version.trim()) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} must include version to validate Debian packages.`,
+            );
+        }
+        const expectedDebAssetName = buildDebianPackageAssetName(
+            entry.version,
+            resolved.buildTarget,
+        );
+        const hasDebAsset = assets.some(
+            (asset) =>
+                asset.kind === "deb" && asset.assetName === expectedDebAssetName,
+        );
+        if (!hasDebAsset) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} must include Debian package ${expectedDebAssetName} in additionalManualAssets.`,
+            );
+        }
+    }
+
+    return assets;
+}
+
 export function validateTargetMetadataEntries(entries) {
     if (!Array.isArray(entries) || entries.length === 0) {
         throw new Error("Target metadata entries must be a non-empty array.");
@@ -124,6 +191,7 @@ export function validateTargetMetadataEntries(entries) {
                 `Duplicate target metadata for feed target ${resolved.feedTarget}.`,
             );
         }
+        validateAdditionalManualAssets(entry, resolved);
         byBuildTarget.set(resolved.buildTarget, entry);
         byFeedTarget.set(resolved.feedTarget, entry);
     }
@@ -172,6 +240,7 @@ export function buildPlatformValidationMatrix({
             updaterBlockmapAssetName: metadata.updaterBlockmapAssetName,
             updaterUrl: metadata.updaterUrl,
             feedRelativePath: metadata.feedRelativePath,
+            additionalManualAssets: metadata.additionalManualAssets ?? [],
         };
     });
 }
@@ -247,6 +316,11 @@ export function renderPlatformValidationChecklist({
         lines.push(`Published feed: \`${row.feedUrl}\``);
         lines.push(`Feed target: \`${row.feedTarget}\``);
         lines.push(`Manual installer: \`${row.manualAssetName}\``);
+        for (const asset of row.additionalManualAssets ?? []) {
+            lines.push(
+                `Additional manual asset (${asset.kind}): \`${asset.assetName}\``,
+            );
+        }
         lines.push(`Updater asset: \`${row.updaterAssetName}\``);
         lines.push(
             `Invalid-checksum fixture: \`fixtures/${row.feedTarget}/invalid-checksum/${channel}/${row.metadataFileName}\``,

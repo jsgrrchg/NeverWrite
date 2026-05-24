@@ -3,7 +3,9 @@ import path from "node:path";
 
 import {
     BUILD_TARGET_TO_APPCAST_KEY,
+    buildDebianPackageAssetName,
     buildUpdaterReleaseAssetName,
+    debianArchForBuildTarget,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
     getCanonicalAppBundleName,
@@ -242,23 +244,44 @@ export function buildManualDownloadRows(version) {
     const normalizedVersion = normalizeReleaseVersion(version);
     return PUBLIC_DOWNLOAD_VARIANTS.map((variant) => ({
         ...variant,
-        assetName: buildPublicReleaseAssetName(
-            normalizedVersion,
-            variant.buildTarget,
-        ),
+        ...(targetPlatformFamily(variant.buildTarget) === "linux"
+            ? {
+                  platformLabel: "Linux Ubuntu/Debian",
+                  architectureLabel: debianArchForBuildTarget(
+                      variant.buildTarget,
+                  ),
+                  recommendedAssetName: buildDebianPackageAssetName(
+                      normalizedVersion,
+                      variant.buildTarget,
+                  ),
+                  portableAssetName: buildPublicReleaseAssetName(
+                      normalizedVersion,
+                      variant.buildTarget,
+                  ),
+              }
+            : {
+                  recommendedAssetName: buildPublicReleaseAssetName(
+                      normalizedVersion,
+                      variant.buildTarget,
+                  ),
+                  portableAssetName: null,
+              }),
     }));
 }
 
 export function renderManualDownloadTable(version) {
     const rows = buildManualDownloadRows(version);
     const lines = [
-        "| Platform | Architecture | Manual installer asset |",
-        "| --- | --- | --- |",
+        "| Platform | Architecture | Recommended installer | Portable option |",
+        "| --- | --- | --- | --- |",
     ];
 
     for (const row of rows) {
+        const portableAssetLabel = row.portableAssetName
+            ? `\`${row.portableAssetName}\``
+            : "_Not applicable_";
         lines.push(
-            `| ${row.platformLabel} | ${row.architectureLabel} | \`${row.assetName}\` |`,
+            `| ${row.platformLabel} | ${row.architectureLabel} | \`${row.recommendedAssetName}\` | ${portableAssetLabel} |`,
         );
     }
 
@@ -274,6 +297,9 @@ export function buildReleaseBody(version, releaseNotes) {
         "Choose the installer that matches your machine:",
         "",
         renderManualDownloadTable(version),
+        "",
+        "For Ubuntu/Debian, install the `.deb` package. For other Linux distributions or portable use, download the AppImage.",
+        "Debian packages do not use the in-app updater yet; download a newer `.deb` from GitHub Releases when upgrading manually.",
         "",
         "Updater artifacts are also attached to the release for in-app updates.",
         "Files ending in `.app.tar.gz`, `.nsis.zip`, `.blockmap`, or `.sig` are internal updater assets and are not intended for manual installation.",

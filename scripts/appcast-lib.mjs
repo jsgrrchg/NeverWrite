@@ -125,6 +125,24 @@ export function buildPublicReleaseAssetName(version, buildTarget) {
     }
 }
 
+export function debianArchForBuildTarget(buildTarget) {
+    switch (buildTarget) {
+        case "aarch64-unknown-linux-gnu":
+            return "arm64";
+        case "x86_64-unknown-linux-gnu":
+            return "amd64";
+        default:
+            throw new Error(
+                `Debian packages are only supported for Linux build targets, received "${buildTarget}".`,
+            );
+    }
+}
+
+export function buildDebianPackageAssetName(version, buildTarget) {
+    const normalizedVersion = normalizeReleaseVersion(version);
+    return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-${debianArchForBuildTarget(buildTarget)}.deb`;
+}
+
 export function getCanonicalAppBundleName() {
     return `${PUBLIC_PRODUCT_NAME}.app`;
 }

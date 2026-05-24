@@ -74,31 +74,36 @@ test("buildManualDownloadRows exposes the public installer set for humans", () =
             buildTarget: "universal-apple-darwin",
             platformLabel: "macOS",
             architectureLabel: "Universal",
-            assetName: "NeverWrite_0.2.0_macOS_Universal.dmg",
+            recommendedAssetName: "NeverWrite_0.2.0_macOS_Universal.dmg",
+            portableAssetName: null,
         },
         {
             buildTarget: "aarch64-pc-windows-msvc",
             platformLabel: "Windows",
             architectureLabel: "ARM64",
-            assetName: "NeverWrite_0.2.0_Windows_ARM64_Setup.exe",
+            recommendedAssetName: "NeverWrite_0.2.0_Windows_ARM64_Setup.exe",
+            portableAssetName: null,
         },
         {
             buildTarget: "x86_64-pc-windows-msvc",
             platformLabel: "Windows",
             architectureLabel: "x64",
-            assetName: "NeverWrite_0.2.0_Windows_x64_Setup.exe",
+            recommendedAssetName: "NeverWrite_0.2.0_Windows_x64_Setup.exe",
+            portableAssetName: null,
         },
         {
             buildTarget: "aarch64-unknown-linux-gnu",
-            platformLabel: "Linux",
-            architectureLabel: "ARM64",
-            assetName: "NeverWrite-0.2.0-arm64.AppImage",
+            platformLabel: "Linux Ubuntu/Debian",
+            architectureLabel: "arm64",
+            recommendedAssetName: "NeverWrite-0.2.0-arm64.deb",
+            portableAssetName: "NeverWrite-0.2.0-arm64.AppImage",
         },
         {
             buildTarget: "x86_64-unknown-linux-gnu",
-            platformLabel: "Linux",
-            architectureLabel: "x64",
-            assetName: "NeverWrite-0.2.0-x64.AppImage",
+            platformLabel: "Linux Ubuntu/Debian",
+            architectureLabel: "amd64",
+            recommendedAssetName: "NeverWrite-0.2.0-amd64.deb",
+            portableAssetName: "NeverWrite-0.2.0-x64.AppImage",
         },
     ]);
 });
@@ -111,7 +116,9 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
     assert.match(body, /## Manual installers/);
     assert.match(body, /NeverWrite_0.2.0_macOS_Universal\.dmg/);
     assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
+    assert.match(body, /NeverWrite-0.2.0-amd64\.deb/);
     assert.match(body, /NeverWrite-0.2.0-x64\.AppImage/);
+    assert.match(body, /For Ubuntu\/Debian, install the `\.deb` package/);
     assert.match(body, /internal updater assets/i);
     assert.match(body, /## Browser extensions/);
     assert.match(

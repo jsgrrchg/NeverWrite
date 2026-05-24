@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     CANONICAL_RELEASE_REPO_SLUG,
+    buildDebianPackageAssetName,
     buildUpdaterReleaseAssetName,
     buildChannelAppcastUrl,
     buildGitHubPagesBaseUrl,
@@ -51,6 +52,21 @@ test("buildPublicReleaseAssetName uses the human-facing naming convention", () =
     assert.equal(
         buildPublicReleaseAssetName("0.2.0", "x86_64-unknown-linux-gnu"),
         "NeverWrite-0.2.0-x64.AppImage",
+    );
+});
+
+test("buildDebianPackageAssetName uses Debian architecture names", () => {
+    assert.equal(
+        buildDebianPackageAssetName("0.2.0", "x86_64-unknown-linux-gnu"),
+        "NeverWrite-0.2.0-amd64.deb",
+    );
+    assert.equal(
+        buildDebianPackageAssetName("0.2.0", "aarch64-unknown-linux-gnu"),
+        "NeverWrite-0.2.0-arm64.deb",
+    );
+    assert.throws(
+        () => buildDebianPackageAssetName("0.2.0", "universal-apple-darwin"),
+        /Debian packages are only supported/i,
     );
 });
 

@@ -275,6 +275,10 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
             "appimage",
         );
         writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-amd64.deb"),
+            "deb package",
+        );
+        writeFile(
             path.join(distDir, "latest-linux.yml"),
             [
                 "version: 0.2.0",
@@ -283,6 +287,11 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
                 "files:",
                 "  - url: NeverWrite-0.2.0-x64.AppImage",
                 "    sha512: original",
+                "  - url: NeverWrite-0.2.0-amd64.deb",
+                "    sha512: deb",
+                "packages:",
+                "  deb:",
+                "    path: NeverWrite-0.2.0-amd64.deb",
                 "",
             ].join("\n"),
         );
@@ -322,10 +331,21 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         assert.equal(metadata.metadataFileName, "latest-linux.yml");
         assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-x64.AppImage");
         assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-x64.AppImage");
+        assert.deepEqual(metadata.additionalManualAssets, [
+            {
+                kind: "deb",
+                assetName: "NeverWrite-0.2.0-amd64.deb",
+                sizeBytes: 11,
+            },
+        ]);
         assert.equal(metadata.updaterBlockmapAssetName, null);
         assert.equal(metadata.updaterBlockmapSizeBytes, 0);
         assert.equal(metadata.feedRelativePath, "linux-x64/latest-linux.yml");
         assert.deepEqual(metadata.feedAliasRelativePaths, []);
+        assert.equal(
+            fs.existsSync(path.join(outputDir, "NeverWrite-0.2.0-amd64.deb")),
+            true,
+        );
         assert.equal(
             fs.existsSync(
                 path.join(outputDir, "NeverWrite-0.2.0-x64.AppImage.blockmap"),
@@ -336,6 +356,85 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
             rewrittenFeed,
             /https:\/\/github\.com\/jsgrrchg\/NeverWrite\/releases\/download\/v0\.2\.0\/NeverWrite-0\.2\.0-x64\.AppImage/,
         );
+        assert.doesNotMatch(rewrittenFeed, /\.deb/);
+        assert.doesNotMatch(rewrittenFeed, /packages:/);
+    });
+});
+
+test("stage-electron-release-assets restores AppImage files when Linux feeds only list deb packages", () => {
+    withTempDir((tempDir) => {
+        const distDir = path.join(tempDir, "dist");
+        const outputDir = path.join(tempDir, "staged");
+        const metadataOut = path.join(tempDir, "metadata", "linux-x64.json");
+        const appImageContents = "appimage";
+        const appImageSha512 = sha512Base64(appImageContents);
+
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.AppImage"),
+            appImageContents,
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-amd64.deb"),
+            "deb package",
+        );
+        writeFile(
+            path.join(distDir, "latest-linux.yml"),
+            [
+                "version: 0.2.0",
+                "path: NeverWrite-0.2.0-amd64.deb",
+                "sha512: deb",
+                "files:",
+                "  - url: NeverWrite-0.2.0-amd64.deb",
+                "    sha512: deb",
+                "packages:",
+                "  deb:",
+                "    path: NeverWrite-0.2.0-amd64.deb",
+                "",
+            ].join("\n"),
+        );
+
+        execFileSync(
+            process.execPath,
+            [
+                stageScriptPath,
+                "--dist-dir",
+                distDir,
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--version",
+                "0.2.0",
+                "--tag",
+                "v0.2.0",
+                "--repo",
+                "jsgrrchg/NeverWrite",
+                "--output-dir",
+                outputDir,
+                "--metadata-out",
+                metadataOut,
+            ],
+            {
+                cwd: repoRoot,
+                stdio: "pipe",
+            },
+        );
+
+        const rewrittenFeed = fs.readFileSync(
+            path.join(outputDir, "feeds", "linux-x64", "latest-linux.yml"),
+            "utf8",
+        );
+        const feedDocument = parseDocument(rewrittenFeed);
+        const updaterUrl =
+            "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-x64.AppImage";
+        const files = feedDocument.get("files", true);
+
+        assert.equal(feedDocument.get("path"), updaterUrl);
+        assert.equal(feedDocument.get("sha512"), appImageSha512);
+        assert.equal(files.items.length, 1);
+        assert.equal(files.items[0].get("url"), updaterUrl);
+        assert.equal(files.items[0].get("sha512"), appImageSha512);
+        assert.equal(files.items[0].get("size"), 8);
+        assert.doesNotMatch(rewrittenFeed, /\.deb/);
+        assert.doesNotMatch(rewrittenFeed, /packages:/);
     });
 });
 
@@ -350,6 +449,10 @@ test("stage-electron-release-assets synthesizes missing Linux AppImage feeds", (
         writeFile(
             path.join(distDir, "NeverWrite-0.2.0-arm64.AppImage"),
             appImageContents,
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-arm64.deb"),
+            "arm64 deb",
         );
 
         execFileSync(
@@ -387,6 +490,13 @@ test("stage-electron-release-assets synthesizes missing Linux AppImage feeds", (
         assert.equal(metadata.metadataFileName, "latest-linux.yml");
         assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-arm64.AppImage");
         assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-arm64.AppImage");
+        assert.deepEqual(metadata.additionalManualAssets, [
+            {
+                kind: "deb",
+                assetName: "NeverWrite-0.2.0-arm64.deb",
+                sizeBytes: 9,
+            },
+        ]);
         assert.equal(metadata.updaterBlockmapAssetName, null);
         assert.equal(metadata.updaterBlockmapSizeBytes, 0);
         assert.equal(metadata.feedRelativePath, "linux-arm64/latest-linux.yml");
@@ -429,6 +539,10 @@ test("stage-electron-release-assets requires generated Linux x64 feeds", () => {
             path.join(distDir, "NeverWrite-0.2.0-x86_64.AppImage"),
             "x64 appimage",
         );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-amd64.deb"),
+            "x64 deb",
+        );
 
         assert.throws(
             () =>
@@ -457,6 +571,64 @@ test("stage-electron-release-assets requires generated Linux x64 feeds", () => {
                     },
                 ),
             /Expected exactly one latest-linux\.yml feed/,
+        );
+    });
+});
+
+test("stage-electron-release-assets requires Linux Debian packages", () => {
+    withTempDir((tempDir) => {
+        const distDir = path.join(tempDir, "dist");
+        const outputDir = path.join(tempDir, "staged");
+        const metadataOut = path.join(tempDir, "metadata", "linux-x64.json");
+
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.AppImage"),
+            "x64 appimage",
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-arm64.deb"),
+            "wrong arch deb",
+        );
+        writeFile(
+            path.join(distDir, "latest-linux.yml"),
+            [
+                "version: 0.2.0",
+                "path: NeverWrite-0.2.0-x64.AppImage",
+                "sha512: original",
+                "files:",
+                "  - url: NeverWrite-0.2.0-x64.AppImage",
+                "    sha512: original",
+                "",
+            ].join("\n"),
+        );
+
+        assert.throws(
+            () =>
+                execFileSync(
+                    process.execPath,
+                    [
+                        stageScriptPath,
+                        "--dist-dir",
+                        distDir,
+                        "--target",
+                        "x86_64-unknown-linux-gnu",
+                        "--version",
+                        "0.2.0",
+                        "--tag",
+                        "v0.2.0",
+                        "--repo",
+                        "jsgrrchg/NeverWrite",
+                        "--output-dir",
+                        outputDir,
+                        "--metadata-out",
+                        metadataOut,
+                    ],
+                    {
+                        cwd: repoRoot,
+                        stdio: "pipe",
+                    },
+                ),
+            /Expected exactly one amd64 Debian package/,
         );
     });
 });

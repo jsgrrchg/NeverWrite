@@ -359,6 +359,16 @@ jobs:
                     --output-dir "$RUNNER_TEMP/release-assets" \
                     --metadata-out "$RUNNER_TEMP/target-metadata/${{ matrix.target }}.json"
 
+            - name: Validate Linux Debian package
+              if: matrix.platform == 'linux'
+              shell: bash
+              run: |
+                  node apps/desktop/scripts/validate-linux-deb-package.mjs \
+                    --staged-assets-dir "$RUNNER_TEMP/release-assets" \
+                    --target ${{ matrix.target }} \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --install
+
             - name: Upload release asset artifact
               uses: actions/upload-artifact@v4
               with:
@@ -627,16 +637,26 @@ jobs:
                     );
 
                   const toMiB = (bytes) => `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+                  const formatAdditionalManualAssets = (entry) => {
+                    const assets = entry.additionalManualAssets ?? [];
+                    if (assets.length === 0) {
+                      return "None";
+                    }
+                    return assets
+                      .map((asset) => `${asset.assetName}: ${toMiB(asset.sizeBytes)}`)
+                      .join("<br>");
+                  };
+
                   const markdown = [
                     "# Electron Release Asset Sizes",
                     "",
                     `Release: ${{ needs.prepare.outputs.tag }}`,
                     "",
-                    "| Build target | Manual installer | Updater asset | Blockmap |",
-                    "| --- | --- | --- | --- |",
+                    "| Build target | Manual installer | Additional manual assets | Updater asset | Blockmap |",
+                    "| --- | --- | --- | --- | --- |",
                     ...entries.map(
                       (entry) =>
-                        `| \`${entry.buildTarget}\` | ${toMiB(entry.manualAssetSizeBytes)} | ${toMiB(entry.updaterAssetSizeBytes)} | ${toMiB(entry.updaterBlockmapSizeBytes)} |`,
+                        `| \`${entry.buildTarget}\` | ${toMiB(entry.manualAssetSizeBytes)} | ${formatAdditionalManualAssets(entry)} | ${toMiB(entry.updaterAssetSizeBytes)} | ${toMiB(entry.updaterBlockmapSizeBytes)} |`,
                     ),
                     "",
                   ].join("\n");

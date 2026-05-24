@@ -121,7 +121,13 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
                 target: [{ target: "nsis" }],
             },
             linux: {
-                target: [{ target: "AppImage" }],
+                target: [{ target: "AppImage" }, { target: "deb" }],
+            },
+            deb: {
+                packageName: "neverwrite",
+                artifactName: "${productName}-${version}-${arch}.deb",
+                priority: "optional",
+                publish: null,
             },
         }),
         [],
@@ -139,6 +145,9 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
             win: {
                 target: [],
             },
+            linux: {
+                target: ["AppImage"],
+            },
         }),
         [
             'electron-builder.config.mjs must register the "neverwrite" protocol.',
@@ -148,7 +157,45 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
             "electron-builder.config.mjs must configure afterPack bundle verification.",
             'electron-builder.config.mjs mac.target must include "zip".',
             'electron-builder.config.mjs win.target must include "nsis".',
-            'electron-builder.config.mjs linux.target must include "AppImage".',
+            'electron-builder.config.mjs linux.target must include "deb".',
+        ],
+    );
+});
+
+test("collectElectronBuildIssues validates Debian package metadata", () => {
+    assert.deepEqual(
+        collectElectronBuildIssues({
+            artifactName: "${productName}-${version}-${os}-${arch}.${ext}",
+            afterPack: "scripts/verify-electron-bundle.mjs",
+            protocols: [{ schemes: ["neverwrite"] }],
+            extraResources: [
+                {
+                    from: "out/native-backend",
+                    to: "native-backend",
+                },
+            ],
+            mac: {
+                minimumSystemVersion: "12.0",
+                target: ["dmg", "zip"],
+            },
+            win: {
+                target: ["nsis"],
+            },
+            linux: {
+                target: ["AppImage", "deb"],
+            },
+            deb: {
+                packageName: "NeverWrite",
+                artifactName: "${productName}-${version}.deb",
+                priority: "required",
+                publish: {},
+            },
+        }),
+        [
+            'electron-builder.config.mjs deb.packageName must be "neverwrite".',
+            'electron-builder.config.mjs deb.artifactName must include "${arch}" and end with ".deb".',
+            'electron-builder.config.mjs deb.priority must be "optional".',
+            "electron-builder.config.mjs deb.publish must be null because Debian packages are manual-only in this release phase.",
         ],
     );
 });

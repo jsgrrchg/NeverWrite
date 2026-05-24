@@ -311,3 +311,13 @@ jobs:
                     --repo "${{ github.repository }}" \
                     --output-dir "$RUNNER_TEMP/release-assets" \
                     --metadata-out "$RUNNER_TEMP/target-metadata/${{ matrix.target }}.json"
+
+            - name: Validate Linux Debian package
+              shell: bash
+              run: |
+                  VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+                  node apps/desktop/scripts/validate-linux-deb-package.mjs \
+                    --staged-assets-dir "$RUNNER_TEMP/release-assets" \
+                    --target ${{ matrix.target }} \
+                    --version "$VERSION" \
+                    --install

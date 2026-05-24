@@ -12,6 +12,7 @@ import {
 function buildMetadataEntries() {
     return [
         {
+            version: "0.2.0",
             buildTarget: "universal-apple-darwin",
             feedTarget: "darwin-universal",
             metadataFileName: "latest-mac.yml",
@@ -24,6 +25,7 @@ function buildMetadataEntries() {
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_macOS_Universal.zip",
         },
         {
+            version: "0.2.0",
             buildTarget: "aarch64-pc-windows-msvc",
             feedTarget: "windows-arm64",
             metadataFileName: "latest.yml",
@@ -36,6 +38,7 @@ function buildMetadataEntries() {
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_ARM64_Setup.exe",
         },
         {
+            version: "0.2.0",
             buildTarget: "x86_64-pc-windows-msvc",
             feedTarget: "windows-x64",
             metadataFileName: "latest.yml",
@@ -48,6 +51,7 @@ function buildMetadataEntries() {
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite_0.2.0_Windows_x64_Setup.exe",
         },
         {
+            version: "0.2.0",
             buildTarget: "aarch64-unknown-linux-gnu",
             feedTarget: "linux-arm64",
             metadataFileName: "latest-linux.yml",
@@ -57,8 +61,16 @@ function buildMetadataEntries() {
             updaterBlockmapAssetName: null,
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-arm64.AppImage",
+            additionalManualAssets: [
+                {
+                    kind: "deb",
+                    assetName: "NeverWrite-0.2.0-arm64.deb",
+                    sizeBytes: 456,
+                },
+            ],
         },
         {
+            version: "0.2.0",
             buildTarget: "x86_64-unknown-linux-gnu",
             feedTarget: "linux-x64",
             metadataFileName: "latest-linux.yml",
@@ -68,6 +80,13 @@ function buildMetadataEntries() {
             updaterBlockmapAssetName: null,
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-x64.AppImage",
+            additionalManualAssets: [
+                {
+                    kind: "deb",
+                    assetName: "NeverWrite-0.2.0-amd64.deb",
+                    sizeBytes: 123,
+                },
+            ],
         },
     ];
 }
@@ -136,6 +155,13 @@ test("buildPlatformValidationMatrix aligns feed URLs with target metadata", () =
         rows[4].updaterAssetName,
         "NeverWrite-0.2.0-x64.AppImage",
     );
+    assert.deepEqual(rows[4].additionalManualAssets, [
+        {
+            kind: "deb",
+            assetName: "NeverWrite-0.2.0-amd64.deb",
+            sizeBytes: 123,
+        },
+    ]);
 });
 
 test("tamperFeedChecksum only modifies the sha512 line", () => {
@@ -171,5 +197,22 @@ test("renderPlatformValidationChecklist includes invalid-checksum fixtures", () 
     assert.match(
         markdown,
         /The app does not switch to another architecture feed/,
+    );
+    assert.match(
+        markdown,
+        /Additional manual asset \(deb\): `NeverWrite-0\.2\.0-amd64\.deb`/,
+    );
+});
+
+test("validateTargetMetadataEntries requires Debian package metadata for Linux", () => {
+    const entries = buildMetadataEntries();
+    entries[4] = {
+        ...entries[4],
+        additionalManualAssets: [],
+    };
+
+    assert.throws(
+        () => validateTargetMetadataEntries(entries),
+        /must include Debian package NeverWrite-0\.2\.0-amd64\.deb/i,
     );
 });
