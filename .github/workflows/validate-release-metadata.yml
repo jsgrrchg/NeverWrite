@@ -24,6 +24,9 @@ on:
             - scripts/extract-changelog-release-notes.mjs
             - scripts/appcast-lib.mjs
             - scripts/appcast.test.mjs
+            - scripts/apt-repo-lib.mjs
+            - scripts/apt-repo.test.mjs
+            - scripts/build-apt-repository.mjs
             - scripts/build-appcast-manifest.mjs
             - scripts/build-appcast-from-target-metadata.mjs
             - scripts/build-platform-validation-pack.mjs
@@ -36,9 +39,12 @@ on:
             - scripts/release-assets-lib.mjs
             - scripts/release-assets.test.mjs
             - scripts/release-metadata.test.mjs
+            - scripts/sign-apt-repository.mjs
             - scripts/validate-appcast-manifest.mjs
+            - scripts/validate-apt-repository.mjs
             - scripts/validate-release-metadata.mjs
             - release/appcast/README.md
+            - release/apt/README.md
             - .github/workflows/electron-package-smoke.yml
             - .github/workflows/release-desktop.yml
             - .github/workflows/validate-release-metadata.yml
@@ -69,6 +75,12 @@ jobs:
 
             - name: Run appcast tests
               run: node --test scripts/appcast.test.mjs
+
+            - name: Run APT repository tests
+              run: node --test scripts/apt-repo.test.mjs
+
+            - name: Check APT repository scripts
+              run: node --check scripts/build-apt-repository.mjs && node --check scripts/sign-apt-repository.mjs && node --check scripts/validate-apt-repository.mjs
 
             - name: Run Electron release helper tests
               run: node --test apps/desktop/scripts/electron-builder-config.test.mjs apps/desktop/scripts/stage-electron-release-assets.test.mjs

@@ -118,7 +118,8 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
     assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
     assert.match(body, /NeverWrite-0.2.0-amd64\.deb/);
     assert.match(body, /NeverWrite-0.2.0-x64\.AppImage/);
-    assert.match(body, /For Ubuntu\/Debian, install the `\.deb` package/);
+    assert.match(body, /configure the NeverWrite APT repository/);
+    assert.match(body, /neverwrite-archive-keyring\.asc/);
     assert.match(body, /internal updater assets/i);
     assert.match(body, /## Browser extensions/);
     assert.match(

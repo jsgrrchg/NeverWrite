@@ -67,7 +67,7 @@ const UPDATER_VERBOSE_LOG_ENV_VARS = [
 ];
 const DEFAULT_UPDATER_BASE_URL = "https://jsgrrchg.github.io/NeverWrite";
 const LINUX_DEBIAN_PACKAGE_UPDATER_MESSAGE =
-    "Updates for Debian packages are handled outside the app. Download the latest .deb from GitHub Releases.";
+    "Updates for Debian packages are handled by apt when the NeverWrite APT repository is configured.";
 
 function readFirstNonEmptyEnv(keys: readonly string[]) {
     for (const key of keys) {
