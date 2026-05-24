@@ -60,6 +60,27 @@ function getRunningStatusLabel(runtimeName: string) {
     return `Waiting for ${runtimeName} sign-in`;
 }
 
+function authTerminalOutputIndicatesSuccess(runtimeId: string, output: string) {
+    if (runtimeId === "gemini-acp") {
+        return (
+            output.includes("Authentication succeeded") ||
+            output.includes("successfully signed in with Google")
+        );
+    }
+
+    if (runtimeId === "opencode-acp") {
+        const normalized = output.toLowerCase();
+        return (
+            normalized.includes("authentication successful") ||
+            normalized.includes("login successful") ||
+            normalized.includes("successfully authenticated") ||
+            normalized.includes("successfully logged in")
+        );
+    }
+
+    return false;
+}
+
 export function AIAuthTerminalModal({
     open,
     runtimeId,
@@ -292,10 +313,10 @@ export function AIAuthTerminalModal({
 
     const terminalExited =
         snapshot.status === "exited" || snapshot.status === "error";
-    const authSucceeded =
-        runtimeId === "gemini-acp" &&
-        (rawOutput.includes("Authentication succeeded") ||
-            rawOutput.includes("successfully signed in with Google"));
+    const authSucceeded = authTerminalOutputIndicatesSuccess(
+        runtimeId,
+        rawOutput,
+    );
 
     return (
         <>
@@ -424,11 +445,11 @@ export function AIAuthTerminalModal({
                             className="text-xs"
                             style={{ color: "var(--text-secondary)" }}
                         >
-                            {terminalExited
-                                ? `If sign-in completed, ${APP_BRAND_NAME} will detect it after refreshing setup.`
-                                : authSucceeded
-                                  ? `Sign-in completed. You can close this dialog; ${APP_BRAND_NAME} will refresh setup.`
-                                : "Complete the sign-in flow in the terminal, then close this dialog or wait for it to exit."}
+                            {authSucceeded
+                                ? `Sign-in completed. You can close this dialog; ${APP_BRAND_NAME} will refresh setup.`
+                                : terminalExited
+                                  ? `If sign-in completed, ${APP_BRAND_NAME} will detect it after refreshing setup.`
+                                  : "Complete the sign-in flow in the terminal, then close this dialog or wait for it to exit."}
                         </div>
                         <div className="flex items-center gap-2">
                             <button

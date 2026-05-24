@@ -1628,7 +1628,9 @@ impl NativeAi {
         pending.auth_method = Some(method_id.to_string());
         pending.auth_ready = false;
         pending.suppress_persisted_auth = false;
-        pending.auth_invalidated_at_ms = None;
+        if runtime_id != OPENCODE_RUNTIME_ID {
+            pending.auth_invalidated_at_ms = None;
+        }
         pending.message = None;
         self.setup_store.save(&pending_setup)?;
 
@@ -1826,6 +1828,7 @@ impl NativeAi {
             Arc::clone(&handle.snapshot),
             Arc::clone(&handle.closed),
             Arc::clone(&self.inner),
+            self.setup_store.clone(),
             launch_config.runtime_id.clone(),
             launch_config.method_id.clone(),
             self.event_tx.clone(),
@@ -1838,6 +1841,7 @@ impl NativeAi {
             Arc::clone(&handle.snapshot),
             Arc::clone(&handle.closed),
             Arc::clone(&self.inner),
+            self.setup_store.clone(),
             launch_config.runtime_id.clone(),
             launch_config.method_id.clone(),
             self.event_tx.clone(),
@@ -6158,6 +6162,7 @@ fn spawn_auth_terminal_output_reader(
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     closed: Arc<AtomicBool>,
     session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: RuntimeSetupStore,
     runtime_id: String,
     method_id: String,
     event_tx: Sender<RpcOutput>,
@@ -6185,7 +6190,12 @@ fn spawn_auth_terminal_output_reader(
                                     &snapshot.buffer,
                                 )
                             {
-                                mark_runtime_auth_verified(&session_state, &runtime_id, &method_id);
+                                mark_runtime_auth_verified(
+                                    &session_state,
+                                    Some(&setup_store),
+                                    &runtime_id,
+                                    &method_id,
+                                );
                                 verified_auth = true;
                             }
                             snapshot.session_id.clone()
@@ -6274,6 +6284,7 @@ fn spawn_auth_terminal_exit_monitor(
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     closed: Arc<AtomicBool>,
     session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: RuntimeSetupStore,
     runtime_id: String,
     method_id: String,
     event_tx: Sender<RpcOutput>,
@@ -6323,7 +6334,12 @@ fn spawn_auth_terminal_exit_monitor(
         if let Some(exit_status) = exit_status {
             let exit_code = i32::try_from(exit_status.exit_code()).ok();
             if exit_code == Some(0) {
-                mark_runtime_auth_verified(&session_state, &runtime_id, &method_id);
+                mark_runtime_auth_verified(
+                    &session_state,
+                    Some(&setup_store),
+                    &runtime_id,
+                    &method_id,
+                );
             }
             let snapshot = {
                 let mut snapshot_guard = match snapshot.lock() {
@@ -6376,16 +6392,22 @@ fn mark_runtime_auth_pending(
 
 fn mark_runtime_auth_verified(
     session_state: &Arc<Mutex<NativeAiInner>>,
+    setup_store: Option<&RuntimeSetupStore>,
     runtime_id: &str,
     method_id: &str,
 ) {
-    if let Ok(mut state) = session_state.lock() {
+    let setup_to_save = session_state.lock().ok().map(|mut state| {
         let setup = state.setup.entry(runtime_id.to_string()).or_default();
         setup.auth_method = Some(method_id.to_string());
         setup.auth_ready = true;
         setup.suppress_persisted_auth = false;
         setup.auth_invalidated_at_ms = None;
         setup.message = None;
+        state.setup.clone()
+    });
+
+    if let (Some(setup_store), Some(setup)) = (setup_store, setup_to_save) {
+        let _ = setup_store.save(&setup);
     }
 }
 
@@ -7858,7 +7880,7 @@ mod tests {
     fn verified_terminal_auth_marks_runtime_ready() {
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
 
-        mark_runtime_auth_verified(&session_state, KILO_RUNTIME_ID, "kilo-login");
+        mark_runtime_auth_verified(&session_state, None, KILO_RUNTIME_ID, "kilo-login");
 
         let state = session_state.lock().unwrap();
         let setup = state.setup.get(KILO_RUNTIME_ID).expect("runtime setup");
@@ -9654,6 +9676,57 @@ mod tests {
             .expect("OpenCode setup should reload");
         assert_eq!(opencode.auth_method.as_deref(), Some("opencode-login"));
         assert_eq!(opencode.auth_invalidated_at_ms, Some(123));
+    }
+
+    #[test]
+    fn opencode_pending_terminal_auth_preserves_disconnect_invalidation_until_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+
+        native_ai
+            .persist_auth_terminal_pending_setup(
+                OPENCODE_RUNTIME_ID,
+                "opencode-login",
+                RuntimeSetupState {
+                    auth_invalidated_at_ms: Some(123),
+                    suppress_persisted_auth: true,
+                    ..RuntimeSetupState::default()
+                },
+            )
+            .unwrap();
+
+        let opencode = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(OPENCODE_RUNTIME_ID)
+            .cloned()
+            .expect("OpenCode setup should be pending");
+        assert_eq!(opencode.auth_method.as_deref(), Some("opencode-login"));
+        assert!(!opencode.auth_ready);
+        assert_eq!(opencode.auth_invalidated_at_ms, Some(123));
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+
+        mark_runtime_auth_verified(
+            &native_ai.inner,
+            Some(&native_ai.setup_store),
+            OPENCODE_RUNTIME_ID,
+            "opencode-login",
+        );
+
+        let loaded = native_ai.setup_store.load().unwrap();
+        let verified = loaded
+            .get(OPENCODE_RUNTIME_ID)
+            .expect("OpenCode setup should persist verified method");
+        assert_eq!(verified.auth_method.as_deref(), Some("opencode-login"));
+        assert_eq!(verified.auth_invalidated_at_ms, None);
     }
 
     #[test]

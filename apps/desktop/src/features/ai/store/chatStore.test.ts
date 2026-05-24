@@ -1922,6 +1922,62 @@ describe("chatStore", () => {
         });
     });
 
+    it("does not treat a generic non-OpenCode 401 as an authentication error", () => {
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: { ...runtimePayload[0].runtime },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                "codex-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "codex-acp",
+                    authReady: true,
+                    onboardingRequired: false,
+                },
+            },
+            sessionsById: {
+                "codex-session-1": {
+                    sessionId: "codex-session-1",
+                    historySessionId: "codex-session-1",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    status: "streaming",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "live",
+                },
+            },
+            selectedRuntimeId: "codex-acp",
+        });
+
+        useChatStore.getState().applySessionError({
+            session_id: "codex-session-1",
+            message: "401 from a downstream document fetch",
+        });
+
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["codex-acp"],
+        ).toMatchObject({
+            authReady: true,
+            onboardingRequired: false,
+        });
+        expect(
+            useChatStore.getState().runtimeConnectionByRuntimeId["codex-acp"],
+        ).toMatchObject({
+            status: "error",
+            message: "401 from a downstream document fetch",
+        });
+    });
+
     it("shows provider quota errors as provider limits", () => {
         useChatStore.setState({
             runtimes: [

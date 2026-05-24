@@ -120,6 +120,48 @@ describe("AIAuthTerminalModal", () => {
         });
     });
 
+    it("recognizes OpenCode terminal auth success output", async () => {
+        const snapshot = {
+            sessionId: "authterm-opencode",
+            runtimeId: "opencode-acp",
+            program: "opencode",
+            displayName: "OpenCode sign-in",
+            cwd: "/vault",
+            cols: 100,
+            rows: 28,
+            buffer: "OpenCode login successful",
+            status: "exited",
+            exitCode: 0,
+            errorMessage: null,
+        };
+        apiMocks.aiStartAuthTerminalSession.mockResolvedValue(snapshot);
+        apiMocks.aiResizeAuthTerminalSession.mockResolvedValue(
+            snapshot as never,
+        );
+
+        renderComponent(
+            <AIAuthTerminalModal
+                open
+                runtimeId="opencode-acp"
+                runtimeName="OpenCode"
+                vaultPath="/vault"
+                onClose={vi.fn()}
+                onRefreshSetup={vi.fn(async () => undefined)}
+            />,
+        );
+
+        await waitFor(() => {
+            expect(
+                screen.getByText("OpenCode sign-in succeeded"),
+            ).toBeInTheDocument();
+            expect(
+                screen.getByText(
+                    /Sign-in completed\. You can close this dialog/,
+                ),
+            ).toBeInTheDocument();
+        });
+    });
+
     it("cleans up listeners that resolve after the modal unmounts", async () => {
         const startedDeferred = createDeferred<Mock>();
         const outputDeferred = createDeferred<Mock>();
