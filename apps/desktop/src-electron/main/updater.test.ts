@@ -158,7 +158,7 @@ describe("ElectronAppUpdater configuration", () => {
             enabled: false,
             endpoint: null,
             message:
-                "Updates for Debian packages are handled outside the app. Download the latest .deb from GitHub Releases.",
+                "Updates for Debian packages are handled by apt when the NeverWrite APT repository is configured.",
             update: null,
         });
     });
@@ -172,7 +172,7 @@ describe("ElectronAppUpdater configuration", () => {
             enabled: false,
             endpoint: null,
             message:
-                "Updates for Debian packages are handled outside the app. Download the latest .deb from GitHub Releases.",
+                "Updates for Debian packages are handled by apt when the NeverWrite APT repository is configured.",
             update: null,
         });
     });

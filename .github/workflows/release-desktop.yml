@@ -580,7 +580,7 @@ jobs:
                   gh release upload "${{ needs.prepare.outputs.tag }}" "${files[@]}" --clobber
 
     publish-feeds:
-        name: Publish Release Feeds
+        name: Publish Release Pages Artifacts
         needs:
             - prepare
             - build-target
@@ -605,6 +605,13 @@ jobs:
               with:
                   pattern: release-target-feeds-*
                   path: .artifacts/feeds
+                  merge-multiple: true
+
+            - name: Download staged release assets
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-assets-*
+                  path: .artifacts/release-assets
                   merge-multiple: true
 
             - name: Build platform validation pack
@@ -687,15 +694,11 @@ jobs:
                   path: dist/release-asset-sizes/${{ needs.prepare.outputs.tag }}
                   if-no-files-found: error
 
-            - name: Publish feeds to gh-pages
+            - name: Prepare gh-pages worktree
               shell: bash
               env:
-                  CHANNEL: ${{ needs.prepare.outputs.channel }}
-                  FEEDS_DIR: .artifacts/feeds
-                  METADATA_DIR: .artifacts/release-targets
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
               run: |
-                  PAGES_DIR="$RUNNER_TEMP/gh-pages"
-                  export PAGES_DIR
                   git fetch origin gh-pages || true
 
                   if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
@@ -709,6 +712,16 @@ jobs:
                     )
                   fi
 
+                  touch "$PAGES_DIR/.nojekyll"
+
+            - name: Stage feeds in gh-pages worktree
+              shell: bash
+              env:
+                  CHANNEL: ${{ needs.prepare.outputs.channel }}
+                  FEEDS_DIR: .artifacts/feeds
+                  METADATA_DIR: .artifacts/release-targets
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
                   node --input-type=module <<'EOF'
                   import fs from "node:fs";
                   import path from "node:path";
@@ -735,17 +748,104 @@ jobs:
                   }
                   EOF
 
-                  touch "$PAGES_DIR/.nojekyll"
+            - name: Install APT repository tools
+              run: sudo apt-get update && sudo apt-get install -y dpkg gnupg gzip
 
+            - name: Build APT repository
+              shell: bash
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  node scripts/build-apt-repository.mjs \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --release-assets-dir .artifacts/release-assets \
+                    --pages-dir "$PAGES_DIR" \
+                    --base-url "${{ needs.prepare.outputs.pages_base_url }}/apt" \
+                    --suite stable \
+                    --component main \
+                    --retain-versions 3
+
+            - name: Sign APT repository
+              shell: bash
+              env:
+                  APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+                  APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+                  APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name}" ]]; then
+                      echo "Missing required GitHub Actions secret: ${name}" >&2
+                      exit 1
+                    fi
+                  done
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  trap 'rm -rf "$GNUPGHOME"' EXIT
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+
+                  node scripts/sign-apt-repository.mjs \
+                    --apt-dir "$PAGES_DIR/apt" \
+                    --key-id "$APT_REPO_GPG_KEY_ID" \
+                    --suite stable
+
+            - name: Validate APT repository
+              shell: bash
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  node scripts/validate-apt-repository.mjs \
+                    --apt-dir "$PAGES_DIR/apt" \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --suite stable \
+                    --component main
+
+            - name: Validate APT repository with apt
+              shell: bash
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  VERSION: ${{ needs.prepare.outputs.version }}
+              run: |
+                  docker run --rm \
+                    -e VERSION="$VERSION" \
+                    -v "$PAGES_DIR/apt:/repo:ro" \
+                    ubuntu:24.04 \
+                    bash -lc '
+                      set -euo pipefail
+                      apt-get update
+                      apt-get install -y ca-certificates gnupg
+                      install -d -m 0755 /etc/apt/keyrings
+                      cp /repo/neverwrite-archive-keyring.asc /etc/apt/keyrings/neverwrite.asc
+                      chmod 0644 /etc/apt/keyrings/neverwrite.asc
+                      printf "%s\n" \
+                        "Types: deb" \
+                        "URIs: file:///repo" \
+                        "Suites: stable" \
+                        "Components: main" \
+                        "Signed-By: /etc/apt/keyrings/neverwrite.asc" \
+                        >/etc/apt/sources.list.d/neverwrite.sources
+                      apt-get update
+                      apt-cache policy neverwrite
+                      apt-cache policy neverwrite | grep -F "$VERSION"
+                    '
+
+            - name: Publish pages artifacts to gh-pages
+              shell: bash
+              env:
+                  CHANNEL: ${{ needs.prepare.outputs.channel }}
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
                   (
                     cd "$PAGES_DIR"
                     git config user.name "github-actions[bot]"
                     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                    git add "${CHANNEL}" .nojekyll
+                    git add "${CHANNEL}" apt .nojekyll
                     if git diff --cached --quiet; then
-                      echo "No feed changes to publish."
+                      echo "No pages artifact changes to publish."
                     else
-                      git commit -m "Publish Electron feeds for ${{ needs.prepare.outputs.tag }}"
+                      git commit -m "Publish release pages artifacts for ${{ needs.prepare.outputs.tag }}"
                       git push origin HEAD:gh-pages
                     fi
                   )
