@@ -38,6 +38,10 @@ describe("clip markdown", () => {
         expect(markdown).toContain(
             "\nsource: https://example.com/articles/demo\n",
         );
+        expect(markdown).toContain('\npublished: "2026-03-24"\n');
+        expect(markdown).toContain(
+            '\nclipped_at: "2026-03-24T00:00:00.000Z"\n',
+        );
         expect(markdown).toContain("\n# Custom title\n");
         expect(markdown.match(/^# Custom title$/gm)).toHaveLength(1);
         expect(markdown).toContain("> **Notes:** Keep for later.");
@@ -83,6 +87,27 @@ describe("clip markdown", () => {
 
         expect(markdown).toContain(
             "\n# Video clip\n\nhttps://www.youtube.com/watch?v=dQw4w9WgXcQ\n\nDemo body",
+        );
+    });
+
+    it("quotes ISO-like date values without treating arbitrary suffixes as dates", () => {
+        const markdown = buildClipMarkdown({
+            clipData: {
+                ...clipData,
+                metadata: {
+                    ...clipData.metadata,
+                    published: "2026-03-24T12:34@Z",
+                },
+                extractedAt: "2026-03-24T12:34:56.789+03:00",
+            },
+            title: "Date parsing demo",
+            tags: [],
+            contentMode: "full-page",
+        });
+
+        expect(markdown).toContain("\npublished: 2026-03-24T12:34@Z\n");
+        expect(markdown).toContain(
+            '\nclipped_at: "2026-03-24T12:34:56.789+03:00"\n',
         );
     });
 });
