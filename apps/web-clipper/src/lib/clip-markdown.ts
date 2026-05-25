@@ -1,6 +1,9 @@
 import type { ClipData } from "./clipper-contract";
 import type { ClipContentMode } from "./types";
 
+const YAML_IMPLICIT_DATE_PATTERN =
+    /^\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:?\d{2})?)?$/;
+
 function quoteYaml(value: string): string {
     if (value.length === 0) {
         return '""';
@@ -9,7 +12,7 @@ function quoteYaml(value: string): string {
     if (
         /^(true|false|null|~)$/i.test(value) ||
         /^-?\d+(\.\d+)?$/.test(value) ||
-        /^\d{4}-\d{2}-\d{2}(?:[Tt ][\d:.+-Zz]+)?$/.test(value)
+        YAML_IMPLICIT_DATE_PATTERN.test(value)
     ) {
         return JSON.stringify(value);
     }
