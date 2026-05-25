@@ -13,6 +13,10 @@ const CHROME_EXTENSION_ID = "pogmjgibofkooljfgaandhoinmenfhao";
 const FIREFOX_EXTENSION_ID = "web-clipper@neverwrite.app";
 const WEB_CLIPPER_CLIP_SAVED_EVENT = "neverwrite:web-clipper/clip-saved";
 const WEB_CLIPPER_ROUTE_CLIP_EVENT = "neverwrite:web-clipper/route-clip";
+const WEB_CLIPPER_REQUEST_ERROR_MESSAGE =
+    "NeverWrite could not complete the web clipper request.";
+const WEB_CLIPPER_SAVE_ERROR_MESSAGE =
+    "Unable to save clip. Please try again from NeverWrite.";
 
 type Runtime = {
     backend: ElectronVaultBackend;
@@ -88,9 +92,12 @@ function startWebClipperServer() {
 
     const server = http.createServer((request, response) => {
         void handleWebClipperRequest(request, response).catch((error) => {
+            logWebClipperError("request failed", error);
+            if (response.writableEnded) return;
             writeJson(response, 500, null, {
                 ok: false,
-                message: error instanceof Error ? error.message : String(error),
+                status: "error",
+                message: WEB_CLIPPER_REQUEST_ERROR_MESSAGE,
             });
         });
     });
@@ -227,8 +234,9 @@ async function handleWebClipperRequest(
                 writeJson(response, 400, authorized.authorized.origin, {
                     ok: false,
                     status: "error",
-                    message: error instanceof Error ? error.message : String(error),
+                    message: WEB_CLIPPER_SAVE_ERROR_MESSAGE,
                 });
+                logWebClipperError("save failed", error);
             }
             return;
         }
@@ -474,6 +482,11 @@ function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object"
         ? (value as Record<string, unknown>)
         : {};
+}
+
+function logWebClipperError(context: string, error: unknown) {
+    const detail = error instanceof Error ? error.stack || error.message : String(error);
+    console.error(`[web-clipper-api] ${context}: ${detail}`);
 }
 
 function writeAuthError(
