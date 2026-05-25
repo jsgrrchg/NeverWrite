@@ -144,7 +144,9 @@ function renderFatalStartupError(error: unknown) {
         error instanceof Error ? error.stack || error.message : String(error);
 
     if (!root) {
-        document.body.innerHTML = `<pre>${stack}</pre>`;
+        const pre = document.createElement("pre");
+        pre.textContent = stack;
+        document.body.replaceChildren(pre);
         return;
     }
 
