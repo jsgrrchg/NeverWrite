@@ -92,9 +92,39 @@ const LOCAL_ONLY_COMMANDS = new Set(["/context", "/heapdump", "/extra-usage"]);
 // payload in these XML-like markers that the CLI uses for its own display.
 // The live prompt loop drops them; replay must strip them too or they leak
 // into the UI on session/load.
-const LOCAL_COMMAND_TAG_PATTERN = /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>[\s\S]*?<\/\1>/g;
+const LOCAL_COMMAND_TAG_NAMES = [
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+];
 function stripMarkerTags(text) {
-    return text.replace(LOCAL_COMMAND_TAG_PATTERN, "");
+    let stripped = "";
+    let cursor = 0;
+    while (cursor < text.length) {
+        const openStart = text.indexOf("<", cursor);
+        if (openStart === -1) {
+            stripped += text.slice(cursor);
+            break;
+        }
+        const tagName = LOCAL_COMMAND_TAG_NAMES.find((name) => text.startsWith(`<${name}>`, openStart));
+        if (!tagName) {
+            stripped += text.slice(cursor, openStart + 1);
+            cursor = openStart + 1;
+            continue;
+        }
+        const openEnd = openStart + tagName.length + 2;
+        const closeTag = `</${tagName}>`;
+        const closeStart = text.indexOf(closeTag, openEnd);
+        if (closeStart === -1) {
+            stripped += text.slice(cursor);
+            break;
+        }
+        stripped += text.slice(cursor, openStart);
+        cursor = closeStart + closeTag.length;
+    }
+    return stripped;
 }
 /**
  * Return user-message content with local-command marker tags removed, or
