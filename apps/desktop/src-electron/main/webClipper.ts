@@ -79,9 +79,7 @@ export function handleWebClipperDeepLink(rawUrl: string) {
         emitClipSaved(payload);
     })().catch((error) => {
         console.error(
-            `[web-clipper-deep-link] ${
-                error instanceof Error ? error.message : String(error)
-            }`,
+            `[web-clipper-deep-link] ${formatWebClipperLogError(error)}`,
         );
     });
 }
@@ -314,13 +312,13 @@ function resolveExtensionIdentity(
     extensionId: string | null,
 ):
     | { ok: true; authorized: AuthorizedClipper }
-    | { ok: false; statusCode: number; message: string } {
+    | { ok: false; statusCode: number; publicMessage: string } {
     const id = extensionId?.trim();
     if (!id) {
         return {
             ok: false,
             statusCode: 401,
-            message: "Web clipper extension identity is required.",
+            publicMessage: "Web clipper extension identity is required.",
         };
     }
 
@@ -339,14 +337,14 @@ function resolveExtensionIdentity(
         return {
             ok: false,
             statusCode: 401,
-            message: "Web clipper origin is required.",
+            publicMessage: "Web clipper origin is required.",
         };
     }
     if (!isExtensionOrigin(resolvedOrigin)) {
         return {
             ok: false,
             statusCode: 403,
-            message: "Web clipper origin is not allowed.",
+            publicMessage: "Web clipper origin is not allowed.",
         };
     }
     if (
@@ -373,7 +371,7 @@ function resolveExtensionIdentity(
     return {
         ok: false,
         statusCode: 403,
-        message: "Web clipper extension is not allowed.",
+        publicMessage: "Web clipper extension is not allowed.",
     };
 }
 
@@ -381,7 +379,7 @@ async function authorizeRequest(
     request: IncomingMessage,
     identity:
         | { ok: true; authorized: AuthorizedClipper }
-        | { ok: false; statusCode: number; message: string },
+        | { ok: false; statusCode: number; publicMessage: string },
 ) {
     if (!identity.ok) return identity;
     const token = headerValue(request, CLIPPER_TOKEN_HEADER);
@@ -389,7 +387,7 @@ async function authorizeRequest(
         return {
             ok: false as const,
             statusCode: 401,
-            message: "Web clipper pairing is required.",
+            publicMessage: "Web clipper pairing is required.",
         };
     }
     const state = await loadOrCreateAuthState();
@@ -397,7 +395,7 @@ async function authorizeRequest(
         return {
             ok: false as const,
             statusCode: 403,
-            message: "Web clipper token is invalid.",
+            publicMessage: "Web clipper token is invalid.",
         };
     }
     if (
@@ -407,7 +405,7 @@ async function authorizeRequest(
         return {
             ok: false as const,
             statusCode: 401,
-            message: "Web clipper pairing is required.",
+            publicMessage: "Web clipper pairing is required.",
         };
     }
     return identity;
@@ -484,19 +482,26 @@ function asRecord(value: unknown): Record<string, unknown> {
         : {};
 }
 
+function formatWebClipperLogError(error: unknown) {
+    if (error instanceof Error) {
+        return `${error.name}: ${error.message}`;
+    }
+    return String(error);
+}
+
 function logWebClipperError(context: string, error: unknown) {
-    const detail = error instanceof Error ? error.stack || error.message : String(error);
+    const detail = formatWebClipperLogError(error);
     console.error(`[web-clipper-api] ${context}: ${detail}`);
 }
 
 function writeAuthError(
     response: ServerResponse,
-    error: { statusCode: number; message: string },
+    authFailure: { statusCode: number; publicMessage: string },
 ) {
-    writeJson(response, error.statusCode, null, {
+    writeJson(response, authFailure.statusCode, null, {
         ok: false,
         status: "unauthorized",
-        message: error.message,
+        message: authFailure.publicMessage,
     });
 }
 
