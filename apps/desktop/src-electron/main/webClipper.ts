@@ -33,6 +33,10 @@ type AuthState = {
     firefoxOrigin?: string | null;
 };
 
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+type JsonObject = { [key: string]: JsonValue };
+
 const pendingDeepLinks: string[] = [];
 let runtime: Runtime | null = null;
 let serverStarted = false;
@@ -149,7 +153,7 @@ async function handleWebClipperRequest(
     switch (`${request.method ?? "GET"} ${url.pathname}`) {
         case "GET /api/web-clipper/health": {
             const vaults = await runtime!.backend.invoke("web_clipper_ready_vaults", {});
-            const vaultList = Array.isArray(vaults) ? vaults : [];
+            const vaultList = toPublicVaultList(vaults);
             writeJson(response, 200, authorized.authorized.origin, {
                 ok: true,
                 message:
@@ -193,7 +197,9 @@ async function handleWebClipperRequest(
                 "web_clipper_list_folders",
                 asRecord(body),
             );
-            writeJson(response, 200, authorized.authorized.origin, { folders });
+            writeJson(response, 200, authorized.authorized.origin, {
+                folders: toPublicStringList(folders),
+            });
             return;
         }
         case "POST /api/web-clipper/tags": {
@@ -202,7 +208,9 @@ async function handleWebClipperRequest(
                 "web_clipper_list_tags",
                 asRecord(body),
             );
-            writeJson(response, 200, authorized.authorized.origin, { tags });
+            writeJson(response, 200, authorized.authorized.origin, {
+                tags: toPublicStringList(tags),
+            });
             return;
         }
         case "POST /api/web-clipper/clips": {
@@ -221,12 +229,13 @@ async function handleWebClipperRequest(
                     body,
                 );
                 emitClipSaved(payload);
+                const savedClip = toPublicSavedClip(payload);
                 writeJson(response, 200, authorized.authorized.origin, {
                     ok: true,
                     status: "saved",
-                    message: `Saved clip to ${asRecord(payload).relativePath}.`,
-                    noteId: asRecord(payload).noteId,
-                    relativePath: asRecord(payload).relativePath,
+                    message: `Saved clip to ${savedClip.relativePath}.`,
+                    noteId: savedClip.noteId,
+                    relativePath: savedClip.relativePath,
                 });
             } catch (error) {
                 writeJson(response, 400, authorized.authorized.origin, {
@@ -482,6 +491,38 @@ function asRecord(value: unknown): Record<string, unknown> {
         : {};
 }
 
+function toPublicVaultList(value: unknown) {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((item) => {
+            const vault = asRecord(item);
+            const vaultPath = publicString(vault.path);
+            const name = publicString(vault.name);
+            return vaultPath && name ? { path: vaultPath, name } : null;
+        })
+        .filter((vault): vault is { path: string; name: string } => vault !== null);
+}
+
+function toPublicStringList(value: unknown) {
+    return Array.isArray(value) ? value.filter(isPublicString) : [];
+}
+
+function toPublicSavedClip(value: unknown) {
+    const payload = asRecord(value);
+    return {
+        noteId: publicString(payload.noteId) ?? "",
+        relativePath: publicString(payload.relativePath) ?? "the selected vault",
+    };
+}
+
+function publicString(value: unknown) {
+    return typeof value === "string" ? value : null;
+}
+
+function isPublicString(value: unknown): value is string {
+    return typeof value === "string";
+}
+
 function formatWebClipperLogError(error: unknown) {
     if (error instanceof Error) {
         return `${error.name}: ${error.message}`;
@@ -509,7 +550,7 @@ function writeJson(
     response: ServerResponse,
     statusCode: number,
     origin: string | null,
-    body: unknown,
+    body: JsonObject,
 ) {
     response.statusCode = statusCode;
     response.setHeader("content-type", "application/json");
