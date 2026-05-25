@@ -46,6 +46,30 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(300);
         expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([]);
+        expect(useSettingsStore.getState().vimModeEnabled).toBe(false);
+        expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(false);
+    });
+
+    it("persists vim settings per vault", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/vim" });
+
+        useSettingsStore.getState().setSetting("vimModeEnabled", true);
+        useSettingsStore
+            .getState()
+            .setSetting("vimRelativeLineNumbers", true);
+
+        expect(useSettingsStore.getState().vimModeEnabled).toBe(true);
+        expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(true);
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/vim") ?? "",
+            ),
+        ).toMatchObject({
+            state: {
+                vimModeEnabled: true,
+                vimRelativeLineNumbers: true,
+            },
+        });
     });
 
     it("persists settings per vault", () => {

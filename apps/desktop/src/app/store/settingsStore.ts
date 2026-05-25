@@ -28,6 +28,8 @@ export interface Settings {
     spellcheckSecondaryLanguage: SpellcheckSecondaryLanguage;
     grammarCheckEnabled: boolean;
     grammarCheckServerUrl: string;
+    vimModeEnabled: boolean;
+    vimRelativeLineNumbers: boolean;
 
     // Navigation
     fileTreeScale: number; // 90–140
@@ -178,6 +180,8 @@ const defaults: Settings = {
     spellcheckSecondaryLanguage: null,
     grammarCheckEnabled: false,
     grammarCheckServerUrl: "",
+    vimModeEnabled: false,
+    vimRelativeLineNumbers: false,
     fileTreeScale: 114,
     agentsSidebarScale: 100,
     fileTreeStickyFolders: true,
@@ -402,6 +406,11 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 typeof parsed.state.grammarCheckServerUrl === "string"
                     ? parsed.state.grammarCheckServerUrl.trim()
                     : defaults.grammarCheckServerUrl,
+            vimModeEnabled:
+                parsed.state.vimModeEnabled ?? defaults.vimModeEnabled,
+            vimRelativeLineNumbers:
+                parsed.state.vimRelativeLineNumbers ??
+                defaults.vimRelativeLineNumbers,
             fileTreeScale: normalizeIntInRange(
                 parsed.state.fileTreeScale,
                 defaults.fileTreeScale,
@@ -516,6 +525,8 @@ function pickSettings(state: SettingsStore): Settings {
         spellcheckSecondaryLanguage: state.spellcheckSecondaryLanguage,
         grammarCheckEnabled: state.grammarCheckEnabled,
         grammarCheckServerUrl: state.grammarCheckServerUrl,
+        vimModeEnabled: state.vimModeEnabled,
+        vimRelativeLineNumbers: state.vimRelativeLineNumbers,
         fileTreeScale: state.fileTreeScale,
         agentsSidebarScale: state.agentsSidebarScale,
         fileTreeStickyFolders: state.fileTreeStickyFolders,

@@ -1095,6 +1095,8 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         lineWrapping,
         justifyText,
         tabSize,
+        vimModeEnabled,
+        vimRelativeLineNumbers,
         setSetting,
     } = useSettingsStore();
     const showTypography = sectionHasSettingsSearchMatches(
@@ -1130,11 +1132,22 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             ["Tab size", "Number of spaces inserted when pressing Tab.", 2, 4],
         ],
     );
+    const showVim = sectionHasSettingsSearchMatches(searchQuery, "Vim", [
+        [
+            "Vim key bindings",
+            "Use modal (vim) editing in the note editor.",
+            "vim",
+        ],
+        [
+            "Relative line numbers",
+            "Show line numbers as distance from the cursor line.",
+        ],
+    ]);
     const showLayout = sectionHasSettingsSearchMatches(searchQuery, "Layout", [
         ["Text width", "Maximum width of the editor content, in pixels."],
     ]);
 
-    if (!showTypography && !showFormatting && !showLayout) {
+    if (!showTypography && !showFormatting && !showVim && !showLayout) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1250,6 +1263,35 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                             { value: 4, label: "4" },
                         ]}
                         onChange={(v) => setSetting("tabSize", v as 2 | 4)}
+                    />
+                }
+            />
+
+            {showVim ? <SectionLabel>Vim</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Vim"
+                label="Vim key bindings"
+                description="Use modal (vim) editing in the note editor."
+                keywords={["vim"]}
+                control={
+                    <Toggle
+                        value={vimModeEnabled}
+                        onChange={(v) => setSetting("vimModeEnabled", v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Vim"
+                label="Relative line numbers"
+                description="Show line numbers as distance from the cursor line. Applies in code (non–live-preview) mode."
+                control={
+                    <Toggle
+                        value={vimRelativeLineNumbers}
+                        onChange={(v) =>
+                            setSetting("vimRelativeLineNumbers", v)
+                        }
                     />
                 }
             />

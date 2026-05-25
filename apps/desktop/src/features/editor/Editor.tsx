@@ -56,8 +56,12 @@ import {
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { logError, logWarn } from "../../app/utils/runtimeLog";
 
-export const REQUEST_CLOSE_ACTIVE_TAB_EVENT =
-    "neverwrite:editor:request-close-active-tab";
+import {
+    REQUEST_CLOSE_ACTIVE_TAB_EVENT,
+    REQUEST_SAVE_ACTIVE_TAB_EVENT,
+} from "./editorActionEvents";
+// Re-export for existing importers (e.g. UnifiedBar).
+export { REQUEST_CLOSE_ACTIVE_TAB_EVENT };
 import { wikilinkExtension } from "./extensions/wikilinks";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
@@ -108,14 +112,19 @@ import {
     spellcheckCompartment,
     spellcheckDecorationsCompartment,
     grammarDecorationsCompartment,
+    vimCompartment,
+    lineNumberCompartment,
     getSyntaxExtension,
     getLivePreviewExtension,
     getAlignmentExtension,
     getWrappingExtension,
     getSpellcheckExtension,
+    getVimExtension,
+    getLineNumberExtension,
     getEditorFontFamily,
     getEditorHorizontalInset,
 } from "./editorExtensions";
+import { registerVimExCommands } from "./extensions/vimCommands";
 import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
 import { resolveEditorTargetForOpenTab } from "./editorTargetResolver";
@@ -188,6 +197,10 @@ import {
     pruneNoteStateCaches,
     type NoteStateCacheCollection,
 } from "./noteStateCache";
+
+// Map vim ex-commands (:w, :q, :wq) onto NeverWrite's save/close actions.
+// Idempotent and global to the vim engine, so register once at module load.
+registerVimExCommands();
 
 type SavedNoteDetail = {
     id: string;
@@ -466,6 +479,10 @@ export function Editor({
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const tabSize = useSettingsStore((s) => s.tabSize);
+    const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled);
+    const vimRelativeLineNumbers = useSettingsStore(
+        (s) => s.vimRelativeLineNumbers,
+    );
     const editorSpellcheck = useSettingsStore((s) => s.editorSpellcheck);
     const spellcheckPrimaryLanguage = useSettingsStore(
         (s) => s.spellcheckPrimaryLanguage,
@@ -2285,6 +2302,19 @@ export function Editor({
             return EditorState.create({
                 doc,
                 extensions: [
+                    // Vim must come before the default keymaps so its modal
+                    // bindings take precedence when enabled.
+                    vimCompartment.of(
+                        getVimExtension(
+                            useSettingsStore.getState().vimModeEnabled,
+                        ),
+                    ),
+                    lineNumberCompartment.of(
+                        getLineNumberExtension(
+                            useSettingsStore.getState().livePreviewEnabled,
+                            useSettingsStore.getState().vimRelativeLineNumbers,
+                        ),
+                    ),
                     history(),
                     markdown({
                         base: markdownLanguage,
@@ -3206,6 +3236,12 @@ export function Editor({
                         livePreviewEnabled,
                     ),
                 ),
+                lineNumberCompartment.reconfigure(
+                    getLineNumberExtension(
+                        livePreviewEnabled,
+                        useSettingsStore.getState().vimRelativeLineNumbers,
+                    ),
+                ),
             ],
         });
         if (view && activeNoteId && didModeChange) {
@@ -3557,9 +3593,23 @@ export function Editor({
                     EditorState.tabSize.of(tabSize),
                     indentUnit.of(" ".repeat(tabSize)),
                 ]),
+                vimCompartment.reconfigure(getVimExtension(vimModeEnabled)),
+                lineNumberCompartment.reconfigure(
+                    getLineNumberExtension(
+                        livePreviewEnabled,
+                        vimRelativeLineNumbers,
+                    ),
+                ),
             ],
         });
-    }, [justifyText, lineWrapping, tabSize]);
+    }, [
+        justifyText,
+        lineWrapping,
+        tabSize,
+        vimModeEnabled,
+        vimRelativeLineNumbers,
+        livePreviewEnabled,
+    ]);
 
     useEffect(() => {
         const view = viewRef.current;
@@ -3672,6 +3722,28 @@ export function Editor({
                 handleCloseRequest,
             );
     }, [closeActiveTabWithSave, isInteractionActive]);
+
+    useEffect(() => {
+        if (!isInteractionActive) return;
+        const handleSaveRequest = () => {
+            const { tabs, activeTabId } = getPaneSnapshot();
+            const tab = tabs.find((item) => item.id === activeTabId);
+            if (!tab || !isNoteTab(tab)) return;
+            const content =
+                viewRef.current?.state.doc.toString() ?? tab.content;
+            void saveNow(tab, content);
+        };
+
+        window.addEventListener(
+            REQUEST_SAVE_ACTIVE_TAB_EVENT,
+            handleSaveRequest,
+        );
+        return () =>
+            window.removeEventListener(
+                REQUEST_SAVE_ACTIVE_TAB_EVENT,
+                handleSaveRequest,
+            );
+    }, [getPaneSnapshot, isInteractionActive, saveNow]);
 
     const editorShellStyle = {
         "--editor-font-size": `${editorFontSize}px`,

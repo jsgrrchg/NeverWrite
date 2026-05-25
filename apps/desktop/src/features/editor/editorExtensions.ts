@@ -13,8 +13,10 @@ import type {
     SpellcheckLanguage,
     SpellcheckSecondaryLanguage,
 } from "../../app/store/settingsStore";
+import { vim } from "@replit/codemirror-vim";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { livePreviewExtension } from "./extensions/livePreview";
+import { vimStatusBarExtension } from "./extensions/vimStatusBar";
 import { resolveWikilink } from "./wikilinkResolution";
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
 import { resolveFrontendSpellcheckLanguage } from "../spellcheck/api";
@@ -161,6 +163,10 @@ export const spellcheckCompartment = new Compartment();
 export const spellcheckDecorationsCompartment = new Compartment();
 // Compartment for grammar check decorations
 export const grammarDecorationsCompartment = new Compartment();
+// Compartment for vim modal editing (keymap + mode status bar)
+export const vimCompartment = new Compartment();
+// Compartment for the line-number gutter (absolute vs. vim relative numbering)
+export const lineNumberCompartment = new Compartment();
 
 const sourceHeadingDecoration = Decoration.mark({
     class: "cm-source-heading",
@@ -224,7 +230,6 @@ export function getLivePreviewExtension(
             EditorView.editorAttributes.of({
                 "data-live-preview": "false",
             }),
-            lineNumbers(),
         ];
     }
     const vaultPath = useVaultStore.getState().vaultPath;
@@ -239,6 +244,37 @@ export function getLivePreviewExtension(
             openLinkContextMenu,
         }),
     ];
+}
+
+// Vim modal editing. Must take precedence over the default keymap, so the
+// caller places this compartment ahead of the default/history/search keymaps
+// in the extension graph. Returns an empty extension when disabled so the
+// editor reverts to its normal behavior on reconfigure.
+export function getVimExtension(enabled: boolean) {
+    if (!enabled) return [];
+    return [vim(), vimStatusBarExtension];
+}
+
+// Line-number gutter. The gutter only renders in code (non–live-preview) mode,
+// matching prior behavior. When vim relative line numbers are enabled, the
+// current line shows its absolute number and others show their distance from
+// the cursor (vim's hybrid `number relativenumber`).
+export function getLineNumberExtension(
+    livePreviewEnabled: boolean,
+    relative: boolean,
+) {
+    if (livePreviewEnabled) return [];
+    if (!relative) return lineNumbers();
+    return lineNumbers({
+        formatNumber: (lineNo, state) => {
+            const cursorLine = state.doc.lineAt(
+                state.selection.main.head,
+            ).number;
+            return lineNo === cursorLine
+                ? String(lineNo)
+                : String(Math.abs(lineNo - cursorLine));
+        },
+    });
 }
 
 export function getAlignmentExtension(enabled: boolean) {
