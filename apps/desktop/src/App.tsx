@@ -1618,21 +1618,30 @@ export default function App() {
                     .openVault(decodeURIComponent(vaultParam));
                 await restoreSessionForCurrentVault();
             } else if (getCurrentWindowLabel() === "main") {
+                const openLastVault =
+                    useSettingsStore.getState().openLastVaultOnLaunch;
                 const restored = await restoreWindowSession({
                     openPrimaryVault: async (path) => {
+                        if (!openLastVault) return;
                         await useVaultStore.getState().openVault(path);
                     },
-                    restorePrimaryVaultSession: restoreSessionForCurrentVault,
+                    restorePrimaryVaultSession: async () => {
+                        if (!openLastVault) return;
+                        await restoreSessionForCurrentVault();
+                    },
                     openVaultWindow,
                     openDetachedNoteWindow,
                 });
                 if (restored) {
                     markSessionReady();
+                    setWindowSessionReady(true);
                     return;
                 }
             } else {
-                await restoreVault();
-                await restoreSessionForCurrentVault();
+                if (useSettingsStore.getState().openLastVaultOnLaunch) {
+                    await restoreVault();
+                    await restoreSessionForCurrentVault();
+                }
             }
 
             markSessionReady();

@@ -153,4 +153,66 @@ describe("TerminalViewport", () => {
 
         expect(getXtermMockInstances()[0]?.scrollToTopCalls).toBe(1);
     });
+
+    it("queues chunks to a local backlog when the xterm write buffer is above the high watermark", async () => {
+        const { rerender } = renderComponent(
+            <TerminalViewport session={createSessionView({ rawOutput: "" })} />,
+        );
+        await flushPromises();
+
+        const [term] = getXtermMockInstances();
+        if (!term) throw new Error("No xterm instance");
+
+        // Make write async so pendingWriteCharsRef doesn't immediately drain.
+        const pendingCallbacks: Array<() => void> = [];
+        vi.spyOn(term, "write").mockImplementation(
+            (text: string, callback?: () => void) => {
+                if (term.screen) {
+                    term.screen.textContent =
+                        (term.screen.textContent ?? "") + text;
+                }
+                if (callback) pendingCallbacks.push(callback);
+            },
+        );
+
+        // Feed a chunk just above HIGH_WATERMARK (256_000). The write is
+        // dispatched (pending was 0) but the callback is held, so
+        // pendingWriteCharsRef stays at 257_000.
+        const bigChunk = "x".repeat(257_000);
+        rerender(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: bigChunk })}
+            />,
+        );
+        await flushPromises();
+
+        expect(pendingCallbacks).toHaveLength(1);
+
+        // Push a second chunk while the first is still in-flight.
+        // pendingWriteCharsRef (257_000) > HIGH_WATERMARK (256_000) → backlog.
+        const smallChunk = "hello";
+        rerender(
+            <TerminalViewport
+                session={createSessionView({
+                    rawOutput: bigChunk + smallChunk,
+                })}
+            />,
+        );
+        await flushPromises();
+
+        expect(pendingCallbacks).toHaveLength(1); // no new write call
+        expect(term.screen?.textContent).toBe(bigChunk); // "hello" not visible yet
+
+        // Fire the first write's callback → pendingWriteCharsRef drops to 0,
+        // queueMicrotask(flushBacklog) drains the "hello" backlog entry.
+        await act(async () => {
+            pendingCallbacks.shift()?.();
+            await Promise.resolve();
+            await Promise.resolve(); // let the queueMicrotask(flushBacklog) run
+        });
+
+        // "hello" is now visible — backlog was drained.
+        expect(term.screen?.textContent).toBe(bigChunk + smallChunk);
+        expect(pendingCallbacks).toHaveLength(1); // the backlog write's callback
+    });
 });

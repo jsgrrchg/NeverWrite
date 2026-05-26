@@ -369,6 +369,23 @@ vi.mock("@xterm/addon-web-links", () => ({
     },
 }));
 
+vi.mock("@xterm/addon-webgl", () => ({
+    WebglAddon: class MockWebglAddon {
+        private contextLossCallbacks = new Set<() => void>();
+
+        activate() {}
+
+        onContextLoss(callback: () => void) {
+            this.contextLossCallbacks.add(callback);
+            return { dispose: () => this.contextLossCallbacks.delete(callback) };
+        }
+
+        dispose() {
+            this.contextLossCallbacks.clear();
+        }
+    },
+}));
+
 vi.mock("react-datasheet-grid", async () => {
     const React = await import("react");
 

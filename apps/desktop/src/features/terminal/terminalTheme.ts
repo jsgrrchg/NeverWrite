@@ -61,7 +61,7 @@ export function getTerminalTheme(
         cursor: v("--accent"),
         fontFamily: opts?.fontFamily?.trim() || FALLBACK_FONT_STACK,
         fontSize: opts?.fontSize ?? 13,
-        lineHeight: 1.4,
+        lineHeight: 1.0,
         black:         ansi("--terminal-ansi-black",          "--bg-secondary"),
         red:           ansi("--terminal-ansi-red",            "--catppuccin-icon-red"),
         green:         ansi("--terminal-ansi-green",          "--catppuccin-icon-green"),
