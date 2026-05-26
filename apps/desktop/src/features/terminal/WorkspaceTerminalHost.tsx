@@ -15,6 +15,7 @@ import {
     type TerminalSessionSnapshot,
 } from "./terminalTypes";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
+import { appendTerminalRawOutput } from "./terminalRawOutput";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -54,7 +55,10 @@ export function WorkspaceTerminalHost() {
                     const { sessionId, chunk } = event.payload;
                     pendingBySessionId.set(
                         sessionId,
-                        (pendingBySessionId.get(sessionId) ?? "") + chunk,
+                        appendTerminalRawOutput(
+                            pendingBySessionId.get(sessionId) ?? "",
+                            chunk,
+                        ),
                     );
                     if (rafId === null) {
                         rafId = requestAnimationFrame(flushPending);

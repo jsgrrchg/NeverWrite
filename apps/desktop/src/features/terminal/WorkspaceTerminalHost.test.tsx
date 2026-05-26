@@ -206,4 +206,94 @@ describe("WorkspaceTerminalHost", () => {
                 ?.rawOutput,
         ).toBe("hello world!");
     });
+
+    it("caps pending output while waiting for a delayed rAF frame", async () => {
+        let capturedRafCallback: ((time: DOMHighResTimeStamp) => void) | null =
+            null;
+        vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+            capturedRafCallback = cb;
+            return 1;
+        });
+        vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {
+            capturedRafCallback = null;
+        });
+
+        const capturedHandlers = new Map<
+            string,
+            (event: { payload: TerminalOutputEventPayload }) => void
+        >();
+        vi.mocked(listen).mockImplementation(async (eventName, handler) => {
+            capturedHandlers.set(
+                eventName,
+                handler as (event: {
+                    payload: TerminalOutputEventPayload;
+                }) => void,
+            );
+            return vi.fn();
+        });
+
+        vi.mocked(invoke).mockResolvedValue({
+            sessionId: "devterm-1",
+            program: "/bin/zsh",
+            status: "running",
+            displayName: "zsh",
+            cwd: "/vault",
+            cols: 120,
+            rows: 24,
+            exitCode: null,
+            errorMessage: null,
+        });
+
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "terminal-tab-1",
+                            kind: "terminal",
+                            terminalId: "terminal-1",
+                            title: "Terminal 1",
+                            cwd: "/vault",
+                        },
+                    ],
+                    activeTabId: "terminal-tab-1",
+                },
+            ],
+            "primary",
+            createInitialLayout("primary"),
+        );
+
+        const handleOutputSpy = vi.spyOn(
+            useTerminalRuntimeStore.getState(),
+            "handleTerminalOutput",
+        );
+        const { unmount } = renderComponent(<WorkspaceTerminalHost />);
+        await flushPromises();
+
+        const emitOutput = (chunk: string) =>
+            capturedHandlers
+                .get(DEV_TERMINAL_OUTPUT_EVENT)
+                ?.({ payload: { sessionId: "devterm-1", chunk } });
+
+        act(() => {
+            emitOutput("a".repeat(1_500_000));
+            emitOutput("b".repeat(1_500_000));
+        });
+
+        expect(capturedRafCallback).not.toBeNull();
+        expect(handleOutputSpy).not.toHaveBeenCalled();
+
+        unmount();
+
+        expect(handleOutputSpy).toHaveBeenCalledTimes(1);
+        const flushedPayload = handleOutputSpy.mock.calls[0]?.[0];
+        expect(flushedPayload?.chunk).toHaveLength(2_000_000);
+        expect(flushedPayload?.chunk.startsWith("a".repeat(500_000))).toBe(
+            true,
+        );
+        expect(flushedPayload?.chunk.endsWith("b".repeat(1_500_000))).toBe(
+            true,
+        );
+    });
 });
