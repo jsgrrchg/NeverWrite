@@ -917,6 +917,44 @@ describe("chatStore", () => {
         ).toBe(CLAUDE_TERMINAL_RUNTIME_ID);
     });
 
+    it("keeps Automatic when the default is cleared during initialization", async () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ defaultRuntimeId: "codex-acp" }),
+        );
+
+        const setupDeferred = createDeferred<typeof readySetupStatus>();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_setup_status") {
+                return setupDeferred.promise;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const initializePromise = useChatStore
+            .getState()
+            .initialize({ createDefaultSession: false });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        useChatStore.getState().setDefaultRuntime(null);
+        // Simulate a stale persisted snapshot still reporting the old explicit
+        // default after the in-memory setting has already moved to Automatic.
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ defaultRuntimeId: "codex-acp" }),
+        );
+
+        setupDeferred.resolve(readySetupStatus);
+        await initializePromise;
+
+        const state = useChatStore.getState();
+        expect(state.defaultRuntimeId).toBeNull();
+        expect(state.selectedRuntimeId).toBe("codex-acp");
+        expect(state.getDefaultNewChatRuntimeId()).toBe("codex-acp");
+    });
+
     it("falls back when a persisted default runtime is no longer available", async () => {
         localStorage.setItem(
             AI_PREFS_KEY,

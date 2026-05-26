@@ -167,6 +167,7 @@ let _persistedHistoryCacheBySessionId = new Map<
     string,
     PersistedSessionHistorySummary
 >();
+let _defaultRuntimePreferenceVersion = 0;
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
 const TRANSCRIPT_PAGE_SIZE = 60;
@@ -6678,6 +6679,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setDefaultRuntime: (runtimeId) => {
+            _defaultRuntimePreferenceVersion += 1;
             set((state) => ({
                 defaultRuntimeId: runtimeId,
                 selectedRuntimeId: runtimeId ?? state.selectedRuntimeId,
@@ -6712,6 +6714,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
             const shouldCreateDefaultSession =
                 options?.createDefaultSession ?? true;
+            const defaultRuntimePreferenceVersionAtStart =
+                _defaultRuntimePreferenceVersion;
 
             set({ isInitializing: true });
 
@@ -6768,22 +6772,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         setupStatusByRuntimeId,
                     );
 
-                // Prefer the in-memory selection over the freshly-read persisted
-                // value. initialize() can be called multiple times (vault change,
-                // tab count change) and its async awaits create a window where the
-                // user may click a new default in the settings UI. In that case
-                // setDefaultRuntime() already wrote to both the store and
-                // localStorage, but this code path would otherwise overwrite the
-                // store value with the snapshot from before the click.
+                // Prefer in-memory changes made while this initialize() was in
+                // flight. "Automatic" is stored as null, so we need the version
+                // guard to distinguish an explicit clear from an uninitialized
+                // store value.
+                const defaultChangedDuringInitialize =
+                    _defaultRuntimePreferenceVersion !==
+                    defaultRuntimePreferenceVersionAtStart;
                 const currentStoreDefault = get().defaultRuntimeId;
-                const resolvedDefault =
-                    currentStoreDefault !== null
-                        ? (getSelectableDefaultRuntimeId(
-                              currentStoreDefault,
-                              runtimes,
-                              setupStatusByRuntimeId,
-                          ) ?? persistedRuntimeId)
-                        : persistedRuntimeId;
+                let resolvedDefault: string | null;
+                if (defaultChangedDuringInitialize) {
+                    resolvedDefault = getSelectableDefaultRuntimeId(
+                        currentStoreDefault,
+                        runtimes,
+                        setupStatusByRuntimeId,
+                    );
+                } else if (currentStoreDefault !== null) {
+                    resolvedDefault =
+                        getSelectableDefaultRuntimeId(
+                            currentStoreDefault,
+                            runtimes,
+                            setupStatusByRuntimeId,
+                        ) ?? persistedRuntimeId;
+                } else {
+                    resolvedDefault = persistedRuntimeId;
+                }
 
                 const initialSelectedRuntimeId =
                     resolvedDefault ??
@@ -11540,6 +11553,7 @@ export function resetChatStore() {
     clearTrackedPersistedReconciliationTimers();
     _sessionPersistenceFlushScheduled = false;
     _sessionPersistenceEpoch += 1;
+    _defaultRuntimePreferenceVersion = 0;
     resetChatRowUiStore();
     useChatStore.setState({
         runtimeConnectionByRuntimeId: {},
