@@ -251,6 +251,26 @@ export function TerminalViewport({
                     return;
                 }
 
+                // First fit after mount: send immediately so the PTY has the
+                // correct size before Claude Code renders its initial frame.
+                // Subsequent resizes (pane drags, etc.) still debounce to
+                // avoid thrashing the PTY on every intermediate pixel.
+                if (!lastRequestedSizeRef.current) {
+                    if (resizeTimerRef.current) {
+                        clearTimeout(resizeTimerRef.current);
+                        resizeTimerRef.current = null;
+                    }
+                    pendingResizeRef.current = null;
+                    lastRequestedSizeRef.current = {
+                        cols: nextCols,
+                        rows: nextRows,
+                    };
+                    void resizeRef
+                        .current(nextCols, nextRows)
+                        .catch(() => undefined);
+                    return;
+                }
+
                 pendingResizeRef.current = { cols: nextCols, rows: nextRows };
                 if (resizeTimerRef.current) {
                     clearTimeout(resizeTimerRef.current);
@@ -285,6 +305,10 @@ export function TerminalViewport({
             if (searchOpenRef.current && event.key === "Escape") {
                 event.preventDefault();
                 closeSearch();
+                return false;
+            }
+            if (event.type === "keydown" && event.key === "Enter" && event.shiftKey) {
+                void writeInputRef.current("\n").catch(() => undefined);
                 return false;
             }
             return true;
