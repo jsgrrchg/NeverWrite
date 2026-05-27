@@ -11,6 +11,7 @@ type XtermMockInstance = {
     selectAll: () => void;
     getSelection: () => string;
     emitData: (data: string) => void;
+    triggerKeyEvent: (event: KeyboardEvent) => boolean;
 };
 
 const xtermMockInstances: XtermMockInstance[] = [];
@@ -262,8 +263,17 @@ vi.mock("@xterm/xterm", () => ({
             };
         }
 
-        attachCustomKeyEventHandler(_: (event: KeyboardEvent) => boolean) {
-            // No-op in tests; keyboard interception is exercised through UI state.
+        private keyEventHandler: ((event: KeyboardEvent) => boolean) | null =
+            null;
+
+        attachCustomKeyEventHandler(
+            handler: (event: KeyboardEvent) => boolean,
+        ) {
+            this.keyEventHandler = handler;
+        }
+
+        triggerKeyEvent(event: KeyboardEvent): boolean {
+            return this.keyEventHandler?.(event) ?? true;
         }
 
         emitData(data: string) {

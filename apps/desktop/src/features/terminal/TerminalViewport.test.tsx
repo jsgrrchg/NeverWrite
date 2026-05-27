@@ -34,7 +34,7 @@ function createSessionView(
 }
 
 describe("TerminalViewport", () => {
-    it("renders raw output and forwards xterm input and settled resize events", async () => {
+    it("renders raw output, fires initial PTY resize immediately, and forwards xterm input", async () => {
         const writeInput = vi.fn(async () => undefined);
         const resize = vi.fn(async () => undefined);
         vi.useFakeTimers();
@@ -52,13 +52,17 @@ describe("TerminalViewport", () => {
 
             expect(screen.getByText(/hello from terminal/i)).toBeInTheDocument();
             expect(screen.getByText(/ready/i)).toBeInTheDocument();
-            expect(resize).not.toHaveBeenCalled();
 
+            // First fit fires immediately — no debounce on initial mount.
+            expect(resize).toHaveBeenCalledOnce();
+            expect(resize).toHaveBeenCalledWith(80, 24);
+
+            // Advancing time triggers the rAF-driven syncSize, but the size
+            // is already recorded so the dedup check prevents a second call.
             await act(async () => {
                 vi.advanceTimersByTime(100);
             });
-
-            expect(resize).toHaveBeenCalledWith(80, 24);
+            expect(resize).toHaveBeenCalledTimes(1);
 
             act(() => {
                 getXtermMockInstances()[0]?.emitData("pwd\r");
@@ -115,14 +119,19 @@ describe("TerminalViewport", () => {
             );
             await flushPromises();
 
+            // Initial fit fires immediately on mount.
+            expect(resize).toHaveBeenCalledOnce();
+            expect(resize).toHaveBeenCalledWith(80, 24);
+
             act(() => {
                 MockResizeObserver.notifyAll();
                 MockResizeObserver.notifyAll();
                 MockResizeObserver.notifyAll();
             });
 
-            expect(resize).not.toHaveBeenCalled();
-
+            // Three noisy ResizeObserver callbacks report the same 80×24 that
+            // was already sent, so the dedup check absorbs them with no new
+            // debounce timer.
             await act(async () => {
                 vi.advanceTimersByTime(100);
             });
@@ -214,5 +223,52 @@ describe("TerminalViewport", () => {
         // "hello" is now visible — backlog was drained.
         expect(term.screen?.textContent).toBe(bigChunk + smallChunk);
         expect(pendingCallbacks).toHaveLength(1); // the backlog write's callback
+    });
+
+    it("sends \\n to the PTY on Shift+Enter and does not intercept plain Enter or keyup", async () => {
+        const writeInput = vi.fn(async () => undefined);
+
+        renderComponent(
+            <TerminalViewport session={createSessionView({ writeInput })} />,
+        );
+        await flushPromises();
+
+        const terminal = getXtermMockInstances()[0];
+        expect(terminal).toBeDefined();
+
+        const makeKey = (
+            key: string,
+            overrides: Partial<KeyboardEventInit> = {},
+        ) =>
+            new KeyboardEvent("keydown", {
+                key,
+                shiftKey: false,
+                bubbles: true,
+                ...overrides,
+            });
+
+        // Shift+Enter keydown → intercepted: writes \n and returns false.
+        const shiftEnter = makeKey("Enter", { shiftKey: true });
+        const shiftEnterResult = terminal!.triggerKeyEvent(shiftEnter);
+        expect(shiftEnterResult).toBe(false);
+        expect(writeInput).toHaveBeenCalledWith("\n");
+
+        writeInput.mockClear();
+
+        // Plain Enter → not intercepted: xterm handles it normally.
+        const plainEnter = makeKey("Enter");
+        const plainEnterResult = terminal!.triggerKeyEvent(plainEnter);
+        expect(plainEnterResult).toBe(true);
+        expect(writeInput).not.toHaveBeenCalled();
+
+        // Shift+Enter keyup → not intercepted (handler only fires on keydown).
+        const shiftEnterKeyUp = new KeyboardEvent("keyup", {
+            key: "Enter",
+            shiftKey: true,
+            bubbles: true,
+        });
+        const keyUpResult = terminal!.triggerKeyEvent(shiftEnterKeyUp);
+        expect(keyUpResult).toBe(true);
+        expect(writeInput).not.toHaveBeenCalled();
     });
 });
