@@ -5,9 +5,11 @@ import path from "node:path";
 import zlib from "node:zlib";
 
 import {
+    APT_DEFAULT_CODENAME,
     APT_DEFAULT_COMPONENT,
     APT_DEFAULT_SUITE,
     APT_PACKAGE_NAME,
+    APT_PACKAGE_CHECKSUMS,
     APT_PUBLIC_KEY_FILE_NAME,
     APT_RELEASE_CHECKSUMS,
     APT_SOURCES_EXAMPLE_FILE_NAME,
@@ -126,7 +128,7 @@ function validateReleaseFile({ aptDir, suite, component }) {
         Origin: "NeverWrite",
         Label: "NeverWrite",
         Suite: suite,
-        Codename: suite,
+        Codename: APT_DEFAULT_CODENAME,
         Architectures: APT_SUPPORTED_ARCHITECTURES.join(" "),
         Components: component,
     };
@@ -218,7 +220,7 @@ function validatePackagesForArchitecture({
         if (fs.statSync(packagePath).size !== size) {
             throw new Error(`${filename} Size does not match package file.`);
         }
-        for (const { fieldName, algorithm } of APT_RELEASE_CHECKSUMS) {
+        for (const { fieldName, algorithm } of APT_PACKAGE_CHECKSUMS) {
             const expectedHash = getDebianControlField(stanza, fieldName);
             if (!expectedHash) {
                 throw new Error(`${filename} is missing ${fieldName}.`);

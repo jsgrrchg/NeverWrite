@@ -104,6 +104,7 @@ test("Packages stanzas append repository filename and checksums", () => {
     assert.match(stanza, /^Package: neverwrite/m);
     assert.match(stanza, /^Filename: pool\/main\/n\/neverwrite\/neverwrite_0\.2\.8_amd64\.deb/m);
     assert.match(stanza, /^Size: 1234/m);
+    assert.match(stanza, /^MD5sum: a{32}$/m);
     assert.match(stanza, /^SHA256: c{64}$/m);
 });
 
@@ -125,6 +126,7 @@ test("Release file includes suite, architectures, components, and checksums", ()
 
     assert.match(release, /^Origin: NeverWrite$/m);
     assert.match(release, /^Suite: stable$/m);
+    assert.match(release, /^Codename: neverwrite-stable$/m);
     assert.match(release, /^Architectures: amd64 arm64$/m);
     assert.match(release, /^Components: main$/m);
     assert.match(release, /^SHA256:/m);

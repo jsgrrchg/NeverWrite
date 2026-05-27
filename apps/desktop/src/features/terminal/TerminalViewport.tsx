@@ -3,6 +3,7 @@ import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@neverwrite/runtime";
 import { Terminal } from "@xterm/xterm";
 import {
@@ -22,6 +23,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { logError } from "../../app/utils/runtimeLog";
 import { getTerminalTheme } from "./terminalTheme";
 import type { TerminalSessionView } from "./terminalTypes";
 
@@ -74,6 +76,11 @@ function buildSearchSummary(resultIndex: number, resultCount: number) {
 }
 
 const TERMINAL_RESIZE_SETTLE_MS = 80;
+// Flow-control watermarks for xterm.js write queue.
+// When pending chars exceed HIGH, new chunks are queued locally.
+// When pending drops below LOW, the local queue is drained.
+const WRITE_HIGH_WATERMARK = 256_000;
+const WRITE_LOW_WATERMARK = 64_000;
 
 export function TerminalViewport({
     active = true,
@@ -107,6 +114,9 @@ export function TerminalViewport({
     const lastRestoredFocusSessionIdRef = useRef<string | null>(null);
     const shouldApplyInitialScrollRef = useRef(false);
     const shouldRestoreFocusRef = useRef(false);
+    const webglAddonRef = useRef<WebglAddon | null>(null);
+    const pendingWriteCharsRef = useRef(0);
+    const writeBacklogRef = useRef<string[]>([]);
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchOpenRef = useRef(false);
@@ -210,7 +220,7 @@ export function TerminalViewport({
         if (!host) return;
 
         const terminal = new Terminal({
-            allowTransparency: true,
+            allowTransparency: false,
             convertEol: false,
             cursorBlink: true,
             cursorStyle: "block",
@@ -330,6 +340,25 @@ export function TerminalViewport({
             if (cancelled) return;
 
             terminal.open(host);
+
+            // WebGL renderer — fastest path. Falls back to DOM renderer on context
+            // loss (GPU crash, system sleep, monitor switch).
+            try {
+                const webglAddon = new WebglAddon();
+                webglAddon.onContextLoss(() => {
+                    webglAddon.dispose();
+                    webglAddonRef.current = null;
+                });
+                terminal.loadAddon(webglAddon);
+                webglAddonRef.current = webglAddon;
+            } catch (error) {
+                logError(
+                    "terminal",
+                    "WebGL renderer unavailable — falling back to DOM renderer",
+                    error,
+                );
+            }
+
             terminalRef.current = terminal;
             fitAddonRef.current = fitAddon;
             searchAddonRef.current = searchAddon;
@@ -401,6 +430,10 @@ export function TerminalViewport({
             if (textarea && handleFocus)
                 textarea.removeEventListener("focus", handleFocus);
             onDataDisposable?.dispose();
+            webglAddonRef.current?.dispose();
+            webglAddonRef.current = null;
+            pendingWriteCharsRef.current = 0;
+            writeBacklogRef.current = [];
             terminal.dispose();
             syncSizeRef.current = () => undefined;
             terminalRef.current = null;
@@ -464,11 +497,55 @@ export function TerminalViewport({
         const terminal = terminalRef.current;
         if (!terminal) return;
 
+        // Drain the local write backlog, capped at WRITE_LOW_WATERMARK chars per
+        // iteration so xterm can interleave rendering between flushes.
+        const flushBacklog = () => {
+            const t = terminalRef.current;
+            if (!t || writeBacklogRef.current.length === 0) return;
+            if (pendingWriteCharsRef.current > WRITE_LOW_WATERMARK) return;
+            let merged = "";
+            while (
+                writeBacklogRef.current.length > 0 &&
+                merged.length < WRITE_LOW_WATERMARK
+            ) {
+                merged += writeBacklogRef.current.shift()!;
+            }
+            const chars = merged.length;
+            pendingWriteCharsRef.current += chars;
+            t.write(merged, () => {
+                pendingWriteCharsRef.current = Math.max(
+                    0,
+                    pendingWriteCharsRef.current - chars,
+                );
+                queueMicrotask(flushBacklog);
+            });
+        };
+
+        // Write a chunk to xterm, queueing locally if the write buffer is full.
+        const writeChunk = (data: string, onDone?: () => void) => {
+            if (pendingWriteCharsRef.current > WRITE_HIGH_WATERMARK) {
+                writeBacklogRef.current.push(data);
+                return;
+            }
+            const chars = data.length;
+            pendingWriteCharsRef.current += chars;
+            terminal.write(data, () => {
+                pendingWriteCharsRef.current = Math.max(
+                    0,
+                    pendingWriteCharsRef.current - chars,
+                );
+                onDone?.();
+                queueMicrotask(flushBacklog);
+            });
+        };
+
         const sessionId = snapshot.sessionId || "__pending-terminal__";
         const previousSessionId = lastSessionIdRef.current;
 
         if (previousSessionId !== sessionId) {
             terminal.reset();
+            pendingWriteCharsRef.current = 0;
+            writeBacklogRef.current = [];
             lastSessionIdRef.current = sessionId;
             lastRawOutputRef.current = "";
             shouldApplyInitialScrollRef.current =
@@ -489,8 +566,10 @@ export function TerminalViewport({
             !rawOutput.startsWith(lastRawOutputRef.current)
         ) {
             terminal.reset();
+            pendingWriteCharsRef.current = 0;
+            writeBacklogRef.current = [];
             if (rawOutput.length > 0) {
-                terminal.write(rawOutput, () => {
+                writeChunk(rawOutput, () => {
                     if (!shouldApplyInitialScrollRef.current) return;
                     shouldApplyInitialScrollRef.current = false;
                     terminal.scrollToTop();
@@ -504,7 +583,7 @@ export function TerminalViewport({
 
         const nextChunk = rawOutput.slice(lastRawOutputRef.current.length);
         if (nextChunk.length > 0) {
-            terminal.write(nextChunk, () => {
+            writeChunk(nextChunk, () => {
                 if (!shouldApplyInitialScrollRef.current) return;
                 shouldApplyInitialScrollRef.current = false;
                 terminal.scrollToTop();
@@ -644,6 +723,7 @@ export function TerminalViewport({
             style={{
                 backgroundColor: theme.background,
                 color: theme.text,
+                paddingBottom: 8,
             }}
             onMouseDown={handleMouseDown}
             onContextMenu={handleContextMenu}

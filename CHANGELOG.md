@@ -34,6 +34,48 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.3.0] - 2026-05-27
+
+### Added
+
+- Promoted Terminal to a first-class workspace feature, including terminal tabs, theme-aware ANSI palettes, Terminal settings, and Claude Code CLI integration as a built-in agent provider. Thanks to @spamsch.
+- Added native OpenCode ACP provider support, including CLI auth, diagnostics, provider settings, runtime smoke coverage, and setup-state handling without storing OpenCode secrets in NeverWrite.
+- Added file tree extension filtering for power users with mixed vaults, with a curated default file set and consistent filtering across the file tree, `@` mentions, New Tab, Quick Switcher, Search Files & Notes, and wikilink suggestions.
+- Added support for dragging files from Finder into vault folders, including folder hover feedback, multiple-file drops, root drops, and existing-name deduplication. Thanks to @spamsch.
+- Added keyboard shortcut hints to the empty workspace pane so Open File, Command Palette, New Agent, and New Terminal actions show their current platform shortcuts.
+- Added an AI chat warning when a resumed session drops previously approved external directories because they are no longer accessible.
+- Added Debian `.deb` release packages for amd64 and arm64 Linux installs, while keeping AppImage as the portable Linux package and updater target.
+- Added signed APT repository publishing for Debian packages, including GitHub Pages metadata, package retention, signed `InRelease`/`Release.gpg` files, validation, and user install documentation.
+- Added a repository security policy with private vulnerability reporting guidance.
+- Added Settings links for GitHub issues, GitHub discussions, Buy Me a Coffee, and GitHub Sponsors.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.37.0`, including first-class additional directory support so approved external roots persist across session create, load, resume, and fork paths.
+- Updated the embedded Codex ACP runtime vendor to the `0.15` line and aligned the desktop/backend protocol dependency with `agent-client-protocol` `0.12.1`.
+- Updated Mermaid to `11.15.0`, bringing newer diagram syntax and upstream rendering fixes.
+- Clarified default agent preference behavior so explicit provider choices win over the current or last-used runtime, while Automatic keeps contextual selection.
+- Clarified File Tree settings, renamed the old Developers section to File Tree, and removed the duplicate Line wrapping setting from that section.
+- Polished Settings navigation around the main product workflows, moved Updates later, clarified that updates are checked automatically but installed manually, and added tactile press styling to Settings action buttons.
+- Polished APT repository metadata with streamed hashing for large packages, Debian-specific checksum casing, and a `neverwrite-stable` repository codename.
+
+### Fixed
+
+- Fixed terminal rendering crashes and jank under heavy Claude Code output by batching PTY output, adding terminal write backpressure, enabling the WebGL renderer when available, and avoiding repeated cold-path terminal resets. Thanks to @spamsch.
+- Fixed AI provider default selection so choosing Claude Code or another provider in Settings is not overwritten by a racing chat-store initialization.
+- Fixed Claude/OpenCode structured diff handling so chat review snippets preserve the exact hunk shown to the review system, keep stable line numbers, survive history restore, and do not leak later edits into older cards.
+- Fixed Pending Changes review tabs so wide/center mode and scroll position persist reliably when switching tabs or remounting the review view.
+- Fixed file tree multi-selection cleanup so selected files and folders clear when focus moves back into an editor or workspace pane.
+- Fixed fatal startup fallback rendering so exception text is displayed as text instead of being assigned through `innerHTML`.
+- Fixed Web Clipper YAML frontmatter date detection so only explicit ISO-like dates and timestamps are quoted as YAML-implicit dates.
+
+### Security
+
+- Hardened Web Clipper public HTTP responses so internal exception details, stack traces, local paths, and arbitrary unknown values cannot be serialized back to the browser extension.
+- Hardened Claude local command metadata stripping by replacing a broad regex with a deterministic scanner over known marker tags, avoiding a potential local denial-of-service pattern.
+- Reduced release metadata workflow permissions to the minimum needed for validation.
+- Patched vulnerable transitive dependencies across the desktop app, web clipper, and Rust backend, including `rustls-webpki`, `uuid`, `rand`, `brace-expansion`, and `ws`.
+
 ## [0.2.7] - 2026-05-19
 
 ### Added

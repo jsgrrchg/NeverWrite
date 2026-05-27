@@ -1,4 +1,4 @@
-const MAX_RAW_OUTPUT_CHARS = 400_000;
+const MAX_RAW_OUTPUT_CHARS = 2_000_000;
 const MAX_PERSISTED_RAW_OUTPUT_CHARS = 120_000;
 
 function trimTerminalRawOutput(value: string, limit: number) {
