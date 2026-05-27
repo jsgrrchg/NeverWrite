@@ -2451,6 +2451,9 @@ function UpdatesSettings({
     const anyBusy = loading || checking || installing;
     const effectiveError = error ?? null;
     const updaterConfigured = Boolean(status?.enabled);
+    const automaticUpdatesDescription = updaterConfigured
+        ? "NeverWrite does not update automatically. It only downloads and installs updates when you choose it."
+        : "Not available in this build.";
     const stateKind = resolveUpdateStateKind({
         checking,
         installing,
@@ -2533,9 +2536,9 @@ function UpdatesSettings({
             ],
             [
                 "Automatic updates",
-                updaterConfigured
-                    ? "Enabled. Updates are fetched from the release feed and applied after restart."
-                    : "Not available in this build.",
+                automaticUpdatesDescription,
+                "manual install",
+                "no automatic install",
             ],
             [
                 "Update status",
@@ -2625,17 +2628,10 @@ function UpdatesSettings({
                 searchQuery={searchQuery}
                 section="Version"
                 label="Automatic updates"
-                description={
-                    updaterConfigured
-                        ? "Enabled. Updates are fetched from the release feed and applied after restart."
-                        : "Not available in this build."
-                }
+                description={automaticUpdatesDescription}
+                keywords={["manual install", "no automatic install"]}
                 control={
-                    <Toggle
-                        disabled
-                        value={updaterConfigured}
-                        onChange={() => {}}
-                    />
+                    <VersionPill label={updaterConfigured ? "Manual" : "Off"} />
                 }
             />
             <SearchableRow
