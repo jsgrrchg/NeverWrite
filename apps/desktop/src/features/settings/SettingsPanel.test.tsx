@@ -366,6 +366,22 @@ describe("SettingsPanel", () => {
         );
     });
 
+    it("opens sponsor links from the sponsors settings panel", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Sponsors" }));
+
+        fireEvent.click(screen.getByRole("button", { name: "buy coffee" }));
+        fireEvent.click(screen.getByRole("button", { name: "sponsor" }));
+
+        expect(vi.mocked(openUrl)).toHaveBeenCalledWith(
+            "https://buymeacoffee.com/jsgrrchg",
+        );
+        expect(vi.mocked(openUrl)).toHaveBeenCalledWith(
+            "https://github.com/sponsors/jsgrrchg",
+        );
+    });
+
     it("shows the whole panel when the category header matches search", () => {
         renderComponent(<SettingsPanel onClose={() => {}} />);
 

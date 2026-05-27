@@ -2398,6 +2398,8 @@ const NEW_REPOSITORY_ISSUE_URL =
     "https://github.com/jsgrrchg/NeverWrite/issues/new";
 const NEW_REPOSITORY_DISCUSSION_URL =
     "https://github.com/jsgrrchg/NeverWrite/discussions/new/choose";
+const BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/jsgrrchg";
+const GITHUB_SPONSORS_URL = "https://github.com/sponsors/jsgrrchg";
 
 function UpdatesSettings({
     searchQuery,
@@ -3011,6 +3013,104 @@ function FeedbackSettings({
                     </SettingsActionButton>
                 }
             />
+        </div>
+    );
+}
+
+function SponsorsSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
+    const showSupport = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Support",
+        [
+            [
+                "Buy Me a Coffee",
+                "Support NeverWrite development with a one-time contribution.",
+                "coffee",
+                "donate",
+                "support",
+            ],
+            [
+                "GitHub Sponsors",
+                "Sponsor ongoing NeverWrite maintenance and development through GitHub.",
+                "github",
+                "sponsor",
+                "funding",
+            ],
+            [
+                "AI tooling is moving fast, and NeverWrite moves with it.",
+                "Support helps fund weekly maintenance, expanded provider compatibility, runtime stability, security hardening, and safer agent review workflows.",
+                "runtime stability",
+                "security hardening",
+                "provider compatibility",
+            ],
+        ],
+    );
+
+    if (!showSupport) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    return (
+        <div>
+            <SectionLabel>Support</SectionLabel>
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Support"
+                label="Buy Me a Coffee"
+                description="Support NeverWrite development with a one-time contribution."
+                keywords={["coffee", "donate", "support"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(BUY_ME_A_COFFEE_URL);
+                        }}
+                    >
+                        buy coffee
+                    </SettingsActionButton>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Support"
+                label="GitHub Sponsors"
+                description="Sponsor ongoing NeverWrite maintenance and development through GitHub."
+                keywords={["github", "sponsor", "funding"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(GITHUB_SPONSORS_URL);
+                        }}
+                    >
+                        sponsor
+                    </SettingsActionButton>
+                }
+            />
+            <div
+                style={{
+                    marginTop: 14,
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    background:
+                        "color-mix(in srgb, var(--accent) 8%, var(--bg-secondary))",
+                    color: "var(--text-primary)",
+                    fontSize: 12,
+                    lineHeight: 1.55,
+                    padding: "12px 14px",
+                }}
+            >
+                <span style={{ fontWeight: 600 }}>
+                    AI tooling is moving fast, and NeverWrite moves with it.
+                </span>{" "}
+                Support helps fund weekly maintenance, expanded provider
+                compatibility, runtime stability, security hardening, and safer
+                agent review workflows.
+            </div>
         </div>
     );
 }
@@ -3912,7 +4012,8 @@ type Category =
     | "developers"
     | "terminal"
     | "updates"
-    | "feedback";
+    | "feedback"
+    | "sponsors";
 
 function isCategory(value: string | null | undefined): value is Category {
     return CATEGORIES.some((category) => category.id === value);
@@ -4153,6 +4254,21 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
             </svg>
         ),
     },
+    {
+        id: "sponsors",
+        label: "Sponsors",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M8 13.25 3.15 8.72C1.35 7.04 1.15 4.42 2.7 3.05c1.15-1.02 2.9-.84 3.95.38L8 5l1.35-1.57c1.05-1.22 2.8-1.4 3.95-.38 1.55 1.37 1.35 3.99-.45 5.67L8 13.25Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
 ];
 
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
@@ -4168,6 +4284,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     ai_providers: "AI runtimes, authentication, and API keys",
     ai: "AI assistant chat preferences",
     feedback: "GitHub issues, discussions, and feedback links",
+    sponsors: "Ways to support NeverWrite development",
 };
 
 const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = {
@@ -4252,6 +4369,16 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Request feature",
         "Question",
         "Idea",
+    ],
+    sponsors: [
+        "Support",
+        "Sponsors",
+        "Buy Me a Coffee",
+        "GitHub Sponsors",
+        "Coffee",
+        "Donate",
+        "Funding",
+        "Support NeverWrite",
     ],
     terminal: [
         "Terminal",
@@ -4400,6 +4527,8 @@ function getDynamicCategorySearchValues(
                 context.updateStatus.error,
             ];
         case "feedback":
+            return [];
+        case "sponsors":
             return [];
         case "terminal":
             return [];
@@ -4943,6 +5072,12 @@ export function SettingsPanel({
                         {filteredCategories.length > 0 &&
                             activeCategory === "feedback" && (
                                 <FeedbackSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "sponsors" && (
+                                <SponsorsSettings
                                     searchQuery={activeSearchQuery}
                                 />
                             )}
