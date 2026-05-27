@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { getAllWebviewWindows, listen } from "@neverwrite/runtime";
+import { getAllWebviewWindows, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useChatStore } from "../ai/store/chatStore";
@@ -336,6 +336,34 @@ describe("SettingsPanel", () => {
 
         expect(screen.getByText("Inline review in editor")).toBeInTheDocument();
         expect(screen.queryByText("Chat font family")).not.toBeInTheDocument();
+    });
+
+    it("opens GitHub feedback links from the feedback settings panel", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Feedback" }));
+
+        fireEvent.click(screen.getByRole("button", { name: "open issues" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "open discussions" }),
+        );
+        fireEvent.click(screen.getByRole("button", { name: "new issue" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "new discussion" }),
+        );
+
+        expect(vi.mocked(openUrl)).toHaveBeenCalledWith(
+            "https://github.com/jsgrrchg/NeverWrite/issues",
+        );
+        expect(vi.mocked(openUrl)).toHaveBeenCalledWith(
+            "https://github.com/jsgrrchg/NeverWrite/discussions",
+        );
+        expect(vi.mocked(openUrl)).toHaveBeenCalledWith(
+            "https://github.com/jsgrrchg/NeverWrite/issues/new",
+        );
+        expect(vi.mocked(openUrl)).toHaveBeenCalledWith(
+            "https://github.com/jsgrrchg/NeverWrite/discussions/new/choose",
+        );
     });
 
     it("shows the whole panel when the category header matches search", () => {

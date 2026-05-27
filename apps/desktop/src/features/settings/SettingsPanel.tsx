@@ -2391,6 +2391,13 @@ const MONO_FONT_STACK =
 
 const RELEASE_NOTES_URL =
     "https://github.com/jsgrrchg/NeverWrite/releases/latest";
+const REPOSITORY_ISSUES_URL = "https://github.com/jsgrrchg/NeverWrite/issues";
+const REPOSITORY_DISCUSSIONS_URL =
+    "https://github.com/jsgrrchg/NeverWrite/discussions";
+const NEW_REPOSITORY_ISSUE_URL =
+    "https://github.com/jsgrrchg/NeverWrite/issues/new";
+const NEW_REPOSITORY_DISCUSSION_URL =
+    "https://github.com/jsgrrchg/NeverWrite/discussions/new/choose";
 
 function UpdatesSettings({
     searchQuery,
@@ -2598,21 +2605,21 @@ function UpdatesSettings({
                         }}
                     >
                         <VersionPill label={currentVersionLabel} />
-                        <UpdaterActionButton
+                        <SettingsActionButton
                             active={false}
                             onClick={() => {
                                 void openUrl(RELEASE_NOTES_URL);
                             }}
                         >
                             release notes
-                        </UpdaterActionButton>
-                        <UpdaterActionButton
+                        </SettingsActionButton>
+                        <SettingsActionButton
                             active={primaryAction.active}
                             disabled={primaryAction.disabled}
                             onClick={primaryAction.onClick}
                         >
                             {primaryAction.label}
-                        </UpdaterActionButton>
+                        </SettingsActionButton>
                     </div>
                 }
             />
@@ -2714,7 +2721,7 @@ function UpdatesSettings({
                             gap: 8,
                         }}
                     >
-                        <UpdaterActionButton
+                        <SettingsActionButton
                             active
                             disabled={installing}
                             onClick={() => {
@@ -2729,14 +2736,14 @@ function UpdatesSettings({
                             }}
                         >
                             {installing ? "installing..." : "install anyway"}
-                        </UpdaterActionButton>
-                        <UpdaterActionButton
+                        </SettingsActionButton>
+                        <SettingsActionButton
                             active={false}
                             disabled={installing}
                             onClick={() => setConfirmInstall(false)}
                         >
                             cancel
-                        </UpdaterActionButton>
+                        </SettingsActionButton>
                     </div>
                 </div>
             ) : null}
@@ -2847,7 +2854,7 @@ function UpdateStatusBadge({ kind }: { kind: UpdateStateKind }) {
     );
 }
 
-function UpdaterActionButton({
+function SettingsActionButton({
     children,
     active,
     disabled,
@@ -2863,6 +2870,7 @@ function UpdaterActionButton({
             type="button"
             disabled={disabled}
             onClick={onClick}
+            className="nw-settings-action-btn"
             style={{
                 backgroundColor: active
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
@@ -2880,6 +2888,130 @@ function UpdaterActionButton({
         >
             {children}
         </button>
+    );
+}
+
+function FeedbackSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
+    const showCommunity = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Community",
+        [
+            [
+                "Issues",
+                "Browse open bug reports, feature requests, and support threads on GitHub.",
+                "github",
+                "bugs",
+                "feature requests",
+            ],
+            [
+                "Discussions",
+                "Read community questions, ideas, and longer-form conversations on GitHub.",
+                "github",
+                "community",
+                "questions",
+                "ideas",
+            ],
+        ],
+    );
+    const showCreate = sectionHasSettingsSearchMatches(searchQuery, "Create", [
+        [
+            "Create issue",
+            "Open GitHub to file a bug report or request a focused change.",
+            "github",
+            "report bug",
+            "request feature",
+        ],
+        [
+            "Start discussion",
+            "Open GitHub to start a broader question, idea, or product conversation.",
+            "github",
+            "question",
+            "idea",
+        ],
+    ]);
+
+    if (!showCommunity && !showCreate) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    return (
+        <div>
+            {showCommunity ? <SectionLabel>Community</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Community"
+                label="Issues"
+                description="Browse open bug reports, feature requests, and support threads on GitHub."
+                keywords={["github", "bugs", "feature requests"]}
+                control={
+                    <SettingsActionButton
+                        active={false}
+                        onClick={() => {
+                            void openUrl(REPOSITORY_ISSUES_URL);
+                        }}
+                    >
+                        open issues
+                    </SettingsActionButton>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Community"
+                label="Discussions"
+                description="Read community questions, ideas, and longer-form conversations on GitHub."
+                keywords={["github", "community", "questions", "ideas"]}
+                control={
+                    <SettingsActionButton
+                        active={false}
+                        onClick={() => {
+                            void openUrl(REPOSITORY_DISCUSSIONS_URL);
+                        }}
+                    >
+                        open discussions
+                    </SettingsActionButton>
+                }
+            />
+
+            {showCreate ? <SectionLabel>Create</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Create"
+                label="Create issue"
+                description="Open GitHub to file a bug report or request a focused change."
+                keywords={["github", "report bug", "request feature"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(NEW_REPOSITORY_ISSUE_URL);
+                        }}
+                    >
+                        new issue
+                    </SettingsActionButton>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Create"
+                label="Start discussion"
+                description="Open GitHub to start a broader question, idea, or product conversation."
+                keywords={["github", "question", "idea"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(NEW_REPOSITORY_DISCUSSION_URL);
+                        }}
+                    >
+                        new discussion
+                    </SettingsActionButton>
+                }
+            />
+        </div>
     );
 }
 
@@ -3779,7 +3911,8 @@ type Category =
     | "vault"
     | "developers"
     | "terminal"
-    | "updates";
+    | "updates"
+    | "feedback";
 
 function isCategory(value: string | null | undefined): value is Category {
     return CATEGORIES.some((category) => category.id === value);
@@ -3999,6 +4132,27 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
             </svg>
         ),
     },
+    {
+        id: "feedback",
+        label: "Feedback",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M3 3.5h10a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7.5L4 14v-2H3a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+                <path
+                    d="M5 6.5h6M5 9h4"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                />
+            </svg>
+        ),
+    },
 ];
 
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
@@ -4013,6 +4167,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     shortcuts: "Keyboard shortcuts reference",
     ai_providers: "AI runtimes, authentication, and API keys",
     ai: "AI assistant chat preferences",
+    feedback: "GitHub issues, discussions, and feedback links",
 };
 
 const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = {
@@ -4084,6 +4239,19 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "check for updates",
         "appcast",
         "release feed",
+    ],
+    feedback: [
+        "Community",
+        "Issues",
+        "Discussions",
+        "Create",
+        "Create issue",
+        "Start discussion",
+        "GitHub",
+        "Report bug",
+        "Request feature",
+        "Question",
+        "Idea",
     ],
     terminal: [
         "Terminal",
@@ -4231,6 +4399,8 @@ function getDynamicCategorySearchValues(
                 context.updateStatus.status?.update?.body,
                 context.updateStatus.error,
             ];
+        case "feedback":
+            return [];
         case "terminal":
             return [];
         case "developers":
@@ -4767,6 +4937,12 @@ export function SettingsPanel({
                         {filteredCategories.length > 0 &&
                             activeCategory === "updates" && (
                                 <UpdatesSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "feedback" && (
+                                <FeedbackSettings
                                     searchQuery={activeSearchQuery}
                                 />
                             )}
