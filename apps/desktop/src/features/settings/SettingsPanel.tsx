@@ -3772,14 +3772,14 @@ type Category =
     | "general"
     | "appearance"
     | "editor"
-    | "spellcheck"
-    | "updates"
-    | "terminal"
-    | "developers"
-    | "vault"
-    | "shortcuts"
+    | "ai"
     | "ai_providers"
-    | "ai";
+    | "spellcheck"
+    | "shortcuts"
+    | "vault"
+    | "developers"
+    | "terminal"
+    | "updates";
 
 function isCategory(value: string | null | undefined): value is Category {
     return CATEGORIES.some((category) => category.id === value);
@@ -3842,6 +3842,47 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
         ),
     },
     {
+        id: "ai",
+        label: "AI",
+        icon: (
+            <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Z" />
+                <path d="M5.5 8.5c.5 1 1.5 1.5 2.5 1.5s2-.5 2.5-1.5" />
+                <path d="M6 6.5h.01M10 6.5h.01" />
+            </svg>
+        ),
+    },
+    {
+        id: "ai_providers",
+        label: "AI providers",
+        icon: (
+            <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <rect x="2.5" y="3" width="11" height="4" rx="1.5" />
+                <path d="M4.5 5h2M11 5h.01" />
+                <rect x="2.5" y="9" width="11" height="4" rx="1.5" />
+                <path d="M4.5 11h2M11 11h.01" />
+            </svg>
+        ),
+    },
+    {
         id: "spellcheck",
         label: "Spellcheck",
         icon: (
@@ -3852,73 +3893,6 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
                     strokeWidth="1.2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "updates",
-        label: "Updates",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <path
-                    d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7M3 12.5h10"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "terminal",
-        label: "Terminal",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <rect
-                    x="1.5"
-                    y="2.5"
-                    width="13"
-                    height="11"
-                    rx="2"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                />
-                <path
-                    d="M4.5 6 6.5 8 4.5 10M8 10h3.5"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "developers",
-        label: "File Tree",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <path
-                    d="M6 4 2.5 8 6 12M10 4l3.5 4-3.5 4M9 2.5 7 13.5"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "vault",
-        label: "Vault",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <path
-                    d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
                 />
             </svg>
         ),
@@ -3959,43 +3933,69 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
         ),
     },
     {
-        id: "ai_providers",
-        label: "AI providers",
+        id: "vault",
+        label: "Vault",
         icon: (
-            <svg
-                width="15"
-                height="15"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <rect x="2.5" y="3" width="11" height="4" rx="1.5" />
-                <path d="M4.5 5h2M11 5h.01" />
-                <rect x="2.5" y="9" width="11" height="4" rx="1.5" />
-                <path d="M4.5 11h2M11 11h.01" />
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
             </svg>
         ),
     },
     {
-        id: "ai",
-        label: "AI",
+        id: "developers",
+        label: "File Tree",
         icon: (
-            <svg
-                width="15"
-                height="15"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Z" />
-                <path d="M5.5 8.5c.5 1 1.5 1.5 2.5 1.5s2-.5 2.5-1.5" />
-                <path d="M6 6.5h.01M10 6.5h.01" />
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M6 4 2.5 8 6 12M10 4l3.5 4-3.5 4M9 2.5 7 13.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "terminal",
+        label: "Terminal",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <rect
+                    x="1.5"
+                    y="2.5"
+                    width="13"
+                    height="11"
+                    rx="2"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
+                <path
+                    d="M4.5 6 6.5 8 4.5 10M8 10h3.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "updates",
+        label: "Updates",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7M3 12.5h10"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
             </svg>
         ),
     },
