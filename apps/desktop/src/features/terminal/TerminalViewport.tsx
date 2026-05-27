@@ -565,6 +565,64 @@ export function TerminalViewport({
             rawOutput.length < lastRawOutputRef.current.length ||
             !rawOutput.startsWith(lastRawOutputRef.current)
         ) {
+            // Check whether this is a truncation event rather than a genuine
+            // content mismatch. appendTerminalRawOutput caps rawOutput at
+            // MAX_RAW_OUTPUT_CHARS by slicing off the front; once the session
+            // crosses that threshold every new chunk lands here, triggering
+            // terminal.reset() on every write and causing continuous flicker.
+            //
+            // Truncation signature: rawOutput didn't shrink (it stayed at the
+            // MAX cap), and rawOutput = lastRef[delta:] + newChunk. We recover
+            // the new tail by locating the start of rawOutput inside lastRef
+            // with a short probe, then writing only the new bytes.
+            if (rawOutput.length >= lastRawOutputRef.current.length) {
+                const PROBE_LEN = 32;
+                // Search up to MAX_SEARCH chars into lastRef for the delta
+                // offset. The inter-render delta can be large when the store
+                // coalesces multiple PTY events (paste echo, large file cat,
+                // TUI redraws) — 512KB covers most realistic bursts without
+                // meaningful cost since String.indexOf is native.
+                const MAX_SEARCH = 512_000;
+                const probe = rawOutput.slice(0, PROBE_LEN);
+                const searchArea = lastRawOutputRef.current.slice(
+                    1,
+                    MAX_SEARCH + PROBE_LEN,
+                );
+                const hit = searchArea.indexOf(probe);
+                if (hit >= 0) {
+                    const delta = hit + 1; // +1 because searchArea starts at 1
+                    // Verify the match extends well past the probe to reduce
+                    // (not eliminate) false positives from repeated ANSI
+                    // sequences — TUI spinners and redraws can emit long runs
+                    // of identical escape codes. A wrong delta produces one
+                    // garbled frame before the next reset corrects it.
+                    if (
+                        lastRawOutputRef.current.slice(
+                            delta + PROBE_LEN,
+                            delta + PROBE_LEN * 2,
+                        ) === rawOutput.slice(PROBE_LEN, PROBE_LEN * 2)
+                    ) {
+                        const overlapLen =
+                            lastRawOutputRef.current.length - delta;
+                        const newChunk =
+                            overlapLen < rawOutput.length
+                                ? rawOutput.slice(overlapLen)
+                                : "";
+                        if (newChunk.length > 0) {
+                            writeChunk(newChunk, () => {
+                                if (!shouldApplyInitialScrollRef.current)
+                                    return;
+                                shouldApplyInitialScrollRef.current = false;
+                                terminal.scrollToTop();
+                            });
+                        }
+                        lastRawOutputRef.current = rawOutput;
+                        return;
+                    }
+                }
+                // Probe not found or verification failed — fall through to
+                // full reset (genuine mismatch or enormous chunk > MAX_SEARCH).
+            }
             terminal.reset();
             pendingWriteCharsRef.current = 0;
             writeBacklogRef.current = [];

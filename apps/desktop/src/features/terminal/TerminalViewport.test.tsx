@@ -271,4 +271,84 @@ describe("TerminalViewport", () => {
         expect(keyUpResult).toBe(true);
         expect(writeInput).not.toHaveBeenCalled();
     });
+
+    it("does not reset xterm when rawOutput is truncated at the buffer cap", async () => {
+        // Simulate what appendTerminalRawOutput does once rawOutput exceeds
+        // MAX_RAW_OUTPUT_CHARS: the front is trimmed so rawOutput no longer
+        // starts with the previous value.  The probe-based truncation detector
+        // must recognise this and avoid calling terminal.reset(), which would
+        // blank the screen on every subsequent write.
+        //
+        // OVERLAP must be >= PROBE_LEN * 2 (64 chars) so the 32-byte probe
+        // AND the 32-byte verification window both land inside the shared
+        // portion of lastRef and rawOutput.
+        const OVERLAP =
+            // 32 chars for the probe window — keep them unique so indexOf
+            // returns the correct position and not an earlier false hit.
+            "1234567890ABCDEFGHIJKLMNOPQRSTUV" +
+            // 48 more chars for the verification window.
+            "WXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()-_+=[]{}";
+        const PREFIX = "AAA"; // bytes trimmed from the front
+        const initial = PREFIX + OVERLAP;
+        // postTruncation = initial.slice(PREFIX.length) + newChunk
+        // — same length, does not start with initial.
+        const postTruncation = OVERLAP + "XYZ";
+
+        const { rerender } = renderComponent(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: initial })}
+            />,
+        );
+        await flushPromises();
+
+        const [term] = getXtermMockInstances();
+        if (!term) throw new Error("No xterm instance");
+
+        // Spy after the initial render — which legitimately calls reset once
+        // for the new session — so we only count resets during truncation.
+        const resetSpy = vi.spyOn(term, "reset");
+
+        rerender(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: postTruncation })}
+            />,
+        );
+        await flushPromises();
+
+        expect(resetSpy).not.toHaveBeenCalled();
+        // The new tail must reach xterm without a full rewrite.
+        expect(term.screen?.textContent).toContain("XYZ");
+    });
+
+    it("writes the new tail to xterm when output stops exactly at the truncation boundary", async () => {
+        // Verify the tail bytes ("ENDOFOUTPUT") reach xterm even if no further
+        // output arrives after the truncating write — ruling out any approach
+        // that would skip writing the new chunk on truncation.
+        const OVERLAP =
+            "1234567890ABCDEFGHIJKLMNOPQRSTUV" +
+            "WXYZabcdefghijklmnopqrstuvwxyz!@#$%^&*()-_+=[]{}";
+        const PREFIX = "AAA";
+        const TAIL = "ENDOFOUTPUT";
+        const initial = PREFIX + OVERLAP;
+        const postTruncation = OVERLAP + TAIL;
+
+        const { rerender } = renderComponent(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: initial })}
+            />,
+        );
+        await flushPromises();
+
+        rerender(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: postTruncation })}
+            />,
+        );
+        await flushPromises();
+
+        const [term] = getXtermMockInstances();
+        if (!term) throw new Error("No xterm instance");
+
+        expect(term.screen?.textContent).toContain(TAIL);
+    });
 });
