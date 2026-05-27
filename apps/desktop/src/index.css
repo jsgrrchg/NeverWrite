@@ -1067,6 +1067,29 @@ body.dragging-tab * {
     border-radius: 4px;
 }
 
+.nw-settings-action-btn {
+    transition:
+        background-color 120ms ease-out,
+        border-color 120ms ease-out,
+        color 120ms ease-out,
+        transform 80ms ease-out;
+}
+.nw-settings-action-btn:hover:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--text-primary) 22%,
+        var(--border)
+    ) !important;
+}
+.nw-settings-action-btn:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 50ms;
+}
+.nw-settings-action-btn:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: 1px;
+}
+
 .nw-settings-theme-tile {
     transition:
         border-color 140ms ease-out,
