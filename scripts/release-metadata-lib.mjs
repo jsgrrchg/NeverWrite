@@ -275,6 +275,11 @@ export function collectElectronBuildIssues(config) {
             'electron-builder.config.mjs linux.target must include "deb".',
         );
     }
+    if (!linuxTargets.has("rpm")) {
+        issues.push(
+            'electron-builder.config.mjs linux.target must include "rpm".',
+        );
+    }
     if (linuxTargets.has("deb") || config.deb != null) {
         if (config.deb?.packageName !== "neverwrite") {
             issues.push(
@@ -298,6 +303,28 @@ export function collectElectronBuildIssues(config) {
         if (config.deb?.publish !== null) {
             issues.push(
                 "electron-builder.config.mjs deb.publish must be null because Debian packages are manual-only in this release phase.",
+            );
+        }
+    }
+
+    if (linuxTargets.has("rpm") || config.rpm != null) {
+        if (config.rpm?.packageName !== "neverwrite") {
+            issues.push(
+                'electron-builder.config.mjs rpm.packageName must be "neverwrite".',
+            );
+        }
+        if (
+            typeof config.rpm?.artifactName !== "string" ||
+            !config.rpm.artifactName.endsWith(".rpm") ||
+            !config.rpm.artifactName.includes("${arch}")
+        ) {
+            issues.push(
+                'electron-builder.config.mjs rpm.artifactName must include "${arch}" and end with ".rpm".',
+            );
+        }
+        if (config.rpm?.publish !== null) {
+            issues.push(
+                "electron-builder.config.mjs rpm.publish must be null because RPM packages are manual-only in this release phase.",
             );
         }
     }
