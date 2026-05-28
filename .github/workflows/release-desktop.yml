@@ -856,9 +856,8 @@ jobs:
                       apt-get update
                       apt-cache policy neverwrite
                       apt-cache policy neverwrite | grep -F "$VERSION"
-                      echo "APT metadata validated successfully."
-                      echo "Note: .deb packages are hosted on GitHub Releases, not in this repo."
-                      echo "apt-get install tests are done in the validate-linux-deb-package step."
+                      apt-get --print-uris install "neverwrite=$VERSION"
+                      apt-get install -y --download-only "neverwrite=$VERSION"
                     '
 
             - name: Publish pages artifacts to gh-pages
