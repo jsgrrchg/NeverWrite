@@ -121,6 +121,7 @@ export function TerminalViewport({
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchOpenRef = useRef(false);
+    const dictationSessionIdRef = useRef(snapshot.sessionId);
     const dictationPanelRef = useRef<HTMLDivElement>(null);
     const dictationInputRef = useRef<HTMLInputElement>(null);
     const searchInputId = useId();
@@ -235,6 +236,23 @@ export function TerminalViewport({
     useEffect(() => {
         searchOpenRef.current = searchOpen;
     }, [searchOpen]);
+
+    useEffect(() => {
+        const previousSessionId = dictationSessionIdRef.current;
+        dictationSessionIdRef.current = snapshot.sessionId;
+
+        if (!dictationOpen) {
+            return;
+        }
+
+        if (
+            previousSessionId !== snapshot.sessionId ||
+            snapshot.status !== "running"
+        ) {
+            setDictationOpen(false);
+            setDictationText("");
+        }
+    }, [dictationOpen, snapshot.sessionId, snapshot.status]);
 
     useEffect(() => {
         const host = hostRef.current;
