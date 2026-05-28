@@ -62,11 +62,8 @@ function buildMetadataEntries() {
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-arm64.AppImage",
             additionalManualAssets: [
-                {
-                    kind: "deb",
-                    assetName: "NeverWrite-0.2.0-arm64.deb",
-                    sizeBytes: 456,
-                },
+                { kind: "deb", assetName: "NeverWrite-0.2.0-arm64.deb", sizeBytes: 456 },
+                { kind: "rpm", assetName: "NeverWrite-0.2.0-aarch64.rpm", sizeBytes: 789 },
             ],
         },
         {
@@ -81,11 +78,8 @@ function buildMetadataEntries() {
             updaterUrl:
                 "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.2.0/NeverWrite-0.2.0-x64.AppImage",
             additionalManualAssets: [
-                {
-                    kind: "deb",
-                    assetName: "NeverWrite-0.2.0-amd64.deb",
-                    sizeBytes: 123,
-                },
+                { kind: "deb", assetName: "NeverWrite-0.2.0-amd64.deb", sizeBytes: 123 },
+                { kind: "rpm", assetName: "NeverWrite-0.2.0-x86_64.rpm", sizeBytes: 456 },
             ],
         },
     ];
@@ -156,11 +150,8 @@ test("buildPlatformValidationMatrix aligns feed URLs with target metadata", () =
         "NeverWrite-0.2.0-x64.AppImage",
     );
     assert.deepEqual(rows[4].additionalManualAssets, [
-        {
-            kind: "deb",
-            assetName: "NeverWrite-0.2.0-amd64.deb",
-            sizeBytes: 123,
-        },
+        { kind: "deb", assetName: "NeverWrite-0.2.0-amd64.deb", sizeBytes: 123 },
+        { kind: "rpm", assetName: "NeverWrite-0.2.0-x86_64.rpm", sizeBytes: 456 },
     ]);
 });
 
@@ -202,13 +193,30 @@ test("renderPlatformValidationChecklist includes invalid-checksum fixtures", () 
         markdown,
         /Additional manual asset \(deb\): `NeverWrite-0\.2\.0-amd64\.deb`/,
     );
+    assert.match(
+        markdown,
+        /Additional manual asset \(rpm\): `NeverWrite-0\.2\.0-x86_64\.rpm`/,
+    );
+});
+
+test("validateTargetMetadataEntries requires Debian and RPM package metadata for Linux", () => {
+    const entries = buildMetadataEntries();
+    entries[4] = {
+        ...entries[4],
+        additionalManualAssets: [{ kind: "deb", assetName: "NeverWrite-0.2.0-amd64.deb", sizeBytes: 123 }],
+    };
+
+    assert.throws(
+        () => validateTargetMetadataEntries(entries),
+        /must include RPM package NeverWrite-0\.2\.0-x86_64\.rpm/i,
+    );
 });
 
 test("validateTargetMetadataEntries requires Debian package metadata for Linux", () => {
     const entries = buildMetadataEntries();
     entries[4] = {
         ...entries[4],
-        additionalManualAssets: [],
+        additionalManualAssets: [{ kind: "rpm", assetName: "NeverWrite-0.2.0-x86_64.rpm", sizeBytes: 456 }],
     };
 
     assert.throws(
