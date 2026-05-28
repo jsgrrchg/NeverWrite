@@ -1,0 +1,140 @@
+import childProcess from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import zlib from "node:zlib";
+
+import {
+    DNF_PUBLIC_KEY_FILE_NAME,
+    DNF_REPO_EXAMPLE_FILE_NAME,
+    DNF_SUPPORTED_ARCHITECTURES,
+    DNF_PACKAGE_NAME,
+    hashFile,
+} from "./dnf-repo-lib.mjs";
+import { normalizeReleaseVersion } from "./appcast-lib.mjs";
+
+function parseArgs(argv) {
+    const args = { dnfDir: null, version: null, skipSignatureCheck: false };
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
+        const next = argv[index + 1] ?? null;
+        if (arg === "--dnf-dir") { args.dnfDir = path.resolve(next); index += 1; continue; }
+        if (arg === "--version") { args.version = next; index += 1; continue; }
+        if (arg === "--skip-signature-check") { args.skipSignatureCheck = true; continue; }
+        throw new Error(`Unknown argument "${arg}".`);
+    }
+    if (!args.dnfDir) throw new Error("Missing --dnf-dir");
+    return { ...args, version: args.version ? normalizeReleaseVersion(args.version) : null };
+}
+
+function assertFileExists(filePath, label) {
+    if (!fs.existsSync(filePath)) throw new Error(`Missing ${label}: ${filePath}`);
+}
+
+function validateRepomd(dnfDir) {
+    const repomdPath = path.join(dnfDir, "repodata", "repomd.xml");
+    assertFileExists(repomdPath, "repomd.xml");
+
+    const content = fs.readFileSync(repomdPath, "utf8");
+    if (!content.includes('<repomd xmlns="http://linux.duke.edu/metadata/repo"')) {
+        throw new Error("repomd.xml has invalid root element");
+    }
+    if (!content.includes('<data type="primary">')) {
+        throw new Error("repomd.xml missing primary data reference");
+    }
+
+    const locationMatch = content.match(/<location href="repodata\/([^"]+)"/);
+    if (!locationMatch) {
+        throw new Error("repomd.xml missing location href");
+    }
+
+    const checksumMatch = content.match(/<checksum type="sha256">([a-f0-9]{64})<\/checksum>/);
+    if (!checksumMatch) {
+        throw new Error("repomd.xml missing SHA256 checksum");
+    }
+
+    return content;
+}
+
+function validateRepomdSignature(dnfDir) {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "neverwrite-dnf-gpg-"));
+    const keyringPath = path.join(tempDir, "neverwrite-keyring.gpg");
+    const publicKeyPath = path.join(dnfDir, DNF_PUBLIC_KEY_FILE_NAME);
+    const repomdPath = path.join(dnfDir, "repodata", "repomd.xml");
+    const repomdAscPath = path.join(dnfDir, "repodata", "repomd.xml.asc");
+
+    try {
+        childProcess.spawnSync("gpg", ["--batch", "--yes", "--no-default-keyring", "--keyring", keyringPath, "--import", publicKeyPath], { encoding: "utf8" });
+        const verifyResult = childProcess.spawnSync("gpg", ["--batch", "--no-default-keyring", "--keyring", keyringPath, "--verify", repomdAscPath, repomdPath], { encoding: "utf8" });
+        if (verifyResult.status !== 0) {
+            throw new Error(`GPG signature verification failed:\n${verifyResult.stderr}`);
+        }
+    } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+}
+
+function validatePrimaryXml(dnfDir, version) {
+    const primaryGzPath = path.join(dnfDir, "repodata", "primary.xml.gz");
+    assertFileExists(primaryGzPath, "primary.xml.gz");
+
+    const inflated = zlib.gunzipSync(fs.readFileSync(primaryGzPath));
+    const content = inflated.toString("utf8");
+
+    if (!content.includes('<package type="rpm">')) {
+        throw new Error("primary.xml missing package entries");
+    }
+    if (!content.includes(`<name>${DNF_PACKAGE_NAME}</name>`)) {
+        throw new Error(`primary.xml missing package name "${DNF_PACKAGE_NAME}"`);
+    }
+
+    const archMatch = content.match(/<arch>([^<]+)<\/arch>/);
+    if (!archMatch || !DNF_SUPPORTED_ARCHITECTURES.includes(archMatch[1])) {
+        throw new Error(`primary.xml has unsupported architecture: ${archMatch ? archMatch[1] : "missing"}`);
+    }
+
+    const locationMatch = content.match(/<location href="(https?:\/\/[^"]+)"/);
+    if (!locationMatch) {
+        throw new Error("primary.xml missing location href");
+    }
+    try {
+        new URL(locationMatch[1]);
+    } catch {
+        throw new Error(`primary.xml has invalid location URL: ${locationMatch[1]}`);
+    }
+
+    if (version) {
+        if (!content.includes(`<version epoch="0" ver="${version}"`)) {
+            throw new Error(`primary.xml missing version ${version}`);
+        }
+    }
+}
+
+function validateRepoExample(dnfDir) {
+    const examplePath = path.join(dnfDir, DNF_REPO_EXAMPLE_FILE_NAME);
+    assertFileExists(examplePath, "repo example file");
+    const content = fs.readFileSync(examplePath, "utf8");
+    if (!content.includes("[neverwrite]")) throw new Error("repo example missing [neverwrite] header");
+    if (!content.includes("gpgcheck=1")) throw new Error("repo example missing gpgcheck=1");
+}
+
+function main() {
+    const args = parseArgs(process.argv.slice(2));
+
+    assertFileExists(args.dnfDir, "DNF repository root");
+    assertFileExists(path.join(args.dnfDir, "repodata"), "repodata directory");
+    assertFileExists(path.join(args.dnfDir, "repodata", "repomd.xml"), "repomd.xml");
+    assertFileExists(path.join(args.dnfDir, "repodata", "repomd.xml.asc"), "repomd.xml.asc");
+
+    validateRepoExample(args.dnfDir);
+    validateRepomd(args.dnfDir);
+    validatePrimaryXml(args.dnfDir, args.version);
+
+    if (!args.skipSignatureCheck) {
+        validateRepomdSignature(args.dnfDir);
+    }
+
+    console.log(`DNF repository is valid${args.version ? ` for version ${args.version}` : ""}.`);
+}
+
+main();
