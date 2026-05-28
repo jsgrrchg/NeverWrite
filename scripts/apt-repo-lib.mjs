@@ -6,6 +6,7 @@ import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     PUBLIC_PRODUCT_NAME,
     buildDebianPackageAssetName,
+    buildGitHubReleaseAssetUrl,
     normalizeReleaseVersion,
 } from "./appcast-lib.mjs";
 
@@ -111,6 +112,19 @@ export function buildAptPoolPackagePath(version, debianArchitecture) {
         APT_PACKAGE_NAME,
         buildAptPoolPackageName(version, debianArchitecture),
     );
+}
+
+export function buildGitHubReleaseDebUrl(repoSlug, tag, version, debianArchitecture) {
+    const normalizedTag = tag.startsWith("v") ? tag : `v${normalizeReleaseVersion(tag)}`;
+    const assetName = buildDebianReleaseAssetName(version, debianArchitecture);
+    return buildGitHubReleaseAssetUrl(repoSlug, normalizedTag, assetName);
+}
+
+export function isUrlFilename(filename) {
+    if (typeof filename !== "string") {
+        return false;
+    }
+    return /^https?:\/\//i.test(filename);
 }
 
 export function getAptBinaryPackagesPath(debianArchitecture) {

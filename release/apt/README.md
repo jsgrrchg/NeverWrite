@@ -61,18 +61,17 @@ apt/
         binary-arm64/
           Packages
           Packages.gz
-  pool/
-    main/
-      n/
-        neverwrite/
-          neverwrite_<version>_amd64.deb
-          neverwrite_<version>_arm64.deb
 ```
 
-The workflow copies the `.deb` assets produced for GitHub Releases into
-`apt/pool/`, retains the latest three package versions, regenerates `Packages`
-and `Release`, signs the repository, validates checksums and signatures, then
-publishes the result with the existing Electron feeds.
+The `.deb` binary packages are NOT stored on `gh-pages`. Instead, the
+`Filename` field in each `Packages` index points to the GitHub Release
+download URL (e.g., `https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb`).
+APT downloads the `.deb` directly from the GitHub Release when installing.
+
+The workflow reads the `.deb` metadata from the staged release assets,
+generates `Packages` and `Release` with URL-based Filenames, signs the
+repository, validates checksums and signatures, then publishes the result
+with the existing Electron feeds.
 
 ## Required GitHub Secrets
 
