@@ -5,17 +5,20 @@ import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     CANONICAL_RELEASE_REPO_SLUG,
     buildDebianPackageAssetName,
+    buildRpmPackageAssetName,
     buildUpdaterReleaseAssetName,
     buildChannelAppcastUrl,
     buildGitHubPagesBaseUrl,
     buildPublicReleaseAssetName,
     createStaticAppcastManifest,
+    describeRpmPackage,
     describeUpdaterArtifactKind,
     getCanonicalAppBundleName,
     getBundledUpdaterArtifactName,
     getAppcastPublishPath,
     getSignatureAssetName,
     normalizePlatformEntries,
+    rpmArchForBuildTarget,
 } from "./appcast-lib.mjs";
 
 test("buildGitHubPagesBaseUrl returns the project pages base URL", () => {
@@ -67,6 +70,44 @@ test("buildDebianPackageAssetName uses Debian architecture names", () => {
     assert.throws(
         () => buildDebianPackageAssetName("0.2.0", "universal-apple-darwin"),
         /Debian packages are only supported/i,
+    );
+});
+
+test("buildRpmPackageAssetName uses RPM architecture names", () => {
+    assert.equal(
+        buildRpmPackageAssetName("0.3.0", "x86_64-unknown-linux-gnu"),
+        "NeverWrite-0.3.0-x86_64.rpm",
+    );
+    assert.equal(
+        buildRpmPackageAssetName("0.3.0", "aarch64-unknown-linux-gnu"),
+        "NeverWrite-0.3.0-aarch64.rpm",
+    );
+});
+
+test("rpmArchForBuildTarget uses RPM conventions", () => {
+    assert.equal(rpmArchForBuildTarget("x86_64-unknown-linux-gnu"), "x86_64");
+    assert.equal(rpmArchForBuildTarget("aarch64-unknown-linux-gnu"), "aarch64");
+});
+
+test("describeRpmPackage returns human-readable RPM description", () => {
+    assert.equal(
+        describeRpmPackage("x86_64-unknown-linux-gnu"),
+        "RPM package (.rpm) for x86_64",
+    );
+    assert.equal(
+        describeRpmPackage("aarch64-unknown-linux-gnu"),
+        "RPM package (.rpm) for aarch64",
+    );
+});
+
+test("rpmArchForBuildTarget rejects non-Linux build targets", () => {
+    assert.throws(
+        () => rpmArchForBuildTarget("universal-apple-darwin"),
+        /RPM packages are only supported/i,
+    );
+    assert.throws(
+        () => rpmArchForBuildTarget("x86_64-pc-windows-msvc"),
+        /RPM packages are only supported/i,
     );
 });
 
