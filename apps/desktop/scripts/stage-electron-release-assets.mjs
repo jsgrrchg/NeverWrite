@@ -9,7 +9,9 @@ import {
     buildElectronUpdaterAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    buildRpmPackageAssetName,
     debianArchForBuildTarget,
+    describeRpmPackage,
     feedTargetForBuildTarget,
     metadataFileNameForBuildTarget,
 } from "../../../scripts/electron-release-lib.mjs";
@@ -211,6 +213,12 @@ function collectArtifacts(distDir, buildTarget, version) {
             (filePath) => path.basename(filePath) === expectedDebAssetName,
             `${debianArchForBuildTarget(buildTarget)} Debian package named ${expectedDebAssetName}`,
         );
+        const expectedRpmAssetName = buildRpmPackageAssetName(version, buildTarget);
+        const rpmPackagePath = findSingleFile(
+            distDir,
+            (filePath) => path.basename(filePath) === expectedRpmAssetName,
+            `${describeRpmPackage(buildTarget)} named ${expectedRpmAssetName}`,
+        );
 
         return {
             feedPath,
@@ -218,10 +226,8 @@ function collectArtifacts(distDir, buildTarget, version) {
             updaterAssetPath: appImagePath,
             blockmapPath,
             additionalManualArtifacts: [
-                {
-                    kind: "deb",
-                    sourcePath: debPackagePath,
-                },
+                { kind: "deb", sourcePath: debPackagePath },
+                { kind: "rpm", sourcePath: rpmPackagePath },
             ],
         };
     }
@@ -490,7 +496,8 @@ function shouldKeepFeedArtifact(sourceValue, buildTarget) {
     if (
         buildTarget.endsWith("-unknown-linux-gnu") &&
         typeof sourceValue === "string" &&
-        sourceValue.toLowerCase().endsWith(".deb")
+        (sourceValue.toLowerCase().endsWith(".deb") ||
+         sourceValue.toLowerCase().endsWith(".rpm"))
     ) {
         return false;
     }
@@ -530,6 +537,17 @@ function stageAdditionalManualAssets({
     outputDir,
 }) {
     return artifacts.additionalManualArtifacts.map((artifact) => {
+        if (artifact.kind === "rpm") {
+            const assetName = buildRpmPackageAssetName(version, target);
+            const destinationPath = path.join(outputDir, assetName);
+            copyIfNeeded(artifact.sourcePath, destinationPath);
+            return {
+                kind: artifact.kind,
+                assetName,
+                sizeBytes: fileSizeInBytes(destinationPath),
+            };
+        }
+
         if (artifact.kind !== "deb") {
             throw new Error(
                 `Unsupported additional manual artifact kind "${artifact.kind}".`,

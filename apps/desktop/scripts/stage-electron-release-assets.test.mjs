@@ -279,6 +279,10 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
             "deb package",
         );
         writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.rpm"),
+            "rpm package",
+        );
+        writeFile(
             path.join(distDir, "latest-linux.yml"),
             [
                 "version: 0.2.0",
@@ -332,11 +336,8 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-x64.AppImage");
         assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-x64.AppImage");
         assert.deepEqual(metadata.additionalManualAssets, [
-            {
-                kind: "deb",
-                assetName: "NeverWrite-0.2.0-amd64.deb",
-                sizeBytes: 11,
-            },
+            { kind: "deb", assetName: "NeverWrite-0.2.0-amd64.deb", sizeBytes: 11 },
+            { kind: "rpm", assetName: "NeverWrite-0.2.0-x86_64.rpm", sizeBytes: 11 },
         ]);
         assert.equal(metadata.updaterBlockmapAssetName, null);
         assert.equal(metadata.updaterBlockmapSizeBytes, 0);
@@ -344,6 +345,10 @@ test("stage-electron-release-assets stages Linux AppImage feeds", () => {
         assert.deepEqual(metadata.feedAliasRelativePaths, []);
         assert.equal(
             fs.existsSync(path.join(outputDir, "NeverWrite-0.2.0-amd64.deb")),
+            true,
+        );
+        assert.equal(
+            fs.existsSync(path.join(outputDir, "NeverWrite-0.2.0-x86_64.rpm")),
             true,
         );
         assert.equal(
@@ -376,6 +381,10 @@ test("stage-electron-release-assets restores AppImage files when Linux feeds onl
         writeFile(
             path.join(distDir, "NeverWrite-0.2.0-amd64.deb"),
             "deb package",
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.rpm"),
+            "rpm package",
         );
         writeFile(
             path.join(distDir, "latest-linux.yml"),
@@ -454,6 +463,10 @@ test("stage-electron-release-assets synthesizes missing Linux AppImage feeds", (
             path.join(distDir, "NeverWrite-0.2.0-arm64.deb"),
             "arm64 deb",
         );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-aarch64.rpm"),
+            "arm64 rpm",
+        );
 
         execFileSync(
             process.execPath,
@@ -491,11 +504,8 @@ test("stage-electron-release-assets synthesizes missing Linux AppImage feeds", (
         assert.equal(metadata.manualAssetName, "NeverWrite-0.2.0-arm64.AppImage");
         assert.equal(metadata.updaterAssetName, "NeverWrite-0.2.0-arm64.AppImage");
         assert.deepEqual(metadata.additionalManualAssets, [
-            {
-                kind: "deb",
-                assetName: "NeverWrite-0.2.0-arm64.deb",
-                sizeBytes: 9,
-            },
+            { kind: "deb", assetName: "NeverWrite-0.2.0-arm64.deb", sizeBytes: 9 },
+            { kind: "rpm", assetName: "NeverWrite-0.2.0-aarch64.rpm", sizeBytes: 9 },
         ]);
         assert.equal(metadata.updaterBlockmapAssetName, null);
         assert.equal(metadata.updaterBlockmapSizeBytes, 0);
@@ -542,6 +552,10 @@ test("stage-electron-release-assets requires generated Linux x64 feeds", () => {
         writeFile(
             path.join(distDir, "NeverWrite-0.2.0-amd64.deb"),
             "x64 deb",
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.rpm"),
+            "x64 rpm",
         );
 
         assert.throws(
@@ -590,6 +604,10 @@ test("stage-electron-release-assets requires Linux Debian packages", () => {
             "wrong arch deb",
         );
         writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.rpm"),
+            "x64 rpm",
+        );
+        writeFile(
             path.join(distDir, "latest-linux.yml"),
             [
                 "version: 0.2.0",
@@ -629,6 +647,56 @@ test("stage-electron-release-assets requires Linux Debian packages", () => {
                     },
                 ),
             /Expected exactly one amd64 Debian package/,
+        );
+    });
+});
+
+test("stage-electron-release-assets requires Linux RPM packages", () => {
+    withTempDir((tempDir) => {
+        const distDir = path.join(tempDir, "dist");
+        const outputDir = path.join(tempDir, "staged");
+        const metadataOut = path.join(tempDir, "metadata", "linux-arm64.json");
+
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-arm64.AppImage"),
+            "arm64 appimage",
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-arm64.deb"),
+            "arm64 deb",
+        );
+        writeFile(
+            path.join(distDir, "NeverWrite-0.2.0-x86_64.rpm"),
+            "wrong arch rpm",
+        );
+
+        assert.throws(
+            () =>
+                execFileSync(
+                    process.execPath,
+                    [
+                        stageScriptPath,
+                        "--dist-dir",
+                        distDir,
+                        "--target",
+                        "aarch64-unknown-linux-gnu",
+                        "--version",
+                        "0.2.0",
+                        "--tag",
+                        "v0.2.0",
+                        "--repo",
+                        "jsgrrchg/NeverWrite",
+                        "--output-dir",
+                        outputDir,
+                        "--metadata-out",
+                        metadataOut,
+                    ],
+                    {
+                        cwd: repoRoot,
+                        stdio: "pipe",
+                    },
+                ),
+            /Expected exactly one RPM package/,
         );
     });
 });
