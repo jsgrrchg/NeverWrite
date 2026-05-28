@@ -229,6 +229,7 @@ export default {
     },
     rpm: {
         packageName: "neverwrite",
+        maintainer: "NeverWrite Maintainers <jsgrrchg@users.noreply.github.com>",
         artifactName: "${productName}-${version}-${arch}.rpm",
         publish: null,
     },
