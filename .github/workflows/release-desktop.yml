@@ -792,7 +792,9 @@ jobs:
                     --base-url "${{ needs.prepare.outputs.pages_base_url }}/apt" \
                     --suite stable \
                     --component main \
-                    --retain-versions 3
+                    --remote-packages \
+                    --repo-slug "${{ needs.prepare.outputs.repo_slug }}" \
+                    --tag "${{ needs.prepare.outputs.tag }}"
 
             - name: Sign APT repository
               shell: bash
@@ -854,6 +856,8 @@ jobs:
                       apt-get update
                       apt-cache policy neverwrite
                       apt-cache policy neverwrite | grep -F "$VERSION"
+                      apt-get --print-uris install "neverwrite=$VERSION"
+                      apt-get install -y --download-only "neverwrite=$VERSION"
                     '
 
             - name: Publish pages artifacts to gh-pages
