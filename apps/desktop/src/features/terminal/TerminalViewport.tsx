@@ -318,6 +318,7 @@ export function TerminalViewport({
                 return false;
             }
             if (event.type === "keydown" && event.key === "Enter" && event.shiftKey) {
+                event.preventDefault();
                 void writeInputRef.current("\n").catch(() => undefined);
                 return false;
             }
