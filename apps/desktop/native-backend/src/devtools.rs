@@ -491,6 +491,46 @@ fn release_session_runtime_resources(
     }
 }
 
+/// Decode a PTY read into a UTF-8 string, carrying any incomplete trailing
+/// multi-byte sequence across to the next read via `carry`. Genuinely invalid
+/// bytes are replaced with U+FFFD; only an unfinished-but-valid prefix is held
+/// back. Mirrors Node's `StringDecoder('utf8')`.
+fn decode_utf8_with_carry(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
+    carry.extend_from_slice(bytes);
+    let mut out = String::new();
+    let mut start = 0;
+    loop {
+        match std::str::from_utf8(&carry[start..]) {
+            Ok(valid) => {
+                out.push_str(valid);
+                carry.clear();
+                return out;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                // SAFETY: `valid_up_to` is, by contract, a valid UTF-8 boundary.
+                out.push_str(unsafe {
+                    std::str::from_utf8_unchecked(&carry[start..start + valid_up_to])
+                });
+                match error.error_len() {
+                    // A real invalid sequence: emit one replacement char and
+                    // advance past it, then keep decoding the rest.
+                    Some(len) => {
+                        out.push('\u{FFFD}');
+                        start += valid_up_to + len;
+                    }
+                    // Input ended mid-sequence: hold the tail for the next read.
+                    None => {
+                        let remainder = carry[start + valid_up_to..].to_vec();
+                        *carry = remainder;
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn spawn_output_reader(
     mut reader: Box<dyn Read + Send>,
     closed: Arc<AtomicBool>,
@@ -499,6 +539,12 @@ fn spawn_output_reader(
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; OUTPUT_CHUNK_SIZE];
+        // Holds the bytes of a multi-byte UTF-8 sequence that was split across a
+        // read boundary. Without this, `from_utf8_lossy` would replace the split
+        // codepoint with U+FFFD, corrupting box-drawing / emoji / powerline
+        // glyphs that TUIs like Claude Code emit heavily. This mirrors Node's
+        // StringDecoder: decode the valid prefix, carry the incomplete tail.
+        let mut carry: Vec<u8> = Vec::new();
         loop {
             if closed.load(Ordering::Relaxed) {
                 break;
@@ -509,8 +555,10 @@ fn spawn_output_reader(
                     if closed.load(Ordering::Relaxed) {
                         break;
                     }
-                    let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
-                    emit_terminal_output(&event_tx, &session_id, chunk);
+                    let chunk = decode_utf8_with_carry(&mut carry, &buffer[..read]);
+                    if !chunk.is_empty() {
+                        emit_terminal_output(&event_tx, &session_id, chunk);
+                    }
                 }
                 Err(error) => {
                     if !closed.load(Ordering::Relaxed) {
@@ -816,6 +864,60 @@ fn required_string(args: &Value, keys: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn decodes_utf8_sequence_split_across_reads() {
+        // "é" (U+00E9) is 0xC3 0xA9. Split it across two reads.
+        let mut carry = Vec::new();
+        let first = decode_utf8_with_carry(&mut carry, &[b'a', 0xC3]);
+        assert_eq!(first, "a");
+        assert_eq!(carry, vec![0xC3]);
+        let second = decode_utf8_with_carry(&mut carry, &[0xA9, b'b']);
+        assert_eq!(second, "\u{00E9}b");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn decodes_three_byte_sequence_split_at_every_boundary() {
+        // "→" (U+2192) is 0xE2 0x86 0x92. Feed one byte per read.
+        let mut carry = Vec::new();
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0xE2]), "");
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0x86]), "");
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0x92]), "\u{2192}");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn decodes_four_byte_emoji_split_across_reads() {
+        // "😀" (U+1F600) is 0xF0 0x9F 0x98 0x80. Split it across three reads.
+        let mut carry = Vec::new();
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0xF0, 0x9F]), "");
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0x98]), "");
+        assert_eq!(
+            decode_utf8_with_carry(&mut carry, &[0x80, b'!']),
+            "\u{1F600}!"
+        );
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn leaves_no_carry_for_complete_input() {
+        let mut carry = Vec::new();
+        assert_eq!(
+            decode_utf8_with_carry(&mut carry, "plain ascii ✓".as_bytes()),
+            "plain ascii ✓"
+        );
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn replaces_genuinely_invalid_bytes_without_stalling() {
+        // 0xFF is never valid UTF-8; it must become U+FFFD and not be carried.
+        let mut carry = Vec::new();
+        let out = decode_utf8_with_carry(&mut carry, &[b'a', 0xFF, b'b']);
+        assert_eq!(out, "a\u{FFFD}b");
+        assert!(carry.is_empty());
+    }
 
     #[test]
     fn resolves_requested_cwd_when_directory_exists() {

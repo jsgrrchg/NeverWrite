@@ -1,7 +1,11 @@
 import { invoke } from "../../app/runtime";
 import type { TerminalTab } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import { appendTerminalRawOutput } from "./terminalRawOutput";
+import {
+    safeStorageGetItem,
+    safeStorageRemoveItem,
+    safeStorageTrySetItem,
+} from "../../app/utils/safeStorage";
 import {
     allocateTabSessionVersion,
     collectSessionIdsToClose,
@@ -10,6 +14,7 @@ import {
 import {
     EMPTY_TERMINAL_SNAPSHOT,
     type TerminalErrorEventPayload,
+    type TerminalOutputCommand,
     type TerminalOutputEventPayload,
     type TerminalSessionCreateInput,
     type TerminalSessionSnapshot,
@@ -22,7 +27,9 @@ export interface WorkspaceTerminalRuntime {
     tabId: string;
     sessionId: string | null;
     snapshot: TerminalSessionSnapshot;
-    rawOutput: string;
+    // Whether any output has been produced this session. Screen content itself
+    // lives in the xterm instance — this only drives empty-state UI.
+    hasOutput: boolean;
     busy: boolean;
     launchError: string | null;
 }
@@ -58,6 +65,119 @@ const pendingResizeByTerminalId = new Map<
 const suppressedOutputSessionIds = new Map<string, true>();
 const nextTerminalSessionVersionRef = { current: 1 };
 
+// --- Live output delivery -------------------------------------------------
+// Output is piped straight to the mounted xterm viewport via per-terminal
+// command channels rather than accumulated in React state and diffed. A small
+// backlog buffers commands emitted before the viewport's first subscriber
+// attaches (the brief window between session start and mount); it is flushed on
+// subscribe. The backlog is bounded so a never-mounted terminal can't grow it
+// without limit.
+const MAX_BOOTSTRAP_BACKLOG_CHARS = 256_000;
+
+interface TerminalOutputChannel {
+    listeners: Set<(command: TerminalOutputCommand) => void>;
+    backlog: TerminalOutputCommand[];
+    backlogChars: number;
+}
+
+const outputChannelsByTerminalId = new Map<string, TerminalOutputChannel>();
+
+function getOutputChannel(terminalId: string): TerminalOutputChannel {
+    let channel = outputChannelsByTerminalId.get(terminalId);
+    if (!channel) {
+        channel = { listeners: new Set(), backlog: [], backlogChars: 0 };
+        outputChannelsByTerminalId.set(terminalId, channel);
+    }
+    return channel;
+}
+
+function emitOutputCommand(terminalId: string, command: TerminalOutputCommand) {
+    const channel = getOutputChannel(terminalId);
+    if (channel.listeners.size === 0) {
+        channel.backlog.push(command);
+        if (command.type === "write") {
+            channel.backlogChars += command.data.length;
+        }
+        // Drop oldest commands once the bootstrap window overflows. This only
+        // bites if a terminal produces output but is never mounted.
+        while (
+            channel.backlogChars > MAX_BOOTSTRAP_BACKLOG_CHARS &&
+            channel.backlog.length > 1
+        ) {
+            const dropped = channel.backlog.shift();
+            if (dropped?.type === "write") {
+                channel.backlogChars -= dropped.data.length;
+            }
+        }
+        return;
+    }
+    for (const listener of channel.listeners) {
+        listener(command);
+    }
+}
+
+function subscribeOutputChannel(
+    terminalId: string,
+    listener: (command: TerminalOutputCommand) => void,
+): () => void {
+    const channel = getOutputChannel(terminalId);
+    // Flush any commands buffered before the first subscriber attached.
+    if (channel.listeners.size === 0 && channel.backlog.length > 0) {
+        const pending = channel.backlog;
+        channel.backlog = [];
+        channel.backlogChars = 0;
+        for (const command of pending) {
+            listener(command);
+        }
+    }
+    channel.listeners.add(listener);
+    return () => {
+        channel.listeners.delete(listener);
+    };
+}
+
+function resetOutputChannel(terminalId: string) {
+    const channel = outputChannelsByTerminalId.get(terminalId);
+    if (channel) {
+        channel.backlog = [];
+        channel.backlogChars = 0;
+    }
+}
+
+// --- Reattach snapshots ---------------------------------------------------
+// A serialized xterm buffer per terminal, written back on mount to restore
+// screen content. Kept in memory for fast in-session remounts (pane reshuffle)
+// and mirrored to persistent storage so content survives a full reload. The
+// terminalId is stable across reloads (it is persisted with the tab).
+const REPLAY_SNAPSHOT_STORAGE_PREFIX = "neverwrite.terminal.replay:";
+const replaySnapshotsByTerminalId = new Map<string, string>();
+
+function replaySnapshotStorageKey(terminalId: string) {
+    return `${REPLAY_SNAPSHOT_STORAGE_PREFIX}${terminalId}`;
+}
+
+function getReplaySnapshot(terminalId: string): string | null {
+    const inMemory = replaySnapshotsByTerminalId.get(terminalId);
+    if (inMemory !== undefined) {
+        return inMemory;
+    }
+    return safeStorageGetItem(replaySnapshotStorageKey(terminalId));
+}
+
+function saveReplaySnapshot(terminalId: string, serialized: string) {
+    if (!serialized) {
+        clearReplaySnapshot(terminalId);
+        return;
+    }
+    replaySnapshotsByTerminalId.set(terminalId, serialized);
+    safeStorageTrySetItem(replaySnapshotStorageKey(terminalId), serialized);
+}
+
+function clearReplaySnapshot(terminalId: string) {
+    replaySnapshotsByTerminalId.delete(terminalId);
+    safeStorageRemoveItem(replaySnapshotStorageKey(terminalId));
+}
+
 function createRuntimeSnapshot(cwd: string | null): TerminalSessionSnapshot {
     return {
         ...EMPTY_TERMINAL_SNAPSHOT,
@@ -73,7 +193,7 @@ function createInitialRuntime(tab: TerminalTab): WorkspaceTerminalRuntime {
         tabId: tab.id,
         sessionId: null,
         snapshot: createRuntimeSnapshot(tab.cwd),
-        rawOutput: "",
+        hasOutput: false,
         busy: true,
         launchError: null,
     };
@@ -180,18 +300,19 @@ async function createSessionForTerminal(
                         ...current,
                         sessionId: next.sessionId,
                         snapshot: next,
-                        rawOutput: bufferedRaw
-                            ? appendTerminalRawOutput(
-                                  current.rawOutput,
-                                  bufferedRaw,
-                              )
-                            : current.rawOutput,
+                        hasOutput: current.hasOutput || bufferedRaw.length > 0,
                         busy: false,
                         launchError: null,
                     },
                 },
             };
         });
+
+        // Output that raced ahead of the runtime gaining its sessionId is piped
+        // through now, in order, ahead of any live chunks.
+        if (bufferedRaw.length > 0) {
+            emitOutputCommand(terminalId, { type: "write", data: bufferedRaw });
+        }
 
         return next;
     } catch (error) {
@@ -381,6 +502,11 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
                 suppressedOutputSessionIds.set(previousSessionId, true);
             }
             pendingResizeByTerminalId.delete(terminalId);
+            // The previous session's screen is gone — wipe xterm, drop any
+            // buffered output, and discard the reattach snapshot.
+            resetOutputChannel(terminalId);
+            clearReplaySnapshot(terminalId);
+            emitOutputCommand(terminalId, { type: "clear" });
 
             set((state) => {
                 const current = state.runtimesById[terminalId];
@@ -391,7 +517,7 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
                         ...state.runtimesById,
                         [terminalId]: {
                             ...current,
-                            rawOutput: "",
+                            hasOutput: false,
                             busy: true,
                             launchError: null,
                             snapshot: {
@@ -437,7 +563,7 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
                                 ...current,
                                 sessionId: next.sessionId,
                                 snapshot: next,
-                                rawOutput: "",
+                                hasOutput: false,
                                 busy: false,
                                 launchError: null,
                             },
@@ -471,16 +597,19 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
         },
 
         clear: (terminalId) => {
+            resetOutputChannel(terminalId);
+            clearReplaySnapshot(terminalId);
+            emitOutputCommand(terminalId, { type: "clear" });
             set((state) => {
                 const runtime = state.runtimesById[terminalId];
-                if (!runtime || runtime.rawOutput.length === 0) return state;
+                if (!runtime || !runtime.hasOutput) return state;
 
                 return {
                     runtimesById: {
                         ...state.runtimesById,
                         [terminalId]: {
                             ...runtime,
-                            rawOutput: "",
+                            hasOutput: false,
                         },
                     },
                 };
@@ -494,6 +623,8 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
             allocateTerminalSessionVersion(terminalId);
             deleteTabSessionVersions(terminalSessionVersions, [terminalId]);
             pendingResizeByTerminalId.delete(terminalId);
+            outputChannelsByTerminalId.delete(terminalId);
+            clearReplaySnapshot(terminalId);
 
             set((state) => {
                 const { [terminalId]: _removed, ...remaining } =
@@ -529,34 +660,35 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
             if (retiredSessionIds.has(sessionId)) return;
             if (suppressedOutputSessionIds.has(sessionId)) return;
 
-            set((state) => {
-                const runtime = getRuntimeBySessionId(
-                    state.runtimesById,
-                    sessionId,
-                );
+            const runtime = getRuntimeBySessionId(get().runtimesById, sessionId);
 
-                if (!runtime) {
-                    const existing = pendingOutputBySessionId.get(sessionId) ?? "";
-                    pendingOutputBySessionId.set(
-                        sessionId,
-                        appendTerminalRawOutput(existing, chunk),
-                    );
-                    return state;
-                }
+            if (!runtime) {
+                // Output arrived before the runtime learned its sessionId. Hold
+                // it briefly; createSessionForTerminal replays it on attach.
+                const existing = pendingOutputBySessionId.get(sessionId) ?? "";
+                pendingOutputBySessionId.set(sessionId, existing + chunk);
+                return;
+            }
 
-                return {
-                    runtimesById: {
-                        ...state.runtimesById,
-                        [runtime.terminalId]: {
-                            ...runtime,
-                            rawOutput: appendTerminalRawOutput(
-                                runtime.rawOutput,
-                                chunk,
-                            ),
+            // Pipe straight to the mounted viewport. No accumulation in state.
+            emitOutputCommand(runtime.terminalId, { type: "write", data: chunk });
+
+            // Flip the empty-state flag exactly once, on the first chunk.
+            if (!runtime.hasOutput) {
+                set((state) => {
+                    const current = state.runtimesById[runtime.terminalId];
+                    if (!current || current.hasOutput) return state;
+                    return {
+                        runtimesById: {
+                            ...state.runtimesById,
+                            [runtime.terminalId]: {
+                                ...current,
+                                hasOutput: true,
+                            },
                         },
-                    },
-                };
-            });
+                    };
+                });
+            }
         },
 
         handleTerminalStarted: (snapshot) => {
@@ -608,6 +740,8 @@ export function resetTerminalRuntimeStoreForTests() {
     retiredSessionIds.clear();
     pendingResizeByTerminalId.clear();
     suppressedOutputSessionIds.clear();
+    outputChannelsByTerminalId.clear();
+    replaySnapshotsByTerminalId.clear();
     nextTerminalSessionVersionRef.current = 1;
     useTerminalRuntimeStore.setState({ runtimesById: {} });
 }
@@ -617,7 +751,7 @@ export function createTerminalSessionView(
 ): TerminalSessionView {
     return {
         snapshot: runtime.snapshot,
-        rawOutput: runtime.rawOutput,
+        hasOutput: runtime.hasOutput,
         busy: runtime.busy,
         writeInput: (input: string) =>
             useTerminalRuntimeStore
@@ -631,5 +765,10 @@ export function createTerminalSessionView(
             useTerminalRuntimeStore.getState().restart(runtime.terminalId),
         clearViewport: () =>
             useTerminalRuntimeStore.getState().clear(runtime.terminalId),
+        subscribeOutput: (listener) =>
+            subscribeOutputChannel(runtime.terminalId, listener),
+        getReplaySnapshot: () => getReplaySnapshot(runtime.terminalId),
+        saveReplaySnapshot: (serialized: string) =>
+            saveReplaySnapshot(runtime.terminalId, serialized),
     };
 }

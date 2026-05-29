@@ -1,8 +1,13 @@
 import { invoke } from "../../app/runtime";
 import type { TerminalTab } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
-import type { TerminalSessionSnapshot } from "./terminalTypes";
+import { safeStorageGetItem } from "../../app/utils/safeStorage";
+import type {
+    TerminalOutputCommand,
+    TerminalSessionSnapshot,
+} from "./terminalTypes";
 import {
+    createTerminalSessionView,
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
 } from "./terminalRuntimeStore";
@@ -60,6 +65,22 @@ function getRuntime(terminalId = "terminal-1") {
     return useTerminalRuntimeStore.getState().runtimesById[terminalId] ?? null;
 }
 
+// Subscribe to a terminal's output channel and collect emitted commands.
+function collectOutput(terminalId = "terminal-1") {
+    const runtime = getRuntime(terminalId);
+    if (!runtime) throw new Error(`No runtime for ${terminalId}`);
+    const commands: TerminalOutputCommand[] = [];
+    const unsubscribe = createTerminalSessionView(runtime).subscribeOutput(
+        (command) => commands.push(command),
+    );
+    const writes = () =>
+        commands
+            .filter((c): c is { type: "write"; data: string } => c.type === "write")
+            .map((c) => c.data)
+            .join("");
+    return { commands, writes, unsubscribe };
+}
+
 describe("terminalRuntimeStore", () => {
     beforeEach(() => {
         resetTerminalRuntimeStoreForTests();
@@ -89,9 +110,14 @@ describe("terminalRuntimeStore", () => {
 
         expect(getRuntime()).toMatchObject({
             sessionId: "devterm-1",
-            rawOutput: "early output\n",
+            hasOutput: true,
             busy: false,
         });
+
+        // The buffered output is replayed through the output channel, flushed
+        // to the first subscriber.
+        const { writes } = collectOutput();
+        expect(writes()).toBe("early output\n");
     });
 
     it("adds Claude Code fullscreen rendering env to newly created sessions when enabled", async () => {
@@ -173,6 +199,10 @@ describe("terminalRuntimeStore", () => {
 
         useTerminalRuntimeStore.getState().ensureTerminal(makeTerminalTab());
         await flushPromises();
+
+        // Watch the output channel live across the restart.
+        const { commands, writes } = collectOutput();
+
         useTerminalRuntimeStore.getState().handleTerminalOutput({
             sessionId: "devterm-1",
             chunk: "before restart\n",
@@ -181,6 +211,7 @@ describe("terminalRuntimeStore", () => {
         const restartPromise = useTerminalRuntimeStore
             .getState()
             .restart("terminal-1");
+        // Output from the dying process is suppressed and never reaches xterm.
         useTerminalRuntimeStore.getState().handleTerminalOutput({
             sessionId: "devterm-1",
             chunk: "old process output\n",
@@ -188,13 +219,114 @@ describe("terminalRuntimeStore", () => {
         restartSession.resolve(makeSnapshot({ sessionId: "devterm-1" }));
         await restartPromise;
 
-        expect(getRuntime()?.rawOutput).toBe("");
+        // Restart wipes the screen via a clear command and resets the flag.
+        expect(commands.some((c) => c.type === "clear")).toBe(true);
+        expect(getRuntime()?.hasOutput).toBe(false);
 
         useTerminalRuntimeStore.getState().handleTerminalOutput({
             sessionId: "devterm-1",
             chunk: "new process output\n",
         });
-        expect(getRuntime()?.rawOutput).toBe("new process output\n");
+        expect(getRuntime()?.hasOutput).toBe(true);
+        // Old process output dropped; only pre-restart and post-restart remain.
+        expect(writes()).toBe("before restart\nnew process output\n");
+    });
+
+    it("delivers live output to a subscriber in arrival order", async () => {
+        vi.mocked(invoke).mockResolvedValue(
+            makeSnapshot({ sessionId: "devterm-1" }),
+        );
+        useTerminalRuntimeStore.getState().ensureTerminal(makeTerminalTab());
+        await flushPromises();
+
+        const { writes } = collectOutput();
+        const emit = (chunk: string) =>
+            useTerminalRuntimeStore
+                .getState()
+                .handleTerminalOutput({ sessionId: "devterm-1", chunk });
+
+        emit("one ");
+        emit("two ");
+        emit("three");
+
+        expect(writes()).toBe("one two three");
+        expect(getRuntime()?.hasOutput).toBe(true);
+    });
+
+    it("clears the viewport: emits a clear command, resets hasOutput, and drops the snapshot", async () => {
+        vi.mocked(invoke).mockResolvedValue(
+            makeSnapshot({ sessionId: "devterm-1" }),
+        );
+        useTerminalRuntimeStore.getState().ensureTerminal(makeTerminalTab());
+        await flushPromises();
+
+        const { commands } = collectOutput();
+        useTerminalRuntimeStore.getState().handleTerminalOutput({
+            sessionId: "devterm-1",
+            chunk: "output\n",
+        });
+        expect(getRuntime()?.hasOutput).toBe(true);
+
+        const view = createTerminalSessionView(getRuntime()!);
+        view.saveReplaySnapshot("snapshot");
+        expect(view.getReplaySnapshot()).toBe("snapshot");
+
+        useTerminalRuntimeStore.getState().clear("terminal-1");
+
+        expect(commands.some((command) => command.type === "clear")).toBe(true);
+        expect(getRuntime()?.hasOutput).toBe(false);
+        expect(
+            createTerminalSessionView(getRuntime()!).getReplaySnapshot(),
+        ).toBeNull();
+    });
+
+    it("round-trips the replay snapshot and persists it for reload", async () => {
+        vi.mocked(invoke).mockResolvedValue(
+            makeSnapshot({ sessionId: "devterm-1" }),
+        );
+        useTerminalRuntimeStore.getState().ensureTerminal(makeTerminalTab());
+        await flushPromises();
+
+        const view = createTerminalSessionView(getRuntime()!);
+        expect(view.getReplaySnapshot()).toBeNull();
+
+        view.saveReplaySnapshot("serialized buffer");
+
+        expect(view.getReplaySnapshot()).toBe("serialized buffer");
+        // Persisted to storage too, so it survives a full reload (the in-memory
+        // copy is gone once the renderer restarts).
+        expect(
+            safeStorageGetItem("neverwrite.terminal.replay:terminal-1"),
+        ).toBe("serialized buffer");
+    });
+
+    it("tears down the output channel and snapshot when a terminal closes", async () => {
+        vi.mocked(invoke).mockResolvedValue(
+            makeSnapshot({ sessionId: "devterm-1" }),
+        );
+        useTerminalRuntimeStore.getState().ensureTerminal(makeTerminalTab());
+        await flushPromises();
+
+        const view = createTerminalSessionView(getRuntime()!);
+        view.saveReplaySnapshot("snapshot");
+        // Output buffered with no subscriber attached.
+        useTerminalRuntimeStore.getState().handleTerminalOutput({
+            sessionId: "devterm-1",
+            chunk: "buffered\n",
+        });
+
+        await useTerminalRuntimeStore.getState().closeTerminal("terminal-1");
+
+        expect(getRuntime()).toBeNull();
+        expect(
+            safeStorageGetItem("neverwrite.terminal.replay:terminal-1"),
+        ).toBeNull();
+
+        // Subscribing to the same id after close yields a fresh channel with no
+        // leftover buffered output.
+        const received: TerminalOutputCommand[] = [];
+        view.subscribeOutput((command) => received.push(command));
+        expect(received).toHaveLength(0);
     });
 
     it("does not spam resize commands for an unchanged or already pending size", async () => {
