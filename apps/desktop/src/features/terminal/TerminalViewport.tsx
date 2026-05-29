@@ -24,6 +24,7 @@ import {
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
 import { logError } from "../../app/utils/runtimeLog";
+import { getDesktopPlatform } from "../../app/utils/platform";
 import { getTerminalTheme } from "./terminalTheme";
 import type { TerminalSessionView } from "./terminalTypes";
 
@@ -120,6 +121,9 @@ export function TerminalViewport({
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchOpenRef = useRef(false);
+    const dictationSessionIdRef = useRef(snapshot.sessionId);
+    const dictationPanelRef = useRef<HTMLDivElement>(null);
+    const dictationInputRef = useRef<HTMLInputElement>(null);
     const searchInputId = useId();
     const [focused, setFocused] = useState(false);
     const [hasSelection, setHasSelection] = useState(false);
@@ -128,6 +132,8 @@ export function TerminalViewport({
     const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
     const [searchResultIndex, setSearchResultIndex] = useState(-1);
     const [searchResultCount, setSearchResultCount] = useState(0);
+    const [dictationOpen, setDictationOpen] = useState(false);
+    const [dictationText, setDictationText] = useState("");
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<void> | null>(null);
 
@@ -141,6 +147,7 @@ export function TerminalViewport({
         (state) => state.terminalFontFamily,
     );
     const terminalFontSize = useSettingsStore((state) => state.terminalFontSize);
+    const platform = getDesktopPlatform();
     const theme = getTerminalTheme(null, {
         fontFamily: terminalFontFamily,
         fontSize: terminalFontSize,
@@ -194,6 +201,21 @@ export function TerminalViewport({
         });
     }, []);
 
+    const closeDictation = useCallback(() => {
+        setDictationOpen(false);
+        setDictationText("");
+        requestAnimationFrame(() => {
+            focusTerminal();
+        });
+    }, [focusTerminal]);
+
+    const openDictation = useCallback(() => {
+        setDictationOpen(true);
+        requestAnimationFrame(() => {
+            dictationInputRef.current?.focus();
+        });
+    }, []);
+
     useEffect(() => {
         writeInputRef.current = writeInput;
         resizeRef.current = resize;
@@ -214,6 +236,23 @@ export function TerminalViewport({
     useEffect(() => {
         searchOpenRef.current = searchOpen;
     }, [searchOpen]);
+
+    useEffect(() => {
+        const previousSessionId = dictationSessionIdRef.current;
+        dictationSessionIdRef.current = snapshot.sessionId;
+
+        if (!dictationOpen) {
+            return;
+        }
+
+        if (
+            previousSessionId !== snapshot.sessionId ||
+            snapshot.status !== "running"
+        ) {
+            setDictationOpen(false);
+            setDictationText("");
+        }
+    }, [dictationOpen, snapshot.sessionId, snapshot.status]);
 
     useEffect(() => {
         const host = hostRef.current;
@@ -365,7 +404,10 @@ export function TerminalViewport({
                 const nextInsideSearch =
                     nextTarget instanceof Node &&
                     searchPanelRef.current?.contains(nextTarget);
-                if (!nextInsideSearch) {
+                const nextInsideDictation =
+                    nextTarget instanceof Node &&
+                    dictationPanelRef.current?.contains(nextTarget);
+                if (!nextInsideSearch && !nextInsideDictation) {
                     shouldRestoreFocusRef.current = false;
                 }
                 setFocused(false);
@@ -432,6 +474,8 @@ export function TerminalViewport({
             setSearchQuery("");
             setSearchResultIndex(-1);
             setSearchResultCount(0);
+            setDictationOpen(false);
+            setDictationText("");
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [closeSearch, openSearch]);
@@ -628,6 +672,12 @@ export function TerminalViewport({
             ) {
                 return;
             }
+            if (
+                dictationPanelRef.current &&
+                dictationPanelRef.current.contains(event.target as Node)
+            ) {
+                return;
+            }
             focusTerminal();
         },
         [focusTerminal],
@@ -647,6 +697,29 @@ export function TerminalViewport({
             }
         },
         [closeSearch, runSearch],
+    );
+
+    const submitDictation = useCallback(() => {
+        const text = dictationText;
+        if (text) {
+            void writeInputRef.current(text).catch(() => undefined);
+        }
+        closeDictation();
+    }, [closeDictation, dictationText]);
+
+    const handleDictationKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLInputElement>) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeDictation();
+                return;
+            }
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submitDictation();
+            }
+        },
+        [closeDictation, submitDictation],
     );
 
     const contextMenuEntries: ContextMenuEntry[] = [
@@ -682,6 +755,11 @@ export function TerminalViewport({
         {
             label: "Find",
             action: () => openSearch(),
+        },
+        {
+            label: "Dictate",
+            disabled: snapshot.status !== "running",
+            action: () => openDictation(),
         },
         { type: "separator" },
         {
@@ -809,6 +887,94 @@ export function TerminalViewport({
                     >
                         Close
                     </button>
+                </div>
+            )}
+
+            {dictationOpen && (
+                <div
+                    ref={dictationPanelRef}
+                    className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5 rounded-lg border px-2 py-2 shadow-lg"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
+                        borderColor: "var(--border)",
+                        color: "var(--text-primary)",
+                    }}
+                >
+                    <div className="flex items-center gap-2">
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            style={{ color: "var(--accent)", flexShrink: 0 }}
+                        >
+                            <rect x="9" y="2" width="6" height="12" rx="3" />
+                            <path d="M5 10a7 7 0 0 0 14 0" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                            <line x1="9" y1="22" x2="15" y2="22" />
+                        </svg>
+                        <input
+                            ref={dictationInputRef}
+                            type="text"
+                            value={dictationText}
+                            onChange={(event) =>
+                                setDictationText(event.target.value)
+                            }
+                            onKeyDown={handleDictationKeyDown}
+                            placeholder="Speak or type — Enter to send"
+                            className="h-8 w-64 rounded border px-2 text-xs outline-none"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                borderColor: "var(--border)",
+                                color: "var(--text-primary)",
+                            }}
+                        />
+                        <button
+                            type="button"
+                            onClick={submitDictation}
+                            className="h-8 rounded border px-2 text-xs"
+                            style={{
+                                backgroundColor: "var(--accent)",
+                                borderColor: "var(--accent)",
+                                color: "white",
+                            }}
+                        >
+                            Send
+                        </button>
+                        <button
+                            type="button"
+                            onClick={closeDictation}
+                            className="h-8 rounded border px-2 text-xs"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                borderColor: "var(--border)",
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                    {platform === "macos" && (
+                        <span
+                            className="px-1 text-[11px]"
+                            style={{ color: "var(--text-secondary)" }}
+                        >
+                            Press Fn Fn to activate macOS dictation, then speak your command.
+                        </span>
+                    )}
+                    {platform === "windows" && (
+                        <span
+                            className="px-1 text-[11px]"
+                            style={{ color: "var(--text-secondary)" }}
+                        >
+                            Type your command, or use your system dictation if available.
+                        </span>
+                    )}
                 </div>
             )}
 
