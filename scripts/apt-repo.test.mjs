@@ -7,10 +7,12 @@ import {
     buildAptPoolPackagePath,
     buildAptReleaseContent,
     buildDebianReleaseAssetName,
+    buildGitHubReleaseDebUrl,
     buildNeverWriteSourcesExample,
     compareReleaseVersionsDescending,
     getAptBinaryPackagesGzipPath,
     getAptBinaryPackagesPath,
+    isUrlFilename,
     normalizeAptComponent,
     normalizeAptSuite,
     normalizeDebianArchitecture,
@@ -104,6 +106,7 @@ test("Packages stanzas append repository filename and checksums", () => {
     assert.match(stanza, /^Package: neverwrite/m);
     assert.match(stanza, /^Filename: pool\/main\/n\/neverwrite\/neverwrite_0\.2\.8_amd64\.deb/m);
     assert.match(stanza, /^Size: 1234/m);
+    assert.match(stanza, /^MD5sum: a{32}$/m);
     assert.match(stanza, /^SHA256: c{64}$/m);
 });
 
@@ -125,6 +128,7 @@ test("Release file includes suite, architectures, components, and checksums", ()
 
     assert.match(release, /^Origin: NeverWrite$/m);
     assert.match(release, /^Suite: stable$/m);
+    assert.match(release, /^Codename: neverwrite-stable$/m);
     assert.match(release, /^Architectures: amd64 arm64$/m);
     assert.match(release, /^Components: main$/m);
     assert.match(release, /^SHA256:/m);
@@ -141,4 +145,48 @@ test("APT pool file parser and version sorter support retention", () => {
         ["0.2.8", "0.3.0", "0.2.10"].sort(compareReleaseVersionsDescending),
         ["0.3.0", "0.2.10", "0.2.8"],
     );
+});
+
+test("buildGitHubReleaseDebUrl builds correct GitHub Release download URL", () => {
+    const url = buildGitHubReleaseDebUrl(
+        "jsgrrchg/NeverWrite",
+        "v0.3.0",
+        "0.3.0",
+        "amd64",
+    );
+    assert.equal(
+        url,
+        "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb",
+    );
+});
+
+test("buildGitHubReleaseDebUrl handles version-only tag input", () => {
+    const url = buildGitHubReleaseDebUrl(
+        "jsgrrchg/NeverWrite",
+        "0.3.0",
+        "0.3.0",
+        "arm64",
+    );
+    assert.equal(
+        url,
+        "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-arm64.deb",
+    );
+});
+
+test("isUrlFilename detects http and https filenames", () => {
+    assert.equal(
+        isUrlFilename("https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb"),
+        true,
+    );
+    assert.equal(
+        isUrlFilename("http://example.com/pkg.deb"),
+        true,
+    );
+    assert.equal(
+        isUrlFilename("pool/main/n/neverwrite/neverwrite_0.3.0_amd64.deb"),
+        false,
+    );
+    assert.equal(isUrlFilename(null), false);
+    assert.equal(isUrlFilename(undefined), false);
+    assert.equal(isUrlFilename(""), false);
 });

@@ -238,6 +238,13 @@ export async function restoreWindowSession(args: {
     const entries = readWindowSessionSnapshot();
     if (entries.length === 0) return false;
 
+    // Skip entries whose window is already live (e.g. OS session restore or a
+    // previous boot already opened them) and skip vault paths that duplicate the
+    // primary vault (which this window is already opening in its own process).
+    const liveLabels = new Set(
+        (await getAllWebviewWindows()).map((w) => w.label),
+    );
+
     const primaryVault =
         entries.find(
             (entry) => entry.label === "main" && entry.kind === "vault",
@@ -250,8 +257,10 @@ export async function restoreWindowSession(args: {
 
     for (const entry of entries) {
         if (entry === primaryVault) continue;
+        if (liveLabels.has(entry.label)) continue;
 
         if (entry.kind === "vault") {
+            if (entry.vaultPath === primaryVault?.vaultPath) continue;
             await args.openVaultWindow(entry.vaultPath);
             continue;
         }

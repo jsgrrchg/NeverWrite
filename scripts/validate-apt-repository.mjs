@@ -5,9 +5,11 @@ import path from "node:path";
 import zlib from "node:zlib";
 
 import {
+    APT_DEFAULT_CODENAME,
     APT_DEFAULT_COMPONENT,
     APT_DEFAULT_SUITE,
     APT_PACKAGE_NAME,
+    APT_PACKAGE_CHECKSUMS,
     APT_PUBLIC_KEY_FILE_NAME,
     APT_RELEASE_CHECKSUMS,
     APT_SOURCES_EXAMPLE_FILE_NAME,
@@ -16,6 +18,7 @@ import {
     getAptBinaryPackagesPath,
     getDebianControlField,
     hashFile,
+    isUrlFilename,
     normalizeAptComponent,
     normalizeAptSuite,
     normalizeDebianArchitecture,
@@ -126,7 +129,7 @@ function validateReleaseFile({ aptDir, suite, component }) {
         Origin: "NeverWrite",
         Label: "NeverWrite",
         Suite: suite,
-        Codename: suite,
+        Codename: APT_DEFAULT_CODENAME,
         Architectures: APT_SUPPORTED_ARCHITECTURES.join(" "),
         Components: component,
     };
@@ -206,26 +209,52 @@ function validatePackagesForArchitecture({
                 `${arch} Packages contains unexpected Architecture "${packageArchitecture}".`,
             );
         }
-        if (!filename?.startsWith("pool/main/n/neverwrite/")) {
+        if (!filename) {
             throw new Error(
-                `${arch} Packages contains invalid Filename "${filename ?? "missing"}".`,
+                `${arch} Packages contains package with missing Filename.`,
             );
         }
 
-        const packagePath = path.join(aptDir, filename);
-        assertFileExists(packagePath, `${arch} package file`);
-
-        if (fs.statSync(packagePath).size !== size) {
-            throw new Error(`${filename} Size does not match package file.`);
-        }
-        for (const { fieldName, algorithm } of APT_RELEASE_CHECKSUMS) {
-            const expectedHash = getDebianControlField(stanza, fieldName);
-            if (!expectedHash) {
-                throw new Error(`${filename} is missing ${fieldName}.`);
+        if (isUrlFilename(filename)) {
+            try {
+                const url = new URL(filename);
+                if (url.protocol !== "https:") {
+                    throw new Error(
+                        `URL protocol must be https, got "${url.protocol}"`,
+                    );
+                }
+                if (!url.hostname.endsWith("github.com") && !url.hostname.endsWith("githubusercontent.com")) {
+                    throw new Error(
+                        `URL host must be a GitHub domain, got "${url.hostname}"`,
+                    );
+                }
+            } catch (error) {
+                throw new Error(
+                    `${arch} Packages contains invalid Filename URL "${filename}": ${error.message}`,
+                );
             }
-            const actualHash = hashFile(packagePath, algorithm);
-            if (expectedHash !== actualHash) {
-                throw new Error(`${filename} ${fieldName} does not match.`);
+        } else {
+            if (!filename.startsWith("pool/main/n/neverwrite/")) {
+                throw new Error(
+                    `${arch} Packages contains invalid Filename "${filename}". Expected "pool/main/n/neverwrite/..." or an absolute URL.`,
+                );
+            }
+
+            const packagePath = path.join(aptDir, filename);
+            assertFileExists(packagePath, `${arch} package file`);
+
+            if (fs.statSync(packagePath).size !== size) {
+                throw new Error(`${filename} Size does not match package file.`);
+            }
+            for (const { fieldName, algorithm } of APT_PACKAGE_CHECKSUMS) {
+                const expectedHash = getDebianControlField(stanza, fieldName);
+                if (!expectedHash) {
+                    throw new Error(`${filename} is missing ${fieldName}.`);
+                }
+                const actualHash = hashFile(packagePath, algorithm);
+                if (expectedHash !== actualHash) {
+                    throw new Error(`${filename} ${fieldName} does not match.`);
+                }
             }
         }
 

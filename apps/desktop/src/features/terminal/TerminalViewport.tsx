@@ -3,6 +3,7 @@ import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@neverwrite/runtime";
 import { Terminal } from "@xterm/xterm";
 import {
@@ -22,6 +23,8 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "../../components/context-menu/ContextMenu";
+import { logError } from "../../app/utils/runtimeLog";
+import { getDesktopPlatform } from "../../app/utils/platform";
 import { getTerminalTheme } from "./terminalTheme";
 import type { TerminalSessionView } from "./terminalTypes";
 
@@ -74,6 +77,11 @@ function buildSearchSummary(resultIndex: number, resultCount: number) {
 }
 
 const TERMINAL_RESIZE_SETTLE_MS = 80;
+// Flow-control watermarks for xterm.js write queue.
+// When pending chars exceed HIGH, new chunks are queued locally.
+// When pending drops below LOW, the local queue is drained.
+const WRITE_HIGH_WATERMARK = 256_000;
+const WRITE_LOW_WATERMARK = 64_000;
 
 export function TerminalViewport({
     active = true,
@@ -107,9 +115,15 @@ export function TerminalViewport({
     const lastRestoredFocusSessionIdRef = useRef<string | null>(null);
     const shouldApplyInitialScrollRef = useRef(false);
     const shouldRestoreFocusRef = useRef(false);
+    const webglAddonRef = useRef<WebglAddon | null>(null);
+    const pendingWriteCharsRef = useRef(0);
+    const writeBacklogRef = useRef<string[]>([]);
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchOpenRef = useRef(false);
+    const dictationSessionIdRef = useRef(snapshot.sessionId);
+    const dictationPanelRef = useRef<HTMLDivElement>(null);
+    const dictationInputRef = useRef<HTMLInputElement>(null);
     const searchInputId = useId();
     const [focused, setFocused] = useState(false);
     const [hasSelection, setHasSelection] = useState(false);
@@ -118,6 +132,8 @@ export function TerminalViewport({
     const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
     const [searchResultIndex, setSearchResultIndex] = useState(-1);
     const [searchResultCount, setSearchResultCount] = useState(0);
+    const [dictationOpen, setDictationOpen] = useState(false);
+    const [dictationText, setDictationText] = useState("");
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<void> | null>(null);
 
@@ -131,6 +147,7 @@ export function TerminalViewport({
         (state) => state.terminalFontFamily,
     );
     const terminalFontSize = useSettingsStore((state) => state.terminalFontSize);
+    const platform = getDesktopPlatform();
     const theme = getTerminalTheme(null, {
         fontFamily: terminalFontFamily,
         fontSize: terminalFontSize,
@@ -184,6 +201,21 @@ export function TerminalViewport({
         });
     }, []);
 
+    const closeDictation = useCallback(() => {
+        setDictationOpen(false);
+        setDictationText("");
+        requestAnimationFrame(() => {
+            focusTerminal();
+        });
+    }, [focusTerminal]);
+
+    const openDictation = useCallback(() => {
+        setDictationOpen(true);
+        requestAnimationFrame(() => {
+            dictationInputRef.current?.focus();
+        });
+    }, []);
+
     useEffect(() => {
         writeInputRef.current = writeInput;
         resizeRef.current = resize;
@@ -206,11 +238,28 @@ export function TerminalViewport({
     }, [searchOpen]);
 
     useEffect(() => {
+        const previousSessionId = dictationSessionIdRef.current;
+        dictationSessionIdRef.current = snapshot.sessionId;
+
+        if (!dictationOpen) {
+            return;
+        }
+
+        if (
+            previousSessionId !== snapshot.sessionId ||
+            snapshot.status !== "running"
+        ) {
+            setDictationOpen(false);
+            setDictationText("");
+        }
+    }, [dictationOpen, snapshot.sessionId, snapshot.status]);
+
+    useEffect(() => {
         const host = hostRef.current;
         if (!host) return;
 
         const terminal = new Terminal({
-            allowTransparency: true,
+            allowTransparency: false,
             convertEol: false,
             cursorBlink: true,
             cursorStyle: "block",
@@ -306,6 +355,25 @@ export function TerminalViewport({
             if (cancelled) return;
 
             terminal.open(host);
+
+            // WebGL renderer — fastest path. Falls back to DOM renderer on context
+            // loss (GPU crash, system sleep, monitor switch).
+            try {
+                const webglAddon = new WebglAddon();
+                webglAddon.onContextLoss(() => {
+                    webglAddon.dispose();
+                    webglAddonRef.current = null;
+                });
+                terminal.loadAddon(webglAddon);
+                webglAddonRef.current = webglAddon;
+            } catch (error) {
+                logError(
+                    "terminal",
+                    "WebGL renderer unavailable — falling back to DOM renderer",
+                    error,
+                );
+            }
+
             terminalRef.current = terminal;
             fitAddonRef.current = fitAddon;
             searchAddonRef.current = searchAddon;
@@ -336,7 +404,10 @@ export function TerminalViewport({
                 const nextInsideSearch =
                     nextTarget instanceof Node &&
                     searchPanelRef.current?.contains(nextTarget);
-                if (!nextInsideSearch) {
+                const nextInsideDictation =
+                    nextTarget instanceof Node &&
+                    dictationPanelRef.current?.contains(nextTarget);
+                if (!nextInsideSearch && !nextInsideDictation) {
                     shouldRestoreFocusRef.current = false;
                 }
                 setFocused(false);
@@ -377,6 +448,10 @@ export function TerminalViewport({
             if (textarea && handleFocus)
                 textarea.removeEventListener("focus", handleFocus);
             onDataDisposable?.dispose();
+            webglAddonRef.current?.dispose();
+            webglAddonRef.current = null;
+            pendingWriteCharsRef.current = 0;
+            writeBacklogRef.current = [];
             terminal.dispose();
             syncSizeRef.current = () => undefined;
             terminalRef.current = null;
@@ -399,6 +474,8 @@ export function TerminalViewport({
             setSearchQuery("");
             setSearchResultIndex(-1);
             setSearchResultCount(0);
+            setDictationOpen(false);
+            setDictationText("");
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [closeSearch, openSearch]);
@@ -440,11 +517,55 @@ export function TerminalViewport({
         const terminal = terminalRef.current;
         if (!terminal) return;
 
+        // Drain the local write backlog, capped at WRITE_LOW_WATERMARK chars per
+        // iteration so xterm can interleave rendering between flushes.
+        const flushBacklog = () => {
+            const t = terminalRef.current;
+            if (!t || writeBacklogRef.current.length === 0) return;
+            if (pendingWriteCharsRef.current > WRITE_LOW_WATERMARK) return;
+            let merged = "";
+            while (
+                writeBacklogRef.current.length > 0 &&
+                merged.length < WRITE_LOW_WATERMARK
+            ) {
+                merged += writeBacklogRef.current.shift()!;
+            }
+            const chars = merged.length;
+            pendingWriteCharsRef.current += chars;
+            t.write(merged, () => {
+                pendingWriteCharsRef.current = Math.max(
+                    0,
+                    pendingWriteCharsRef.current - chars,
+                );
+                queueMicrotask(flushBacklog);
+            });
+        };
+
+        // Write a chunk to xterm, queueing locally if the write buffer is full.
+        const writeChunk = (data: string, onDone?: () => void) => {
+            if (pendingWriteCharsRef.current > WRITE_HIGH_WATERMARK) {
+                writeBacklogRef.current.push(data);
+                return;
+            }
+            const chars = data.length;
+            pendingWriteCharsRef.current += chars;
+            terminal.write(data, () => {
+                pendingWriteCharsRef.current = Math.max(
+                    0,
+                    pendingWriteCharsRef.current - chars,
+                );
+                onDone?.();
+                queueMicrotask(flushBacklog);
+            });
+        };
+
         const sessionId = snapshot.sessionId || "__pending-terminal__";
         const previousSessionId = lastSessionIdRef.current;
 
         if (previousSessionId !== sessionId) {
             terminal.reset();
+            pendingWriteCharsRef.current = 0;
+            writeBacklogRef.current = [];
             lastSessionIdRef.current = sessionId;
             lastRawOutputRef.current = "";
             shouldApplyInitialScrollRef.current =
@@ -465,8 +586,10 @@ export function TerminalViewport({
             !rawOutput.startsWith(lastRawOutputRef.current)
         ) {
             terminal.reset();
+            pendingWriteCharsRef.current = 0;
+            writeBacklogRef.current = [];
             if (rawOutput.length > 0) {
-                terminal.write(rawOutput, () => {
+                writeChunk(rawOutput, () => {
                     if (!shouldApplyInitialScrollRef.current) return;
                     shouldApplyInitialScrollRef.current = false;
                     terminal.scrollToTop();
@@ -480,7 +603,7 @@ export function TerminalViewport({
 
         const nextChunk = rawOutput.slice(lastRawOutputRef.current.length);
         if (nextChunk.length > 0) {
-            terminal.write(nextChunk, () => {
+            writeChunk(nextChunk, () => {
                 if (!shouldApplyInitialScrollRef.current) return;
                 shouldApplyInitialScrollRef.current = false;
                 terminal.scrollToTop();
@@ -549,6 +672,12 @@ export function TerminalViewport({
             ) {
                 return;
             }
+            if (
+                dictationPanelRef.current &&
+                dictationPanelRef.current.contains(event.target as Node)
+            ) {
+                return;
+            }
             focusTerminal();
         },
         [focusTerminal],
@@ -568,6 +697,29 @@ export function TerminalViewport({
             }
         },
         [closeSearch, runSearch],
+    );
+
+    const submitDictation = useCallback(() => {
+        const text = dictationText;
+        if (text) {
+            void writeInputRef.current(text).catch(() => undefined);
+        }
+        closeDictation();
+    }, [closeDictation, dictationText]);
+
+    const handleDictationKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLInputElement>) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeDictation();
+                return;
+            }
+            if (event.key === "Enter") {
+                event.preventDefault();
+                submitDictation();
+            }
+        },
+        [closeDictation, submitDictation],
     );
 
     const contextMenuEntries: ContextMenuEntry[] = [
@@ -604,6 +756,11 @@ export function TerminalViewport({
             label: "Find",
             action: () => openSearch(),
         },
+        {
+            label: "Dictate",
+            disabled: snapshot.status !== "running",
+            action: () => openDictation(),
+        },
         { type: "separator" },
         {
             label: "Clear",
@@ -620,6 +777,7 @@ export function TerminalViewport({
             style={{
                 backgroundColor: theme.background,
                 color: theme.text,
+                paddingBottom: 8,
             }}
             onMouseDown={handleMouseDown}
             onContextMenu={handleContextMenu}
@@ -729,6 +887,94 @@ export function TerminalViewport({
                     >
                         Close
                     </button>
+                </div>
+            )}
+
+            {dictationOpen && (
+                <div
+                    ref={dictationPanelRef}
+                    className="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5 rounded-lg border px-2 py-2 shadow-lg"
+                    style={{
+                        backgroundColor:
+                            "color-mix(in srgb, var(--bg-secondary) 92%, transparent)",
+                        borderColor: "var(--border)",
+                        color: "var(--text-primary)",
+                    }}
+                >
+                    <div className="flex items-center gap-2">
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            style={{ color: "var(--accent)", flexShrink: 0 }}
+                        >
+                            <rect x="9" y="2" width="6" height="12" rx="3" />
+                            <path d="M5 10a7 7 0 0 0 14 0" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                            <line x1="9" y1="22" x2="15" y2="22" />
+                        </svg>
+                        <input
+                            ref={dictationInputRef}
+                            type="text"
+                            value={dictationText}
+                            onChange={(event) =>
+                                setDictationText(event.target.value)
+                            }
+                            onKeyDown={handleDictationKeyDown}
+                            placeholder="Speak or type — Enter to send"
+                            className="h-8 w-64 rounded border px-2 text-xs outline-none"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                borderColor: "var(--border)",
+                                color: "var(--text-primary)",
+                            }}
+                        />
+                        <button
+                            type="button"
+                            onClick={submitDictation}
+                            className="h-8 rounded border px-2 text-xs"
+                            style={{
+                                backgroundColor: "var(--accent)",
+                                borderColor: "var(--accent)",
+                                color: "white",
+                            }}
+                        >
+                            Send
+                        </button>
+                        <button
+                            type="button"
+                            onClick={closeDictation}
+                            className="h-8 rounded border px-2 text-xs"
+                            style={{
+                                backgroundColor: "var(--bg-primary)",
+                                borderColor: "var(--border)",
+                                color: "var(--text-primary)",
+                            }}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                    {platform === "macos" && (
+                        <span
+                            className="px-1 text-[11px]"
+                            style={{ color: "var(--text-secondary)" }}
+                        >
+                            Press Fn Fn to activate macOS dictation, then speak your command.
+                        </span>
+                    )}
+                    {platform === "windows" && (
+                        <span
+                            className="px-1 text-[11px]"
+                            style={{ color: "var(--text-secondary)" }}
+                        >
+                            Type your command, or use your system dictation if available.
+                        </span>
+                    )}
                 </div>
             )}
 

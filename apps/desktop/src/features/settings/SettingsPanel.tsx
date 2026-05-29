@@ -2433,6 +2433,15 @@ const MONO_FONT_STACK =
 
 const RELEASE_NOTES_URL =
     "https://github.com/jsgrrchg/NeverWrite/releases/latest";
+const REPOSITORY_ISSUES_URL = "https://github.com/jsgrrchg/NeverWrite/issues";
+const REPOSITORY_DISCUSSIONS_URL =
+    "https://github.com/jsgrrchg/NeverWrite/discussions";
+const NEW_REPOSITORY_ISSUE_URL =
+    "https://github.com/jsgrrchg/NeverWrite/issues/new";
+const NEW_REPOSITORY_DISCUSSION_URL =
+    "https://github.com/jsgrrchg/NeverWrite/discussions/new/choose";
+const BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/jsgrrchg";
+const GITHUB_SPONSORS_URL = "https://github.com/sponsors/jsgrrchg";
 
 function UpdatesSettings({
     searchQuery,
@@ -2493,6 +2502,9 @@ function UpdatesSettings({
     const anyBusy = loading || checking || installing;
     const effectiveError = error ?? null;
     const updaterConfigured = Boolean(status?.enabled);
+    const automaticUpdatesDescription = updaterConfigured
+        ? "NeverWrite does not update automatically. It only downloads and installs updates when you choose it."
+        : "Not available in this build.";
     const stateKind = resolveUpdateStateKind({
         checking,
         installing,
@@ -2575,9 +2587,9 @@ function UpdatesSettings({
             ],
             [
                 "Automatic updates",
-                updaterConfigured
-                    ? "Enabled. Updates are fetched from the release feed and applied after restart."
-                    : "Not available in this build.",
+                automaticUpdatesDescription,
+                "manual install",
+                "no automatic install",
             ],
             [
                 "Update status",
@@ -2637,21 +2649,21 @@ function UpdatesSettings({
                         }}
                     >
                         <VersionPill label={currentVersionLabel} />
-                        <UpdaterActionButton
+                        <SettingsActionButton
                             active={false}
                             onClick={() => {
                                 void openUrl(RELEASE_NOTES_URL);
                             }}
                         >
                             release notes
-                        </UpdaterActionButton>
-                        <UpdaterActionButton
+                        </SettingsActionButton>
+                        <SettingsActionButton
                             active={primaryAction.active}
                             disabled={primaryAction.disabled}
                             onClick={primaryAction.onClick}
                         >
                             {primaryAction.label}
-                        </UpdaterActionButton>
+                        </SettingsActionButton>
                     </div>
                 }
             />
@@ -2667,17 +2679,10 @@ function UpdatesSettings({
                 searchQuery={searchQuery}
                 section="Version"
                 label="Automatic updates"
-                description={
-                    updaterConfigured
-                        ? "Enabled. Updates are fetched from the release feed and applied after restart."
-                        : "Not available in this build."
-                }
+                description={automaticUpdatesDescription}
+                keywords={["manual install", "no automatic install"]}
                 control={
-                    <Toggle
-                        disabled
-                        value={updaterConfigured}
-                        onChange={() => {}}
-                    />
+                    <VersionPill label={updaterConfigured ? "Manual" : "Off"} />
                 }
             />
             <SearchableRow
@@ -2760,7 +2765,7 @@ function UpdatesSettings({
                             gap: 8,
                         }}
                     >
-                        <UpdaterActionButton
+                        <SettingsActionButton
                             active
                             disabled={installing}
                             onClick={() => {
@@ -2775,14 +2780,14 @@ function UpdatesSettings({
                             }}
                         >
                             {installing ? "installing..." : "install anyway"}
-                        </UpdaterActionButton>
-                        <UpdaterActionButton
+                        </SettingsActionButton>
+                        <SettingsActionButton
                             active={false}
                             disabled={installing}
                             onClick={() => setConfirmInstall(false)}
                         >
                             cancel
-                        </UpdaterActionButton>
+                        </SettingsActionButton>
                     </div>
                 </div>
             ) : null}
@@ -2893,7 +2898,7 @@ function UpdateStatusBadge({ kind }: { kind: UpdateStateKind }) {
     );
 }
 
-function UpdaterActionButton({
+function SettingsActionButton({
     children,
     active,
     disabled,
@@ -2909,6 +2914,7 @@ function UpdaterActionButton({
             type="button"
             disabled={disabled}
             onClick={onClick}
+            className="nw-settings-action-btn"
             style={{
                 backgroundColor: active
                     ? "color-mix(in srgb, var(--accent) 14%, transparent)"
@@ -2926,6 +2932,228 @@ function UpdaterActionButton({
         >
             {children}
         </button>
+    );
+}
+
+function FeedbackSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
+    const showCommunity = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Community",
+        [
+            [
+                "Issues",
+                "Browse open bug reports, feature requests, and support threads on GitHub.",
+                "github",
+                "bugs",
+                "feature requests",
+            ],
+            [
+                "Discussions",
+                "Read community questions, ideas, and longer-form conversations on GitHub.",
+                "github",
+                "community",
+                "questions",
+                "ideas",
+            ],
+        ],
+    );
+    const showCreate = sectionHasSettingsSearchMatches(searchQuery, "Create", [
+        [
+            "Create issue",
+            "Open GitHub to file a bug report or request a focused change.",
+            "github",
+            "report bug",
+            "request feature",
+        ],
+        [
+            "Start discussion",
+            "Open GitHub to start a broader question, idea, or product conversation.",
+            "github",
+            "question",
+            "idea",
+        ],
+    ]);
+
+    if (!showCommunity && !showCreate) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    return (
+        <div>
+            {showCommunity ? <SectionLabel>Community</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Community"
+                label="Issues"
+                description="Browse open bug reports, feature requests, and support threads on GitHub."
+                keywords={["github", "bugs", "feature requests"]}
+                control={
+                    <SettingsActionButton
+                        active={false}
+                        onClick={() => {
+                            void openUrl(REPOSITORY_ISSUES_URL);
+                        }}
+                    >
+                        open issues
+                    </SettingsActionButton>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Community"
+                label="Discussions"
+                description="Read community questions, ideas, and longer-form conversations on GitHub."
+                keywords={["github", "community", "questions", "ideas"]}
+                control={
+                    <SettingsActionButton
+                        active={false}
+                        onClick={() => {
+                            void openUrl(REPOSITORY_DISCUSSIONS_URL);
+                        }}
+                    >
+                        open discussions
+                    </SettingsActionButton>
+                }
+            />
+
+            {showCreate ? <SectionLabel>Create</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Create"
+                label="Create issue"
+                description="Open GitHub to file a bug report or request a focused change."
+                keywords={["github", "report bug", "request feature"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(NEW_REPOSITORY_ISSUE_URL);
+                        }}
+                    >
+                        new issue
+                    </SettingsActionButton>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Create"
+                label="Start discussion"
+                description="Open GitHub to start a broader question, idea, or product conversation."
+                keywords={["github", "question", "idea"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(NEW_REPOSITORY_DISCUSSION_URL);
+                        }}
+                    >
+                        new discussion
+                    </SettingsActionButton>
+                }
+            />
+        </div>
+    );
+}
+
+function SponsorsSettings({
+    searchQuery,
+}: {
+    searchQuery: SettingsSearchQuery;
+}) {
+    const showSupport = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Support",
+        [
+            [
+                "Buy Me a Coffee",
+                "Support NeverWrite development with a one-time contribution.",
+                "coffee",
+                "donate",
+                "support",
+            ],
+            [
+                "GitHub Sponsors",
+                "Sponsor ongoing NeverWrite maintenance and development through GitHub.",
+                "github",
+                "sponsor",
+                "funding",
+            ],
+            [
+                "AI tooling is moving fast, and NeverWrite moves with it.",
+                "Support helps fund weekly maintenance, expanded provider compatibility, runtime stability, security hardening, and safer agent review workflows.",
+                "runtime stability",
+                "security hardening",
+                "provider compatibility",
+            ],
+        ],
+    );
+
+    if (!showSupport) {
+        return <EmptyPanelSearchResult />;
+    }
+
+    return (
+        <div>
+            <SectionLabel>Support</SectionLabel>
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Support"
+                label="Buy Me a Coffee"
+                description="Support NeverWrite development with a one-time contribution."
+                keywords={["coffee", "donate", "support"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(BUY_ME_A_COFFEE_URL);
+                        }}
+                    >
+                        buy coffee
+                    </SettingsActionButton>
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Support"
+                label="GitHub Sponsors"
+                description="Sponsor ongoing NeverWrite maintenance and development through GitHub."
+                keywords={["github", "sponsor", "funding"]}
+                control={
+                    <SettingsActionButton
+                        active
+                        onClick={() => {
+                            void openUrl(GITHUB_SPONSORS_URL);
+                        }}
+                    >
+                        sponsor
+                    </SettingsActionButton>
+                }
+            />
+            <div
+                style={{
+                    marginTop: 14,
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    background:
+                        "color-mix(in srgb, var(--accent) 8%, var(--bg-secondary))",
+                    color: "var(--text-primary)",
+                    fontSize: 12,
+                    lineHeight: 1.55,
+                    padding: "12px 14px",
+                }}
+            >
+                <span style={{ fontWeight: 600 }}>
+                    AI tooling is moving fast, and NeverWrite moves with it.
+                </span>{" "}
+                Support helps fund weekly maintenance, expanded provider
+                compatibility, runtime stability, security hardening, and safer
+                agent review workflows.
+            </div>
+        </div>
     );
 }
 
@@ -3818,14 +4046,16 @@ type Category =
     | "general"
     | "appearance"
     | "editor"
-    | "spellcheck"
-    | "updates"
-    | "terminal"
-    | "developers"
-    | "vault"
-    | "shortcuts"
+    | "ai"
     | "ai_providers"
-    | "ai";
+    | "spellcheck"
+    | "shortcuts"
+    | "vault"
+    | "developers"
+    | "terminal"
+    | "updates"
+    | "feedback"
+    | "sponsors";
 
 function isCategory(value: string | null | undefined): value is Category {
     return CATEGORIES.some((category) => category.id === value);
@@ -3888,6 +4118,47 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
         ),
     },
     {
+        id: "ai",
+        label: "AI",
+        icon: (
+            <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Z" />
+                <path d="M5.5 8.5c.5 1 1.5 1.5 2.5 1.5s2-.5 2.5-1.5" />
+                <path d="M6 6.5h.01M10 6.5h.01" />
+            </svg>
+        ),
+    },
+    {
+        id: "ai_providers",
+        label: "AI providers",
+        icon: (
+            <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <rect x="2.5" y="3" width="11" height="4" rx="1.5" />
+                <path d="M4.5 5h2M11 5h.01" />
+                <rect x="2.5" y="9" width="11" height="4" rx="1.5" />
+                <path d="M4.5 11h2M11 11h.01" />
+            </svg>
+        ),
+    },
+    {
         id: "spellcheck",
         label: "Spellcheck",
         icon: (
@@ -3898,73 +4169,6 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
                     strokeWidth="1.2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "updates",
-        label: "Updates",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <path
-                    d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7M3 12.5h10"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "terminal",
-        label: "Terminal",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <rect
-                    x="1.5"
-                    y="2.5"
-                    width="13"
-                    height="11"
-                    rx="2"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                />
-                <path
-                    d="M4.5 6 6.5 8 4.5 10M8 10h3.5"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "developers",
-        label: "File Tree",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <path
-                    d="M6 4 2.5 8 6 12M10 4l3.5 4-3.5 4M9 2.5 7 13.5"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                />
-            </svg>
-        ),
-    },
-    {
-        id: "vault",
-        label: "Vault",
-        icon: (
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                <path
-                    d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
                 />
             </svg>
         ),
@@ -4005,43 +4209,105 @@ const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
         ),
     },
     {
-        id: "ai_providers",
-        label: "AI providers",
+        id: "vault",
+        label: "Vault",
         icon: (
-            <svg
-                width="15"
-                height="15"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <rect x="2.5" y="3" width="11" height="4" rx="1.5" />
-                <path d="M4.5 5h2M11 5h.01" />
-                <rect x="2.5" y="9" width="11" height="4" rx="1.5" />
-                <path d="M4.5 11h2M11 11h.01" />
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
             </svg>
         ),
     },
     {
-        id: "ai",
-        label: "AI",
+        id: "developers",
+        label: "File Tree",
         icon: (
-            <svg
-                width="15"
-                height="15"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-            >
-                <path d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2Z" />
-                <path d="M5.5 8.5c.5 1 1.5 1.5 2.5 1.5s2-.5 2.5-1.5" />
-                <path d="M6 6.5h.01M10 6.5h.01" />
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M6 4 2.5 8 6 12M10 4l3.5 4-3.5 4M9 2.5 7 13.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "terminal",
+        label: "Terminal",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <rect
+                    x="1.5"
+                    y="2.5"
+                    width="13"
+                    height="11"
+                    rx="2"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
+                <path
+                    d="M4.5 6 6.5 8 4.5 10M8 10h3.5"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "updates",
+        label: "Updates",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M8 2.5v7M5.5 7l2.5 2.5L10.5 7M3 12.5h10"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "feedback",
+        label: "Feedback",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M3 3.5h10a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H7.5L4 14v-2H3a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+                <path
+                    d="M5 6.5h6M5 9h4"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                />
+            </svg>
+        ),
+    },
+    {
+        id: "sponsors",
+        label: "Sponsors",
+        icon: (
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M8 13.25 3.15 8.72C1.35 7.04 1.15 4.42 2.7 3.05c1.15-1.02 2.9-.84 3.95.38L8 5l1.35-1.57c1.05-1.22 2.8-1.4 3.95-.38 1.55 1.37 1.35 3.99-.45 5.67L8 13.25Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
             </svg>
         ),
     },
@@ -4059,6 +4325,8 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     shortcuts: "Keyboard shortcuts reference",
     ai_providers: "AI runtimes, authentication, and API keys",
     ai: "AI assistant chat preferences",
+    feedback: "GitHub issues, discussions, and feedback links",
+    sponsors: "Ways to support NeverWrite development",
 };
 
 const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = {
@@ -4130,6 +4398,29 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "check for updates",
         "appcast",
         "release feed",
+    ],
+    feedback: [
+        "Community",
+        "Issues",
+        "Discussions",
+        "Create",
+        "Create issue",
+        "Start discussion",
+        "GitHub",
+        "Report bug",
+        "Request feature",
+        "Question",
+        "Idea",
+    ],
+    sponsors: [
+        "Support",
+        "Sponsors",
+        "Buy Me a Coffee",
+        "GitHub Sponsors",
+        "Coffee",
+        "Donate",
+        "Funding",
+        "Support NeverWrite",
     ],
     terminal: [
         "Terminal",
@@ -4277,6 +4568,10 @@ function getDynamicCategorySearchValues(
                 context.updateStatus.status?.update?.body,
                 context.updateStatus.error,
             ];
+        case "feedback":
+            return [];
+        case "sponsors":
+            return [];
         case "terminal":
             return [];
         case "developers":
@@ -4813,6 +5108,18 @@ export function SettingsPanel({
                         {filteredCategories.length > 0 &&
                             activeCategory === "updates" && (
                                 <UpdatesSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "feedback" && (
+                                <FeedbackSettings
+                                    searchQuery={activeSearchQuery}
+                                />
+                            )}
+                        {filteredCategories.length > 0 &&
+                            activeCategory === "sponsors" && (
+                                <SponsorsSettings
                                     searchQuery={activeSearchQuery}
                                 />
                             )}

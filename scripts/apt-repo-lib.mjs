@@ -6,6 +6,7 @@ import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
     PUBLIC_PRODUCT_NAME,
     buildDebianPackageAssetName,
+    buildGitHubReleaseAssetUrl,
     normalizeReleaseVersion,
 } from "./appcast-lib.mjs";
 
@@ -16,6 +17,7 @@ export const APT_LABEL = PUBLIC_PRODUCT_NAME;
 export const APT_DESCRIPTION =
     "NeverWrite desktop Debian package repository";
 export const APT_DEFAULT_SUITE = "stable";
+export const APT_DEFAULT_CODENAME = "neverwrite-stable";
 export const APT_DEFAULT_COMPONENT = "main";
 export const APT_SUPPORTED_ARCHITECTURES = ["amd64", "arm64"];
 export const APT_DEFAULT_BASE_URL = `${CANONICAL_RELEASE_PAGES_BASE_URL}/apt`;
@@ -27,6 +29,13 @@ export const APT_RELEASE_CHECKSUMS = [
     { fieldName: "SHA1", algorithm: "sha1" },
     { fieldName: "SHA256", algorithm: "sha256" },
 ];
+export const APT_PACKAGE_CHECKSUMS = [
+    { fieldName: "MD5sum", hashKey: "MD5Sum", algorithm: "md5" },
+    { fieldName: "SHA1", hashKey: "SHA1", algorithm: "sha1" },
+    { fieldName: "SHA256", hashKey: "SHA256", algorithm: "sha256" },
+];
+
+const HASH_READ_BUFFER_SIZE_BYTES = 1024 * 1024;
 
 const BUILD_TARGET_BY_DEBIAN_ARCHITECTURE = {
     amd64: "x86_64-unknown-linux-gnu",
@@ -103,6 +112,19 @@ export function buildAptPoolPackagePath(version, debianArchitecture) {
         APT_PACKAGE_NAME,
         buildAptPoolPackageName(version, debianArchitecture),
     );
+}
+
+export function buildGitHubReleaseDebUrl(repoSlug, tag, version, debianArchitecture) {
+    const normalizedTag = tag.startsWith("v") ? tag : `v${normalizeReleaseVersion(tag)}`;
+    const assetName = buildDebianReleaseAssetName(version, debianArchitecture);
+    return buildGitHubReleaseAssetUrl(repoSlug, normalizedTag, assetName);
+}
+
+export function isUrlFilename(filename) {
+    if (typeof filename !== "string") {
+        return false;
+    }
+    return /^https?:\/\//i.test(filename);
 }
 
 export function getAptBinaryPackagesPath(debianArchitecture) {
@@ -205,7 +227,27 @@ export function renderDebianControlFields(fields) {
 
 export function hashFile(filePath, algorithm) {
     const hash = crypto.createHash(algorithm);
-    hash.update(fs.readFileSync(filePath));
+    const buffer = Buffer.allocUnsafe(HASH_READ_BUFFER_SIZE_BYTES);
+    const fileDescriptor = fs.openSync(filePath, "r");
+
+    try {
+        let bytesRead = 0;
+        do {
+            bytesRead = fs.readSync(
+                fileDescriptor,
+                buffer,
+                0,
+                buffer.length,
+                null,
+            );
+            if (bytesRead > 0) {
+                hash.update(buffer.subarray(0, bytesRead));
+            }
+        } while (bytesRead > 0);
+    } finally {
+        fs.closeSync(fileDescriptor);
+    }
+
     return hash.digest("hex");
 }
 
@@ -253,9 +295,10 @@ export function renderPackagesStanza({
         ),
         { name: "Filename", value: filename },
         { name: "Size", value: String(sizeBytes) },
-        { name: "MD5sum", value: hashes.MD5Sum },
-        { name: "SHA1", value: hashes.SHA1 },
-        { name: "SHA256", value: hashes.SHA256 },
+        ...APT_PACKAGE_CHECKSUMS.map(({ fieldName, hashKey }) => ({
+            name: fieldName,
+            value: hashes[hashKey],
+        })),
     );
 
     return renderDebianControlFields(orderedFields);
@@ -263,6 +306,7 @@ export function renderPackagesStanza({
 
 export function buildAptReleaseContent({
     suite = APT_DEFAULT_SUITE,
+    codename = APT_DEFAULT_CODENAME,
     component = APT_DEFAULT_COMPONENT,
     architectures = APT_SUPPORTED_ARCHITECTURES,
     files,
@@ -280,7 +324,7 @@ export function buildAptReleaseContent({
         `Origin: ${APT_ORIGIN}`,
         `Label: ${APT_LABEL}`,
         `Suite: ${normalizedSuite}`,
-        `Codename: ${normalizedSuite}`,
+        `Codename: ${codename}`,
         `Date: ${generatedAt.toUTCString()}`,
         `Architectures: ${normalizedArchitectures.join(" ")}`,
         `Components: ${normalizedComponent}`,

@@ -15,6 +15,7 @@ import {
     type TerminalSessionSnapshot,
 } from "./terminalTypes";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
+import { appendTerminalRawOutput } from "./terminalRawOutput";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -34,14 +35,34 @@ export function WorkspaceTerminalHost() {
 
     useEffect(() => {
         let cancelled = false;
+        const pendingBySessionId = new Map<string, string>();
+        let rafId: number | null = null;
+
+        const flushPending = () => {
+            rafId = null;
+            const store = useTerminalRuntimeStore.getState();
+            for (const [sessionId, chunk] of pendingBySessionId) {
+                store.handleTerminalOutput({ sessionId, chunk });
+            }
+            pendingBySessionId.clear();
+        };
+
         const detachPromise = Promise.all([
             listen<TerminalOutputEventPayload>(
                 DEV_TERMINAL_OUTPUT_EVENT,
                 (event) => {
                     if (cancelled) return;
-                    useTerminalRuntimeStore
-                        .getState()
-                        .handleTerminalOutput(event.payload);
+                    const { sessionId, chunk } = event.payload;
+                    pendingBySessionId.set(
+                        sessionId,
+                        appendTerminalRawOutput(
+                            pendingBySessionId.get(sessionId) ?? "",
+                            chunk,
+                        ),
+                    );
+                    if (rafId === null) {
+                        rafId = requestAnimationFrame(flushPending);
+                    }
                 },
             ),
             listen<TerminalSessionSnapshot>(
@@ -75,6 +96,17 @@ export function WorkspaceTerminalHost() {
 
         return () => {
             cancelled = true;
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+            if (pendingBySessionId.size > 0) {
+                const store = useTerminalRuntimeStore.getState();
+                for (const [sessionId, chunk] of pendingBySessionId) {
+                    store.handleTerminalOutput({ sessionId, chunk });
+                }
+                pendingBySessionId.clear();
+            }
             void detachPromise.then((listeners) => {
                 for (const unlisten of listeners) {
                     unlisten();

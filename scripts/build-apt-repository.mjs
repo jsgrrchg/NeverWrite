@@ -11,6 +11,7 @@ import {
     buildAptPoolPackagePath,
     buildAptReleaseContent,
     buildDebianReleaseAssetName,
+    buildGitHubReleaseDebUrl,
     buildNeverWriteSourcesExample,
     compareReleaseVersionsDescending,
     getAptBinaryPackagesGzipPath,
@@ -26,6 +27,7 @@ import {
     parseDebianControlStanza,
     renderPackagesStanza,
 } from "./apt-repo-lib.mjs";
+import { parseGitHubRepoSlug } from "./appcast-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
 
 function parseArgs(argv) {
@@ -37,6 +39,9 @@ function parseArgs(argv) {
         suite: APT_DEFAULT_SUITE,
         component: APT_DEFAULT_COMPONENT,
         retainVersions: 3,
+        remotePackages: false,
+        repoSlug: null,
+        tag: null,
     };
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -78,9 +83,23 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
+        if (arg === "--remote-packages") {
+            args.remotePackages = true;
+            continue;
+        }
+        if (arg === "--repo-slug") {
+            args.repoSlug = next;
+            index += 1;
+            continue;
+        }
+        if (arg === "--tag") {
+            args.tag = next;
+            index += 1;
+            continue;
+        }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --version, --release-assets-dir, --pages-dir, --base-url, --suite, --component, --retain-versions.`,
+            `Unknown argument "${arg}". Supported args: --version, --release-assets-dir, --pages-dir, --base-url, --suite, --component, --retain-versions, --remote-packages, --repo-slug, --tag.`,
         );
     }
 
@@ -100,6 +119,18 @@ function parseArgs(argv) {
     }
     if (!Number.isInteger(args.retainVersions) || args.retainVersions < 1) {
         throw new Error("--retain-versions must be a positive integer.");
+    }
+
+    if (args.remotePackages) {
+        if (!args.repoSlug) {
+            throw new Error(
+                "--remote-packages requires --repo-slug <owner/repo>.",
+            );
+        }
+        if (!args.tag) {
+            throw new Error("--remote-packages requires --tag <vX.Y.Z>.");
+        }
+        parseGitHubRepoSlug(args.repoSlug);
     }
 
     return {
@@ -237,13 +268,13 @@ function validateDebianPackageFields({
     }
 }
 
-function renderPackagesFileForArchitecture({ aptDir, architecture }) {
+function collectPoolPackages({ aptDir }) {
     const poolDir = path.join(aptDir, "pool", "main", "n", "neverwrite");
-    const stanzas = [];
+    const packages = [];
 
     for (const packagePath of listFilesRecursively(poolDir)) {
         const metadata = parseAptPoolPackageFileName(path.basename(packagePath));
-        if (!metadata || metadata.architecture !== architecture) {
+        if (!metadata) {
             continue;
         }
 
@@ -256,10 +287,11 @@ function renderPackagesFileForArchitecture({ aptDir, architecture }) {
             packagePath,
             relativePath,
             fields,
-            architecture,
+            architecture: metadata.architecture,
         });
-        stanzas.push({
+        packages.push({
             version: metadata.version,
+            architecture: metadata.architecture,
             content: renderPackagesStanza({
                 controlFields: fields,
                 filename: relativePath,
@@ -269,11 +301,52 @@ function renderPackagesFileForArchitecture({ aptDir, architecture }) {
         });
     }
 
-    stanzas.sort((left, right) =>
-        compareReleaseVersionsDescending(left.version, right.version),
-    );
+    return packages;
+}
 
-    return stanzas.map((stanza) => stanza.content).join("\n");
+function collectRemotePackages({ version, releaseAssetsDir, repoSlug, tag }) {
+    const packages = [];
+
+    for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
+        const assetName = buildDebianReleaseAssetName(version, architecture);
+        const source = findSingleReleaseAsset(releaseAssetsDir, assetName);
+        const urlFilename = buildGitHubReleaseDebUrl(
+            repoSlug,
+            tag,
+            version,
+            architecture,
+        );
+        const fields = readDebianControlFields(source);
+        validateDebianPackageFields({
+            packagePath: source,
+            relativePath: urlFilename,
+            fields,
+            architecture,
+        });
+        packages.push({
+            version,
+            architecture,
+            content: renderPackagesStanza({
+                controlFields: fields,
+                filename: urlFilename,
+                sizeBytes: fs.statSync(source).size,
+                hashes: getFileHashes(source),
+            }),
+        });
+    }
+
+    return packages;
+}
+
+function renderPackagesFileForArchitecture({ packages, architecture }) {
+    const stanzas = packages
+        .filter((pkg) => pkg.architecture === architecture)
+        .sort((left, right) =>
+            compareReleaseVersionsDescending(left.version, right.version),
+        )
+        .map((pkg) => pkg.content);
+
+    return stanzas.join("\n");
 }
 
 function gzipDeterministic(input) {
@@ -290,14 +363,14 @@ function gzipDeterministic(input) {
     return zlib.gzipSync(Buffer.from(input, "utf8"), { level: 9, mtime: 0 });
 }
 
-function writePackagesIndexes({ aptDir }) {
+function writePackagesIndexes({ aptDir, packages }) {
     const written = [];
 
     for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
         const packagesRelativePath = getAptBinaryPackagesPath(architecture);
         const packagesPath = path.join(aptDir, packagesRelativePath);
         const content = renderPackagesFileForArchitecture({
-            aptDir,
+            packages,
             architecture,
         });
 
@@ -349,24 +422,52 @@ function main() {
     const aptDir = getAptRepositoryRoot(args.pagesDir);
     fs.mkdirSync(aptDir, { recursive: true });
 
-    const copied = copyCurrentReleaseDebs({
-        version: args.version,
-        releaseAssetsDir: args.releaseAssetsDir,
-        aptDir,
-    });
-    const retention = pruneOldPoolPackages({
-        aptDir,
-        retainVersions: args.retainVersions,
-        currentVersion: args.version,
-    });
+    let packages;
 
-    // Rebuild metadata from retained pool packages so stale indexes never leak
+    if (args.remotePackages) {
+        const poolDir = path.join(aptDir, "pool");
+        if (fs.existsSync(poolDir)) {
+            fs.rmSync(poolDir, { recursive: true, force: true });
+        }
+
+        packages = collectRemotePackages({
+            version: args.version,
+            releaseAssetsDir: args.releaseAssetsDir,
+            repoSlug: args.repoSlug,
+            tag: args.tag,
+        });
+    } else {
+        const copied = copyCurrentReleaseDebs({
+            version: args.version,
+            releaseAssetsDir: args.releaseAssetsDir,
+            aptDir,
+        });
+        const retention = pruneOldPoolPackages({
+            aptDir,
+            retainVersions: args.retainVersions,
+            currentVersion: args.version,
+        });
+
+        packages = collectPoolPackages({ aptDir });
+
+        console.log(
+            `Copied Debian packages: ${copied.map((entry) => entry.relativePath).join(", ")}`,
+        );
+        console.log(
+            `Retained APT package versions: ${retention.retainedVersions.join(", ")}`,
+        );
+        if (retention.removed.length > 0) {
+            console.log(`Pruned old Debian packages: ${retention.removed.length}`);
+        }
+    }
+
+    // Rebuild metadata from collected packages so stale indexes never leak
     // into the published repository.
     fs.rmSync(path.join(aptDir, "dists", args.suite), {
         recursive: true,
         force: true,
     });
-    const packagesIndexes = writePackagesIndexes({ aptDir });
+    const packagesIndexes = writePackagesIndexes({ aptDir, packages });
     const releaseFiles = collectReleaseFiles(aptDir, args.suite);
     const releasePath = path.join(aptDir, "dists", args.suite, "Release");
 
@@ -387,14 +488,8 @@ function main() {
     removeStaleSignatures(aptDir, args.suite);
 
     console.log(
-        `Copied Debian packages: ${copied.map((entry) => entry.relativePath).join(", ")}`,
+        `APT package versions indexed: ${packages.map((pkg) => `${pkg.version} (${pkg.architecture})`).join(", ")}`,
     );
-    console.log(
-        `Retained APT package versions: ${retention.retainedVersions.join(", ")}`,
-    );
-    if (retention.removed.length > 0) {
-        console.log(`Pruned old Debian packages: ${retention.removed.length}`);
-    }
     console.log(`Wrote APT package indexes: ${packagesIndexes.join(", ")}`);
     console.log(`Wrote APT Release metadata: ${releasePath}`);
 }
