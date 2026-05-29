@@ -28,6 +28,8 @@ export interface Settings {
     spellcheckSecondaryLanguage: SpellcheckSecondaryLanguage;
     grammarCheckEnabled: boolean;
     grammarCheckServerUrl: string;
+    vimModeEnabled: boolean;
+    vimRelativeLineNumbers: boolean;
 
     // Navigation
     fileTreeScale: number; // 90–140
@@ -58,6 +60,12 @@ interface SettingsStore extends Settings {
 const SETTINGS_KEY_PREFIX = "neverwrite:settings:";
 const SETTINGS_KEY_FALLBACK = "neverwrite:settings";
 const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
+const GLOBAL_SETTING_KEYS = [
+    "vimModeEnabled",
+    "vimRelativeLineNumbers",
+] as const;
+
+type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
 
 export type EditorFontFamily =
     | "system"
@@ -178,6 +186,8 @@ const defaults: Settings = {
     spellcheckSecondaryLanguage: null,
     grammarCheckEnabled: false,
     grammarCheckServerUrl: "",
+    vimModeEnabled: false,
+    vimRelativeLineNumbers: false,
     fileTreeScale: 114,
     agentsSidebarScale: 100,
     fileTreeStickyFolders: true,
@@ -334,6 +344,36 @@ export function normalizeEditorFontFamily(
         : fallback;
 }
 
+function extractPersistedState(raw: string | null): Partial<Settings> | null {
+    if (!raw) return null;
+
+    try {
+        const parsed = JSON.parse(raw) as { state?: unknown };
+        if (!parsed?.state || typeof parsed.state !== "object") return null;
+        return parsed.state as Partial<Settings>;
+    } catch {
+        return null;
+    }
+}
+
+function hasVaultScopedSettings(raw: string | null) {
+    const state = extractPersistedState(raw);
+    if (!state) return false;
+
+    return Object.keys(state).some(
+        (key) => !GLOBAL_SETTING_KEYS.includes(key as GlobalSettingKey),
+    );
+}
+
+function hasStoredVimSettings(raw: string | null) {
+    const state = extractPersistedState(raw);
+    if (!state) return false;
+
+    return GLOBAL_SETTING_KEYS.some((key) =>
+        Object.prototype.hasOwnProperty.call(state, key),
+    );
+}
+
 function extractSettingsFromStorage(raw: string | null): Settings | null {
     if (!raw) return null;
 
@@ -402,6 +442,11 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 typeof parsed.state.grammarCheckServerUrl === "string"
                     ? parsed.state.grammarCheckServerUrl.trim()
                     : defaults.grammarCheckServerUrl,
+            vimModeEnabled:
+                parsed.state.vimModeEnabled ?? defaults.vimModeEnabled,
+            vimRelativeLineNumbers:
+                parsed.state.vimRelativeLineNumbers ??
+                defaults.vimRelativeLineNumbers,
             fileTreeScale: normalizeIntInRange(
                 parsed.state.fileTreeScale,
                 defaults.fileTreeScale,
@@ -516,6 +561,8 @@ function pickSettings(state: SettingsStore): Settings {
         spellcheckSecondaryLanguage: state.spellcheckSecondaryLanguage,
         grammarCheckEnabled: state.grammarCheckEnabled,
         grammarCheckServerUrl: state.grammarCheckServerUrl,
+        vimModeEnabled: state.vimModeEnabled,
+        vimRelativeLineNumbers: state.vimRelativeLineNumbers,
         fileTreeScale: state.fileTreeScale,
         agentsSidebarScale: state.agentsSidebarScale,
         fileTreeStickyFolders: state.fileTreeStickyFolders,
@@ -533,6 +580,35 @@ function pickSettings(state: SettingsStore): Settings {
     };
 }
 
+function pickVaultSettings(settings: Settings): Partial<Settings> {
+    const vaultSettings: Partial<Settings> = { ...settings };
+    for (const key of GLOBAL_SETTING_KEYS) {
+        delete vaultSettings[key];
+    }
+    return vaultSettings;
+}
+
+function pickGlobalSettings(
+    settings: Settings,
+): Pick<Settings, GlobalSettingKey> {
+    return {
+        vimModeEnabled: settings.vimModeEnabled,
+        vimRelativeLineNumbers: settings.vimRelativeLineNumbers,
+    };
+}
+
+function mergeGlobalSettings(settings: Settings): Settings {
+    const global = extractSettingsFromStorage(
+        safeStorageGetItem(SETTINGS_KEY_FALLBACK),
+    );
+    if (!global) return settings;
+
+    return {
+        ...settings,
+        ...pickGlobalSettings(global),
+    };
+}
+
 function getStorageKey(vaultPath: string | null): string {
     return vaultPath
         ? `${SETTINGS_KEY_PREFIX}${vaultPath}`
@@ -543,15 +619,15 @@ function migrateGlobalSettings(vaultPath: string) {
     try {
         const vaultKey = getStorageKey(vaultPath);
         if (safeStorageGetItem(vaultKey)) return; // already migrated
-        const global = extractSettingsFromStorage(
-            safeStorageGetItem(SETTINGS_KEY_FALLBACK),
-        );
+        const globalRaw = safeStorageGetItem(SETTINGS_KEY_FALLBACK);
+        if (!hasVaultScopedSettings(globalRaw)) return;
+        const global = extractSettingsFromStorage(globalRaw);
         if (!global) return;
         safeStorageSetItem(
             vaultKey,
             JSON.stringify({
                 state: {
-                    ...global,
+                    ...pickVaultSettings(global),
                     editorSpellcheck: defaults.editorSpellcheck,
                 },
             }),
@@ -593,6 +669,21 @@ function migrateGlobalSpellcheckToVault(vaultPath: string) {
     }
 }
 
+function migrateVaultVimSettingsToGlobal(vaultRaw: string | null) {
+    try {
+        if (hasStoredVimSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))) {
+            return;
+        }
+        if (!hasStoredVimSettings(vaultRaw)) return;
+
+        const vaultSettings = extractSettingsFromStorage(vaultRaw);
+        if (!vaultSettings) return;
+        saveGlobalSettings(vaultSettings);
+    } catch {
+        // localStorage unavailable
+    }
+}
+
 function loadSettings(vaultPath: string | null): Settings {
     try {
         if (vaultPath) {
@@ -600,7 +691,11 @@ function loadSettings(vaultPath: string | null): Settings {
             migrateGlobalSpellcheckToVault(vaultPath);
         }
         const raw = safeStorageGetItem(getStorageKey(vaultPath));
-        return extractSettingsFromStorage(raw) ?? defaults;
+        if (vaultPath) {
+            migrateVaultVimSettingsToGlobal(raw);
+        }
+        const settings = extractSettingsFromStorage(raw) ?? defaults;
+        return vaultPath ? mergeGlobalSettings(settings) : settings;
     } catch {
         return defaults;
     }
@@ -623,13 +718,38 @@ function getEffectiveVaultPath(
 
 function saveSettings(vaultPath: string | null, settings: Settings) {
     try {
+        if (vaultPath) {
+            safeStorageSetItem(
+                getStorageKey(vaultPath),
+                JSON.stringify({ state: pickVaultSettings(settings) }),
+            );
+            saveGlobalSettings(settings);
+            return;
+        }
+
         safeStorageSetItem(
-            getStorageKey(vaultPath),
+            SETTINGS_KEY_FALLBACK,
             JSON.stringify({ state: settings }),
         );
     } catch {
         // localStorage unavailable (e.g. during test module init)
     }
+}
+
+function saveGlobalSettings(settings: Settings) {
+    const existing = extractPersistedState(
+        safeStorageGetItem(SETTINGS_KEY_FALLBACK),
+    );
+
+    safeStorageSetItem(
+        SETTINGS_KEY_FALLBACK,
+        JSON.stringify({
+            state: {
+                ...(existing ?? {}),
+                ...pickGlobalSettings(settings),
+            },
+        }),
+    );
 }
 
 // Read vault path synchronously at module load to avoid a flash of defaults.
