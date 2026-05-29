@@ -10,7 +10,8 @@ const mockQuery = vi.hoisted(() => vi.fn(() => ({
     setPermissionMode: vi.fn(),
     supportedCommands: vi.fn().mockResolvedValue([]),
 })));
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+vi.mock("@anthropic-ai/claude-agent-sdk", async () => ({
+    ...(await vi.importActual("@anthropic-ai/claude-agent-sdk")),
     query: mockQuery,
 }));
 describe("authorization", () => {

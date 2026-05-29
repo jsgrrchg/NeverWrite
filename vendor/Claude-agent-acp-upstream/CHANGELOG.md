@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.39.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.38.0...v0.39.0) (2026-05-29)
+
+
+### Features
+
+* **deps:** update Claude Agent SDK to 0.3.156 ([#722](https://github.com/agentclientprotocol/claude-agent-acp/issues/722)) ([3fb6db4](https://github.com/agentclientprotocol/claude-agent-acp/commit/3fb6db4e5ee5bd1f431cf5d2ce5331ce983f9597))
+
+## [0.38.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.37.0...v0.38.0) (2026-05-28)
+
+
+### Features
+
+* **deps:** bump to @anthropic-ai/claude-agent-sdk 0.3.154 (Opus 4.8) ([#716](https://github.com/agentclientprotocol/claude-agent-acp/issues/716)) ([a172885](https://github.com/agentclientprotocol/claude-agent-acp/commit/a172885c80fc32c108a8501268a543641088f543))
+* Support Opus 4.8 ([#718](https://github.com/agentclientprotocol/claude-agent-acp/issues/718)) ([98b54a0](https://github.com/agentclientprotocol/claude-agent-acp/commit/98b54a02c267cdef619becceccf6ef519fbf8f6f))
+
+
+### Bug Fixes
+
+* Remove hide Claude auth flag handling ([#707](https://github.com/agentclientprotocol/claude-agent-acp/issues/707)) ([7ed1daf](https://github.com/agentclientprotocol/claude-agent-acp/commit/7ed1daf7b42088ad149e9bf742f764752b82d093))
+
 ## [0.37.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.36.1...v0.37.0) (2026-05-21)
 
 

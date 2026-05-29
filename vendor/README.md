@@ -52,9 +52,9 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.37.0`
-  - upstream commit: `36822c2b75b6e1cd5406a5ab40fe603fc380ee10`
-  - local runtime update keeps `@agentclientprotocol/sdk` at `0.22.1` and updates `@anthropic-ai/claude-agent-sdk` to `0.3.154` (Claude Code `2.1.154`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.39.0`
+  - upstream commit: `edde96ebafac2ea5d1c879c17459453472d82916`
+  - dependencies match the upstream `0.39.0` release (`@agentclientprotocol/sdk` `0.22.1`, `@anthropic-ai/claude-agent-sdk` `0.3.156`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 
 ## Current Codex Delta
@@ -81,13 +81,11 @@ metadata paths that NeverWrite depends on.
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.37.0`, with a narrow local runtime bump to `@anthropic-ai/claude-agent-sdk`
-`0.3.154` so the embedded Claude Code runtime is `2.1.154`.
+`0.39.0` without a NeverWrite-specific source delta.
 
-The only source-level compatibility delta is treating the SDK's
-`thinking_tokens` system event as a no-op. The event is streaming telemetry for
-thinking-token estimates, not assistant content, tool calls, file edits, or final
-usage. `dist/` is rebuilt from the vendored source after applying that delta.
+The `dist/` directory is rebuilt from the vendored source snapshot because the
+desktop packaging flow stages the compiled runtime files, while upstream does
+not track generated output in git.
 
 ## Updating Vendored Runtimes
 

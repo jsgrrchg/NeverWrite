@@ -32,6 +32,7 @@ import {
   ClaudeAcpAgent,
   claudeCliPath,
   describeAlwaysAllow,
+  streamEventToAcpNotifications,
   type SDKMessageFilter,
 } from "../acp-agent.js";
 import { Pushable } from "../utils.js";
@@ -238,13 +239,15 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
       name: "compact",
     });
 
-    // Send something
-    await connection.prompt({
-      prompt: [{ type: "text", text: "Hi" }],
-      sessionId: newSessionResponse.sessionId,
-    });
-    // Clear response
-    client.takeReceivedText();
+    // Build up enough conversation that there's something to compact. The SDK
+    // refuses to compact a conversation with too few message groups.
+    for (let i = 0; i < 6; i++) {
+      await connection.prompt({
+        prompt: [{ type: "text", text: `Reply with just the number ${i}.` }],
+        sessionId: newSessionResponse.sessionId,
+      });
+      client.takeReceivedText();
+    }
 
     await connection.prompt({
       prompt: [
@@ -257,7 +260,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     });
 
     expect(client.takeReceivedText()).toContain("Compacting...\n\nCompacting completed.");
-  }, 30000);
+  }, 60000);
 });
 
 describe("tool conversions", () => {
@@ -662,6 +665,7 @@ describe("tool conversions", () => {
           server_tool_use: null,
           inference_geo: null,
           iterations: null,
+          output_tokens_details: null,
           speed: null,
         },
         context_management: null,
@@ -1198,16 +1202,6 @@ describe("stripLocalCommandMetadata", () => {
       },
     ]);
     expect(result).toEqual([{ type: "text", text: "hi" }]);
-  });
-
-  it("leaves unterminated marker tags unchanged", () => {
-    const text = "<command-args>opus";
-    expect(stripLocalCommandMetadata(text)).toBe(text);
-  });
-
-  it("handles many marker-looking fragments without dropping real prose", () => {
-    const markerLikeNoise = "<command-args".repeat(5000);
-    expect(stripLocalCommandMetadata(`${markerLikeNoise}hi`)).toBe(`${markerLikeNoise}hi`);
   });
 
   it("leaves non-text blocks alone", () => {
@@ -3880,5 +3874,40 @@ describe("post-error recovery", () => {
     await expect(pendingA).resolves.toBe(true);
     await expect(pendingB).resolves.toBe(true);
     expect(session.pendingMessages.size).toBe(0);
+  });
+});
+
+describe("streamEventToAcpNotifications", () => {
+  it("treats `ping` keep-alive events as no-ops without logging to stderr", () => {
+    const errors: unknown[][] = [];
+    const logger = {
+      log: () => {},
+      error: (...args: unknown[]) => {
+        errors.push(args);
+      },
+    };
+    const pingMessage = {
+      type: "stream_event",
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      // The SDK's typed `BetaRawMessageStreamEvent` union doesn't include
+      // `ping`, but the API emits it on the wire and the SDK passes it
+      // through. Cast through `unknown` to feed the realistic runtime shape.
+      event: { type: "ping" } as unknown,
+    } as Parameters<typeof streamEventToAcpNotifications>[0];
+
+    const result = streamEventToAcpNotifications(
+      pingMessage,
+      "test-session",
+      {},
+      { sessionUpdate: async () => {} } as unknown as Parameters<
+        typeof streamEventToAcpNotifications
+      >[3],
+      logger,
+    );
+
+    expect(result).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });

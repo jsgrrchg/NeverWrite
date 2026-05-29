@@ -266,9 +266,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.37.0` (`36822c2b75b6e1cd5406a5ab40fe603fc380ee10`) with vendored `dist/` runtime files |
-| `package.json`, `package-lock.json` | Updated `@anthropic-ai/claude-agent-sdk` to `0.3.154` to embed Claude Code `2.1.154` |
-| `src/acp-agent.ts`, `dist/acp-agent.js` | Added no-op handling for the SDK `thinking_tokens` system event introduced by the newer runtime |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.39.0` (`edde96ebafac2ea5d1c879c17459453472d82916`) with generated `dist/` runtime files required by desktop packaging |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at
