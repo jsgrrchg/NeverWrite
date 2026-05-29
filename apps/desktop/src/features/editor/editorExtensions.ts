@@ -264,8 +264,11 @@ function formatRelativeLineNumber(lineNo: number, cursorLine: number) {
 }
 
 class RelativeLineNumberMarker extends GutterMarker {
-    constructor(private readonly text: string) {
+    private readonly text: string;
+
+    constructor(text: string) {
         super();
+        this.text = text;
     }
 
     eq(other: RelativeLineNumberMarker) {
