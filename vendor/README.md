@@ -81,7 +81,12 @@ metadata paths that NeverWrite depends on.
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.39.0` without a NeverWrite-specific source delta.
+`0.39.0` with one bounded NeverWrite-specific source delta.
+
+Upstream `0.39.0` strips local-command metadata with a regular expression that
+GitHub Advanced Security flags as vulnerable to polynomial runtime on
+uncontrolled input. NeverWrite replaces that expression with an equivalent
+linear scanner in `src/acp-agent.ts` and rebuilds `dist/` from that source.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does
