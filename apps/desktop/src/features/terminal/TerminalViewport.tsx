@@ -117,6 +117,11 @@ export function TerminalViewport({
     const webglAddonRef = useRef<WebglAddon | null>(null);
     const pendingWriteCharsRef = useRef(0);
     const writeBacklogRef = useRef<string[]>([]);
+    // Set to true after an explicit Shift+Enter write so that onData can drop
+    // the duplicate \n that Electron's textarea sometimes leaks despite
+    // event.preventDefault() — the root cause of ghost rows when lines added
+    // via Shift+Enter are then deleted.
+    const suppressNextNewlineRef = useRef(false);
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchOpenRef = useRef(false);
@@ -319,6 +324,7 @@ export function TerminalViewport({
             }
             if (event.type === "keydown" && event.key === "Enter" && event.shiftKey) {
                 event.preventDefault();
+                suppressNextNewlineRef.current = true;
                 void writeInputRef.current("\n").catch(() => undefined);
                 return false;
             }
@@ -365,6 +371,11 @@ export function TerminalViewport({
             searchAddonRef.current = searchAddon;
 
             onDataDisposable = terminal.onData((data) => {
+                if (data === "\n" && suppressNextNewlineRef.current) {
+                    suppressNextNewlineRef.current = false;
+                    return;
+                }
+                suppressNextNewlineRef.current = false;
                 void writeInputRef
                     .current(data)
                     .catch((error) =>
