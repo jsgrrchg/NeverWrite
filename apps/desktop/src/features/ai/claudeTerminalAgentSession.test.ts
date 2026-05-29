@@ -1,9 +1,13 @@
 import { invoke } from "@neverwrite/runtime";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useEditorStore } from "../../app/store/editorStore";
+import {
+    selectEditorWorkspaceTabs,
+    useEditorStore,
+} from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { setEditorTabs } from "../../test/test-utils";
+import { openChatSessionInWorkspace } from "./chatPaneMovement";
 import {
     resetTerminalRuntimeStoreForTests,
     useTerminalRuntimeStore,
@@ -180,6 +184,34 @@ describe("claudeTerminalAgentSession", () => {
         expect(
             focusClaudeTerminalAgentSession({ terminalId: "missing" }),
         ).toBe(false);
+    });
+
+    it("opening the entry in the workspace focuses the terminal, not an ACP chat", () => {
+        const tabs = [
+            { id: "note-1", kind: "note", noteId: "notes/a", title: "Note A" },
+            {
+                id: "term-tab-1",
+                kind: "terminal",
+                terminalId: "term-1",
+                title: "Claude Code 1",
+                cwd: "/vault",
+            },
+        ] as Parameters<typeof setEditorTabs>[0];
+        setEditorTabs(tabs, "note-1");
+        registerClaudeTerminalAgentSession({
+            terminalId: "term-1",
+            title: "Claude Code 1",
+        });
+
+        openChatSessionInWorkspace(SESSION_ID);
+
+        // Focused the terminal tab; no ai-chat tab was opened for it (which would
+        // have resumed a nonexistent ACP session).
+        expect(useEditorStore.getState().activeTabId).toBe("term-tab-1");
+        const chatTabs = selectEditorWorkspaceTabs(
+            useEditorStore.getState(),
+        ).filter((tab) => "sessionId" in tab && tab.kind === "ai-chat");
+        expect(chatTabs).toHaveLength(0);
     });
 
     it("prunes agent entries whose terminal is gone, keeping live ones", async () => {
