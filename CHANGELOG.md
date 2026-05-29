@@ -34,6 +34,19 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.3.1] - 2026-05-28
+
+### Changed
+
+- Updated the embedded Claude Code runtime to `2.1.154`, including compatibility with the newer thinking-token telemetry event emitted by the Claude SDK.
+- Changed APT repository publishing so Debian `.deb` binaries stay on GitHub Releases while signed APT metadata remains on GitHub Pages, keeping Linux installs pointed at release assets without publishing large package files to the Pages branch.
+- Updated the desktop app's transitive `tmp` dependency to `0.2.6`.
+
+### Fixed
+
+- Fixed HTML preview tabs so iframe previews no longer swallow internal file-tree or agent-sidebar drag events, restoring reliable drag interactions across HTML previews.
+- Fixed APT repository validation for Debian packages published through remote GitHub Release URLs.
+
 ## [0.3.0] - 2026-05-27
 
 ### Added
