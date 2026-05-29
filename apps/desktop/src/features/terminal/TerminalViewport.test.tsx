@@ -351,4 +351,109 @@ describe("TerminalViewport", () => {
 
         expect(term.screen?.textContent).toContain(TAIL);
     });
+
+    it("writes the new tail without reset when the overlap region is plain repeated characters", async () => {
+        // Covers the case where a terminal outputs monotonous content (progress
+        // bars, spinner lines, repeated padding) so the overlap between lastRef
+        // and rawOutput is all the same character.  The unique prefix before the
+        // repeated block ensures the probe's first indexOf hit lands at the true
+        // truncation offset, not at a false-positive earlier position.
+        //
+        // Geometry assumes PROBE_LEN=32.  The probe is "a"*32; PREFIX has no
+        // 'a', so the first indexOf hit in searchArea is at the true offset.
+        //
+        // Length invariant: postTruncation.length must be >= initial.length so
+        // the rawOutput.length >= lastRef.length gate is satisfied and the probe
+        // path is entered.  We preserve length by adding as many tail chars as
+        // were trimmed from the front.
+        const PREFIX = "UNIQUE_PREF"; // 11 unique non-'a' chars, trimmed by the cap
+        const OVERLAP = "a".repeat(200); // repeated content — the probe "a"*32 lives here
+        const TAIL = "N".repeat(PREFIX.length); // same length as PREFIX to keep total length equal
+        const initial = PREFIX + OVERLAP; // 211 chars
+        const postTruncation = OVERLAP + TAIL; // 211 chars — does not start with initial
+
+        const { rerender } = renderComponent(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: initial })}
+            />,
+        );
+        await flushPromises();
+
+        const [term] = getXtermMockInstances();
+        if (!term) throw new Error("No xterm instance");
+
+        // Spy after the initial render (which legitimately resets for the new
+        // session) so we only count resets that happen during truncation.
+        const resetSpy = vi.spyOn(term, "reset");
+
+        rerender(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: postTruncation })}
+            />,
+        );
+        await flushPromises();
+
+        expect(resetSpy).not.toHaveBeenCalled();
+        // Exact screen state: initial content (written on first render) followed
+        // by only the delta tail — not a full reset+rewrite of postTruncation.
+        // If reset+replay had fired, PREFIX would be absent (reset clears screen,
+        // then the full replay starts with OVERLAP).
+        expect(term.screen?.textContent).toBe(initial + TAIL);
+    });
+
+    it("falls back to full reset when the probe hits an earlier repeated-content position and verification rejects it", async () => {
+        // When rawOutput starts with a repeated pattern that also appears
+        // earlier in lastRef, indexOf finds the wrong (earlier) offset.  The
+        // 32-char verification window catches the mismatch and the code falls
+        // through to terminal.reset() + full replay — no silent output drop.
+        //
+        // Geometry assumes PROBE_LEN=32.
+        //
+        // Layout (all lengths preserved so the length gate is satisfied):
+        //   initial     = "a"*100  +  SEPARATOR  +  "a"*100   (213 chars)
+        //   postTrunc   = "a"*40   +  SEPARATOR  +  "a"*100  +  "N"*60  (213 chars)
+        //
+        // Probe = "a"*32.  searchArea = initial[1:] starts with "a"*99 so the
+        // first indexOf hit is at index 0 → delta = 1 (wrong; true offset = 60).
+        // Verification: initial[33:65] = "a"*32 but postTrunc[32:64] contains
+        // SEPARATOR (which starts at index 40), so the windows differ and the
+        // verification step rejects the early hit.
+        //
+        // SEPARATOR must appear within postTrunc[32:64] (starts at 40, ends at
+        // 52) — i.e. it must start after the 32-char probe window AND end before
+        // index 64.  Shifting it entirely before index 32 would put it inside the
+        // probe (changing the probe content), and shifting it past index 64 would
+        // place it outside the verification window and allow a false acceptance.
+        const SEPARATOR = "SEP_UNIQUE_XZ"; // 13 chars, no 'a', starts at postTrunc[40]
+        const initial =
+            "a".repeat(100) + SEPARATOR + "a".repeat(100); // 213 chars
+        const postTruncation =
+            initial.slice(60) + "N".repeat(60); // 153 + 60 = 213 chars
+
+        const { rerender } = renderComponent(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: initial })}
+            />,
+        );
+        await flushPromises();
+
+        const [term] = getXtermMockInstances();
+        if (!term) throw new Error("No xterm instance");
+
+        const resetSpy = vi.spyOn(term, "reset");
+
+        rerender(
+            <TerminalViewport
+                session={createSessionView({ rawOutput: postTruncation })}
+            />,
+        );
+        await flushPromises();
+
+        // Verification rejected the early probe hit → graceful reset fallback.
+        expect(resetSpy).toHaveBeenCalledOnce();
+        // Exact screen state after reset+full replay: postTruncation in full.
+        // toContain alone would miss a regression where only part of the output
+        // was replayed after the reset.
+        expect(term.screen?.textContent).toBe(postTruncation);
+    });
 });
