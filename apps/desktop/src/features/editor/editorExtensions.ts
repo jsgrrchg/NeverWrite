@@ -3,6 +3,8 @@ import {
     EditorView,
     type ViewUpdate,
     ViewPlugin,
+    gutter,
+    GutterMarker,
     lineNumbers,
 } from "@codemirror/view";
 import { Compartment, RangeSetBuilder } from "@codemirror/state";
@@ -255,6 +257,52 @@ export function getVimExtension(enabled: boolean) {
     return [vim(), vimStatusBarExtension];
 }
 
+function formatRelativeLineNumber(lineNo: number, cursorLine: number) {
+    return lineNo === cursorLine
+        ? String(lineNo)
+        : String(Math.abs(lineNo - cursorLine));
+}
+
+class RelativeLineNumberMarker extends GutterMarker {
+    constructor(private readonly text: string) {
+        super();
+    }
+
+    eq(other: RelativeLineNumberMarker) {
+        return this.text === other.text;
+    }
+
+    toDOM() {
+        return document.createTextNode(this.text);
+    }
+}
+
+// The built-in `lineNumbers()` gutter only repaints its labels on document,
+// viewport, or height changes — never on a bare selection change — and its
+// `lineMarkerChange` hook is not exposed through the public config. Relative
+// numbering reads the cursor line, so we build the gutter directly and force a
+// redraw on `selectionSet`; otherwise relative numbers go stale until an
+// unrelated edit/scroll/reconfigure triggers a repaint.
+function relativeLineNumberGutter() {
+    return gutter({
+        class: "cm-lineNumbers",
+        lineMarker(view, line) {
+            const lineNo = view.state.doc.lineAt(line.from).number;
+            const cursorLine = view.state.doc.lineAt(
+                view.state.selection.main.head,
+            ).number;
+            return new RelativeLineNumberMarker(
+                formatRelativeLineNumber(lineNo, cursorLine),
+            );
+        },
+        lineMarkerChange: (update) =>
+            update.selectionSet || update.docChanged,
+        initialSpacer() {
+            return new RelativeLineNumberMarker("0");
+        },
+    });
+}
+
 // Line-number gutter. The gutter only renders in code (non–live-preview) mode,
 // matching prior behavior. When vim relative line numbers are enabled, the
 // current line shows its absolute number and others show their distance from
@@ -265,16 +313,7 @@ export function getLineNumberExtension(
 ) {
     if (livePreviewEnabled) return [];
     if (!relative) return lineNumbers();
-    return lineNumbers({
-        formatNumber: (lineNo, state) => {
-            const cursorLine = state.doc.lineAt(
-                state.selection.main.head,
-            ).number;
-            return lineNo === cursorLine
-                ? String(lineNo)
-                : String(Math.abs(lineNo - cursorLine));
-        },
-    });
+    return relativeLineNumberGutter();
 }
 
 export function getAlignmentExtension(enabled: boolean) {

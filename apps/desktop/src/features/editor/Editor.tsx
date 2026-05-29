@@ -3038,6 +3038,28 @@ export function Editor({
         isInternalRef.current = false;
         if (!view) return;
 
+        // A restored cached state carries the vim/line-number compartment
+        // config it had when it was stashed. If the user toggled vim mode (or
+        // relative numbers) while another note was active, that config is now
+        // stale, so reconfigure it to the current settings. Freshly created
+        // states already read the live settings in createEditorState.
+        if (savedStateIsCurrent) {
+            const settings = useSettingsStore.getState();
+            view.dispatch({
+                effects: [
+                    vimCompartment.reconfigure(
+                        getVimExtension(settings.vimModeEnabled),
+                    ),
+                    lineNumberCompartment.reconfigure(
+                        getLineNumberExtension(
+                            settings.livePreviewEnabled,
+                            settings.vimRelativeLineNumbers,
+                        ),
+                    ),
+                ],
+            });
+        }
+
         // Re-insert scroll header if setState detached it
         if (
             scrollHeaderRef.current &&
