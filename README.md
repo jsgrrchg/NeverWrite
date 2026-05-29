@@ -63,6 +63,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 ### Editing and reading
 
 - Markdown editing with CodeMirror 6
+- Optional Vim key bindings for modal editing, with Vim-style ex commands and relative line numbers
 - Wikilink suggestions, resolution, and navigation
 - Live preview with tasks, tables, embeds, math, and YouTube previews
 - Frontmatter/properties editing
