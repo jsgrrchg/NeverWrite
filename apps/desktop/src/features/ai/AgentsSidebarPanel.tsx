@@ -46,6 +46,7 @@ import {
     countAiSessionChildren,
     type AiSessionHierarchyGroup,
 } from "./sessionHierarchy";
+import { focusClaudeTerminalAgentSession } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import type { AIChatSession } from "./types";
@@ -611,6 +612,10 @@ export function AgentsSidebarPanel() {
                 onRenameCancel={cancelEditing}
                 renameInputRef={inputRef}
                 onOpen={() => {
+                    if (session.runtimeId === CLAUDE_TERMINAL_RUNTIME_ID) {
+                        focusClaudeTerminalAgentSession(session);
+                        return;
+                    }
                     void openChatSessionInWorkspace(session.sessionId);
                 }}
                 onStartRename={() => {

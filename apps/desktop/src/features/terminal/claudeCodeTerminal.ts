@@ -6,6 +6,7 @@ import {
 import { isTerminalTab } from "../../app/store/editorTabs";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { registerClaudeTerminalAgentSession } from "../ai/claudeTerminalAgentSession";
 import type { FileTreeNoteDragDetail } from "../ai/dragEvents";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
 
@@ -191,6 +192,10 @@ export async function openClaudeCodeTerminalWithContext(
     const { terminalId } = tab;
     const ready = await waitForTerminalRunning(terminalId);
     if (!ready) return;
+
+    // Surface this terminal in the Agents sidebar. The entry is non-persisted
+    // and removed when the terminal tab closes.
+    registerClaudeTerminalAgentSession({ terminalId, title: tab.title });
 
     const store = useTerminalRuntimeStore.getState();
 
