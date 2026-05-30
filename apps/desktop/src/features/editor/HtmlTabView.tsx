@@ -4,9 +4,11 @@ import { useVaultStore } from "../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../app/utils/vaultPaths";
 import { buildVaultAssetUrl } from "../../app/utils/filePreviewUrl";
 import type { FileTab } from "../../app/store/editorStore";
+import { useInternalDragIframeShield } from "./useInternalDragIframeShield";
 
 export function HtmlTabView({ tab }: { tab: FileTab }) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
+    const iframeShieldActive = useInternalDragIframeShield();
 
     const previewUrl = useMemo(() => {
         const relative = toVaultRelativePath(tab.path, vaultPath);
@@ -74,6 +76,9 @@ export function HtmlTabView({ tab }: { tab: FileTab }) {
                             height: "100%",
                             border: "none",
                             backgroundColor: "white",
+                            pointerEvents: iframeShieldActive
+                                ? "none"
+                                : "auto",
                         }}
                     />
                 ) : (

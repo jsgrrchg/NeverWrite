@@ -49,6 +49,12 @@ The release workflow publishes these files to `gh-pages`:
 apt/
   neverwrite-archive-keyring.asc
   neverwrite.sources.example
+  pool/
+    main/
+      n/
+        neverwrite/
+          neverwrite_0.3.0_amd64.deb
+          neverwrite_0.3.0_arm64.deb
   dists/
     stable/
       InRelease
@@ -61,18 +67,17 @@ apt/
         binary-arm64/
           Packages
           Packages.gz
-  pool/
-    main/
-      n/
-        neverwrite/
-          neverwrite_<version>_amd64.deb
-          neverwrite_<version>_arm64.deb
 ```
 
-The workflow copies the `.deb` assets produced for GitHub Releases into
-`apt/pool/`, retains the latest three package versions, regenerates `Packages`
-and `Release`, signs the repository, validates checksums and signatures, then
-publishes the result with the existing Electron feeds.
+The `.deb` binary packages are stored inside the APT repository pool. The
+`Filename` field in each `Packages` index must be a relative pool path, for
+example `pool/main/n/neverwrite/neverwrite_0.3.0_amd64.deb`. APT then resolves
+the package relative to the configured repository URL.
+
+The workflow reads the `.deb` metadata from the staged release assets,
+copies the packages into `apt/pool/`, generates `Packages` and `Release`, signs
+the repository, validates checksums and signatures, then publishes the result
+with the existing Electron feeds.
 
 ## Required GitHub Secrets
 

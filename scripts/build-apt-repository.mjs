@@ -78,7 +78,6 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
-
         throw new Error(
             `Unknown argument "${arg}". Supported args: --version, --release-assets-dir, --pages-dir, --base-url, --suite, --component, --retain-versions.`,
         );
@@ -237,13 +236,13 @@ function validateDebianPackageFields({
     }
 }
 
-function renderPackagesFileForArchitecture({ aptDir, architecture }) {
+function collectPoolPackages({ aptDir }) {
     const poolDir = path.join(aptDir, "pool", "main", "n", "neverwrite");
-    const stanzas = [];
+    const packages = [];
 
     for (const packagePath of listFilesRecursively(poolDir)) {
         const metadata = parseAptPoolPackageFileName(path.basename(packagePath));
-        if (!metadata || metadata.architecture !== architecture) {
+        if (!metadata) {
             continue;
         }
 
@@ -256,10 +255,11 @@ function renderPackagesFileForArchitecture({ aptDir, architecture }) {
             packagePath,
             relativePath,
             fields,
-            architecture,
+            architecture: metadata.architecture,
         });
-        stanzas.push({
+        packages.push({
             version: metadata.version,
+            architecture: metadata.architecture,
             content: renderPackagesStanza({
                 controlFields: fields,
                 filename: relativePath,
@@ -269,11 +269,18 @@ function renderPackagesFileForArchitecture({ aptDir, architecture }) {
         });
     }
 
-    stanzas.sort((left, right) =>
-        compareReleaseVersionsDescending(left.version, right.version),
-    );
+    return packages;
+}
 
-    return stanzas.map((stanza) => stanza.content).join("\n");
+function renderPackagesFileForArchitecture({ packages, architecture }) {
+    const stanzas = packages
+        .filter((pkg) => pkg.architecture === architecture)
+        .sort((left, right) =>
+            compareReleaseVersionsDescending(left.version, right.version),
+        )
+        .map((pkg) => pkg.content);
+
+    return stanzas.join("\n");
 }
 
 function gzipDeterministic(input) {
@@ -290,14 +297,14 @@ function gzipDeterministic(input) {
     return zlib.gzipSync(Buffer.from(input, "utf8"), { level: 9, mtime: 0 });
 }
 
-function writePackagesIndexes({ aptDir }) {
+function writePackagesIndexes({ aptDir, packages }) {
     const written = [];
 
     for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
         const packagesRelativePath = getAptBinaryPackagesPath(architecture);
         const packagesPath = path.join(aptDir, packagesRelativePath);
         const content = renderPackagesFileForArchitecture({
-            aptDir,
+            packages,
             architecture,
         });
 
@@ -360,13 +367,25 @@ function main() {
         currentVersion: args.version,
     });
 
-    // Rebuild metadata from retained pool packages so stale indexes never leak
+    const packages = collectPoolPackages({ aptDir });
+
+    console.log(
+        `Copied Debian packages: ${copied.map((entry) => entry.relativePath).join(", ")}`,
+    );
+    console.log(
+        `Retained APT package versions: ${retention.retainedVersions.join(", ")}`,
+    );
+    if (retention.removed.length > 0) {
+        console.log(`Pruned old Debian packages: ${retention.removed.length}`);
+    }
+
+    // Rebuild metadata from collected packages so stale indexes never leak
     // into the published repository.
     fs.rmSync(path.join(aptDir, "dists", args.suite), {
         recursive: true,
         force: true,
     });
-    const packagesIndexes = writePackagesIndexes({ aptDir });
+    const packagesIndexes = writePackagesIndexes({ aptDir, packages });
     const releaseFiles = collectReleaseFiles(aptDir, args.suite);
     const releasePath = path.join(aptDir, "dists", args.suite, "Release");
 
@@ -387,14 +406,8 @@ function main() {
     removeStaleSignatures(aptDir, args.suite);
 
     console.log(
-        `Copied Debian packages: ${copied.map((entry) => entry.relativePath).join(", ")}`,
+        `APT package versions indexed: ${packages.map((pkg) => `${pkg.version} (${pkg.architecture})`).join(", ")}`,
     );
-    console.log(
-        `Retained APT package versions: ${retention.retainedVersions.join(", ")}`,
-    );
-    if (retention.removed.length > 0) {
-        console.log(`Pruned old Debian packages: ${retention.removed.length}`);
-    }
     console.log(`Wrote APT package indexes: ${packagesIndexes.join(", ")}`);
     console.log(`Wrote APT Release metadata: ${releasePath}`);
 }

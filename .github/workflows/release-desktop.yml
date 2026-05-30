@@ -786,7 +786,45 @@ jobs:
                   }
                   EOF
 
-            - name: Install repository tools
+            - name: Publish updater feeds to gh-pages
+              shell: bash
+              env:
+                  CHANNEL: ${{ needs.prepare.outputs.channel }}
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  (
+                    cd "$PAGES_DIR"
+                    git config user.name "github-actions[bot]"
+                    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                    git add "${CHANNEL}" .nojekyll
+                    if git diff --cached --quiet; then
+                      echo "No updater feed changes to publish."
+                    else
+                      git commit -m "Publish updater feeds for ${{ needs.prepare.outputs.tag }}"
+                      git push origin HEAD:gh-pages
+                    fi
+                  )
+
+            - name: Print published feed URLs
+              shell: bash
+              run: |
+                  node --input-type=module <<'EOF'
+                  import fs from "node:fs";
+                  import path from "node:path";
+
+                  const baseUrl = "${{ needs.prepare.outputs.pages_base_url }}".replace(/\/+$/, "");
+                  const channel = "${{ needs.prepare.outputs.channel }}";
+                  const metadataDir = path.resolve(".artifacts/release-targets");
+
+                  for (const fileName of fs.readdirSync(metadataDir).filter((file) => file.endsWith(".json")).sort()) {
+                    const metadata = JSON.parse(
+                      fs.readFileSync(path.join(metadataDir, fileName), "utf8"),
+                    );
+                    console.log(`${baseUrl}/${channel}/${metadata.feedRelativePath}`);
+                  }
+                  EOF
+
+            - name: Install Linux repository tools
               run: sudo apt-get update && sudo apt-get install -y dpkg gnupg gzip rpm
 
             - name: Build APT repository
@@ -800,8 +838,7 @@ jobs:
                     --pages-dir "$PAGES_DIR" \
                     --base-url "${{ needs.prepare.outputs.pages_base_url }}/apt" \
                     --suite stable \
-                    --component main \
-                    --retain-versions 3
+                    --component main
 
             - name: Build DNF repository
               shell: bash
@@ -844,17 +881,26 @@ jobs:
             - name: Sign DNF repository
               shell: bash
               env:
+                  APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
                   APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+                  APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
                   PAGES_DIR: ${{ runner.temp }}/gh-pages
               run: |
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name}" ]]; then
+                      echo "Missing required GitHub Actions secret: ${name}" >&2
+                      exit 1
+                    fi
+                  done
+
                   export GNUPGHOME
                   GNUPGHOME="$(mktemp -d)"
                   trap 'rm -rf "$GNUPGHOME"' EXIT
                   chmod 700 "$GNUPGHOME"
-                  printf '%s' "${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}" | gpg --batch --import
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   node scripts/sign-dnf-repository.mjs \
                     --dnf-dir "$PAGES_DIR/dnf" \
-                    --key-id "${{ secrets.APT_REPO_GPG_KEY_ID }}"
+                    --key-id "$APT_REPO_GPG_KEY_ID"
 
             - name: Validate APT repository
               shell: bash
@@ -899,6 +945,8 @@ jobs:
                       apt-get update
                       apt-cache policy neverwrite
                       apt-cache policy neverwrite | grep -F "$VERSION"
+                      apt-get --print-uris install "neverwrite=$VERSION"
+                      apt-get install -y --download-only "neverwrite=$VERSION"
                     '
 
             - name: Validate DNF repository with dnf
@@ -922,40 +970,20 @@ jobs:
                       echo "DNF repository validated successfully."
                     '
 
-            - name: Publish pages artifacts to gh-pages
+            - name: Publish Linux repositories to gh-pages
               shell: bash
               env:
-                  CHANNEL: ${{ needs.prepare.outputs.channel }}
                   PAGES_DIR: ${{ runner.temp }}/gh-pages
               run: |
                   (
                     cd "$PAGES_DIR"
                     git config user.name "github-actions[bot]"
                     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                    git add "${CHANNEL}" apt dnf .nojekyll
+                    git add apt dnf .nojekyll
                     if git diff --cached --quiet; then
-                      echo "No pages artifact changes to publish."
+                      echo "No Linux repository changes to publish."
                     else
-                      git commit -m "Publish release pages artifacts for ${{ needs.prepare.outputs.tag }}"
+                      git commit -m "Publish Linux repositories for ${{ needs.prepare.outputs.tag }}"
                       git push origin HEAD:gh-pages
                     fi
                   )
-
-            - name: Print published feed URLs
-              shell: bash
-              run: |
-                  node --input-type=module <<'EOF'
-                  import fs from "node:fs";
-                  import path from "node:path";
-
-                  const baseUrl = "${{ needs.prepare.outputs.pages_base_url }}".replace(/\/+$/, "");
-                  const channel = "${{ needs.prepare.outputs.channel }}";
-                  const metadataDir = path.resolve(".artifacts/release-targets");
-
-                  for (const fileName of fs.readdirSync(metadataDir).filter((file) => file.endsWith(".json")).sort()) {
-                    const metadata = JSON.parse(
-                      fs.readFileSync(path.join(metadataDir, fileName), "utf8"),
-                    );
-                    console.log(`${baseUrl}/${channel}/${metadata.feedRelativePath}`);
-                  }
-                  EOF

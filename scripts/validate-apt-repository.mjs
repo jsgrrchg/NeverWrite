@@ -25,6 +25,8 @@ import {
 } from "./apt-repo-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
 
+const APT_PACKAGE_FILENAME_PREFIX = "pool/main/n/neverwrite/";
+
 function parseArgs(argv) {
     const args = {
         aptDir: null,
@@ -162,6 +164,34 @@ function validateReleaseFile({ aptDir, suite, component }) {
     }
 }
 
+function resolvePackageFilename({ aptDir, arch, filename }) {
+    const normalizedFilename = path.posix.normalize(filename);
+    if (
+        filename !== normalizedFilename ||
+        filename.includes("\\") ||
+        path.posix.isAbsolute(normalizedFilename) ||
+        !normalizedFilename.startsWith(APT_PACKAGE_FILENAME_PREFIX)
+    ) {
+        throw new Error(
+            `${arch} Packages contains invalid Filename "${filename}". Expected a normalized relative path under "${APT_PACKAGE_FILENAME_PREFIX}".`,
+        );
+    }
+
+    const packagePath = path.resolve(aptDir, normalizedFilename);
+    const relativeFromAptRoot = path
+        .relative(aptDir, packagePath)
+        .split(path.sep)
+        .join(path.posix.sep);
+
+    if (relativeFromAptRoot !== normalizedFilename) {
+        throw new Error(
+            `${arch} Packages contains invalid Filename "${filename}". Expected a path inside the APT repository root.`,
+        );
+    }
+
+    return packagePath;
+}
+
 function validatePackagesForArchitecture({
     aptDir,
     architecture,
@@ -208,13 +238,13 @@ function validatePackagesForArchitecture({
                 `${arch} Packages contains unexpected Architecture "${packageArchitecture}".`,
             );
         }
-        if (!filename?.startsWith("pool/main/n/neverwrite/")) {
+        if (!filename) {
             throw new Error(
-                `${arch} Packages contains invalid Filename "${filename ?? "missing"}".`,
+                `${arch} Packages contains package with missing Filename.`,
             );
         }
 
-        const packagePath = path.join(aptDir, filename);
+        const packagePath = resolvePackageFilename({ aptDir, arch, filename });
         assertFileExists(packagePath, `${arch} package file`);
 
         if (fs.statSync(packagePath).size !== size) {
