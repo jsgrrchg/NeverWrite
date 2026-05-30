@@ -67,7 +67,6 @@ type TimelineRow =
 const NEAR_BOTTOM_THRESHOLD = 80;
 const LOAD_OLDER_THRESHOLD = 120;
 const DETACHED_TIMELINE_SCOPE = "__detached_timeline__";
-const RECENT_HISTORICAL_DIFF_WORK_CYCLE_LIMIT = 2;
 
 function isNearBottom(el: HTMLElement) {
     return (
@@ -97,36 +96,6 @@ function scopeTimelineRowKey(
     rowKey: string,
 ) {
     return `${sessionId ?? DETACHED_TIMELINE_SCOPE}:${rowKey}`;
-}
-
-function deriveRecentHistoricalDiffWorkCycleIds(
-    messages: AIChatMessage[],
-    visibleWorkCycleId: string | null | undefined,
-) {
-    if (!visibleWorkCycleId) {
-        return [];
-    }
-
-    const recentWorkCycleIds: string[] = [];
-    const seen = new Set<string>([visibleWorkCycleId]);
-
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const message = messages[i];
-        const workCycleId = message.workCycleId;
-        if (!workCycleId || !message.diffs?.length || seen.has(workCycleId)) {
-            continue;
-        }
-
-        seen.add(workCycleId);
-        recentWorkCycleIds.push(workCycleId);
-        if (
-            recentWorkCycleIds.length >= RECENT_HISTORICAL_DIFF_WORK_CYCLE_LIMIT
-        ) {
-            break;
-        }
-    }
-
-    return recentWorkCycleIds;
 }
 
 function StreamingRunIndicator({
@@ -270,7 +239,6 @@ function renderTimelineRow(
         pillMetrics: ReturnType<typeof getChatPillMetrics>;
         chatFontSize: number;
         visibleWorkCycleId?: string | null;
-        recentDiffWorkCycleIds?: string[];
         onPermissionResponse?: (requestId: string, optionId?: string) => void;
         onUserInputResponse?: (
             requestId: string,
@@ -297,7 +265,6 @@ function renderTimelineRow(
             pillMetrics={options.pillMetrics}
             chatFontSize={options.chatFontSize}
             visibleWorkCycleId={options.visibleWorkCycleId}
-            recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
             onPermissionResponse={
                 options.readOnly ? undefined : options.onPermissionResponse
             }
@@ -436,14 +403,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     );
     const dismissPinnedPlan = useChatRowUiStore((state) => state.patchRow);
     const visiblePinnedPlan = pinnedPlanDismissed ? null : pinnedPlan;
-    const recentDiffWorkCycleIds = useMemo(
-        () =>
-            deriveRecentHistoricalDiffWorkCycleIds(
-                messages,
-                visibleWorkCycleId,
-            ),
-        [messages, visibleWorkCycleId],
-    );
     const timelineRows = useMemo(() => {
         const rows: TimelineRow[] = [];
 
@@ -491,7 +450,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             pillMetrics,
             chatFontSize,
             visibleWorkCycleId,
-            recentDiffWorkCycleIds,
             onPermissionResponse,
             onUserInputResponse,
             onDismissMessage: handleDismissMessage,
@@ -503,7 +461,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             onUserInputResponse,
             pillMetrics,
             readOnly,
-            recentDiffWorkCycleIds,
             sessionId,
             visibleWorkCycleId,
         ],
