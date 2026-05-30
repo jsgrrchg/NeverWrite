@@ -2,6 +2,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@neverwrite/runtime";
@@ -26,7 +27,10 @@ import {
 import { logError } from "../../app/utils/runtimeLog";
 import { getDesktopPlatform } from "../../app/utils/platform";
 import { getTerminalTheme } from "./terminalTheme";
-import type { TerminalSessionView } from "./terminalTypes";
+import type {
+    TerminalOutputCommand,
+    TerminalSessionView,
+} from "./terminalTypes";
 
 function TerminalMessage({ message }: { message: string }) {
     return (
@@ -77,11 +81,12 @@ function buildSearchSummary(resultIndex: number, resultCount: number) {
 }
 
 const TERMINAL_RESIZE_SETTLE_MS = 80;
-// Flow-control watermarks for xterm.js write queue.
-// When pending chars exceed HIGH, new chunks are queued locally.
-// When pending drops below LOW, the local queue is drained.
-const WRITE_HIGH_WATERMARK = 256_000;
-const WRITE_LOW_WATERMARK = 64_000;
+// Debounce for persisting the xterm buffer snapshot after output settles, so a
+// full reload can restore recent screen content without serializing on every
+// chunk. Scrollback lines kept in the persisted snapshot are capped to bound
+// storage size; in-session remounts use the full in-memory snapshot instead.
+const SNAPSHOT_SAVE_DEBOUNCE_MS = 1_000;
+const PERSISTED_SNAPSHOT_SCROLLBACK = 1_000;
 
 export function TerminalViewport({
     active = true,
@@ -94,16 +99,23 @@ export function TerminalViewport({
     initialScrollPosition?: "top" | "bottom";
     session: TerminalSessionView;
 }) {
-    const { rawOutput, resize, snapshot, writeInput } = session;
+    const { hasOutput, resize, snapshot, writeInput } = session;
     const hostRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const searchAddonRef = useRef<SearchAddon | null>(null);
+    const serializeAddonRef = useRef<SerializeAddon | null>(null);
     const writeInputRef = useRef(writeInput);
     const resizeRef = useRef(resize);
     const snapshotRef = useRef(snapshot);
+    // Latest session view, so the unmount handler can persist a snapshot without
+    // capturing a stale closure.
+    const sessionRef = useRef(session);
     const syncSizeRef = useRef<() => void>(() => undefined);
     const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const snapshotSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
     const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(
         null,
     );
@@ -111,13 +123,15 @@ export function TerminalViewport({
         null,
     );
     const lastSessionIdRef = useRef<string | null>(null);
-    const lastRawOutputRef = useRef("");
     const lastRestoredFocusSessionIdRef = useRef<string | null>(null);
     const shouldApplyInitialScrollRef = useRef(false);
     const shouldRestoreFocusRef = useRef(false);
     const webglAddonRef = useRef<WebglAddon | null>(null);
-    const pendingWriteCharsRef = useRef(0);
-    const writeBacklogRef = useRef<string[]>([]);
+    // Set to true after an explicit Shift+Enter write so that onData can drop
+    // the duplicate \n that Electron's textarea sometimes leaks despite
+    // event.preventDefault() — the root cause of ghost rows when lines added
+    // via Shift+Enter are then deleted.
+    const suppressNextNewlineRef = useRef(false);
     const searchPanelRef = useRef<HTMLDivElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const searchOpenRef = useRef(false);
@@ -220,7 +234,8 @@ export function TerminalViewport({
         writeInputRef.current = writeInput;
         resizeRef.current = resize;
         snapshotRef.current = snapshot;
-    }, [resize, snapshot, writeInput]);
+        sessionRef.current = session;
+    }, [resize, session, snapshot, writeInput]);
 
     useEffect(() => {
         const lastRequestedSize = lastRequestedSizeRef.current;
@@ -300,6 +315,26 @@ export function TerminalViewport({
                     return;
                 }
 
+                // First fit after mount: send immediately so the PTY has the
+                // correct size before Claude Code renders its initial frame.
+                // Subsequent resizes (pane drags, etc.) still debounce to
+                // avoid thrashing the PTY on every intermediate pixel.
+                if (!lastRequestedSizeRef.current) {
+                    if (resizeTimerRef.current) {
+                        clearTimeout(resizeTimerRef.current);
+                        resizeTimerRef.current = null;
+                    }
+                    pendingResizeRef.current = null;
+                    lastRequestedSizeRef.current = {
+                        cols: nextCols,
+                        rows: nextRows,
+                    };
+                    void resizeRef
+                        .current(nextCols, nextRows)
+                        .catch(() => undefined);
+                    return;
+                }
+
                 pendingResizeRef.current = { cols: nextCols, rows: nextRows };
                 if (resizeTimerRef.current) {
                     clearTimeout(resizeTimerRef.current);
@@ -336,6 +371,12 @@ export function TerminalViewport({
                 closeSearch();
                 return false;
             }
+            if (event.type === "keydown" && event.key === "Enter" && event.shiftKey) {
+                event.preventDefault();
+                suppressNextNewlineRef.current = true;
+                void writeInputRef.current("\n").catch(() => undefined);
+                return false;
+            }
             return true;
         });
         let cancelled = false;
@@ -350,6 +391,51 @@ export function TerminalViewport({
         let handleFocus: (() => void) | null = null;
         let handleBlur: ((event: FocusEvent) => void) | null = null;
         let observer: ResizeObserver | null = null;
+        let unsubscribeOutput: (() => void) | null = null;
+
+        // Persist the xterm buffer (debounced) so a full reload can restore the
+        // screen. xterm owns the live buffer; this only snapshots it.
+        const saveSnapshot = () => {
+            snapshotSaveTimerRef.current = null;
+            const addon = serializeAddonRef.current;
+            if (!addon) return;
+            try {
+                sessionRef.current.saveReplaySnapshot(
+                    addon.serialize({
+                        scrollback: PERSISTED_SNAPSHOT_SCROLLBACK,
+                    }),
+                );
+            } catch {
+                // Serialization is best-effort; a failure just skips this save.
+            }
+        };
+        const scheduleSnapshotSave = () => {
+            if (snapshotSaveTimerRef.current) {
+                clearTimeout(snapshotSaveTimerRef.current);
+            }
+            snapshotSaveTimerRef.current = setTimeout(
+                saveSnapshot,
+                SNAPSHOT_SAVE_DEBOUNCE_MS,
+            );
+        };
+
+        // The single output path: PTY chunks are written straight to xterm, in
+        // order. No accumulation, no diffing, no reset on the hot path.
+        const handleOutputCommand = (command: TerminalOutputCommand) => {
+            const t = terminalRef.current;
+            if (!t) return;
+            if (command.type === "clear") {
+                t.reset();
+                return;
+            }
+            t.write(command.data, () => {
+                if (shouldApplyInitialScrollRef.current) {
+                    shouldApplyInitialScrollRef.current = false;
+                    t.scrollToTop();
+                }
+            });
+            scheduleSnapshotSave();
+        };
 
         const finishOpen = () => {
             if (cancelled) return;
@@ -374,11 +460,34 @@ export function TerminalViewport({
                 );
             }
 
+            const serializeAddon = new SerializeAddon();
+            terminal.loadAddon(serializeAddon);
+
             terminalRef.current = terminal;
             fitAddonRef.current = fitAddon;
             searchAddonRef.current = searchAddon;
+            serializeAddonRef.current = serializeAddon;
+
+            shouldApplyInitialScrollRef.current =
+                initialScrollPosition === "top";
+
+            // Restore prior screen content (remount or reload), then subscribe to
+            // live output. Both go through xterm's write queue in FIFO order, so
+            // the snapshot lands before any buffered/live chunks.
+            const replaySnapshot = sessionRef.current.getReplaySnapshot();
+            if (replaySnapshot) {
+                terminal.write(replaySnapshot);
+            }
+            unsubscribeOutput = sessionRef.current.subscribeOutput(
+                handleOutputCommand,
+            );
 
             onDataDisposable = terminal.onData((data) => {
+                if (data === "\n" && suppressNextNewlineRef.current) {
+                    suppressNextNewlineRef.current = false;
+                    return;
+                }
+                suppressNextNewlineRef.current = false;
                 void writeInputRef
                     .current(data)
                     .catch((error) =>
@@ -440,6 +549,15 @@ export function TerminalViewport({
 
         return () => {
             cancelled = true;
+            // Capture a final snapshot before teardown so a remount restores the
+            // last screen state. Runs synchronously off the live buffer.
+            unsubscribeOutput?.();
+            unsubscribeOutput = null;
+            if (snapshotSaveTimerRef.current) {
+                clearTimeout(snapshotSaveTimerRef.current);
+                snapshotSaveTimerRef.current = null;
+            }
+            saveSnapshot();
             observer?.disconnect();
             onSearchResultsDisposable?.dispose();
             onSelectionDisposable?.dispose();
@@ -450,13 +568,12 @@ export function TerminalViewport({
             onDataDisposable?.dispose();
             webglAddonRef.current?.dispose();
             webglAddonRef.current = null;
-            pendingWriteCharsRef.current = 0;
-            writeBacklogRef.current = [];
             terminal.dispose();
             syncSizeRef.current = () => undefined;
             terminalRef.current = null;
             fitAddonRef.current = null;
             searchAddonRef.current = null;
+            serializeAddonRef.current = null;
             if (resizeTimerRef.current) {
                 clearTimeout(resizeTimerRef.current);
                 resizeTimerRef.current = null;
@@ -464,7 +581,6 @@ export function TerminalViewport({
             pendingResizeRef.current = null;
             lastRequestedSizeRef.current = null;
             lastSessionIdRef.current = null;
-            lastRawOutputRef.current = "";
             lastRestoredFocusSessionIdRef.current = null;
             shouldApplyInitialScrollRef.current = false;
             shouldRestoreFocusRef.current = false;
@@ -513,104 +629,24 @@ export function TerminalViewport({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [JSON.stringify(theme)]);
 
+    // Reset transient UI state when the underlying session changes (e.g. after a
+    // restart). The screen wipe itself arrives as a "clear" output command, so
+    // this only handles viewport bookkeeping, not content.
     useEffect(() => {
-        const terminal = terminalRef.current;
-        if (!terminal) return;
-
-        // Drain the local write backlog, capped at WRITE_LOW_WATERMARK chars per
-        // iteration so xterm can interleave rendering between flushes.
-        const flushBacklog = () => {
-            const t = terminalRef.current;
-            if (!t || writeBacklogRef.current.length === 0) return;
-            if (pendingWriteCharsRef.current > WRITE_LOW_WATERMARK) return;
-            let merged = "";
-            while (
-                writeBacklogRef.current.length > 0 &&
-                merged.length < WRITE_LOW_WATERMARK
-            ) {
-                merged += writeBacklogRef.current.shift()!;
-            }
-            const chars = merged.length;
-            pendingWriteCharsRef.current += chars;
-            t.write(merged, () => {
-                pendingWriteCharsRef.current = Math.max(
-                    0,
-                    pendingWriteCharsRef.current - chars,
-                );
-                queueMicrotask(flushBacklog);
-            });
-        };
-
-        // Write a chunk to xterm, queueing locally if the write buffer is full.
-        const writeChunk = (data: string, onDone?: () => void) => {
-            if (pendingWriteCharsRef.current > WRITE_HIGH_WATERMARK) {
-                writeBacklogRef.current.push(data);
-                return;
-            }
-            const chars = data.length;
-            pendingWriteCharsRef.current += chars;
-            terminal.write(data, () => {
-                pendingWriteCharsRef.current = Math.max(
-                    0,
-                    pendingWriteCharsRef.current - chars,
-                );
-                onDone?.();
-                queueMicrotask(flushBacklog);
-            });
-        };
-
         const sessionId = snapshot.sessionId || "__pending-terminal__";
-        const previousSessionId = lastSessionIdRef.current;
-
-        if (previousSessionId !== sessionId) {
-            terminal.reset();
-            pendingWriteCharsRef.current = 0;
-            writeBacklogRef.current = [];
-            lastSessionIdRef.current = sessionId;
-            lastRawOutputRef.current = "";
-            shouldApplyInitialScrollRef.current =
-                initialScrollPosition === "top";
-            queueMicrotask(() => {
-                setHasSelection(false);
-                setSearchResultCount(0);
-                setSearchResultIndex(-1);
-            });
-        }
-
-        if (rawOutput === lastRawOutputRef.current) {
+        if (lastSessionIdRef.current === sessionId) {
             return;
         }
-
-        if (
-            rawOutput.length < lastRawOutputRef.current.length ||
-            !rawOutput.startsWith(lastRawOutputRef.current)
-        ) {
-            terminal.reset();
-            pendingWriteCharsRef.current = 0;
-            writeBacklogRef.current = [];
-            if (rawOutput.length > 0) {
-                writeChunk(rawOutput, () => {
-                    if (!shouldApplyInitialScrollRef.current) return;
-                    shouldApplyInitialScrollRef.current = false;
-                    terminal.scrollToTop();
-                });
-            } else {
-                shouldApplyInitialScrollRef.current = false;
-            }
-            lastRawOutputRef.current = rawOutput;
+        const isFirstSession = lastSessionIdRef.current === null;
+        lastSessionIdRef.current = sessionId;
+        if (isFirstSession) {
             return;
         }
-
-        const nextChunk = rawOutput.slice(lastRawOutputRef.current.length);
-        if (nextChunk.length > 0) {
-            writeChunk(nextChunk, () => {
-                if (!shouldApplyInitialScrollRef.current) return;
-                shouldApplyInitialScrollRef.current = false;
-                terminal.scrollToTop();
-            });
-        }
-        lastRawOutputRef.current = rawOutput;
-    }, [initialScrollPosition, rawOutput, snapshot.sessionId]);
+        shouldApplyInitialScrollRef.current = initialScrollPosition === "top";
+        setHasSelection(false);
+        setSearchResultCount(0);
+        setSearchResultIndex(-1);
+    }, [initialScrollPosition, snapshot.sessionId]);
 
     useEffect(() => {
         if (
@@ -764,12 +800,12 @@ export function TerminalViewport({
         { type: "separator" },
         {
             label: "Clear",
-            disabled: rawOutput.length === 0,
+            disabled: !hasOutput,
             action: () => session.clearViewport(),
         },
     ];
 
-    const noOutput = rawOutput.length === 0;
+    const noOutput = !hasOutput;
 
     return (
         <div
