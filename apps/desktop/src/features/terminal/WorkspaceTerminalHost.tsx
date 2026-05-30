@@ -15,7 +15,6 @@ import {
     type TerminalSessionSnapshot,
 } from "./terminalTypes";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
-import { appendTerminalRawOutput } from "./terminalRawOutput";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -53,12 +52,13 @@ export function WorkspaceTerminalHost() {
                 (event) => {
                     if (cancelled) return;
                     const { sessionId, chunk } = event.payload;
+                    // Coalesce same-session chunks within a frame to cut the
+                    // number of handler calls. No cap here — this holds a single
+                    // frame of output, then hands it to xterm, which owns the
+                    // buffer.
                     pendingBySessionId.set(
                         sessionId,
-                        appendTerminalRawOutput(
-                            pendingBySessionId.get(sessionId) ?? "",
-                            chunk,
-                        ),
+                        (pendingBySessionId.get(sessionId) ?? "") + chunk,
                     );
                     if (rafId === null) {
                         rafId = requestAnimationFrame(flushPending);
