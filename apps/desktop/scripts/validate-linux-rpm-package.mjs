@@ -13,6 +13,7 @@ function parseArgs(argv) {
         buildTarget: null,
         version: null,
         skipInstall: false,
+        requireSignature: false,
     };
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
@@ -34,6 +35,10 @@ function parseArgs(argv) {
         }
         if (arg === "--skip-install") {
             args.skipInstall = true;
+            continue;
+        }
+        if (arg === "--require-signature") {
+            args.requireSignature = true;
             continue;
         }
         throw new Error(`Unknown argument: ${arg}`);
@@ -75,6 +80,16 @@ function assertRpmAvailable() {
     runCommand("rpm", ["--version"]);
 }
 
+function assertRpmSignature(rpmPath) {
+    const output = runCommand("rpm", ["-Kv", rpmPath]);
+    if (!/signature/i.test(output)) {
+        throw new Error(`RPM package is not signed: ${rpmPath}\n${output}`);
+    }
+    if (/(not ok|nokey|nottrusted|missing keys|bad)/i.test(output)) {
+        throw new Error(`RPM package signature check failed: ${rpmPath}\n${output}`);
+    }
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     assertRpmAvailable();
@@ -85,6 +100,9 @@ function main() {
     const expectedArch = rpmArchForBuildTarget(args.buildTarget);
 
     runCommand("rpm", ["-K", rpmPath]);
+    if (args.requireSignature) {
+        assertRpmSignature(rpmPath);
+    }
     const info = runCommand("rpm", ["-qip", rpmPath]);
     const files = runCommand("rpm", ["-qlp", rpmPath]);
 

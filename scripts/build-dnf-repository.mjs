@@ -1,9 +1,7 @@
-import childProcess from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 import {
-    DNF_REPOSITORY_RELATIVE_ROOT,
     DNF_SUPPORTED_ARCHITECTURES,
     DNF_REPO_EXAMPLE_FILE_NAME,
     buildDnfRepoRoot,
@@ -14,9 +12,9 @@ import {
     buildFilelistsXml,
     buildOtherXml,
     buildRepomdXml,
+    getContentHashes,
     getFileHashes,
     gzipContent,
-    xmlEscape,
 } from "./dnf-repo-lib.mjs";
 import { parseGitHubRepoSlug } from "./appcast-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
@@ -91,6 +89,20 @@ function findSingleReleaseAsset(releaseAssetsDir, assetName) {
     return matches[0];
 }
 
+function writeCompressedMetadata(repodataDir, relativePath, content) {
+    const absolutePath = path.join(repodataDir, relativePath);
+    fs.writeFileSync(absolutePath, gzipContent(content));
+
+    return {
+        relativePath,
+        absolutePath,
+        sizeBytes: fs.statSync(absolutePath).size,
+        openSizeBytes: Buffer.byteLength(content, "utf8"),
+        hashes: getFileHashes(absolutePath),
+        openHashes: getContentHashes(content),
+    };
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
 
@@ -123,28 +135,23 @@ function main() {
     const repodataDir = path.join(dnfDir, "repodata");
     fs.mkdirSync(repodataDir, { recursive: true });
 
-    const primaryXml = buildPrimaryXml({ packages });
-    const primaryGzPath = path.join(repodataDir, "primary.xml.gz");
-    fs.writeFileSync(primaryGzPath, gzipContent(primaryXml));
-
-    const filelistsXml = buildFilelistsXml({ packages });
-    const filelistsGzPath = path.join(repodataDir, "filelists.xml.gz");
-    fs.writeFileSync(filelistsGzPath, gzipContent(filelistsXml));
-
-    const otherXml = buildOtherXml({ packages });
-    const otherGzPath = path.join(repodataDir, "other.xml.gz");
-    fs.writeFileSync(otherGzPath, gzipContent(otherXml));
-
-    // Build repomd.xml
     const metadataFiles = [
-        { relativePath: "primary.xml.gz", absolutePath: primaryGzPath },
-        { relativePath: "filelists.xml.gz", absolutePath: filelistsGzPath },
-        { relativePath: "other.xml.gz", absolutePath: otherGzPath },
-    ].map((file) => ({
-        relativePath: file.relativePath,
-        sizeBytes: fs.statSync(file.absolutePath).size,
-        hashes: getFileHashes(file.absolutePath),
-    }));
+        writeCompressedMetadata(
+            repodataDir,
+            "primary.xml.gz",
+            buildPrimaryXml({ packages }),
+        ),
+        writeCompressedMetadata(
+            repodataDir,
+            "filelists.xml.gz",
+            buildFilelistsXml({ packages }),
+        ),
+        writeCompressedMetadata(
+            repodataDir,
+            "other.xml.gz",
+            buildOtherXml({ packages }),
+        ),
+    ];
 
     const repomdXml = buildRepomdXml({ files: metadataFiles });
     const repomdPath = path.join(repodataDir, "repomd.xml");

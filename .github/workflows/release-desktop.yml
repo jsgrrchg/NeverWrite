@@ -86,7 +86,9 @@ jobs:
 
     build-target:
         name: Build ${{ matrix.target }}
-        needs: prepare
+        needs:
+            - prepare
+            - apt-repository-preflight
         runs-on: ${{ matrix.runner }}
         strategy:
             fail-fast: false
@@ -167,7 +169,7 @@ jobs:
                   EOF
                   fi
                   sudo apt-get update
-                  sudo apt-get install -y pkg-config libcap-dev rpm
+                  sudo apt-get install -y pkg-config libcap-dev gnupg rpm
                   if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
                     sudo apt-get install -y gcc-aarch64-linux-gnu libcap-dev:arm64 libssl-dev:arm64
                     echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
@@ -346,6 +348,33 @@ jobs:
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
 
+            - name: Sign Linux RPM package
+              if: matrix.platform == 'linux'
+              shell: bash
+              env:
+                  APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+                  APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+                  APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+              run: |
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name}" ]]; then
+                      echo "Missing required GitHub Actions secret: ${name}" >&2
+                      exit 1
+                    fi
+                  done
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  trap 'rm -rf "$GNUPGHOME"' EXIT
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --armor --export "$APT_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
+                  sudo rpm --import "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
+
+                  node scripts/sign-rpm-packages.mjs \
+                    --rpm-dir "$RUNNER_TEMP/electron-dist" \
+                    --key-id "$APT_REPO_GPG_KEY_ID"
+
             - name: Stage release assets and target metadata
               shell: bash
               run: |
@@ -376,7 +405,8 @@ jobs:
                   node apps/desktop/scripts/validate-linux-rpm-package.mjs \
                     --staged-assets-dir "$RUNNER_TEMP/release-assets" \
                     --target ${{ matrix.target }} \
-                    --version "${{ needs.prepare.outputs.version }}"
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --require-signature
 
             - name: Upload release asset artifact
               uses: actions/upload-artifact@v4
@@ -962,11 +992,14 @@ jobs:
                     bash -lc '
                       set -euo pipefail
                       cp /repo/neverwrite-archive-keyring.asc /etc/pki/rpm-gpg/
-                      dnf config-manager --add-repo file:///repo/neverwrite.repo.example
+                      rpm --import /repo/neverwrite-archive-keyring.asc
+                      cp /repo/neverwrite.repo.example /etc/yum.repos.d/neverwrite.repo
                       sed -i "s|baseurl=.*|baseurl=file:///repo|" /etc/yum.repos.d/neverwrite.repo
-                      dnf makecache
+                      sed -i "s|gpgkey=.*|gpgkey=file:///repo/neverwrite-archive-keyring.asc|" /etc/yum.repos.d/neverwrite.repo
+                      dnf -y makecache
                       dnf info neverwrite
                       dnf info neverwrite | grep -F "$VERSION"
+                      dnf install -y --downloadonly neverwrite
                       echo "DNF repository validated successfully."
                     '
 

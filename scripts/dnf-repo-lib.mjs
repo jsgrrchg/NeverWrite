@@ -60,6 +60,7 @@ export function buildNeverWriteRepoExample(baseUrl = DNF_DEFAULT_BASE_URL) {
         `baseurl=${normalizedUrl}`,
         "enabled=1",
         "gpgcheck=1",
+        "repo_gpgcheck=1",
         `gpgkey=${normalizedUrl}/${DNF_PUBLIC_KEY_FILE_NAME}`,
         "",
     ].join("\n");
@@ -90,6 +91,15 @@ export function getFileHashes(filePath) {
         md5: hashFile(filePath, "md5"),
         sha1: hashFile(filePath, "sha1"),
         sha256: hashFile(filePath, "sha256"),
+    };
+}
+
+export function getContentHashes(content) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content);
+    return {
+        md5: crypto.createHash("md5").update(buffer).digest("hex"),
+        sha1: crypto.createHash("sha1").update(buffer).digest("hex"),
+        sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
     };
 }
 
@@ -171,11 +181,11 @@ export function buildRepomdXml({ files }) {
         const type = typeMap[file.relativePath] || "primary";
         return `  <data type="${type}">
     <checksum type="sha256">${file.hashes.sha256}</checksum>
-    <open-checksum type="sha256">${file.hashes.sha256}</open-checksum>
+    <open-checksum type="sha256">${file.openHashes.sha256}</open-checksum>
     <location href="repodata/${xmlEscape(file.relativePath)}"/>
     <timestamp>${Math.floor(Date.now() / 1000)}</timestamp>
     <size>${file.sizeBytes}</size>
-    <open-size>${file.sizeBytes}</open-size>
+    <open-size>${file.openSizeBytes}</open-size>
   </data>`;
     });
 

@@ -7,7 +7,8 @@ https://jsgrrchg.github.io/NeverWrite/dnf
 ```
 
 RPM packages are hosted on GitHub Releases; the DNF repository contains only
-package metadata.
+package metadata. The repository enables both RPM package signature checks and
+repository metadata signature checks.
 
 ## User Install
 
@@ -39,4 +40,5 @@ Manual post-release checks:
 curl -fsSL https://jsgrrchg.github.io/NeverWrite/dnf/repodata/repomd.xml | head
 curl -fsSL https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite.repo.example
 dnf info neverwrite
+sudo dnf install --downloadonly neverwrite
 ```

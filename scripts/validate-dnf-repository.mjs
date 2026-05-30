@@ -116,6 +116,7 @@ function validateRepoExample(dnfDir) {
     const content = fs.readFileSync(examplePath, "utf8");
     if (!content.includes("[neverwrite]")) throw new Error("repo example missing [neverwrite] header");
     if (!content.includes("gpgcheck=1")) throw new Error("repo example missing gpgcheck=1");
+    if (!content.includes("repo_gpgcheck=1")) throw new Error("repo example missing repo_gpgcheck=1");
 }
 
 function main() {

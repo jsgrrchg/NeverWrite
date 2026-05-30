@@ -7,6 +7,7 @@ import {
     buildNeverWriteRepoExample,
     buildPrimaryXml,
     buildRepomdXml,
+    getContentHashes,
     normalizeRpmArchitecture,
 } from "./dnf-repo-lib.mjs";
 
@@ -35,6 +36,7 @@ test("buildNeverWriteRepoExample uses the public DNF endpoint", () => {
     const example = buildNeverWriteRepoExample();
     assert.match(example, /baseurl=https:\/\/jsgrrchg\.github\.io\/NeverWrite\/dnf/);
     assert.match(example, /gpgcheck=1/);
+    assert.match(example, /repo_gpgcheck=1/);
     assert.match(example, /\[neverwrite\]/);
 });
 
@@ -68,10 +70,21 @@ test("buildRepomdXml generates valid repomd XML", () => {
         {
             relativePath: "primary.xml.gz",
             sizeBytes: 100,
+            openSizeBytes: 250,
             hashes: { sha256: "b".repeat(64) },
+            openHashes: { sha256: "c".repeat(64) },
         },
     ];
     const xml = buildRepomdXml({ files });
     assert.match(xml, /<repomd/);
     assert.match(xml, /<data type="primary">/);
+    assert.match(xml, new RegExp(`<open-checksum type="sha256">${"c".repeat(64)}</open-checksum>`));
+    assert.match(xml, /<open-size>250<\/open-size>/);
+});
+
+test("getContentHashes hashes uncompressed metadata content", () => {
+    assert.equal(
+        getContentHashes("neverwrite").sha256,
+        "ba11db9f5638d9c98918b6f05a7388d4fe4996ec40bc2a4c1f4451c6bcf095a2",
+    );
 });
