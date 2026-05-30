@@ -134,7 +134,8 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
     assert.match(body, /NeverWrite-0.2.0-x64\.AppImage/);
     assert.match(body, /NeverWrite-0\.2\.0-x86_64\.rpm/);
     assert.match(body, /configure the NeverWrite DNF repository/);
-    assert.match(body, /dnf config-manager --add-repo/);
+    assert.match(body, /sudo tee \/etc\/yum\.repos\.d\/neverwrite\.repo/);
+    assert.match(body, /repo_gpgcheck=1/);
     assert.match(body, /configure the NeverWrite APT repository/);
     assert.match(body, /neverwrite-archive-keyring\.asc/);
     assert.match(body, /internal updater assets/i);

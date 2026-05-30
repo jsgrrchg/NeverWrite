@@ -14,7 +14,15 @@ signature checks.
 ## User Install
 
 ```bash
-sudo dnf config-manager --add-repo https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite.repo.example
+sudo tee /etc/yum.repos.d/neverwrite.repo >/dev/null <<'EOF'
+[neverwrite]
+name=NeverWrite
+baseurl=https://jsgrrchg.github.io/NeverWrite/dnf
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite-archive-keyring.asc
+EOF
 sudo rpm --import https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite-archive-keyring.asc
 sudo dnf install neverwrite
 ```
