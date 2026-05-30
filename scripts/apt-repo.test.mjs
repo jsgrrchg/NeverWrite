@@ -1,18 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 import {
     APT_DEFAULT_BASE_URL,
+    APT_PUBLIC_KEY_FILE_NAME,
+    APT_SOURCES_EXAMPLE_FILE_NAME,
+    APT_SUPPORTED_ARCHITECTURES,
     buildAptPoolPackageName,
     buildAptPoolPackagePath,
     buildAptReleaseContent,
     buildDebianReleaseAssetName,
-    buildGitHubReleaseDebUrl,
     buildNeverWriteSourcesExample,
     compareReleaseVersionsDescending,
     getAptBinaryPackagesGzipPath,
     getAptBinaryPackagesPath,
-    isUrlFilename,
+    getFileHashes,
     normalizeAptComponent,
     normalizeAptSuite,
     normalizeDebianArchitecture,
@@ -20,6 +28,105 @@ import {
     parseDebianControlStanza,
     renderPackagesStanza,
 } from "./apt-repo-lib.mjs";
+
+const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const VALIDATE_APT_REPOSITORY_SCRIPT = path.join(
+    SCRIPTS_DIR,
+    "validate-apt-repository.mjs",
+);
+
+function writeFixtureAptRepository({ filenamesByArchitecture = {} } = {}) {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "neverwrite-apt-test-"));
+    const aptDir = path.join(rootDir, "apt");
+    const suiteDir = path.join(aptDir, "dists", "stable");
+    const releaseFiles = [];
+
+    fs.mkdirSync(aptDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(aptDir, APT_PUBLIC_KEY_FILE_NAME),
+        "fixture public key\n",
+        "utf8",
+    );
+    fs.writeFileSync(
+        path.join(aptDir, APT_SOURCES_EXAMPLE_FILE_NAME),
+        buildNeverWriteSourcesExample("file:///tmp/neverwrite-apt"),
+        "utf8",
+    );
+
+    for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
+        const packageRelativePath = buildAptPoolPackagePath("0.3.0", architecture);
+        const packagePath = path.join(aptDir, packageRelativePath);
+        const packageBytes = Buffer.from(`fixture package ${architecture}\n`);
+        fs.mkdirSync(path.dirname(packagePath), { recursive: true });
+        fs.writeFileSync(packagePath, packageBytes);
+
+        const packagesRelativePath = getAptBinaryPackagesPath(architecture);
+        const packagesPath = path.join(aptDir, packagesRelativePath);
+        const packagesContent = renderPackagesStanza({
+            controlFields: parseDebianControlStanza([
+                "Package: neverwrite",
+                "Version: 0.3.0",
+                `Architecture: ${architecture}`,
+                "Description: NeverWrite desktop",
+                "",
+            ].join("\n")),
+            filename: filenamesByArchitecture[architecture] ?? packageRelativePath,
+            sizeBytes: packageBytes.length,
+            hashes: getFileHashes(packagePath),
+        });
+
+        fs.mkdirSync(path.dirname(packagesPath), { recursive: true });
+        fs.writeFileSync(packagesPath, packagesContent, "utf8");
+        fs.writeFileSync(
+            path.join(aptDir, getAptBinaryPackagesGzipPath(architecture)),
+            zlib.gzipSync(Buffer.from(packagesContent, "utf8")),
+        );
+    }
+
+    for (const relativePath of [
+        ...APT_SUPPORTED_ARCHITECTURES.map((architecture) =>
+            getAptBinaryPackagesPath(architecture),
+        ),
+        ...APT_SUPPORTED_ARCHITECTURES.map((architecture) =>
+            getAptBinaryPackagesGzipPath(architecture),
+        ),
+    ]) {
+        const absolutePath = path.join(aptDir, relativePath);
+        releaseFiles.push({
+            relativePath: relativePath.replace("dists/stable/", ""),
+            sizeBytes: fs.statSync(absolutePath).size,
+            hashes: getFileHashes(absolutePath),
+        });
+    }
+
+    fs.mkdirSync(suiteDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(suiteDir, "Release"),
+        buildAptReleaseContent({ files: releaseFiles }),
+        "utf8",
+    );
+    fs.writeFileSync(path.join(suiteDir, "InRelease"), "fixture inrelease\n", "utf8");
+    fs.writeFileSync(path.join(suiteDir, "Release.gpg"), "fixture signature\n", "utf8");
+
+    return { rootDir, aptDir };
+}
+
+function validateFixtureAptRepository(aptDir) {
+    return childProcess.spawnSync(
+        process.execPath,
+        [
+            VALIDATE_APT_REPOSITORY_SCRIPT,
+            "--apt-dir",
+            aptDir,
+            "--version",
+            "0.3.0",
+            "--skip-signature-check",
+        ],
+        {
+            encoding: "utf8",
+        },
+    );
+}
 
 test("APT package paths use Debian pool conventions", () => {
     assert.equal(
@@ -147,46 +254,27 @@ test("APT pool file parser and version sorter support retention", () => {
     );
 });
 
-test("buildGitHubReleaseDebUrl builds correct GitHub Release download URL", () => {
-    const url = buildGitHubReleaseDebUrl(
-        "jsgrrchg/NeverWrite",
-        "v0.3.0",
-        "0.3.0",
-        "amd64",
-    );
-    assert.equal(
-        url,
-        "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb",
-    );
+test("APT repository validator accepts local pool package filenames", (t) => {
+    const { rootDir, aptDir } = writeFixtureAptRepository();
+    t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+    const result = validateFixtureAptRepository(aptDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /APT repository is valid for version 0\.3\.0/);
 });
 
-test("buildGitHubReleaseDebUrl handles version-only tag input", () => {
-    const url = buildGitHubReleaseDebUrl(
-        "jsgrrchg/NeverWrite",
-        "0.3.0",
-        "0.3.0",
-        "arm64",
-    );
-    assert.equal(
-        url,
-        "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-arm64.deb",
-    );
-});
+test("APT repository validator rejects package Filename URLs", (t) => {
+    const { rootDir, aptDir } = writeFixtureAptRepository({
+        filenamesByArchitecture: {
+            amd64: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb",
+        },
+    });
+    t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
 
-test("isUrlFilename detects http and https filenames", () => {
-    assert.equal(
-        isUrlFilename("https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb"),
-        true,
-    );
-    assert.equal(
-        isUrlFilename("http://example.com/pkg.deb"),
-        true,
-    );
-    assert.equal(
-        isUrlFilename("pool/main/n/neverwrite/neverwrite_0.3.0_amd64.deb"),
-        false,
-    );
-    assert.equal(isUrlFilename(null), false);
-    assert.equal(isUrlFilename(undefined), false);
-    assert.equal(isUrlFilename(""), false);
+    const result = validateFixtureAptRepository(aptDir);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid Filename/);
+    assert.match(result.stderr, /Expected a normalized relative path under "pool\/main\/n\/neverwrite\/"/);
 });
