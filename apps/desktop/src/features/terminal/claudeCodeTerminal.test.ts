@@ -52,7 +52,7 @@ async function attachOpenedTerminalRuntime() {
                 tabId: tab!.id,
                 sessionId: "devterm-1",
                 snapshot: makeRunningSnapshot(),
-                rawOutput: "",
+                hasOutput: false,
                 busy: false,
                 launchError: null,
             },

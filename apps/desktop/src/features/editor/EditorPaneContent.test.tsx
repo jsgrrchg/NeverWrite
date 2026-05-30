@@ -42,12 +42,20 @@ function seedTerminalRuntime(terminalId: string, rawOutput = "ready\n") {
                 snapshot: makeSnapshot({
                     sessionId: `session-${terminalId}`,
                 }),
-                rawOutput,
+                hasOutput: false,
                 busy: false,
                 launchError: null,
             },
         },
     });
+    // Output is piped through the channel; emitted now, it buffers until the
+    // viewport mounts and subscribes, then lands in xterm.
+    if (rawOutput) {
+        useTerminalRuntimeStore.getState().handleTerminalOutput({
+            sessionId: `session-${terminalId}`,
+            chunk: rawOutput,
+        });
+    }
 }
 
 function getEditorView() {

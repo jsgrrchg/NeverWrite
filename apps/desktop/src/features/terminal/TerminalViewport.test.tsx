@@ -6,14 +6,30 @@ import {
     renderComponent,
 } from "../../test/test-utils";
 import { TerminalViewport } from "./TerminalViewport";
-import type { TerminalSessionView } from "./terminalTypes";
+import type {
+    TerminalOutputCommand,
+    TerminalSessionView,
+} from "./terminalTypes";
 
 const DICTATION_PLACEHOLDER = "Speak or type — Enter to send";
 
-function createSessionView(
-    overrides: Partial<TerminalSessionView> = {},
-): TerminalSessionView {
-    return {
+// Build a session view backed by a controllable output channel that mirrors the
+// runtime store's emitter: commands buffered before the viewport subscribes are
+// flushed on subscribe, exactly like production.
+function createSession(overrides: Partial<TerminalSessionView> = {}) {
+    const listeners = new Set<(command: TerminalOutputCommand) => void>();
+    const backlog: TerminalOutputCommand[] = [];
+    let replaySnapshot: string | null = null;
+
+    const emit = (command: TerminalOutputCommand) => {
+        if (listeners.size === 0) {
+            backlog.push(command);
+            return;
+        }
+        for (const listener of listeners) listener(command);
+    };
+
+    const session: TerminalSessionView = {
         snapshot: {
             sessionId: "devterm-1",
             program: "/bin/zsh",
@@ -25,42 +41,70 @@ function createSessionView(
             exitCode: null,
             errorMessage: null,
         },
-        rawOutput: "hello from terminal\nready",
+        hasOutput: true,
         busy: false,
         writeInput: vi.fn(async () => undefined),
         resize: vi.fn(async () => undefined),
         restart: vi.fn(async () => undefined),
         clearViewport: vi.fn(),
+        subscribeOutput: (listener) => {
+            if (listeners.size === 0 && backlog.length > 0) {
+                const pending = backlog.splice(0, backlog.length);
+                for (const command of pending) listener(command);
+            }
+            listeners.add(listener);
+            return () => {
+                listeners.delete(listener);
+            };
+        },
+        getReplaySnapshot: () => replaySnapshot,
+        saveReplaySnapshot: (serialized) => {
+            replaySnapshot = serialized;
+        },
         ...overrides,
     };
+
+    return { session, emit };
+}
+
+// Thin wrapper for tests that only need the session view itself (e.g. the
+// dictation UI), not the output channel.
+function createSessionView(
+    overrides: Partial<TerminalSessionView> = {},
+): TerminalSessionView {
+    return createSession(overrides).session;
 }
 
 describe("TerminalViewport", () => {
-    it("renders raw output and forwards xterm input and settled resize events", async () => {
+    it("writes piped output to xterm, fires initial PTY resize immediately, and forwards xterm input", async () => {
         const writeInput = vi.fn(async () => undefined);
         const resize = vi.fn(async () => undefined);
         vi.useFakeTimers();
 
         try {
-            renderComponent(
-                <TerminalViewport
-                    session={createSessionView({
-                        writeInput,
-                        resize,
-                    })}
-                />,
-            );
+            const { session, emit } = createSession({ writeInput, resize });
+            renderComponent(<TerminalViewport session={session} />);
             await flushPromises();
 
-            expect(screen.getByText(/hello from terminal/i)).toBeInTheDocument();
-            expect(screen.getByText(/ready/i)).toBeInTheDocument();
-            expect(resize).not.toHaveBeenCalled();
+            act(() => {
+                emit({ type: "write", data: "hello from terminal\nready" });
+            });
 
+            expect(
+                screen.getByText(/hello from terminal/i),
+            ).toBeInTheDocument();
+            expect(screen.getByText(/ready/i)).toBeInTheDocument();
+
+            // First fit fires immediately — no debounce on initial mount.
+            expect(resize).toHaveBeenCalledOnce();
+            expect(resize).toHaveBeenCalledWith(80, 24);
+
+            // Advancing time triggers the rAF-driven syncSize, but the size is
+            // already recorded so the dedup check prevents a second call.
             await act(async () => {
                 vi.advanceTimersByTime(100);
             });
-
-            expect(resize).toHaveBeenCalledWith(80, 24);
+            expect(resize).toHaveBeenCalledTimes(1);
 
             act(() => {
                 getXtermMockInstances()[0]?.emitData("pwd\r");
@@ -70,6 +114,18 @@ describe("TerminalViewport", () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+
+    it("flushes output buffered before the viewport subscribes", async () => {
+        const { session, emit } = createSession();
+
+        // Emitted before render → goes to the backlog, then flushed on subscribe.
+        emit({ type: "write", data: "buffered output\n" });
+
+        renderComponent(<TerminalViewport session={session} />);
+        await flushPromises();
+
+        expect(screen.getByText(/buffered output/i)).toBeInTheDocument();
     });
 
     it("coalesces noisy resize observer updates into a single PTY resize", async () => {
@@ -108,14 +164,13 @@ describe("TerminalViewport", () => {
         });
 
         try {
-            renderComponent(
-                <TerminalViewport
-                    session={createSessionView({
-                        resize,
-                    })}
-                />,
-            );
+            const { session } = createSession({ resize });
+            renderComponent(<TerminalViewport session={session} />);
             await flushPromises();
+
+            // Initial fit fires immediately on mount.
+            expect(resize).toHaveBeenCalledOnce();
+            expect(resize).toHaveBeenCalledWith(80, 24);
 
             act(() => {
                 MockResizeObserver.notifyAll();
@@ -123,8 +178,9 @@ describe("TerminalViewport", () => {
                 MockResizeObserver.notifyAll();
             });
 
-            expect(resize).not.toHaveBeenCalled();
-
+            // Three noisy ResizeObserver callbacks report the same 80×24 that
+            // was already sent, so the dedup check absorbs them with no new
+            // debounce timer.
             await act(async () => {
                 vi.advanceTimersByTime(100);
             });
@@ -143,79 +199,124 @@ describe("TerminalViewport", () => {
     });
 
     it("can keep the first terminal output scrolled to the top", async () => {
+        const { session, emit } = createSession();
         renderComponent(
-            <TerminalViewport
-                initialScrollPosition="top"
-                session={createSessionView({
-                    rawOutput: "first line\nsecond line\nthird line",
-                })}
-            />,
+            <TerminalViewport initialScrollPosition="top" session={session} />,
         );
         await flushPromises();
+
+        act(() => {
+            emit({
+                type: "write",
+                data: "first line\nsecond line\nthird line",
+            });
+        });
 
         expect(getXtermMockInstances()[0]?.scrollToTopCalls).toBe(1);
     });
 
-    it("queues chunks to a local backlog when the xterm write buffer is above the high watermark", async () => {
-        const { rerender } = renderComponent(
-            <TerminalViewport session={createSessionView({ rawOutput: "" })} />,
+    it("restores the replay snapshot on mount before live output", async () => {
+        const { session, emit } = createSession();
+        session.saveReplaySnapshot("restored screen state");
+
+        renderComponent(<TerminalViewport session={session} />);
+        await flushPromises();
+
+        act(() => {
+            emit({ type: "write", data: " + live tail" });
+        });
+
+        const [term] = getXtermMockInstances();
+        expect(term?.screen?.textContent).toBe(
+            "restored screen state + live tail",
         );
+    });
+
+    it("saves a serialized snapshot when unmounting", async () => {
+        const saveReplaySnapshot = vi.fn();
+        const { session, emit } = createSession({ saveReplaySnapshot });
+        const { unmount } = renderComponent(
+            <TerminalViewport session={session} />,
+        );
+        await flushPromises();
+
+        act(() => {
+            emit({ type: "write", data: "persist me" });
+        });
+
+        unmount();
+
+        // The serialize addon mock returns the xterm screen content, so the
+        // final snapshot captures what was on screen at teardown.
+        expect(saveReplaySnapshot).toHaveBeenLastCalledWith("persist me");
+    });
+
+    it("clears the xterm screen on a clear command", async () => {
+        const { session, emit } = createSession();
+        renderComponent(<TerminalViewport session={session} />);
         await flushPromises();
 
         const [term] = getXtermMockInstances();
         if (!term) throw new Error("No xterm instance");
 
-        // Make write async so pendingWriteCharsRef doesn't immediately drain.
-        const pendingCallbacks: Array<() => void> = [];
-        vi.spyOn(term, "write").mockImplementation(
-            (text: string, callback?: () => void) => {
-                if (term.screen) {
-                    term.screen.textContent =
-                        (term.screen.textContent ?? "") + text;
-                }
-                if (callback) pendingCallbacks.push(callback);
-            },
-        );
+        act(() => {
+            emit({ type: "write", data: "some output" });
+        });
+        expect(term.screen?.textContent).toBe("some output");
 
-        // Feed a chunk just above HIGH_WATERMARK (256_000). The write is
-        // dispatched (pending was 0) but the callback is held, so
-        // pendingWriteCharsRef stays at 257_000.
-        const bigChunk = "x".repeat(257_000);
-        rerender(
-            <TerminalViewport
-                session={createSessionView({ rawOutput: bigChunk })}
-            />,
-        );
-        await flushPromises();
-
-        expect(pendingCallbacks).toHaveLength(1);
-
-        // Push a second chunk while the first is still in-flight.
-        // pendingWriteCharsRef (257_000) > HIGH_WATERMARK (256_000) → backlog.
-        const smallChunk = "hello";
-        rerender(
-            <TerminalViewport
-                session={createSessionView({
-                    rawOutput: bigChunk + smallChunk,
-                })}
-            />,
-        );
-        await flushPromises();
-
-        expect(pendingCallbacks).toHaveLength(1); // no new write call
-        expect(term.screen?.textContent).toBe(bigChunk); // "hello" not visible yet
-
-        // Fire the first write's callback → pendingWriteCharsRef drops to 0,
-        // queueMicrotask(flushBacklog) drains the "hello" backlog entry.
-        await act(async () => {
-            pendingCallbacks.shift()?.();
-            await Promise.resolve();
-            await Promise.resolve(); // let the queueMicrotask(flushBacklog) run
+        const resetSpy = vi.spyOn(term, "reset");
+        act(() => {
+            emit({ type: "clear" });
         });
 
-        // "hello" is now visible — backlog was drained.
-        expect(term.screen?.textContent).toBe(bigChunk + smallChunk);
-        expect(pendingCallbacks).toHaveLength(1); // the backlog write's callback
+        expect(resetSpy).toHaveBeenCalledOnce();
+        expect(term.screen?.textContent).toBe("");
+    });
+
+    it("sends \\n to the PTY on Shift+Enter and does not intercept plain Enter or keyup", async () => {
+        const writeInput = vi.fn(async () => undefined);
+
+        const { session } = createSession({ writeInput });
+        renderComponent(<TerminalViewport session={session} />);
+        await flushPromises();
+
+        const terminal = getXtermMockInstances()[0];
+        expect(terminal).toBeDefined();
+
+        const makeKey = (
+            key: string,
+            overrides: Partial<KeyboardEventInit> = {},
+        ) =>
+            new KeyboardEvent("keydown", {
+                key,
+                shiftKey: false,
+                bubbles: true,
+                ...overrides,
+            });
+
+        // Shift+Enter keydown → intercepted: writes \n and returns false.
+        const shiftEnter = makeKey("Enter", { shiftKey: true });
+        const shiftEnterResult = terminal!.triggerKeyEvent(shiftEnter);
+        expect(shiftEnterResult).toBe(false);
+        expect(writeInput).toHaveBeenCalledWith("\n");
+
+        writeInput.mockClear();
+
+        // Plain Enter → not intercepted: xterm handles it normally.
+        const plainEnter = makeKey("Enter");
+        const plainEnterResult = terminal!.triggerKeyEvent(plainEnter);
+        expect(plainEnterResult).toBe(true);
+        expect(writeInput).not.toHaveBeenCalled();
+
+        // Shift+Enter keyup → not intercepted (handler only fires on keydown).
+        const shiftEnterKeyUp = new KeyboardEvent("keyup", {
+            key: "Enter",
+            shiftKey: true,
+            bubbles: true,
+        });
+        const keyUpResult = terminal!.triggerKeyEvent(shiftEnterKeyUp);
+        expect(keyUpResult).toBe(true);
+        expect(writeInput).not.toHaveBeenCalled();
     });
 
     it("opens dictation from the context menu, cancels cleanly, and sends entered text", async () => {

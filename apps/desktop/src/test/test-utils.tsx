@@ -153,6 +153,12 @@ export function getXtermMockInstances() {
         globalThis as typeof globalThis & {
             __xtermMockInstances: Array<{
                 emitData: (data: string) => void;
+                triggerKeyEvent: (event: KeyboardEvent) => boolean;
+                write: (text: string, callback?: () => void) => void;
+                reset: () => void;
+                clear: () => void;
+                scrollToTop: () => void;
+                screen: HTMLDivElement | null;
                 focusCalls: number;
                 scrollToTopCalls: number;
             }>;
