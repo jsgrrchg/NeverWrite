@@ -9,7 +9,6 @@ import {
     DNF_REPO_EXAMPLE_FILE_NAME,
     DNF_SUPPORTED_ARCHITECTURES,
     DNF_PACKAGE_NAME,
-    hashFile,
 } from "./dnf-repo-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
 
@@ -87,6 +86,15 @@ function validatePrimaryXml(dnfDir, version) {
     if (!content.includes(`<name>${DNF_PACKAGE_NAME}</name>`)) {
         throw new Error(`primary.xml missing package name "${DNF_PACKAGE_NAME}"`);
     }
+    if (!content.includes("<rpm:provides>")) {
+        throw new Error("primary.xml missing RPM provides metadata from package headers");
+    }
+    if (!content.includes("<rpm:requires>")) {
+        throw new Error("primary.xml missing RPM requires metadata from package headers");
+    }
+    if (!content.includes("<rpm:header-range ")) {
+        throw new Error("primary.xml missing RPM header range metadata");
+    }
 
     const archMatch = content.match(/<arch>([^<]+)<\/arch>/);
     if (!archMatch || !DNF_SUPPORTED_ARCHITECTURES.includes(archMatch[1])) {
@@ -110,6 +118,20 @@ function validatePrimaryXml(dnfDir, version) {
     }
 }
 
+function validateFilelistsXml(dnfDir) {
+    const filelistsGzPath = path.join(dnfDir, "repodata", "filelists.xml.gz");
+    assertFileExists(filelistsGzPath, "filelists.xml.gz");
+
+    const inflated = zlib.gunzipSync(fs.readFileSync(filelistsGzPath));
+    const content = inflated.toString("utf8");
+    if (!content.includes(`name="${DNF_PACKAGE_NAME}"`)) {
+        throw new Error(`filelists.xml missing package name "${DNF_PACKAGE_NAME}"`);
+    }
+    if (!/<file(?:\s|>)/.test(content)) {
+        throw new Error("filelists.xml missing installed file entries from RPM payload");
+    }
+}
+
 function validateRepoExample(dnfDir) {
     const examplePath = path.join(dnfDir, DNF_REPO_EXAMPLE_FILE_NAME);
     assertFileExists(examplePath, "repo example file");
@@ -130,6 +152,7 @@ function main() {
     validateRepoExample(args.dnfDir);
     validateRepomd(args.dnfDir);
     validatePrimaryXml(args.dnfDir, args.version);
+    validateFilelistsXml(args.dnfDir);
 
     if (!args.skipSignatureCheck) {
         validateRepomdSignature(args.dnfDir);

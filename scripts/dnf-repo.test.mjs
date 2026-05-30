@@ -3,11 +3,9 @@ import assert from "node:assert/strict";
 import {
     DNF_DEFAULT_BASE_URL,
     buildRpmReleaseAssetName,
+    buildGitHubReleaseRpmLocationPrefix,
     buildGitHubReleaseRpmUrl,
     buildNeverWriteRepoExample,
-    buildPrimaryXml,
-    buildRepomdXml,
-    getContentHashes,
     normalizeRpmArchitecture,
 } from "./dnf-repo-lib.mjs";
 
@@ -19,6 +17,13 @@ test("RPM release asset names use RPM architecture naming", () => {
     assert.equal(
         buildRpmReleaseAssetName("0.3.0", "aarch64"),
         "NeverWrite-0.3.0-aarch64.rpm",
+    );
+});
+
+test("buildGitHubReleaseRpmLocationPrefix builds GitHub release asset prefix", () => {
+    assert.equal(
+        buildGitHubReleaseRpmLocationPrefix("jsgrrchg/NeverWrite", "v0.3.0"),
+        "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/",
     );
 });
 
@@ -45,46 +50,4 @@ test("normalizeRpmArchitecture accepts valid RPM architectures", () => {
     assert.equal(normalizeRpmArchitecture("aarch64"), "aarch64");
     assert.throws(() => normalizeRpmArchitecture("amd64"), /Unsupported/);
     assert.throws(() => normalizeRpmArchitecture("arm64"), /Unsupported/);
-});
-
-test("buildPrimaryXml generates valid XML with package metadata", () => {
-    const packages = [
-        {
-            name: "neverwrite",
-            arch: "x86_64",
-            version: "0.3.0",
-            locationUrl: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-x86_64.rpm",
-            sizeBytes: 1000000,
-            hashes: { sha256: "a".repeat(64) },
-        },
-    ];
-    const xml = buildPrimaryXml({ packages });
-    assert.match(xml, /<package type="rpm">/);
-    assert.match(xml, /<name>neverwrite<\/name>/);
-    assert.match(xml, /<arch>x86_64<\/arch>/);
-    assert.match(xml, /<location href="https:\/\/github\.com/);
-});
-
-test("buildRepomdXml generates valid repomd XML", () => {
-    const files = [
-        {
-            relativePath: "primary.xml.gz",
-            sizeBytes: 100,
-            openSizeBytes: 250,
-            hashes: { sha256: "b".repeat(64) },
-            openHashes: { sha256: "c".repeat(64) },
-        },
-    ];
-    const xml = buildRepomdXml({ files });
-    assert.match(xml, /<repomd/);
-    assert.match(xml, /<data type="primary">/);
-    assert.match(xml, new RegExp(`<open-checksum type="sha256">${"c".repeat(64)}</open-checksum>`));
-    assert.match(xml, /<open-size>250<\/open-size>/);
-});
-
-test("getContentHashes hashes uncompressed metadata content", () => {
-    assert.equal(
-        getContentHashes("neverwrite").sha256,
-        "ba11db9f5638d9c98918b6f05a7388d4fe4996ec40bc2a4c1f4451c6bcf095a2",
-    );
 });

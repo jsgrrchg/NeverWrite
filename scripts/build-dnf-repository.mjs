@@ -1,4 +1,6 @@
+import childProcess from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -6,15 +8,8 @@ import {
     DNF_REPO_EXAMPLE_FILE_NAME,
     buildDnfRepoRoot,
     buildRpmReleaseAssetName,
-    buildGitHubReleaseRpmUrl,
+    buildGitHubReleaseRpmLocationPrefix,
     buildNeverWriteRepoExample,
-    buildPrimaryXml,
-    buildFilelistsXml,
-    buildOtherXml,
-    buildRepomdXml,
-    getContentHashes,
-    getFileHashes,
-    gzipContent,
 } from "./dnf-repo-lib.mjs";
 import { parseGitHubRepoSlug } from "./appcast-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
@@ -89,75 +84,89 @@ function findSingleReleaseAsset(releaseAssetsDir, assetName) {
     return matches[0];
 }
 
-function writeCompressedMetadata(repodataDir, relativePath, content) {
-    const absolutePath = path.join(repodataDir, relativePath);
-    fs.writeFileSync(absolutePath, gzipContent(content));
+function runCommand(command, args) {
+    const result = childProcess.spawnSync(command, args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.error) {
+        throw result.error;
+    }
+    if (result.status !== 0) {
+        const stderr = result.stderr?.trim();
+        const stdout = result.stdout?.trim();
+        throw new Error(
+            [
+                `${command} failed with exit code ${result.status}.`,
+                stderr ? `stderr:\n${stderr}` : null,
+                stdout ? `stdout:\n${stdout}` : null,
+            ].filter(Boolean).join("\n"),
+        );
+    }
+    return result.stdout;
+}
 
-    return {
-        relativePath,
-        absolutePath,
-        sizeBytes: fs.statSync(absolutePath).size,
-        openSizeBytes: Buffer.byteLength(content, "utf8"),
-        hashes: getFileHashes(absolutePath),
-        openHashes: getContentHashes(content),
-    };
+function assertCreaterepoAvailable() {
+    try {
+        runCommand("createrepo_c", ["--version"]);
+    } catch (error) {
+        throw new Error(
+            `createrepo_c is required to build DNF metadata from real RPM headers.\n${error.message}`,
+        );
+    }
+}
+
+function buildCreaterepoArgs({ repositoryDir, locationPrefix }) {
+    return [
+        "--checksum", "sha256",
+        "--general-compress-type", "gz",
+        "--no-database",
+        "--simple-md-filenames",
+        "--location-prefix", locationPrefix,
+        repositoryDir,
+    ];
+}
+
+function copyGeneratedRepodata(sourceRepositoryDir, dnfDir) {
+    const sourceRepodataDir = path.join(sourceRepositoryDir, "repodata");
+    const targetRepodataDir = path.join(dnfDir, "repodata");
+    fs.rmSync(targetRepodataDir, { recursive: true, force: true });
+    fs.cpSync(sourceRepodataDir, targetRepodataDir, { recursive: true });
 }
 
 function main() {
     const args = parseArgs(process.argv.slice(2));
+    assertCreaterepoAvailable();
 
     const dnfDir = buildDnfRepoRoot(args.pagesDir);
+    fs.rmSync(dnfDir, { recursive: true, force: true });
     fs.mkdirSync(dnfDir, { recursive: true });
 
-    // Collect RPM packages
-    const packages = [];
-    for (const arch of DNF_SUPPORTED_ARCHITECTURES) {
-        const assetName = buildRpmReleaseAssetName(args.version, arch);
-        const source = findSingleReleaseAsset(args.releaseAssetsDir, assetName);
-        const locationUrl = buildGitHubReleaseRpmUrl(
-            args.repoSlug, args.tag, args.version, arch,
-        );
-        const sizeBytes = fs.statSync(source).size;
-        const hashes = getFileHashes(source);
+    const tempRepositoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "neverwrite-dnf-repo-"));
+    const indexedPackages = [];
 
-        packages.push({
-            name: "neverwrite",
-            arch,
-            version: args.version,
-            locationUrl,
-            sourcePath: source,
-            sizeBytes,
-            hashes,
-        });
+    try {
+        // createrepo_c reads the RPM headers and payload file list from local packages,
+        // then we prefix package locations so DNF downloads the published GitHub assets.
+        const locationPrefix = buildGitHubReleaseRpmLocationPrefix(args.repoSlug, args.tag);
+
+        for (const arch of DNF_SUPPORTED_ARCHITECTURES) {
+            const assetName = buildRpmReleaseAssetName(args.version, arch);
+            const source = findSingleReleaseAsset(args.releaseAssetsDir, assetName);
+            fs.copyFileSync(source, path.join(tempRepositoryDir, assetName));
+            indexedPackages.push(`${assetName} (${arch})`);
+        }
+
+        runCommand("createrepo_c", buildCreaterepoArgs({
+            repositoryDir: tempRepositoryDir,
+            locationPrefix,
+        }));
+
+        copyGeneratedRepodata(tempRepositoryDir, dnfDir);
+    } finally {
+        fs.rmSync(tempRepositoryDir, { recursive: true, force: true });
     }
 
-    // Build repodata
-    const repodataDir = path.join(dnfDir, "repodata");
-    fs.mkdirSync(repodataDir, { recursive: true });
-
-    const metadataFiles = [
-        writeCompressedMetadata(
-            repodataDir,
-            "primary.xml.gz",
-            buildPrimaryXml({ packages }),
-        ),
-        writeCompressedMetadata(
-            repodataDir,
-            "filelists.xml.gz",
-            buildFilelistsXml({ packages }),
-        ),
-        writeCompressedMetadata(
-            repodataDir,
-            "other.xml.gz",
-            buildOtherXml({ packages }),
-        ),
-    ];
-
-    const repomdXml = buildRepomdXml({ files: metadataFiles });
-    const repomdPath = path.join(repodataDir, "repomd.xml");
-    fs.writeFileSync(repomdPath, repomdXml, "utf8");
-
-    // Write repo example file
     fs.writeFileSync(
         path.join(dnfDir, DNF_REPO_EXAMPLE_FILE_NAME),
         buildNeverWriteRepoExample(),
@@ -165,8 +174,8 @@ function main() {
     );
 
     console.log(`DNF repository built at ${dnfDir}`);
-    console.log(`Packages indexed: ${packages.map((p) => `${p.name}-${p.version}.${p.arch}`).join(", ")}`);
-    console.log(`repodata: repomd.xml, primary.xml.gz, filelists.xml.gz, other.xml.gz`);
+    console.log(`Packages indexed from RPM headers: ${indexedPackages.join(", ")}`);
+    console.log("repodata generated by createrepo_c");
 }
 
 main();
