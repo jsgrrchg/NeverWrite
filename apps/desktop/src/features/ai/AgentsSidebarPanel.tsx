@@ -49,7 +49,9 @@ import {
 } from "./sessionHierarchy";
 import {
     claudeTerminalAgentSessionId,
+    closeClaudeTerminalAgentSession,
     focusClaudeTerminalAgentSession,
+    isClaudeTerminalAgentSession,
 } from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
@@ -494,6 +496,23 @@ export function AgentsSidebarPanel() {
         [deleteSession, sessions, unpinChat],
     );
 
+    const handleCloseClaudeTerminal = useCallback(
+        async (session: AIChatSession) => {
+            const title = getSessionTitleText(session);
+            const approved = await confirm(
+                `Close terminal "${title}"?\n\nThis closes the Claude Code terminal backing this Agents entry. The entry will disappear from the sidebar when the terminal closes.`,
+                {
+                    title: "Close terminal?",
+                    kind: "warning",
+                },
+            );
+            if (!approved) return;
+
+            await closeClaudeTerminalAgentSession(session);
+        },
+        [],
+    );
+
     // --- Context menu ------------------------------------------------------
     const [contextMenu, setContextMenu] = useState<
         ContextMenuState<AIChatSession> | null
@@ -885,13 +904,23 @@ export function AgentsSidebarPanel() {
                                 handleStartRename(contextMenu.payload),
                         },
                         { type: "separator" },
-                        {
-                            label: "Delete",
-                            danger: true,
-                            action: () => {
-                                void handleDelete(contextMenu.payload);
-                            },
-                        },
+                        isClaudeTerminalAgentSession(contextMenu.payload)
+                            ? {
+                                  label: "Close Terminal",
+                                  danger: true,
+                                  action: () => {
+                                      void handleCloseClaudeTerminal(
+                                          contextMenu.payload,
+                                      );
+                                  },
+                              }
+                            : {
+                                  label: "Delete",
+                                  danger: true,
+                                  action: () => {
+                                      void handleDelete(contextMenu.payload);
+                                  },
+                              },
                     ]}
                 />
             )}

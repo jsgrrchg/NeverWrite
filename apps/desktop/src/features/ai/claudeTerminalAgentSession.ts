@@ -257,6 +257,30 @@ export function focusClaudeTerminalAgentSession(
     return true;
 }
 
+// Close the workspace terminal backing this lightweight Agents entry. The
+// terminal runtime store tears down the PTY; the regular reconciliation path
+// then removes the pseudo-session from the sidebar.
+export async function closeClaudeTerminalAgentSession(
+    session: Pick<AIChatSession, "terminalId">,
+): Promise<boolean> {
+    const terminalId = session.terminalId;
+    if (!terminalId) return false;
+
+    const tab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
+        (candidate) =>
+            isTerminalTab(candidate) && candidate.terminalId === terminalId,
+    );
+    const hadRuntime = Boolean(
+        useTerminalRuntimeStore.getState().runtimesById[terminalId],
+    );
+
+    if (tab) {
+        useEditorStore.getState().closeTab(tab.id);
+    }
+    await useTerminalRuntimeStore.getState().closeTerminal(terminalId);
+    return Boolean(tab || hadRuntime);
+}
+
 export function resetClaudeTerminalAgentSessionsForTests() {
     agentsByTerminalId.clear();
     if (pollTimer) {

@@ -15,6 +15,7 @@ import {
 } from "../terminal/terminalRuntimeStore";
 import { EMPTY_TERMINAL_SNAPSHOT } from "../terminal/terminalTypes";
 import {
+    closeClaudeTerminalAgentSession,
     focusClaudeTerminalAgentSession,
     pruneClaudeTerminalAgentSessions,
     refreshClaudeTerminalAgentTranscripts,
@@ -187,6 +188,30 @@ describe("claudeTerminalAgentSession", () => {
         expect(
             focusClaudeTerminalAgentSession({ terminalId: "missing" }),
         ).toBe(false);
+    });
+
+    it("closes the terminal tab and runtime backing the agent entry", async () => {
+        const tabs = [
+            { id: "note-1", kind: "note", noteId: "notes/a", title: "Note A" },
+            {
+                id: "term-tab-1",
+                kind: "terminal",
+                terminalId: "term-1",
+                title: "Claude Code 1",
+                cwd: "/vault",
+            },
+        ] as Parameters<typeof setEditorTabs>[0];
+        setEditorTabs(tabs, "term-tab-1");
+
+        await expect(
+            closeClaudeTerminalAgentSession({ terminalId: "term-1" }),
+        ).resolves.toBe(true);
+
+        expect(useEditorStore.getState().tabs).toHaveLength(1);
+        expect(useEditorStore.getState().tabs[0]?.id).toBe("note-1");
+        expect(
+            useTerminalRuntimeStore.getState().runtimesById["term-1"],
+        ).toBeUndefined();
     });
 
     it("opening the entry in the workspace focuses the terminal, not an ACP chat", () => {
