@@ -12111,6 +12111,65 @@ describe("chatStore", () => {
         );
     });
 
+    it("does not create a replacement ACP session when deleting the last Claude terminal entry", async () => {
+        const terminalSession: AIChatSession = {
+            sessionId: "claude-terminal:term-1",
+            historySessionId: "claude-terminal:term-1",
+            runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            terminalId: "term-1",
+            modelId: "",
+            modeId: "",
+            status: "idle",
+            models: [],
+            modes: [],
+            configOptions: [],
+            messages: [],
+            attachments: [],
+        };
+
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: CLAUDE_TERMINAL_RUNTIME_ID,
+                        name: "Claude Code",
+                        description: "Claude Code terminal pseudo-runtime",
+                        capabilities: ["attachments"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    ...readySetupStatusState,
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                },
+            },
+            sessionsById: {
+                [terminalSession.sessionId]: terminalSession,
+            },
+            sessionOrder: [terminalSession.sessionId],
+            activeSessionId: terminalSession.sessionId,
+            lastFocusedSessionId: terminalSession.sessionId,
+            selectedRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+        });
+
+        await useChatStore.getState().deleteSession(terminalSession.sessionId);
+
+        expect(useChatStore.getState().sessionsById).toEqual({});
+        expect(useChatStore.getState().sessionOrder).toEqual([]);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_get_setup_status",
+            expect.anything(),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_create_session",
+            expect.anything(),
+        );
+    });
+
     it("removes chat tabs when deleting a session", async () => {
         await useChatStore.getState().initialize();
 

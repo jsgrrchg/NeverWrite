@@ -10865,6 +10865,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deleteSession: async (sessionId) => {
             const vaultPath = useVaultStore.getState().vaultPath;
             const targetSession = get().sessionsById[sessionId];
+            const shouldCreateReplacementSession =
+                !targetSession ||
+                !isClaudeTerminalRuntimeId(targetSession.runtimeId);
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
             clearStaleStreamingCheck(sessionId);
@@ -10957,10 +10960,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 interruptedTurnStateBySessionId:
                     nextInterruptedTurnStateBySessionId,
             });
-            if (nextActiveId && !nextSessionsById[nextActiveId]) {
-                await get().newSession();
-            } else if (Object.keys(nextSessionsById).length === 0) {
-                await get().newSession();
+            if (shouldCreateReplacementSession) {
+                if (nextActiveId && !nextSessionsById[nextActiveId]) {
+                    await get().newSession();
+                } else if (Object.keys(nextSessionsById).length === 0) {
+                    await get().newSession();
+                }
             }
         },
 
