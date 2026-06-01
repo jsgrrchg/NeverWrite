@@ -26,10 +26,12 @@ export function normalizeScreenshotRetentionSeconds(value: unknown): number {
         return DEFAULT_SCREENSHOT_RETENTION_SECONDS;
     }
 
-    const rounded = Math.max(0, Math.round(value));
-    if (SCREENSHOT_RETENTION_VALUES.has(rounded)) return rounded;
+    if (value === 0) return 0;
 
-    if (rounded === 0) return 0;
+    const rounded = Math.round(value);
+    if (rounded <= 0) return DEFAULT_SCREENSHOT_RETENTION_SECONDS;
+
+    if (SCREENSHOT_RETENTION_VALUES.has(rounded)) return rounded;
 
     return (
         FINITE_SCREENSHOT_RETENTION_SECONDS.find(

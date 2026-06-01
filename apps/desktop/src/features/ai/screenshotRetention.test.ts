@@ -15,6 +15,12 @@ describe("screenshot retention", () => {
         expect(normalizeScreenshotRetentionSeconds(undefined)).toBe(
             DEFAULT_SCREENSHOT_RETENTION_SECONDS,
         );
+        expect(normalizeScreenshotRetentionSeconds(-1)).toBe(
+            DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+        );
+        expect(normalizeScreenshotRetentionSeconds(0.4)).toBe(
+            DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+        );
     });
 
     it("removes expired screenshots without dropping surrounding text", () => {
