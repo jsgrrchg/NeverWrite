@@ -7,7 +7,9 @@ import {
 import { isTerminalTab } from "../../app/store/editorTabs";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { resetClaudeTerminalAgentSessionsForTests } from "../ai/claudeTerminalAgentSession";
 import type { FileTreeNoteDragDetail } from "../ai/dragEvents";
+import { resetChatStore } from "../ai/store/chatStore";
 import type { TerminalSessionSnapshot } from "./terminalTypes";
 import { openClaudeCodeTerminalWithContext } from "./claudeCodeTerminal";
 import {
@@ -79,10 +81,16 @@ function getWrittenInputs() {
         });
 }
 
+const FIXED_SESSION_UUID = "2198181b-9c2d-4c4b-b646-0c219657a6ff";
+
 describe("openClaudeCodeTerminalWithContext", () => {
     beforeEach(() => {
         vi.useRealTimers();
         vi.mocked(invoke).mockClear();
+        // Deterministic --session-id so command assertions are stable.
+        vi.spyOn(crypto, "randomUUID").mockReturnValue(FIXED_SESSION_UUID);
+        resetClaudeTerminalAgentSessionsForTests();
+        resetChatStore();
         useSettingsStore.getState().reset();
         useVaultStore.setState({ vaultPath: "/vault root" });
         useEditorStore.getState().hydrateWorkspace(
@@ -100,6 +108,9 @@ describe("openClaudeCodeTerminalWithContext", () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        vi.restoreAllMocks();
+        resetClaudeTerminalAgentSessionsForTests();
+        resetChatStore();
         resetTerminalRuntimeStoreForTests();
     });
 
@@ -126,6 +137,10 @@ describe("openClaudeCodeTerminalWithContext", () => {
             "cd '/vault root'\n",
             "claude --dangerously-skip-permissions --model claude-sonnet-4-6 --continue --max-turns 7\n",
         ]);
+        expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+            "devtools_read_claude_transcript",
+            expect.anything(),
+        );
     });
 
     it("ignores unsupported persisted Claude Code models before writing to the shell", async () => {
@@ -197,7 +212,7 @@ describe("openClaudeCodeTerminalWithContext", () => {
 
         expect(getWrittenInputs()).toEqual([
             "cd '/vault root/Draft Folder'\n",
-            "claude\n",
+            `claude --session-id ${FIXED_SESSION_UUID}\n`,
             [
                 '@"Project Notes/One note.md"',
                 '@"assets/chart (v1).png"',

@@ -895,7 +895,8 @@ impl NativeBackend {
             | "devtools_restart_terminal_session"
             | "devtools_close_terminal_session"
             | "devtools_get_terminal_session_snapshot"
-            | "devtools_check_binary" => self.devtools.invoke(command, args),
+            | "devtools_check_binary"
+            | "devtools_read_claude_transcript" => self.devtools.invoke(command, args),
             "spellcheck_list_languages"
             | "spellcheck_list_catalog"
             | "spellcheck_check_text"

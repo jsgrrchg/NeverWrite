@@ -6,6 +6,7 @@ import {
 import { isTerminalTab } from "../../app/store/editorTabs";
 import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
+import { registerClaudeTerminalAgentSession } from "../ai/claudeTerminalAgentSession";
 import type { FileTreeNoteDragDetail } from "../ai/dragEvents";
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
 
@@ -194,16 +195,6 @@ export async function openClaudeCodeTerminalWithContext(
 
     const store = useTerminalRuntimeStore.getState();
 
-    // cd into the target directory so the user can see where claude starts,
-    // and so relative @mentions resolve correctly.
-    const cdTarget = resolveCdTarget(detail, vaultPath);
-    if (cdTarget) {
-        // Single-quote the path so $, backticks, and backslash are inert.
-        // Escape any embedded single quotes as '\'' (end-quote, literal, re-open).
-        const cdQuoted = `'${cdTarget.replace(/'/g, "'\\''")}'`;
-        await store.writeInput(terminalId, `cd ${cdQuoted}\n`);
-    }
-
     // Build the claude command from settings. Treat persisted settings as data,
     // not trusted shell text, before writing into the interactive PTY.
     const {
@@ -213,8 +204,46 @@ export async function openClaudeCodeTerminalWithContext(
         claudeCodeMaxTurns,
     } = useSettingsStore.getState();
 
+    // Pin a fresh session id so we can locate this terminal's transcript exactly.
+    // --session-id can't combine with --continue (which resumes an existing
+    // session we can't name up front), so transcript-derived title/preview are
+    // disabled in that case rather than guessed from another terminal's JSONL.
+    const pinnedSessionId = claudeCodeContinueSession
+        ? null
+        : crypto.randomUUID();
+
+    // claude runs in cdTarget after the cd below, so that's where it writes its
+    // session transcript. Fall back to the vault / the terminal's spawn cwd.
+    const cdTarget = resolveCdTarget(detail, vaultPath);
+    const transcriptCwd = pinnedSessionId
+        ? (cdTarget ??
+          vaultPath ??
+          store.runtimesById[terminalId]?.snapshot.cwd ??
+          null)
+        : null;
+
+    // Surface this terminal in the Agents sidebar, with title (first prompt) and
+    // preview (latest answer) sourced from the Claude Code transcript. The entry
+    // is non-persisted and removed when the terminal tab closes.
+    registerClaudeTerminalAgentSession({
+        terminalId,
+        title: tab.title,
+        transcriptSessionId: pinnedSessionId,
+        cwd: transcriptCwd,
+    });
+
+    // cd into the target directory so the user can see where claude starts,
+    // and so relative @mentions resolve correctly.
+    if (cdTarget) {
+        // Single-quote the path so $, backticks, and backslash are inert.
+        // Escape any embedded single quotes as '\'' (end-quote, literal, re-open).
+        const cdQuoted = `'${cdTarget.replace(/'/g, "'\\''")}'`;
+        await store.writeInput(terminalId, `cd ${cdQuoted}\n`);
+    }
+
     const args = ["claude"];
     if (claudeCodeSkipPermissions) args.push("--dangerously-skip-permissions");
+    if (pinnedSessionId) args.push("--session-id", pinnedSessionId);
     const safeModel = getSafeClaudeCodeModel(claudeCodeModel);
     if (safeModel) args.push("--model", safeModel);
     if (claudeCodeContinueSession) args.push("--continue");

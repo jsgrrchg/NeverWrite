@@ -17,6 +17,7 @@ import {
 import { SidebarFilterInput } from "../../components/layout/SidebarFilterInput";
 import {
     isChatTab,
+    isTerminalTab,
     selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
     useEditorStore,
@@ -46,6 +47,12 @@ import {
     countAiSessionChildren,
     type AiSessionHierarchyGroup,
 } from "./sessionHierarchy";
+import {
+    claudeTerminalAgentSessionId,
+    closeClaudeTerminalAgentSession,
+    focusClaudeTerminalAgentSession,
+    isClaudeTerminalAgentSession,
+} from "./claudeTerminalAgentSession";
 import { useChatStore } from "./store/chatStore";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import type { AIChatSession } from "./types";
@@ -284,7 +291,13 @@ export function AgentsSidebarPanel() {
         useShallow((state) => {
             const ids = new Set<string>();
             for (const tab of selectEditorWorkspaceTabs(state)) {
-                if (isChatTab(tab)) ids.add(tab.sessionId);
+                if (isChatTab(tab)) {
+                    ids.add(tab.sessionId);
+                } else if (isTerminalTab(tab)) {
+                    // A Claude Code terminal tab being open means its agent
+                    // entry belongs in the "Open" section.
+                    ids.add(claudeTerminalAgentSessionId(tab.terminalId));
+                }
             }
             return ids;
         }),
@@ -294,6 +307,17 @@ export function AgentsSidebarPanel() {
         useShallow((state) => {
             const focused = selectFocusedEditorTab(state);
             return focused && isChatTab(focused) ? focused.sessionId : null;
+        }),
+    );
+
+    // When a Claude Code terminal tab is focused, mark its agent entry as
+    // selected (the entry has no chat tab of its own).
+    const focusedTerminalAgentSessionId = useEditorStore(
+        useShallow((state) => {
+            const focused = selectFocusedEditorTab(state);
+            return focused && isTerminalTab(focused)
+                ? claudeTerminalAgentSessionId(focused.terminalId)
+                : null;
         }),
     );
 
@@ -472,6 +496,23 @@ export function AgentsSidebarPanel() {
         [deleteSession, sessions, unpinChat],
     );
 
+    const handleCloseClaudeTerminal = useCallback(
+        async (session: AIChatSession) => {
+            const title = getSessionTitleText(session);
+            const approved = await confirm(
+                `Close terminal "${title}"?\n\nThis closes the Claude Code terminal backing this Agents entry. The entry will disappear from the sidebar when the terminal closes.`,
+                {
+                    title: "Close terminal?",
+                    kind: "warning",
+                },
+            );
+            if (!approved) return;
+
+            await closeClaudeTerminalAgentSession(session);
+        },
+        [],
+    );
+
     // --- Context menu ------------------------------------------------------
     const [contextMenu, setContextMenu] = useState<
         ContextMenuState<AIChatSession> | null
@@ -520,7 +561,13 @@ export function AgentsSidebarPanel() {
         [],
     );
 
-    const activeSidebarId = focusedWorkspaceChatSessionId ?? activeSessionId;
+    const activeSidebarId =
+        focusedWorkspaceChatSessionId ??
+        (focusedTerminalAgentSessionId &&
+        sessionsById[focusedTerminalAgentSessionId]
+            ? focusedTerminalAgentSessionId
+            : null) ??
+        activeSessionId;
     const metrics = useMemo(
         () => buildAgentsSidebarMetrics(agentsSidebarScale),
         [agentsSidebarScale],
@@ -611,6 +658,10 @@ export function AgentsSidebarPanel() {
                 onRenameCancel={cancelEditing}
                 renameInputRef={inputRef}
                 onOpen={() => {
+                    if (session.runtimeId === CLAUDE_TERMINAL_RUNTIME_ID) {
+                        focusClaudeTerminalAgentSession(session);
+                        return;
+                    }
                     void openChatSessionInWorkspace(session.sessionId);
                 }}
                 onStartRename={() => {
@@ -853,13 +904,23 @@ export function AgentsSidebarPanel() {
                                 handleStartRename(contextMenu.payload),
                         },
                         { type: "separator" },
-                        {
-                            label: "Delete",
-                            danger: true,
-                            action: () => {
-                                void handleDelete(contextMenu.payload);
-                            },
-                        },
+                        isClaudeTerminalAgentSession(contextMenu.payload)
+                            ? {
+                                  label: "Close Terminal",
+                                  danger: true,
+                                  action: () => {
+                                      void handleCloseClaudeTerminal(
+                                          contextMenu.payload,
+                                      );
+                                  },
+                              }
+                            : {
+                                  label: "Delete",
+                                  danger: true,
+                                  action: () => {
+                                      void handleDelete(contextMenu.payload);
+                                  },
+                              },
                     ]}
                 />
             )}
