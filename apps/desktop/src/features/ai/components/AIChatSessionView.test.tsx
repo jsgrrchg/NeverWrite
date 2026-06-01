@@ -107,4 +107,41 @@ describe("AIChatSessionView", () => {
 
         expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
     });
+
+    it("removes expired screenshots from the composer", async () => {
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "session-a": createSession("session-a", "Workspace chat"),
+            },
+            activeSessionId: "session-a",
+            screenshotRetentionSeconds: 60,
+            composerPartsBySessionId: {
+                "session-a": [
+                    { id: "text-1", type: "text", text: "Review " },
+                    {
+                        id: "shot-1",
+                        type: "screenshot",
+                        filePath: "/vault/assets/chat/old.png",
+                        mimeType: "image/png",
+                        label: "Screenshot 10:42 hrs",
+                        createdAt: Date.now() - 61_000,
+                    },
+                    { id: "text-2", type: "text", text: " please" },
+                ],
+            },
+        }));
+        useEditorStore.getState().openChat("session-a", {
+            title: "Workspace chat",
+            paneId: "primary",
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().composerPartsBySessionId["session-a"],
+            ).toEqual([{ id: "text-1", type: "text", text: "Review  please" }]);
+        });
+    });
 });

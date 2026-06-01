@@ -546,6 +546,33 @@ describe("SettingsPanel", () => {
                 "How long pasted screenshots stay in the AI composer before they are removed automatically.",
             ),
         ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: /5 minutes/ }));
+
+        expect(
+            screen.getByRole("button", { name: "1 minute" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "30 minutes" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "1 hour" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "24 hours" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "7 days" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getAllByRole("button", { name: "Forever" }).length,
+        ).toBeGreaterThan(0);
+        expect(
+            screen.queryByRole("button", { name: "30 seconds" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "15 minutes" }),
+        ).not.toBeInTheDocument();
     });
 
     it("renders and persists the context usage bar toggle in AI settings", () => {

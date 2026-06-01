@@ -337,6 +337,9 @@ function createScreenshotNode(
     element.dataset.filePath = part.filePath;
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
+    if (part.createdAt != null) {
+        element.dataset.createdAt = String(part.createdAt);
+    }
     element.contentEditable = "false";
     element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
@@ -465,6 +468,9 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
             filePath: node.dataset.filePath,
             mimeType: node.dataset.mimeType,
             label: node.dataset.label,
+            createdAt: node.dataset.createdAt
+                ? Number(node.dataset.createdAt)
+                : undefined,
         });
         return;
     }

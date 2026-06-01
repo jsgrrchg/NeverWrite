@@ -59,6 +59,11 @@ import {
     serializeComposerPartsForAI,
 } from "../composerParts";
 import {
+    DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+    normalizeScreenshotPartTimestamps,
+    normalizeScreenshotRetentionSeconds,
+} from "../screenshotRetention";
+import {
     ensureSessionWorkCycle,
     startNewWorkCycle,
 } from "./editedFilesBufferModel";
@@ -231,7 +236,7 @@ const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     chatFontFamily: "system",
     editDiffZoom: 0.72,
     historyRetentionDays: 0,
-    screenshotRetentionSeconds: 0,
+    screenshotRetentionSeconds: DEFAULT_SCREENSHOT_RETENTION_SECONDS,
 };
 
 interface AIRuntimeCatalogSnapshot {
@@ -369,6 +374,16 @@ function saveAutoContextPreference(
 
 function getNormalizedAiPreferences(): NormalizedAiPreferences {
     const prefs = loadAiPreferences();
+    const screenshotRetentionSeconds = normalizeScreenshotRetentionSeconds(
+        prefs.screenshotRetentionSeconds,
+    );
+    if (
+        prefs.screenshotRetentionSeconds != null &&
+        prefs.screenshotRetentionSeconds !== screenshotRetentionSeconds
+    ) {
+        saveAiPreferences({ screenshotRetentionSeconds });
+    }
+
     return {
         requireCmdEnterToSend: prefs.requireCmdEnterToSend === true,
         contextUsageBarEnabled: prefs.contextUsageBarEnabled !== false,
@@ -378,7 +393,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
         historyRetentionDays: prefs.historyRetentionDays ?? 0,
-        screenshotRetentionSeconds: prefs.screenshotRetentionSeconds ?? 0,
+        screenshotRetentionSeconds,
     };
 }
 
@@ -9162,9 +9177,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             set((state) => {
+                const normalizedParts = normalizeScreenshotPartTimestamps(parts);
                 const session = state.sessionsById[resolvedSessionId];
                 const mentionIds = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9176,7 +9192,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         .map((p) => p.noteId),
                 );
                 const folderPaths = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9188,7 +9204,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         .map((p) => p.folderPath),
                 );
                 const fileMentionPaths = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9215,7 +9231,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return {
                     composerPartsBySessionId: {
                         ...state.composerPartsBySessionId,
-                        [resolvedSessionId]: parts,
+                        [resolvedSessionId]: normalizedParts,
                     },
                     ...(session &&
                     prunedAttachments.length !== session.attachments.length
@@ -11370,7 +11386,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setScreenshotRetentionSeconds: (seconds) => {
-            const next = Math.max(0, Math.round(seconds));
+            const next = normalizeScreenshotRetentionSeconds(seconds);
             set({ screenshotRetentionSeconds: next });
             saveAiPreferences({ screenshotRetentionSeconds: next });
         },

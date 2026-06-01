@@ -575,6 +575,50 @@ describe("chatStore", () => {
         });
     });
 
+    it("uses a finite default for screenshot retention unless Forever is saved", () => {
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(1800);
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                screenshotRetentionSeconds: 0,
+            }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(0);
+    });
+
+    it("migrates removed screenshot retention preferences into saved options", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                screenshotRetentionSeconds: 900,
+            }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(1800);
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({
+            screenshotRetentionSeconds: 1800,
+        });
+    });
+
+    it("persists only supported screenshot retention updates", () => {
+        useChatStore.getState().setScreenshotRetentionSeconds(30);
+
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(60);
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({
+            screenshotRetentionSeconds: 60,
+        });
+    });
+
     it("keeps root backend streaming upserts from reviving stale sessions", () => {
         const session = createSessionWithTrackedFiles("root-session", []);
         useChatStore.getState().upsertSession(session, true);

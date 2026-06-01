@@ -43,6 +43,11 @@ import {
     createEmptyComposerParts,
 } from "../composerParts";
 import {
+    getNextScreenshotExpiryDelayMs,
+    normalizeScreenshotPartTimestamps,
+    pruneExpiredScreenshotParts,
+} from "../screenshotRetention";
+import {
     findSessionForHistorySelection,
     getSessionTitle,
     getSessionTitleText,
@@ -81,6 +86,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         queuedMessageEdit,
         interruptedTurnState,
         tokenUsage,
+        screenshotRetentionSeconds,
     } = useChatStore(
         useShallow((state) => {
             const s = sessionId
@@ -113,6 +119,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 tokenUsage: sid
                     ? (state.tokenUsageBySessionId[sid] ?? null)
                     : null,
+                screenshotRetentionSeconds: state.screenshotRetentionSeconds,
             };
         }),
     );
@@ -317,6 +324,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         filePath: saved.path,
                         mimeType: saved.mime_type ?? file.type,
                         label: timeLabel,
+                        createdAt: now.getTime(),
                     }),
                     sessionId,
                 );
@@ -326,6 +334,62 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         },
         [chatActions, refreshEntries, sessionId],
     );
+
+    useEffect(() => {
+        if (!sessionId || screenshotRetentionSeconds <= 0) return;
+
+        const now = Date.now();
+        const normalizedParts = normalizeScreenshotPartTimestamps(
+            composerParts,
+            now,
+        );
+        const prunedParts = pruneExpiredScreenshotParts(
+            normalizedParts,
+            screenshotRetentionSeconds,
+            now,
+        );
+
+        if (prunedParts !== composerParts) {
+            chatActions.setComposerParts(prunedParts, sessionId);
+            return;
+        }
+
+        const nextDelay = getNextScreenshotExpiryDelayMs(
+            composerParts,
+            screenshotRetentionSeconds,
+            now,
+        );
+        if (nextDelay == null) return;
+
+        const timer = window.setTimeout(() => {
+            const state = useChatStore.getState();
+            const currentParts =
+                state.composerPartsBySessionId[sessionId] ??
+                createEmptyComposerParts();
+            const currentRetentionSeconds = state.screenshotRetentionSeconds;
+            const currentNow = Date.now();
+            const normalizedCurrentParts = normalizeScreenshotPartTimestamps(
+                currentParts,
+                currentNow,
+            );
+            const nextParts = pruneExpiredScreenshotParts(
+                normalizedCurrentParts,
+                currentRetentionSeconds,
+                currentNow,
+            );
+
+            if (nextParts !== currentParts) {
+                state.setComposerParts(nextParts, sessionId);
+            }
+        }, nextDelay);
+
+        return () => window.clearTimeout(timer);
+    }, [
+        chatActions,
+        composerParts,
+        screenshotRetentionSeconds,
+        sessionId,
+    ]);
 
     // Title sync: keep the editor tab title in sync with session title
     useEffect(() => {
