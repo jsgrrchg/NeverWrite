@@ -29,7 +29,6 @@ function renderMessage(
     options: {
         sessionId?: string | null;
         visibleWorkCycleId?: string | null;
-        recentDiffWorkCycleIds?: string[];
         onDismissMessage?: (messageId: string) => void;
     } = {},
 ) {
@@ -39,7 +38,6 @@ function renderMessage(
             sessionId={options.sessionId}
             pillMetrics={pillMetrics}
             visibleWorkCycleId={options.visibleWorkCycleId}
-            recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
             onDismissMessage={options.onDismissMessage}
         />,
     );
@@ -390,7 +388,7 @@ describe("AIChatMessageItem tool diffs", () => {
         ).toBeInTheDocument();
     });
 
-    it("hides diff review panels for non-visible work cycles", () => {
+    it("keeps historical work cycle diffs on the rich diff card", () => {
         renderMessage(
             {
                 id: "tool:hidden",
@@ -414,20 +412,16 @@ describe("AIChatMessageItem tool diffs", () => {
                     target: "/vault/src/watcher.rs",
                 },
             },
-            { visibleWorkCycleId: "cycle-new", recentDiffWorkCycleIds: [] },
+            { visibleWorkCycleId: "cycle-new" },
         );
 
-        expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
-        expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
-            "Earlier change",
-        );
-        expect(screen.getByText(/watcher\.rs/)).toBeInTheDocument();
-        expect(
-            screen.queryByRole("button", { name: "Open" }),
-        ).not.toBeInTheDocument();
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
     });
 
-    it("keeps recent non-visible work cycles on the rich diff card in read-only mode", () => {
+    it("keeps non-visible work cycles on the rich diff card without a recency badge", () => {
         renderMessage(
             {
                 id: "tool:recent",
@@ -453,18 +447,16 @@ describe("AIChatMessageItem tool diffs", () => {
             },
             {
                 visibleWorkCycleId: "cycle-current",
-                recentDiffWorkCycleIds: ["cycle-recent"],
             },
         );
 
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
-        expect(screen.getByTestId("recent-diff-badge")).toHaveTextContent(
-            "Recent change",
-        );
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.queryByText("Recent change")).not.toBeInTheDocument();
         expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
     });
 
-    it("keeps recent permission diffs inspectable without rendering decision actions", () => {
+    it("keeps historical permission diffs inspectable without rendering decision actions", () => {
         renderMessage(
             {
                 id: "permission:recent",
@@ -503,13 +495,12 @@ describe("AIChatMessageItem tool diffs", () => {
             },
             {
                 visibleWorkCycleId: "cycle-current",
-                recentDiffWorkCycleIds: ["cycle-recent"],
             },
         );
 
-        expect(screen.getByTestId("recent-diff-badge")).toHaveTextContent(
-            "Recent change",
-        );
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
         expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
         expect(

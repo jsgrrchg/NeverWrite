@@ -418,7 +418,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(secondScrollContainer.scrollTop).toBe(4_320);
     });
 
-    it("keeps only the two most recent non-visible diff work cycles as rich cards", () => {
+    it("keeps non-visible diff work cycles as rich cards", () => {
         const messages: AIChatMessage[] = [
             {
                 id: "tool:oldest",
@@ -519,12 +519,13 @@ describe("AIChatMessageList streaming run indicator", () => {
             />,
         );
 
-        expect(screen.getAllByTestId("recent-diff-badge")).toHaveLength(2);
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
+        expect(screen.getByText("Edited oldest.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited older.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited recent.ts")).toBeInTheDocument();
-        expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
-            "Edited oldest.ts",
-        );
+        expect(screen.getByText("Edited current.ts")).toBeInTheDocument();
     });
 
     it("lets the user dismiss the pinned plan banner and keeps the plan in the timeline", () => {
