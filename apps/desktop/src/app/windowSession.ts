@@ -255,12 +255,15 @@ export async function restoreWindowSession(args: {
         await args.restorePrimaryVaultSession();
     }
 
+    const primaryVaultPath =
+        primaryVault?.kind === "vault" ? primaryVault.vaultPath : null;
+
     for (const entry of entries) {
         if (entry === primaryVault) continue;
         if (liveLabels.has(entry.label)) continue;
 
         if (entry.kind === "vault") {
-            if (entry.vaultPath === primaryVault?.vaultPath) continue;
+            if (entry.vaultPath === primaryVaultPath) continue;
             await args.openVaultWindow(entry.vaultPath);
             continue;
         }

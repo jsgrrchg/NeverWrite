@@ -46,6 +46,39 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(300);
         expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([]);
+        expect(useSettingsStore.getState().vimModeEnabled).toBe(false);
+        expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(false);
+    });
+
+    it("persists vim settings globally across vaults", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/vim-one" });
+
+        useSettingsStore.getState().setSetting("vimModeEnabled", true);
+        useSettingsStore
+            .getState()
+            .setSetting("vimRelativeLineNumbers", true);
+
+        expect(useSettingsStore.getState().vimModeEnabled).toBe(true);
+        expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(true);
+        expect(
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? ""),
+        ).toMatchObject({
+            state: {
+                vimModeEnabled: true,
+                vimRelativeLineNumbers: true,
+            },
+        });
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/vim-one") ??
+                    "",
+            ).state,
+        ).not.toHaveProperty("vimModeEnabled");
+
+        useVaultStore.setState({ vaultPath: "/vaults/vim-two" });
+
+        expect(useSettingsStore.getState().vimModeEnabled).toBe(true);
+        expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(true);
     });
 
     it("persists settings per vault", () => {
@@ -75,6 +108,34 @@ describe("settingsStore", () => {
                 editorAutosaveDelayMs: 750,
             },
         });
+    });
+
+    it("loads vim settings from global storage over vault storage", () => {
+        localStorage.setItem(
+            "neverwrite:settings",
+            JSON.stringify({
+                state: {
+                    vimModeEnabled: true,
+                    vimRelativeLineNumbers: true,
+                },
+            }),
+        );
+        localStorage.setItem(
+            "neverwrite:settings:/vaults/vim-legacy",
+            JSON.stringify({
+                state: {
+                    inlineReviewEnabled: false,
+                    vimModeEnabled: false,
+                    vimRelativeLineNumbers: false,
+                },
+            }),
+        );
+
+        useVaultStore.setState({ vaultPath: "/vaults/vim-legacy" });
+
+        expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().vimModeEnabled).toBe(true);
+        expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(true);
     });
 
     it("persists terminal settings per vault", () => {

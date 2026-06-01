@@ -158,6 +158,10 @@ impl DevTerminalManager {
                 let session_id = required_string(&args, &["sessionId", "session_id"])?;
                 Ok(json!(self.snapshot(&session_id)?))
             }
+            "devtools_read_claude_transcript" => {
+                let input = parse_input::<ReadClaudeTranscriptInput>(&args)?;
+                Ok(json!(read_claude_transcript(input)))
+            }
             "devtools_check_binary" => {
                 let name = required_string(&args, &["name"])?;
                 // Reject anything that isn't a plain binary name to prevent
@@ -491,6 +495,46 @@ fn release_session_runtime_resources(
     }
 }
 
+/// Decode a PTY read into a UTF-8 string, carrying any incomplete trailing
+/// multi-byte sequence across to the next read via `carry`. Genuinely invalid
+/// bytes are replaced with U+FFFD; only an unfinished-but-valid prefix is held
+/// back. Mirrors Node's `StringDecoder('utf8')`.
+fn decode_utf8_with_carry(carry: &mut Vec<u8>, bytes: &[u8]) -> String {
+    carry.extend_from_slice(bytes);
+    let mut out = String::new();
+    let mut start = 0;
+    loop {
+        match std::str::from_utf8(&carry[start..]) {
+            Ok(valid) => {
+                out.push_str(valid);
+                carry.clear();
+                return out;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                // SAFETY: `valid_up_to` is, by contract, a valid UTF-8 boundary.
+                out.push_str(unsafe {
+                    std::str::from_utf8_unchecked(&carry[start..start + valid_up_to])
+                });
+                match error.error_len() {
+                    // A real invalid sequence: emit one replacement char and
+                    // advance past it, then keep decoding the rest.
+                    Some(len) => {
+                        out.push('\u{FFFD}');
+                        start += valid_up_to + len;
+                    }
+                    // Input ended mid-sequence: hold the tail for the next read.
+                    None => {
+                        let remainder = carry[start + valid_up_to..].to_vec();
+                        *carry = remainder;
+                        return out;
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn spawn_output_reader(
     mut reader: Box<dyn Read + Send>,
     closed: Arc<AtomicBool>,
@@ -499,6 +543,12 @@ fn spawn_output_reader(
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; OUTPUT_CHUNK_SIZE];
+        // Holds the bytes of a multi-byte UTF-8 sequence that was split across a
+        // read boundary. Without this, `from_utf8_lossy` would replace the split
+        // codepoint with U+FFFD, corrupting box-drawing / emoji / powerline
+        // glyphs that TUIs like Claude Code emit heavily. This mirrors Node's
+        // StringDecoder: decode the valid prefix, carry the incomplete tail.
+        let mut carry: Vec<u8> = Vec::new();
         loop {
             if closed.load(Ordering::Relaxed) {
                 break;
@@ -509,8 +559,10 @@ fn spawn_output_reader(
                     if closed.load(Ordering::Relaxed) {
                         break;
                     }
-                    let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
-                    emit_terminal_output(&event_tx, &session_id, chunk);
+                    let chunk = decode_utf8_with_carry(&mut carry, &buffer[..read]);
+                    if !chunk.is_empty() {
+                        emit_terminal_output(&event_tx, &session_id, chunk);
+                    }
                 }
                 Err(error) => {
                     if !closed.load(Ordering::Relaxed) {
@@ -812,10 +864,318 @@ fn required_string(args: &Value, keys: &[&str]) -> Result<String, String> {
     Err(format!("Missing argument: {}", keys[0]))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadClaudeTranscriptInput {
+    /// Claude session UUID (the file is `<session_id>.jsonl`). When absent, we
+    /// skip transcript reading rather than guessing from another terminal.
+    #[serde(default)]
+    session_id: Option<String>,
+    /// The directory Claude Code is running in; used to locate the project dir.
+    cwd: String,
+    /// If set, skip reading when the file hasn't changed since this mtime.
+    #[serde(default)]
+    since_mtime_ms: Option<u64>,
+}
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeTranscriptResult {
+    found: bool,
+    changed: bool,
+    mtime_ms: Option<u64>,
+    title: Option<String>,
+    preview: Option<String>,
+}
+
+fn claude_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+/// Claude Code encodes a project directory by replacing every non-alphanumeric
+/// character with '-'. e.g. "/Users/x/My Vault" -> "-Users-x-My-Vault".
+fn encode_project_path(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+fn system_time_to_ms(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+fn is_valid_claude_session_id(id: &str) -> bool {
+    const UUID_LEN: usize = 36;
+    const HYPHEN_POSITIONS: [usize; 4] = [8, 13, 18, 23];
+
+    let bytes = id.as_bytes();
+    bytes.len() == UUID_LEN
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if HYPHEN_POSITIONS.contains(&index) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Collapse whitespace to single spaces and cap length, so a multi-line message
+/// renders cleanly on one sidebar row.
+fn clean_one_line(text: &str, max_chars: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > max_chars {
+        collapsed.chars().take(max_chars).collect()
+    } else {
+        collapsed
+    }
+}
+
+/// Pull the plain text out of a transcript entry's `message.content`, which may
+/// be a bare string or an array of typed blocks. Only `text` blocks count;
+/// tool calls, tool results, thinking, and images are ignored.
+fn extract_message_text(entry: &Value) -> Option<String> {
+    let content = entry.get("message")?.get("content")?;
+    if let Some(text) = content.as_str() {
+        let trimmed = text.trim();
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    let blocks = content.as_array()?;
+    let mut buffer = String::new();
+    for block in blocks {
+        if block.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                if !buffer.is_empty() {
+                    buffer.push(' ');
+                }
+                buffer.push_str(text);
+            }
+        }
+    }
+    let trimmed = buffer.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Scan a JSONL transcript for the first user prompt (title) and the most
+/// recent assistant answer (preview). Parsing is defensive: unparseable lines,
+/// sidechain/meta entries, and non-text content are skipped.
+fn extract_title_preview(content: &str) -> (Option<String>, Option<String>) {
+    let mut first_user: Option<String> = None;
+    let mut last_assistant: Option<String> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+            || value.get("isMeta").and_then(Value::as_bool) == Some(true)
+        {
+            continue;
+        }
+        match value.get("type").and_then(Value::as_str) {
+            Some("user") if first_user.is_none() => {
+                first_user = extract_message_text(&value);
+            }
+            Some("assistant") => {
+                if let Some(text) = extract_message_text(&value) {
+                    last_assistant = Some(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    (
+        first_user.map(|text| clean_one_line(&text, 500)),
+        last_assistant.map(|text| clean_one_line(&text, 500)),
+    )
+}
+
+fn read_claude_transcript(input: ReadClaudeTranscriptInput) -> ClaudeTranscriptResult {
+    let Some(home) = claude_home_dir() else {
+        return ClaudeTranscriptResult::default();
+    };
+    let dir = home
+        .join(".claude")
+        .join("projects")
+        .join(encode_project_path(&input.cwd));
+    let Some(id) = input
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return ClaudeTranscriptResult::default();
+    };
+    if !is_valid_claude_session_id(id) {
+        return ClaudeTranscriptResult::default();
+    }
+    let path = dir.join(format!("{id}.jsonl"));
+
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return ClaudeTranscriptResult::default();
+    };
+    let mtime_ms = metadata.modified().ok().and_then(system_time_to_ms);
+
+    // Unchanged since the caller last read it — skip the (potentially large) read.
+    if let (Some(previous), Some(current)) = (input.since_mtime_ms, mtime_ms) {
+        if current <= previous {
+            return ClaudeTranscriptResult {
+                found: true,
+                changed: false,
+                mtime_ms,
+                title: None,
+                preview: None,
+            };
+        }
+    }
+
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return ClaudeTranscriptResult::default();
+    };
+    let (title, preview) = extract_title_preview(&content);
+    ClaudeTranscriptResult {
+        found: true,
+        changed: true,
+        mtime_ms,
+        title,
+        preview,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn decodes_utf8_sequence_split_across_reads() {
+        // "é" (U+00E9) is 0xC3 0xA9. Split it across two reads.
+        let mut carry = Vec::new();
+        let first = decode_utf8_with_carry(&mut carry, &[b'a', 0xC3]);
+        assert_eq!(first, "a");
+        assert_eq!(carry, vec![0xC3]);
+        let second = decode_utf8_with_carry(&mut carry, &[0xA9, b'b']);
+        assert_eq!(second, "\u{00E9}b");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn decodes_three_byte_sequence_split_at_every_boundary() {
+        // "→" (U+2192) is 0xE2 0x86 0x92. Feed one byte per read.
+        let mut carry = Vec::new();
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0xE2]), "");
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0x86]), "");
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0x92]), "\u{2192}");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn encodes_project_path_like_claude_code() {
+        assert_eq!(
+            encode_project_path("/Users/simonpamies/Documents/Code/NeverWrite"),
+            "-Users-simonpamies-Documents-Code-NeverWrite"
+        );
+        // Spaces, dots, and underscores all collapse to '-'.
+        assert_eq!(encode_project_path("/a b/c.d_e"), "-a-b-c-d-e");
+    }
+
+    #[test]
+    fn validates_claude_session_id_as_uuid_basename() {
+        assert!(is_valid_claude_session_id(
+            "2198181b-9c2d-4c4b-b646-0c219657a6ff"
+        ));
+        assert!(is_valid_claude_session_id(
+            "2198181B-9C2D-4C4B-B646-0C219657A6FF"
+        ));
+
+        assert!(!is_valid_claude_session_id("../outside"));
+        assert!(!is_valid_claude_session_id(
+            "2198181b/9c2d-4c4b-b646-0c219657a6ff"
+        ));
+        assert!(!is_valid_claude_session_id(
+            "2198181b-9c2d-4c4b-b646-0c219657a6ff.jsonl"
+        ));
+        assert!(!is_valid_claude_session_id(
+            "2198181b-9c2d-4c4b-b646-0c219657a6fg"
+        ));
+    }
+
+    #[test]
+    fn extracts_first_prompt_and_latest_answer_from_transcript() {
+        let jsonl = [
+            r#"{"type":"system","subtype":"init"}"#,
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"  How do I add a route?  "}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"First answer"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":"ok"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"y","name":"Edit","input":{}}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Latest\nanswer here"}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent noise"}]}}"#,
+        ]
+        .join("\n");
+
+        let (title, preview) = extract_title_preview(&jsonl);
+        assert_eq!(title.as_deref(), Some("How do I add a route?"));
+        // Latest text answer wins; tool_use/sidechain entries are ignored and
+        // newlines collapse to a single line.
+        assert_eq!(preview.as_deref(), Some("Latest answer here"));
+    }
+
+    #[test]
+    fn extract_title_preview_tolerates_garbage_lines() {
+        let jsonl = [
+            "not json at all",
+            r#"{"type":"user","message":{"content":"plain string prompt"}}"#,
+            "",
+            r#"{"broken json"#,
+        ]
+        .join("\n");
+        let (title, preview) = extract_title_preview(&jsonl);
+        assert_eq!(title.as_deref(), Some("plain string prompt"));
+        assert_eq!(preview, None);
+    }
+
+    #[test]
+    fn decodes_four_byte_emoji_split_across_reads() {
+        // "😀" (U+1F600) is 0xF0 0x9F 0x98 0x80. Split it across three reads.
+        let mut carry = Vec::new();
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0xF0, 0x9F]), "");
+        assert_eq!(decode_utf8_with_carry(&mut carry, &[0x98]), "");
+        assert_eq!(
+            decode_utf8_with_carry(&mut carry, &[0x80, b'!']),
+            "\u{1F600}!"
+        );
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn leaves_no_carry_for_complete_input() {
+        let mut carry = Vec::new();
+        assert_eq!(
+            decode_utf8_with_carry(&mut carry, "plain ascii ✓".as_bytes()),
+            "plain ascii ✓"
+        );
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn replaces_genuinely_invalid_bytes_without_stalling() {
+        // 0xFF is never valid UTF-8; it must become U+FFFD and not be carried.
+        let mut carry = Vec::new();
+        let out = decode_utf8_with_carry(&mut carry, &[b'a', 0xFF, b'b']);
+        assert_eq!(out, "a\u{FFFD}b");
+        assert!(carry.is_empty());
+    }
 
     #[test]
     fn resolves_requested_cwd_when_directory_exists() {

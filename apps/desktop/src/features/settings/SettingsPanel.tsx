@@ -51,6 +51,7 @@ import {
 } from "../../app/utils/appZoom";
 import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
+import { SCREENSHOT_RETENTION_OPTIONS } from "../ai/screenshotRetention";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
 import { ExtensionFilterInput } from "./ExtensionFilterInput";
@@ -176,6 +177,10 @@ type SelectFieldOption<T extends string | number | null> = {
     label: string;
     group?: string;
 };
+
+const SCREENSHOT_RETENTION_KEYWORDS = SCREENSHOT_RETENTION_OPTIONS.map(
+    (option) => option.label,
+);
 
 function SelectField<T extends string | number | null>({
     value,
@@ -1095,6 +1100,8 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         lineWrapping,
         justifyText,
         tabSize,
+        vimModeEnabled,
+        vimRelativeLineNumbers,
         setSetting,
     } = useSettingsStore();
     const showTypography = sectionHasSettingsSearchMatches(
@@ -1130,11 +1137,22 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             ["Tab size", "Number of spaces inserted when pressing Tab.", 2, 4],
         ],
     );
+    const showVim = sectionHasSettingsSearchMatches(searchQuery, "Vim", [
+        [
+            "Vim key bindings",
+            "Use modal (vim) editing in the note editor.",
+            "vim",
+        ],
+        [
+            "Relative line numbers",
+            "Show line numbers as distance from the cursor line.",
+        ],
+    ]);
     const showLayout = sectionHasSettingsSearchMatches(searchQuery, "Layout", [
         ["Text width", "Maximum width of the editor content, in pixels."],
     ]);
 
-    if (!showTypography && !showFormatting && !showLayout) {
+    if (!showTypography && !showFormatting && !showVim && !showLayout) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1250,6 +1268,35 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                             { value: 4, label: "4" },
                         ]}
                         onChange={(v) => setSetting("tabSize", v as 2 | 4)}
+                    />
+                }
+            />
+
+            {showVim ? <SectionLabel>Vim</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Vim"
+                label="Vim key bindings"
+                description="Use modal (vim) editing in the note editor."
+                keywords={["vim"]}
+                control={
+                    <Toggle
+                        value={vimModeEnabled}
+                        onChange={(v) => setSetting("vimModeEnabled", v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Vim"
+                label="Relative line numbers"
+                description="Show line numbers as distance from the cursor line. Applies in code (non–live-preview) mode."
+                control={
+                    <Toggle
+                        value={vimRelativeLineNumbers}
+                        onChange={(v) =>
+                            setSetting("vimRelativeLineNumbers", v)
+                        }
                     />
                 }
             />
@@ -3804,12 +3851,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             [
                 "Screenshot retention",
                 "How long pasted screenshots stay in the AI composer before they are removed automatically.",
-                "Forever",
-                "30 seconds",
-                "1 minute",
-                "5 minutes",
-                "15 minutes",
-                "30 minutes",
+                ...SCREENSHOT_RETENTION_KEYWORDS,
             ],
             [
                 "Composer font family",
@@ -3931,25 +3973,11 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 section="Composer"
                 label="Screenshot retention"
                 description="How long pasted screenshots stay in the AI composer before they are removed automatically."
-                keywords={[
-                    "Forever",
-                    "30 seconds",
-                    "1 minute",
-                    "5 minutes",
-                    "15 minutes",
-                    "30 minutes",
-                ]}
+                keywords={SCREENSHOT_RETENTION_KEYWORDS}
                 control={
                     <SelectField
                         value={screenshotRetentionSeconds}
-                        options={[
-                            { value: 0, label: "Forever" },
-                            { value: 30, label: "30 seconds" },
-                            { value: 60, label: "1 minute" },
-                            { value: 300, label: "5 minutes" },
-                            { value: 900, label: "15 minutes" },
-                            { value: 1800, label: "30 minutes" },
-                        ]}
+                        options={[...SCREENSHOT_RETENTION_OPTIONS]}
                         onChange={(value) =>
                             setScreenshotRetentionSeconds(Number(value))
                         }

@@ -18,13 +18,14 @@ import {
     getAptBinaryPackagesPath,
     getDebianControlField,
     hashFile,
-    isUrlFilename,
     normalizeAptComponent,
     normalizeAptSuite,
     normalizeDebianArchitecture,
     parseDebianControlStanza,
 } from "./apt-repo-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
+
+const APT_PACKAGE_FILENAME_PREFIX = "pool/main/n/neverwrite/";
 
 function parseArgs(argv) {
     const args = {
@@ -163,6 +164,34 @@ function validateReleaseFile({ aptDir, suite, component }) {
     }
 }
 
+function resolvePackageFilename({ aptDir, arch, filename }) {
+    const normalizedFilename = path.posix.normalize(filename);
+    if (
+        filename !== normalizedFilename ||
+        filename.includes("\\") ||
+        path.posix.isAbsolute(normalizedFilename) ||
+        !normalizedFilename.startsWith(APT_PACKAGE_FILENAME_PREFIX)
+    ) {
+        throw new Error(
+            `${arch} Packages contains invalid Filename "${filename}". Expected a normalized relative path under "${APT_PACKAGE_FILENAME_PREFIX}".`,
+        );
+    }
+
+    const packagePath = path.resolve(aptDir, normalizedFilename);
+    const relativeFromAptRoot = path
+        .relative(aptDir, packagePath)
+        .split(path.sep)
+        .join(path.posix.sep);
+
+    if (relativeFromAptRoot !== normalizedFilename) {
+        throw new Error(
+            `${arch} Packages contains invalid Filename "${filename}". Expected a path inside the APT repository root.`,
+        );
+    }
+
+    return packagePath;
+}
+
 function validatePackagesForArchitecture({
     aptDir,
     architecture,
@@ -215,46 +244,20 @@ function validatePackagesForArchitecture({
             );
         }
 
-        if (isUrlFilename(filename)) {
-            try {
-                const url = new URL(filename);
-                if (url.protocol !== "https:") {
-                    throw new Error(
-                        `URL protocol must be https, got "${url.protocol}"`,
-                    );
-                }
-                if (!url.hostname.endsWith("github.com") && !url.hostname.endsWith("githubusercontent.com")) {
-                    throw new Error(
-                        `URL host must be a GitHub domain, got "${url.hostname}"`,
-                    );
-                }
-            } catch (error) {
-                throw new Error(
-                    `${arch} Packages contains invalid Filename URL "${filename}": ${error.message}`,
-                );
-            }
-        } else {
-            if (!filename.startsWith("pool/main/n/neverwrite/")) {
-                throw new Error(
-                    `${arch} Packages contains invalid Filename "${filename}". Expected "pool/main/n/neverwrite/..." or an absolute URL.`,
-                );
-            }
+        const packagePath = resolvePackageFilename({ aptDir, arch, filename });
+        assertFileExists(packagePath, `${arch} package file`);
 
-            const packagePath = path.join(aptDir, filename);
-            assertFileExists(packagePath, `${arch} package file`);
-
-            if (fs.statSync(packagePath).size !== size) {
-                throw new Error(`${filename} Size does not match package file.`);
+        if (fs.statSync(packagePath).size !== size) {
+            throw new Error(`${filename} Size does not match package file.`);
+        }
+        for (const { fieldName, algorithm } of APT_PACKAGE_CHECKSUMS) {
+            const expectedHash = getDebianControlField(stanza, fieldName);
+            if (!expectedHash) {
+                throw new Error(`${filename} is missing ${fieldName}.`);
             }
-            for (const { fieldName, algorithm } of APT_PACKAGE_CHECKSUMS) {
-                const expectedHash = getDebianControlField(stanza, fieldName);
-                if (!expectedHash) {
-                    throw new Error(`${filename} is missing ${fieldName}.`);
-                }
-                const actualHash = hashFile(packagePath, algorithm);
-                if (expectedHash !== actualHash) {
-                    throw new Error(`${filename} ${fieldName} does not match.`);
-                }
+            const actualHash = hashFile(packagePath, algorithm);
+            if (expectedHash !== actualHash) {
+                throw new Error(`${filename} ${fieldName} does not match.`);
             }
         }
 

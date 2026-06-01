@@ -575,6 +575,50 @@ describe("chatStore", () => {
         });
     });
 
+    it("uses a finite default for screenshot retention unless Forever is saved", () => {
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(1800);
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                screenshotRetentionSeconds: 0,
+            }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(0);
+    });
+
+    it("migrates removed screenshot retention preferences into saved options", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({
+                screenshotRetentionSeconds: 900,
+            }),
+        );
+
+        resetChatStore();
+
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(1800);
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({
+            screenshotRetentionSeconds: 1800,
+        });
+    });
+
+    it("persists only supported screenshot retention updates", () => {
+        useChatStore.getState().setScreenshotRetentionSeconds(30);
+
+        expect(useChatStore.getState().screenshotRetentionSeconds).toBe(60);
+        expect(
+            JSON.parse(localStorage.getItem(AI_PREFS_KEY) ?? "{}"),
+        ).toMatchObject({
+            screenshotRetentionSeconds: 60,
+        });
+    });
+
     it("keeps root backend streaming upserts from reviving stale sessions", () => {
         const session = createSessionWithTrackedFiles("root-session", []);
         useChatStore.getState().upsertSession(session, true);
@@ -12107,6 +12151,65 @@ describe("chatStore", () => {
         expect(resolved).toBe(true);
         expect(invokeMock).not.toHaveBeenCalledWith(
             "ai_save_session_history",
+            expect.anything(),
+        );
+    });
+
+    it("does not create a replacement ACP session when deleting the last Claude terminal entry", async () => {
+        const terminalSession: AIChatSession = {
+            sessionId: "claude-terminal:term-1",
+            historySessionId: "claude-terminal:term-1",
+            runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+            terminalId: "term-1",
+            modelId: "",
+            modeId: "",
+            status: "idle",
+            models: [],
+            modes: [],
+            configOptions: [],
+            messages: [],
+            attachments: [],
+        };
+
+        useChatStore.setState({
+            runtimes: [
+                {
+                    runtime: {
+                        id: CLAUDE_TERMINAL_RUNTIME_ID,
+                        name: "Claude Code",
+                        description: "Claude Code terminal pseudo-runtime",
+                        capabilities: ["attachments"],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            setupStatusByRuntimeId: {
+                [CLAUDE_TERMINAL_RUNTIME_ID]: {
+                    ...readySetupStatusState,
+                    runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                },
+            },
+            sessionsById: {
+                [terminalSession.sessionId]: terminalSession,
+            },
+            sessionOrder: [terminalSession.sessionId],
+            activeSessionId: terminalSession.sessionId,
+            lastFocusedSessionId: terminalSession.sessionId,
+            selectedRuntimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+        });
+
+        await useChatStore.getState().deleteSession(terminalSession.sessionId);
+
+        expect(useChatStore.getState().sessionsById).toEqual({});
+        expect(useChatStore.getState().sessionOrder).toEqual([]);
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_get_setup_status",
+            expect.anything(),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_create_session",
             expect.anything(),
         );
     });

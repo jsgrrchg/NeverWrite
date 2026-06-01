@@ -829,10 +829,7 @@ jobs:
                     --pages-dir "$PAGES_DIR" \
                     --base-url "${{ needs.prepare.outputs.pages_base_url }}/apt" \
                     --suite stable \
-                    --component main \
-                    --remote-packages \
-                    --repo-slug "${{ needs.prepare.outputs.repo_slug }}" \
-                    --tag "${{ needs.prepare.outputs.tag }}"
+                    --component main
 
             - name: Sign APT repository
               shell: bash

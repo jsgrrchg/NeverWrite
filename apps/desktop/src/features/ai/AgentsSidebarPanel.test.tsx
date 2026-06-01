@@ -5,6 +5,12 @@ import { useEditorStore } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { renderComponent } from "../../test/test-utils";
 import { AgentsSidebarPanel } from "./AgentsSidebarPanel";
+import {
+    resetTerminalRuntimeStoreForTests,
+    useTerminalRuntimeStore,
+    type WorkspaceTerminalRuntime,
+} from "../terminal/terminalRuntimeStore";
+import { EMPTY_TERMINAL_SNAPSHOT } from "../terminal/terminalTypes";
 import { usePinnedChatsStore } from "./store/pinnedChatsStore";
 import { resetChatStore, useChatStore } from "./store/chatStore";
 import type { AIChatSession, AIChatSessionStatus } from "./types";
@@ -86,6 +92,7 @@ function firePointer(
 describe("AgentsSidebarPanel", () => {
     beforeEach(() => {
         resetChatStore();
+        resetTerminalRuntimeStoreForTests();
         vi.clearAllMocks();
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -681,6 +688,82 @@ describe("AgentsSidebarPanel", () => {
         await waitFor(() => {
             expect(confirm).toHaveBeenCalledTimes(1);
         });
+        expect(deleteSession).not.toHaveBeenCalled();
+    });
+
+    it("closes a Claude Code terminal agent instead of deleting it", async () => {
+        const session = createSession(
+            "claude-terminal:term-1",
+            "Claude Code 1",
+            "idle",
+            10,
+            {
+                runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
+                terminalId: "term-1",
+                persistedTitle: "Claude Code 1",
+                messages: [],
+            },
+        );
+        const deleteSession = vi.fn().mockResolvedValue(undefined);
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            sessionOrder: [session.sessionId],
+            deleteSession,
+        }));
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "term-tab-1",
+                    kind: "terminal",
+                    terminalId: "term-1",
+                    title: "Claude Code 1",
+                    cwd: "/vault",
+                },
+            ],
+            "term-tab-1",
+        );
+        useTerminalRuntimeStore.setState({
+            runtimesById: {
+                "term-1": {
+                    terminalId: "term-1",
+                    tabId: "term-tab-1",
+                    sessionId: null,
+                    snapshot: {
+                        ...EMPTY_TERMINAL_SNAPSHOT,
+                        status: "running",
+                    },
+                    hasOutput: false,
+                    busy: false,
+                    launchError: null,
+                } satisfies WorkspaceTerminalRuntime,
+            },
+        });
+
+        renderComponent(<AgentsSidebarPanel />);
+
+        fireEvent.contextMenu(screen.getByRole("option"));
+        expect(
+            await screen.findByRole("button", { name: "Close Terminal" }),
+        ).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+        fireEvent.click(screen.getByRole("button", { name: "Close Terminal" }));
+
+        await waitFor(() => {
+            expect(confirm).toHaveBeenCalledWith(
+                expect.stringContaining("Close terminal \"Claude Code 1\"?"),
+                expect.objectContaining({ title: "Close terminal?" }),
+            );
+        });
+        await waitFor(() => {
+            expect(
+                useTerminalRuntimeStore.getState().runtimesById["term-1"],
+            ).toBeUndefined();
+        });
+        expect(useEditorStore.getState().tabs).toHaveLength(0);
         expect(deleteSession).not.toHaveBeenCalled();
     });
 });

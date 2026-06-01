@@ -297,7 +297,12 @@ export function appendSelectionMentionPart(
 
 export function appendScreenshotPart(
     parts: AIComposerPart[],
-    screenshot: { filePath: string; mimeType: string; label: string },
+    screenshot: {
+        filePath: string;
+        mimeType: string;
+        label: string;
+        createdAt?: number;
+    },
 ): AIComposerPart[] {
     const next = [...parts];
 
@@ -315,6 +320,7 @@ export function appendScreenshotPart(
         id: crypto.randomUUID(),
         type: "screenshot",
         ...screenshot,
+        createdAt: screenshot.createdAt ?? Date.now(),
     });
     next.push({ id: crypto.randomUUID(), type: "text", text: " " });
 

@@ -59,6 +59,11 @@ import {
     serializeComposerPartsForAI,
 } from "../composerParts";
 import {
+    DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+    normalizeScreenshotPartTimestamps,
+    normalizeScreenshotRetentionSeconds,
+} from "../screenshotRetention";
+import {
     ensureSessionWorkCycle,
     startNewWorkCycle,
 } from "./editedFilesBufferModel";
@@ -231,7 +236,7 @@ const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     chatFontFamily: "system",
     editDiffZoom: 0.72,
     historyRetentionDays: 0,
-    screenshotRetentionSeconds: 0,
+    screenshotRetentionSeconds: DEFAULT_SCREENSHOT_RETENTION_SECONDS,
 };
 
 interface AIRuntimeCatalogSnapshot {
@@ -369,6 +374,16 @@ function saveAutoContextPreference(
 
 function getNormalizedAiPreferences(): NormalizedAiPreferences {
     const prefs = loadAiPreferences();
+    const screenshotRetentionSeconds = normalizeScreenshotRetentionSeconds(
+        prefs.screenshotRetentionSeconds,
+    );
+    if (
+        prefs.screenshotRetentionSeconds != null &&
+        prefs.screenshotRetentionSeconds !== screenshotRetentionSeconds
+    ) {
+        saveAiPreferences({ screenshotRetentionSeconds });
+    }
+
     return {
         requireCmdEnterToSend: prefs.requireCmdEnterToSend === true,
         contextUsageBarEnabled: prefs.contextUsageBarEnabled !== false,
@@ -378,7 +393,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
         historyRetentionDays: prefs.historyRetentionDays ?? 0,
-        screenshotRetentionSeconds: prefs.screenshotRetentionSeconds ?? 0,
+        screenshotRetentionSeconds,
     };
 }
 
@@ -8640,6 +8655,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const state = get();
             const session = state.sessionsById[sessionId];
             if (!session) return null;
+            // The claude-code-terminal pseudo-runtime has no ACP backend, so it
+            // can't be resumed — attempting it errors ("AI session not found")
+            // and flips the entry into a bogus reconnecting state.
+            if (isClaudeTerminalRuntimeId(session.runtimeId)) return sessionId;
             if (session.isPendingSessionCreation) return sessionId;
             if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;
@@ -9162,9 +9181,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             set((state) => {
+                const normalizedParts = normalizeScreenshotPartTimestamps(parts);
                 const session = state.sessionsById[resolvedSessionId];
                 const mentionIds = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9176,7 +9196,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         .map((p) => p.noteId),
                 );
                 const folderPaths = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9188,7 +9208,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         .map((p) => p.folderPath),
                 );
                 const fileMentionPaths = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9215,7 +9235,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return {
                     composerPartsBySessionId: {
                         ...state.composerPartsBySessionId,
-                        [resolvedSessionId]: parts,
+                        [resolvedSessionId]: normalizedParts,
                     },
                     ...(session &&
                     prunedAttachments.length !== session.attachments.length
@@ -10861,6 +10881,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deleteSession: async (sessionId) => {
             const vaultPath = useVaultStore.getState().vaultPath;
             const targetSession = get().sessionsById[sessionId];
+            const shouldCreateReplacementSession =
+                !targetSession ||
+                !isClaudeTerminalRuntimeId(targetSession.runtimeId);
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
             clearStaleStreamingCheck(sessionId);
@@ -10953,10 +10976,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 interruptedTurnStateBySessionId:
                     nextInterruptedTurnStateBySessionId,
             });
-            if (nextActiveId && !nextSessionsById[nextActiveId]) {
-                await get().newSession();
-            } else if (Object.keys(nextSessionsById).length === 0) {
-                await get().newSession();
+            if (shouldCreateReplacementSession) {
+                if (nextActiveId && !nextSessionsById[nextActiveId]) {
+                    await get().newSession();
+                } else if (Object.keys(nextSessionsById).length === 0) {
+                    await get().newSession();
+                }
             }
         },
 
@@ -11370,7 +11395,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setScreenshotRetentionSeconds: (seconds) => {
-            const next = Math.max(0, Math.round(seconds));
+            const next = normalizeScreenshotRetentionSeconds(seconds);
             set({ screenshotRetentionSeconds: next });
             saveAiPreferences({ screenshotRetentionSeconds: next });
         },

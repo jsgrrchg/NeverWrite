@@ -341,6 +341,12 @@ export interface AIChatSession {
     historySessionId: string;
     parentSessionId?: string | null;
     runtimeSessionId?: string | null;
+    /**
+     * For the "claude-code-terminal" pseudo-runtime: the terminal runtime this
+     * agent entry stands in for. Clicking the entry focuses that terminal tab
+     * instead of opening an ACP chat pane. Unset for real ACP sessions.
+     */
+    terminalId?: string | null;
     vaultPath?: string | null;
     status: AIChatSessionStatus;
     activeWorkCycleId?: string | null;
@@ -637,6 +643,7 @@ export type AIComposerPart =
           filePath: string;
           mimeType: string;
           label: string;
+          createdAt?: number;
       }
     | {
           id: string;

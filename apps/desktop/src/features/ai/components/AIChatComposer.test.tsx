@@ -788,6 +788,52 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
+    it("resyncs screenshot metadata when the visible label is unchanged", () => {
+        const label = "Screenshot 10:42 hrs";
+        const baseProps = {
+            notes: [],
+            status: "idle" as const,
+            runtimeName: "Assistant",
+            composerFontFamily: "system" as const,
+            availableCommands: [],
+            onChange: vi.fn(),
+            onMentionAttach: vi.fn(),
+            onFolderAttach: vi.fn(),
+            onSubmit: vi.fn(),
+            onStop: vi.fn(),
+        };
+        const legacyScreenshot: Extract<
+            AIComposerPart,
+            { type: "screenshot" }
+        > = {
+            id: "shot-1",
+            type: "screenshot",
+            filePath: "/vault/assets/chat/shot.png",
+            mimeType: "image/png",
+            label,
+        };
+        const legacyParts: AIComposerPart[] = [legacyScreenshot];
+        const timestampedParts: AIComposerPart[] = [
+            {
+                ...legacyScreenshot,
+                createdAt: 5_000,
+            },
+        ];
+
+        const { rerender } = renderComponent(
+            <AIChatComposer {...baseProps} parts={legacyParts} />,
+        );
+
+        expect(screen.getByText(label)).not.toHaveAttribute("data-created-at");
+
+        rerender(<AIChatComposer {...baseProps} parts={timestampedParts} />);
+
+        expect(screen.getByText(label)).toHaveAttribute(
+            "data-created-at",
+            "5000",
+        );
+    });
+
     it("applies the selected composer font family to the textbox", () => {
         const { composer } = renderComposer({
             composerFontFamily: "serif",

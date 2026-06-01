@@ -337,6 +337,9 @@ function createScreenshotNode(
     element.dataset.filePath = part.filePath;
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
+    if (part.createdAt != null) {
+        element.dataset.createdAt = String(part.createdAt);
+    }
     element.contentEditable = "false";
     element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
@@ -465,6 +468,9 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
             filePath: node.dataset.filePath,
             mimeType: node.dataset.mimeType,
             label: node.dataset.label,
+            createdAt: node.dataset.createdAt
+                ? Number(node.dataset.createdAt)
+                : undefined,
         });
         return;
     }
@@ -510,6 +516,79 @@ function readPartsFromDom(root: HTMLElement): AIComposerPart[] {
     }
 
     return normalizeComposerParts(normalized);
+}
+
+function assertNeverComposerPart(part: never): never {
+    throw new Error(`Unsupported composer part: ${JSON.stringify(part)}`);
+}
+
+function getComposerPartsDomSignature(parts: AIComposerPart[]) {
+    return JSON.stringify(
+        parts.map((part) => {
+            if (part.type === "text") {
+                return { type: part.type, text: part.text };
+            }
+            if (part.type === "mention") {
+                return {
+                    type: part.type,
+                    noteId: part.noteId,
+                    label: part.label,
+                    path: part.path,
+                };
+            }
+            if (part.type === "file_mention") {
+                return {
+                    type: part.type,
+                    label: part.label,
+                    path: part.path,
+                    relativePath: part.relativePath,
+                    mimeType: part.mimeType ?? null,
+                };
+            }
+            if (part.type === "folder_mention") {
+                return {
+                    type: part.type,
+                    folderPath: part.folderPath,
+                    label: part.label,
+                };
+            }
+            if (part.type === "fetch_mention") {
+                return { type: part.type };
+            }
+            if (part.type === "plan_mention") {
+                return { type: part.type };
+            }
+            if (part.type === "selection_mention") {
+                return {
+                    type: part.type,
+                    noteId: part.noteId ?? null,
+                    label: part.label,
+                    path: part.path,
+                    selectedText: part.selectedText,
+                    startLine: part.startLine,
+                    endLine: part.endLine,
+                };
+            }
+            if (part.type === "screenshot") {
+                return {
+                    type: part.type,
+                    filePath: part.filePath,
+                    mimeType: part.mimeType,
+                    label: part.label,
+                    createdAt: part.createdAt ?? null,
+                };
+            }
+            if (part.type === "file_attachment") {
+                return {
+                    type: part.type,
+                    filePath: part.filePath,
+                    mimeType: part.mimeType,
+                    label: part.label,
+                };
+            }
+            return assertNeverComposerPart(part);
+        }),
+    );
 }
 
 function setCaretAfterNode(node: Node) {
@@ -1015,6 +1094,10 @@ export function AIChatComposer({
         () => serializeComposerParts(parts),
         [parts],
     );
+    const partsDomSignature = useMemo(
+        () => getComposerPartsDomSignature(parts),
+        [parts],
+    );
     const folderPaths = useMemo(
         () => extractFolderPaths(notes, fallbackEntries),
         [fallbackEntries, notes],
@@ -1098,15 +1181,15 @@ export function AIChatComposer({
         if (!composer) return;
 
         if (
-            serializeComposerParts(readPartsFromDom(composer)) ===
-                serializedValue &&
+            getComposerPartsDomSignature(readPartsFromDom(composer)) ===
+                partsDomSignature &&
             composer.dataset.pillMetricsSignature === pillMetricsSignature
         ) {
             return;
         }
 
         syncComposerDom(composer, parts, pillMetrics, pillMetricsSignature);
-    }, [parts, pillMetrics, pillMetricsSignature, serializedValue]);
+    }, [parts, partsDomSignature, pillMetrics, pillMetricsSignature]);
 
     const isStreaming = status === "streaming";
     const isStopTransitionActive = isStopping || hasPendingSubmitAfterStop;

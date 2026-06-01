@@ -134,10 +134,11 @@ describe("WorkspaceTerminalHost", () => {
                     payload: TerminalOutputEventPayload;
                 }) => void,
             );
-            return vi.fn();
+            const unlisten: () => void = vi.fn();
+            return unlisten;
         });
 
-        // Set up a live terminal session so output is applied to rawOutput.
+        // Set up a live terminal session so output is delivered to the runtime.
         vi.mocked(invoke).mockResolvedValue({
             sessionId: "devterm-1",
             program: "/bin/zsh",
@@ -191,23 +192,26 @@ describe("WorkspaceTerminalHost", () => {
         });
 
         expect(capturedRafCallback).not.toBeNull();
-        expect(
-            useTerminalRuntimeStore.getState().runtimesById["terminal-1"]
-                ?.rawOutput,
-        ).toBe("");
 
-        // Fire the rAF manually — all three chunks merge into one store update.
+        // Output is held until the frame fires — no store update yet.
+        const handleOutputSpy = vi.spyOn(
+            useTerminalRuntimeStore.getState(),
+            "handleTerminalOutput",
+        );
+
+        // Fire the rAF manually — all three chunks merge into one update.
         await act(async () => {
             capturedRafCallback?.(performance.now());
         });
 
-        expect(
-            useTerminalRuntimeStore.getState().runtimesById["terminal-1"]
-                ?.rawOutput,
-        ).toBe("hello world!");
+        expect(handleOutputSpy).toHaveBeenCalledTimes(1);
+        expect(handleOutputSpy).toHaveBeenCalledWith({
+            sessionId: "devterm-1",
+            chunk: "hello world!",
+        });
     });
 
-    it("caps pending output while waiting for a delayed rAF frame", async () => {
+    it("merges pending output for a delayed rAF frame without capping it", async () => {
         let capturedRafCallback: ((time: DOMHighResTimeStamp) => void) | null =
             null;
         vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
@@ -229,7 +233,8 @@ describe("WorkspaceTerminalHost", () => {
                     payload: TerminalOutputEventPayload;
                 }) => void,
             );
-            return vi.fn();
+            const unlisten: () => void = vi.fn();
+            return unlisten;
         });
 
         vi.mocked(invoke).mockResolvedValue({
@@ -288,8 +293,10 @@ describe("WorkspaceTerminalHost", () => {
 
         expect(handleOutputSpy).toHaveBeenCalledTimes(1);
         const flushedPayload = handleOutputSpy.mock.calls[0]?.[0];
-        expect(flushedPayload?.chunk).toHaveLength(2_000_000);
-        expect(flushedPayload?.chunk.startsWith("a".repeat(500_000))).toBe(
+        // No host-side cap — xterm owns the buffer, so all bytes pass through
+        // intact rather than being trimmed.
+        expect(flushedPayload?.chunk).toHaveLength(3_000_000);
+        expect(flushedPayload?.chunk.startsWith("a".repeat(1_500_000))).toBe(
             true,
         );
         expect(flushedPayload?.chunk.endsWith("b".repeat(1_500_000))).toBe(

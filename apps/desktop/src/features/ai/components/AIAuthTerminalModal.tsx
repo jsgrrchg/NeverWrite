@@ -14,6 +14,7 @@ import { appendTerminalRawOutput } from "../../terminal/terminalRawOutput";
 import { TerminalViewport } from "../../terminal/TerminalViewport";
 import {
     EMPTY_TERMINAL_SNAPSHOT,
+    type TerminalOutputCommand,
     type TerminalSessionView,
 } from "../../terminal/terminalTypes";
 import { APP_BRAND_NAME } from "../../../app/utils/branding";
@@ -98,6 +99,37 @@ export function AIAuthTerminalModal({
     const [rawOutput, setRawOutput] = useState("");
     const [busy, setBusy] = useState(false);
     const onRefreshSetupRef = useRef(onRefreshSetup);
+    // Local output channel feeding the viewport (it pipes commands straight to
+    // xterm). rawOutput state is kept separately, only for auth-success scanning.
+    const outputListenersRef = useRef(
+        new Set<(command: TerminalOutputCommand) => void>(),
+    );
+    const outputBacklogRef = useRef<TerminalOutputCommand[]>([]);
+    const replaySnapshotRef = useRef<string | null>(null);
+
+    const emitOutputCommand = useCallback((command: TerminalOutputCommand) => {
+        const listeners = outputListenersRef.current;
+        if (listeners.size === 0) {
+            outputBacklogRef.current.push(command);
+            return;
+        }
+        for (const listener of listeners) {
+            listener(command);
+        }
+    }, []);
+
+    // Reset the viewport screen and feed it an initial buffer (e.g. on (re)start).
+    const resetOutputWithBuffer = useCallback(
+        (buffer: string) => {
+            replaySnapshotRef.current = null;
+            outputBacklogRef.current = [];
+            emitOutputCommand({ type: "clear" });
+            if (buffer) {
+                emitOutputCommand({ type: "write", data: buffer });
+            }
+        },
+        [emitOutputCommand],
+    );
 
     useEffect(() => {
         onRefreshSetupRef.current = onRefreshSetup;
@@ -137,6 +169,7 @@ export function AIAuthTerminalModal({
                         if (payload.sessionId !== sessionIdRef.current) return;
                         setSnapshot(payload);
                         setRawOutput(payload.buffer);
+                        resetOutputWithBuffer(payload.buffer);
                         setBusy(false);
                     }),
                 ),
@@ -146,6 +179,10 @@ export function AIAuthTerminalModal({
                         setRawOutput((current) =>
                             appendTerminalRawOutput(current, payload.chunk),
                         );
+                        emitOutputCommand({
+                            type: "write",
+                            data: payload.chunk,
+                        });
                     }),
                 ),
                 registerListener(
@@ -173,6 +210,7 @@ export function AIAuthTerminalModal({
         const startSession = async () => {
             setBusy(true);
             setRawOutput("");
+            resetOutputWithBuffer("");
             setSnapshot((current) => ({
                 ...current,
                 sessionId: "",
@@ -197,6 +235,7 @@ export function AIAuthTerminalModal({
                 sessionIdRef.current = nextSnapshot.sessionId;
                 setSnapshot(nextSnapshot);
                 setRawOutput(nextSnapshot.buffer);
+                resetOutputWithBuffer(nextSnapshot.buffer);
                 setBusy(false);
             } catch (error) {
                 if (disposed) return;
@@ -216,6 +255,7 @@ export function AIAuthTerminalModal({
             }
             void startSession();
         });
+        // emitOutputCommand and resetOutputWithBuffer are stable (useCallback).
 
         return () => {
             disposed = true;
@@ -230,7 +270,15 @@ export function AIAuthTerminalModal({
                 void unlisten();
             });
         };
-    }, [open, runtimeId, methodId, vaultPath, customBinaryPath]);
+    }, [
+        open,
+        runtimeId,
+        methodId,
+        vaultPath,
+        customBinaryPath,
+        emitOutputCommand,
+        resetOutputWithBuffer,
+    ]);
 
     const handleClose = useCallback(() => {
         const sessionId = sessionIdRef.current;
@@ -250,6 +298,7 @@ export function AIAuthTerminalModal({
         }
 
         setRawOutput("");
+        resetOutputWithBuffer("");
         setSnapshot(buildInitialSnapshot(runtimeId, runtimeName, vaultPath));
         setBusy(true);
 
@@ -263,6 +312,7 @@ export function AIAuthTerminalModal({
             sessionIdRef.current = nextSnapshot.sessionId;
             setSnapshot(nextSnapshot);
             setRawOutput(nextSnapshot.buffer);
+            resetOutputWithBuffer(nextSnapshot.buffer);
             setBusy(false);
         } catch (error) {
             setSnapshot((current) => ({
@@ -279,12 +329,13 @@ export function AIAuthTerminalModal({
         runtimeId,
         runtimeName,
         vaultPath,
+        resetOutputWithBuffer,
     ]);
 
     const sessionView = useMemo<TerminalSessionView>(
         () => ({
             snapshot,
-            rawOutput,
+            hasOutput: rawOutput.length > 0,
             busy,
             writeInput: async (input) => {
                 const sessionId = sessionIdRef.current;
@@ -304,9 +355,28 @@ export function AIAuthTerminalModal({
             restart: handleRetry,
             clearViewport: () => {
                 setRawOutput("");
+                resetOutputWithBuffer("");
+            },
+            subscribeOutput: (listener) => {
+                const listeners = outputListenersRef.current;
+                if (listeners.size === 0 && outputBacklogRef.current.length > 0) {
+                    const pending = outputBacklogRef.current;
+                    outputBacklogRef.current = [];
+                    for (const command of pending) {
+                        listener(command);
+                    }
+                }
+                listeners.add(listener);
+                return () => {
+                    listeners.delete(listener);
+                };
+            },
+            getReplaySnapshot: () => replaySnapshotRef.current,
+            saveReplaySnapshot: (serialized) => {
+                replaySnapshotRef.current = serialized;
             },
         }),
-        [snapshot, rawOutput, busy, handleRetry],
+        [snapshot, rawOutput, busy, handleRetry, resetOutputWithBuffer],
     );
 
     if (!open) return null;
