@@ -137,6 +137,10 @@ describe("openClaudeCodeTerminalWithContext", () => {
             "cd '/vault root'\n",
             "claude --dangerously-skip-permissions --model claude-sonnet-4-6 --continue --max-turns 7\n",
         ]);
+        expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+            "devtools_read_claude_transcript",
+            expect.anything(),
+        );
     });
 
     it("ignores unsupported persisted Claude Code models before writing to the shell", async () => {

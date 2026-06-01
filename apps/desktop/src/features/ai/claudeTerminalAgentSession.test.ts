@@ -164,6 +164,25 @@ describe("claudeTerminalAgentSession", () => {
         expect(session?.persistedPreview).toBeFalsy();
     });
 
+    it("does not read a transcript without an exact Claude session id", async () => {
+        registerClaudeTerminalAgentSession({
+            terminalId: "term-1",
+            title: "Claude Code 1",
+            transcriptSessionId: null,
+            cwd: "/vault",
+        });
+
+        await refreshClaudeTerminalAgentTranscripts();
+
+        expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+            "devtools_read_claude_transcript",
+            expect.anything(),
+        );
+        const session = useChatStore.getState().sessionsById[SESSION_ID];
+        expect(session?.persistedTitle).toBe("Claude Code 1");
+        expect(session?.persistedPreview).toBeFalsy();
+    });
+
     it("focuses the terminal tab when the agent entry is opened", () => {
         const tabs = [
             { id: "note-1", kind: "note", noteId: "notes/a", title: "Note A" },

@@ -204,22 +204,23 @@ export async function openClaudeCodeTerminalWithContext(
         claudeCodeMaxTurns,
     } = useSettingsStore.getState();
 
-    // claude runs in cdTarget after the cd below, so that's where it writes its
-    // session transcript. Fall back to the vault / the terminal's spawn cwd.
-    const cdTarget = resolveCdTarget(detail, vaultPath);
-    const transcriptCwd =
-        cdTarget ??
-        vaultPath ??
-        store.runtimesById[terminalId]?.snapshot.cwd ??
-        null;
-
     // Pin a fresh session id so we can locate this terminal's transcript exactly.
     // --session-id can't combine with --continue (which resumes an existing
-    // session we can't name up front), so skip pinning in that case and fall
-    // back to the newest transcript in the project dir.
+    // session we can't name up front), so transcript-derived title/preview are
+    // disabled in that case rather than guessed from another terminal's JSONL.
     const pinnedSessionId = claudeCodeContinueSession
         ? null
         : crypto.randomUUID();
+
+    // claude runs in cdTarget after the cd below, so that's where it writes its
+    // session transcript. Fall back to the vault / the terminal's spawn cwd.
+    const cdTarget = resolveCdTarget(detail, vaultPath);
+    const transcriptCwd = pinnedSessionId
+        ? (cdTarget ??
+          vaultPath ??
+          store.runtimesById[terminalId]?.snapshot.cwd ??
+          null)
+        : null;
 
     // Surface this terminal in the Agents sidebar, with title (first prompt) and
     // preview (latest answer) sourced from the Claude Code transcript. The entry

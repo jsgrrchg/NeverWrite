@@ -867,8 +867,8 @@ fn required_string(args: &Value, keys: &[&str]) -> Result<String, String> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReadClaudeTranscriptInput {
-    /// Claude session UUID (the file is `<session_id>.jsonl`). When absent we
-    /// fall back to the most recently modified transcript in the project dir.
+    /// Claude session UUID (the file is `<session_id>.jsonl`). When absent, we
+    /// skip transcript reading rather than guessing from another terminal.
     #[serde(default)]
     session_id: Option<String>,
     /// The directory Claude Code is running in; used to locate the project dir.
@@ -911,24 +911,6 @@ fn system_time_to_ms(time: std::time::SystemTime) -> Option<u64> {
     time.duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_millis() as u64)
-}
-
-fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let Some(modified) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
-            continue;
-        };
-        match &newest {
-            Some((best, _)) if *best >= modified => {}
-            _ => newest = Some((modified, path)),
-        }
-    }
-    newest.map(|(_, path)| path)
 }
 
 /// Collapse whitespace to single spaces and cap length, so a multi-line message
@@ -1012,13 +994,15 @@ fn read_claude_transcript(input: ReadClaudeTranscriptInput) -> ClaudeTranscriptR
         .join(".claude")
         .join("projects")
         .join(encode_project_path(&input.cwd));
-    let path = match input.session_id.as_deref() {
-        Some(id) if !id.is_empty() => dir.join(format!("{id}.jsonl")),
-        _ => match newest_jsonl(&dir) {
-            Some(path) => path,
-            None => return ClaudeTranscriptResult::default(),
-        },
+    let Some(id) = input
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return ClaudeTranscriptResult::default();
     };
+    let path = dir.join(format!("{id}.jsonl"));
 
     let Ok(metadata) = std::fs::metadata(&path) else {
         return ClaudeTranscriptResult::default();

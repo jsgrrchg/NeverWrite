@@ -155,7 +155,7 @@ function stopTranscriptPollingIfIdle() {
 // entry's title (first prompt) and preview (latest answer).
 export async function refreshClaudeTerminalAgentTranscripts() {
     for (const entry of [...agentsByTerminalId.values()]) {
-        if (!entry.cwd) continue;
+        if (!entry.cwd || !entry.transcriptSessionId) continue;
 
         let result:
             | {
@@ -235,7 +235,7 @@ export function registerClaudeTerminalAgentSession(args: {
 
     upsertAgentSession(entry);
 
-    if (entry.cwd) {
+    if (entry.cwd && entry.transcriptSessionId) {
         ensureTranscriptPolling();
         void refreshClaudeTerminalAgentTranscripts();
     }
