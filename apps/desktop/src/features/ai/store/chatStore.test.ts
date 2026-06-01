@@ -12473,6 +12473,265 @@ describe("chatStore", () => {
         });
     });
 
+    it("does not send direct prompts to subagents closed by their parent", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            closedAt: "123",
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: child.sessionId,
+            composerPartsBySessionId: {
+                [child.sessionId]: createTextParts("Continue"),
+            },
+        });
+        invokeMock.mockClear();
+
+        await useChatStore.getState().sendMessage(child.sessionId);
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_send_message",
+            ),
+        ).toBe(false);
+    });
+
+    it("persists closed child session state", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            closedAt: "123",
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: { [parent.sessionId]: parent },
+            sessionOrder: [parent.sessionId],
+            activeSessionId: parent.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().upsertSession(child);
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: child.sessionId,
+                parent_session_id: parent.sessionId,
+                closed_at: "123",
+            }),
+        });
+    });
+
+    it("clears queued child messages with a status note when the parent closes the subagent", async () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+        const activeQueuedItem = createQueuedMessage(
+            "queued-active",
+            "Already sending",
+            { status: "sending" },
+        );
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: child.sessionId,
+            queuedMessagesBySessionId: {
+                [child.sessionId]: [
+                    createQueuedMessage("queued-1", "Follow up"),
+                ],
+            },
+            activeQueuedMessageBySessionId: {
+                [child.sessionId]: {
+                    item: activeQueuedItem,
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: null,
+                },
+            },
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().upsertSession({
+            ...child,
+            closedAt: "123",
+        });
+        await Promise.resolve();
+
+        const closedChild =
+            useChatStore.getState().sessionsById[child.sessionId];
+        expect(
+            useChatStore.getState().queuedMessagesBySessionId[child.sessionId],
+        ).toBeUndefined();
+        expect(
+            useChatStore.getState().activeQueuedMessageBySessionId[
+                child.sessionId
+            ],
+        ).toBeUndefined();
+        expect(closedChild?.messages).toEqual([
+            expect.objectContaining({
+                kind: "status",
+                content:
+                    "Queued messages were cancelled because this subagent was closed by its parent thread.",
+                meta: expect.objectContaining({
+                    status_event: "subagent_lifecycle",
+                    status: "cancelled",
+                }),
+            }),
+        ]);
+        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
+            vaultPath: "/vault",
+            history: expect.objectContaining({
+                session_id: child.sessionId,
+                closed_at: "123",
+                messages: expect.arrayContaining([
+                    expect.objectContaining({
+                        kind: "status",
+                        content:
+                            "Queued messages were cancelled because this subagent was closed by its parent thread.",
+                    }),
+                ]),
+            }),
+        });
+    });
+
+    it("restores composer state when closing a subagent with an edited queued message", () => {
+        const parent = {
+            ...createSessionWithTrackedFiles("session-parent", []),
+            runtimeId: "codex-acp",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+        };
+        const previousAttachment: AIChatAttachment = {
+            id: "previous-file",
+            type: "file",
+            noteId: null,
+            label: "Previous.txt",
+            path: null,
+            filePath: "/tmp/previous.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+        const queuedAttachment: AIChatAttachment = {
+            id: "queued-file",
+            type: "file",
+            noteId: null,
+            label: "Queued.txt",
+            path: null,
+            filePath: "/tmp/queued.txt",
+            mimeType: "text/plain",
+            status: "ready",
+        };
+        const child = {
+            ...createSessionWithTrackedFiles("session-child", []),
+            parentSessionId: parent.sessionId,
+            runtimeId: "codex-acp",
+            runtimeSessionId: "runtime-child",
+            runtimeState: "live" as const,
+            status: "idle" as const,
+            vaultPath: "/vault",
+            attachments: [queuedAttachment],
+        };
+        const editingItem = createQueuedMessage("queued-edit", "Edited queue", {
+            attachments: [queuedAttachment],
+        });
+
+        useVaultStore.setState({ vaultPath: "/vault" });
+        useChatStore.setState({
+            sessionsById: {
+                [parent.sessionId]: parent,
+                [child.sessionId]: child,
+            },
+            sessionOrder: [parent.sessionId, child.sessionId],
+            activeSessionId: child.sessionId,
+            composerPartsBySessionId: {
+                [child.sessionId]: createTextParts("Edited queue"),
+            },
+            queuedMessageEditBySessionId: {
+                [child.sessionId]: {
+                    item: editingItem,
+                    originalIndex: 0,
+                    previousItemId: null,
+                    nextItemId: null,
+                    previousComposerParts: createTextParts("Previous draft"),
+                    previousAttachments: [previousAttachment],
+                },
+            },
+        });
+
+        useChatStore.getState().upsertSession({
+            ...child,
+            closedAt: "123",
+        });
+
+        expect(
+            useChatStore.getState().queuedMessageEditBySessionId[
+                child.sessionId
+            ],
+        ).toBeUndefined();
+        expect(
+            serializeComposerParts(
+                useChatStore.getState().composerPartsBySessionId[
+                    child.sessionId
+                ] ?? [],
+            ),
+        ).toBe("Previous draft");
+        expect(
+            useChatStore.getState().sessionsById[child.sessionId]?.attachments,
+        ).toEqual([previousAttachment]);
+    });
+
     it("deletes a child session without stopping or deleting its parent", async () => {
         const parent = {
             ...createSessionWithTrackedFiles("session-parent", []),

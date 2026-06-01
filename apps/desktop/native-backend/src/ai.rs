@@ -1451,6 +1451,12 @@ impl NativeAi {
                 .sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+            if managed.session.parent_session_id.is_some() && managed.session.closed_at.is_some() {
+                return Err(
+                    "This subagent was closed by its parent thread and can't receive new messages."
+                        .to_string(),
+                );
+            }
             let prompt = build_prompt_with_attachments(
                 &content,
                 &attachments,
@@ -2338,10 +2344,30 @@ impl NativeAcpClient {
         }
     }
 
+    fn mark_subagent_closed_by_parent(&self, session_id: &str) {
+        self.end_thinking(session_id);
+        self.end_message(session_id);
+
+        let session = self.session_state.lock().ok().and_then(|mut state| {
+            let managed = state.sessions.get_mut(session_id)?;
+            if managed.session.parent_session_id.is_none() {
+                return None;
+            }
+            managed.active_turn_id = None;
+            managed.session.status = AiSessionStatus::Idle;
+            managed.session.closed_at = Some(epoch_millis_string());
+            Some(managed.session.clone())
+        });
+        if let Some(session) = session {
+            self.emit(AI_SESSION_UPDATED_EVENT, session);
+        }
+    }
+
     fn begin_session_turn(&self, session_id: &str, turn_id: Option<String>) {
         let session = self.session_state.lock().ok().and_then(|mut state| {
             let managed = state.sessions.get_mut(session_id)?;
             managed.active_turn_id = turn_id;
+            managed.session.closed_at = None;
             if managed.session.status == AiSessionStatus::Streaming {
                 return None;
             }
@@ -2549,7 +2575,7 @@ impl NativeAcpClient {
             self.child_session_ids_for_terminal_subagent_breadcrumb(parent_session_id, meta);
         for child_session_id in child_session_ids {
             if child_session_id != parent_session_id {
-                self.mark_session_idle(&child_session_id);
+                self.mark_subagent_closed_by_parent(&child_session_id);
             }
         }
     }
@@ -3405,6 +3431,7 @@ fn session_from_acp_response(
         session_id,
         parent_session_id: None,
         runtime_session_id: None,
+        closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
         model_id,
@@ -4318,6 +4345,7 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         session_id,
         parent_session_id: None,
         runtime_session_id: None,
+        closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
         model_id: models
@@ -6452,6 +6480,13 @@ fn touch_session(state: &mut NativeAiInner, session_id: &str) {
     state.session_order.insert(0, session_id.to_string());
 }
 
+fn epoch_millis_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 fn emit_event(event_tx: &Sender<RpcOutput>, event_name: &str, payload: Value) {
     let _ = event_tx.send(RpcOutput::Event {
         event_name: event_name.to_string(),
@@ -7264,6 +7299,15 @@ mod tests {
             CHILD_RUNTIME_SESSION_ID,
             CHILD_RUNTIME_SESSION_ID,
         );
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist")
+                .session
+                .closed_at = Some("123".to_string());
+        }
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
 
         run_client_future(
@@ -7293,6 +7337,7 @@ mod tests {
             payload.get("status").and_then(Value::as_str),
             Some("streaming")
         );
+        assert!(payload.get("closed_at").is_none());
     }
 
     #[test]
@@ -7461,7 +7506,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_close_breadcrumb_marks_child_idle() {
+    fn subagent_close_breadcrumb_marks_child_closed() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
         insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
@@ -7512,7 +7557,7 @@ mod tests {
         .unwrap();
 
         let mut saw_message_completed = false;
-        let mut saw_idle_update = false;
+        let mut saw_closed_update = false;
         for _ in 0..3 {
             let RpcOutput::Event {
                 event_name,
@@ -7531,18 +7576,50 @@ mod tests {
                 && payload.get("session_id").and_then(Value::as_str)
                     == Some(CHILD_RUNTIME_SESSION_ID)
                 && payload.get("status").and_then(Value::as_str) == Some("idle")
+                && payload.get("closed_at").and_then(Value::as_str).is_some()
             {
-                saw_idle_update = true;
+                saw_closed_update = true;
             }
         }
 
         assert!(saw_message_completed);
-        assert!(saw_idle_update);
+        assert!(saw_closed_update);
         assert!(!client
             .message_ids
             .lock()
             .unwrap()
             .contains_key(CHILD_RUNTIME_SESSION_ID));
+    }
+
+    #[test]
+    fn send_message_rejects_subagent_closed_by_parent() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &ai.inner,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        {
+            let mut state = ai.inner.lock().unwrap();
+            let child = state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist");
+            child.session.closed_at = Some("123".to_string());
+        }
+
+        let error = ai
+            .send_message(&json!({
+                "session_id": CHILD_RUNTIME_SESSION_ID,
+                "content": "continue",
+                "attachments": [],
+            }))
+            .expect_err("closed child should reject direct prompts");
+
+        assert!(error.contains("closed by its parent thread"));
     }
 
     #[test]

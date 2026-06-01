@@ -205,8 +205,10 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
 
     const runtimeLabel =
         activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+    const isClosedSubagent = Boolean(session?.parentSessionId && session.closedAt);
     const agentControlsDisabled =
         !session ||
+        isClosedSubagent ||
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
 
@@ -605,15 +607,18 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
                     disabled={
                         !session ||
+                        isClosedSubagent ||
                         isPendingSessionCreation ||
                         activeConnection.status === "loading" ||
                         Boolean(session.isResumingSession)
                     }
                     placeholderText={
-                        isPendingSessionCreation
-                            ? pendingSessionError
-                                ? "Agent unavailable"
-                                : "Loading agent"
+                        isClosedSubagent
+                            ? "This subagent was closed by its parent thread."
+                            : isPendingSessionCreation
+                              ? pendingSessionError
+                                  ? "Agent unavailable"
+                                  : "Loading agent"
                             : undefined
                     }
                     contextBar={

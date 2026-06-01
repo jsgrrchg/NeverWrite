@@ -181,9 +181,13 @@ const SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID =
     "neverwrite:recovery:reconnecting-saved-chat";
 const RUNTIME_CONTEXT_RECOVERY_STATUS_EVENT_ID =
     "neverwrite:recovery:runtime-context";
+const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_EVENT_ID =
+    "neverwrite:subagent:queue-cancelled";
 const SAVED_CHAT_RECONNECTING_STATUS_TITLE = "Reconnecting saved chat...";
 const RUNTIME_CONTEXT_RECOVERY_STATUS_TITLE =
     "The AI runtime lost its connection. Reconnecting with saved context...";
+const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
+    "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
 const _pendingTrackedPersistedReconcileByKey = new Map<
@@ -511,6 +515,10 @@ function isLiveRuntimeSession(session: AIChatSession) {
         session.runtimeState === "live" &&
         getPersistedHistorySessionId(session.sessionId) === null
     );
+}
+
+function isClosedSubagentSession(session: AIChatSession) {
+    return Boolean(session.parentSessionId && session.closedAt);
 }
 
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
@@ -1529,7 +1537,11 @@ function isProviderQuotaErrorMessage(message: string) {
 
 function isRuntimeSessionDisconnectedErrorMessage(message: string) {
     const normalized = message.trim().toLowerCase();
-    return normalized.includes("runtime session is not connected");
+    return (
+        normalized.includes("runtime session is not connected") ||
+        normalized.includes("resource_not_found") ||
+        normalized.includes("ai session not found")
+    );
 }
 
 function normalizeAiErrorMessage(message: string, runtimeId?: string | null) {
@@ -1956,6 +1968,19 @@ function createRuntimeContextRecoveryStatus(
         kind: "session_recovery",
         status: "in_progress",
         title: RUNTIME_CONTEXT_RECOVERY_STATUS_TITLE,
+        detail: null,
+        emphasis: "warning",
+    });
+}
+
+function createClosedSubagentQueueCancelledStatus(
+    sessionId: string,
+): AIStatusEventPayload {
+    return createLocalStatusPayload(sessionId, {
+        event_id: CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_EVENT_ID,
+        kind: "subagent_lifecycle",
+        status: "cancelled",
+        title: CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE,
         detail: null,
         emphasis: "warning",
     });
@@ -2933,6 +2958,78 @@ function reconcileIdleQueuedState(
                   null,
               )
             : state.activeQueuedMessageBySessionId,
+        };
+}
+
+function clearClosedSubagentQueueState(
+    state: Pick<
+        ChatStore,
+        | "queuedMessagesBySessionId"
+        | "activeQueuedMessageBySessionId"
+        | "queuedMessageEditBySessionId"
+        | "pausedQueueBySessionId"
+        | "composerPartsBySessionId"
+    >,
+    sessionId: string,
+    session: AIChatSession,
+) {
+    const queue = state.queuedMessagesBySessionId[sessionId] ?? [];
+    const activeQueuedMessage =
+        state.activeQueuedMessageBySessionId[sessionId] ?? null;
+    const editState = state.queuedMessageEditBySessionId[sessionId] ?? null;
+    const pausedQueue = state.pausedQueueBySessionId[sessionId] ?? null;
+    const hasQueuedState =
+        queue.length > 0 ||
+        activeQueuedMessage != null ||
+        editState != null ||
+        pausedQueue != null;
+
+    if (!hasQueuedState) {
+        return null;
+    }
+
+    const nextQueuedMessageEditBySessionId = {
+        ...state.queuedMessageEditBySessionId,
+    };
+    delete nextQueuedMessageEditBySessionId[sessionId];
+
+    _queueDrainLocks.delete(sessionId);
+
+    return {
+        session: upsertSessionStatusMessage(
+            editState
+                ? {
+                      ...session,
+                      attachments:
+                          editState.previousAttachments.map(cloneAttachment),
+                  }
+                : session,
+            createClosedSubagentQueueCancelledStatus(sessionId),
+        ),
+        composerPartsBySessionId: editState
+            ? {
+                  ...state.composerPartsBySessionId,
+                  [sessionId]: cloneComposerParts(
+                      editState.previousComposerParts,
+                  ),
+              }
+            : state.composerPartsBySessionId,
+        queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+            state.queuedMessagesBySessionId,
+            sessionId,
+            [],
+        ),
+        activeQueuedMessageBySessionId: cleanupDeferredQueuedMessagesBySessionId(
+            state.activeQueuedMessageBySessionId,
+            sessionId,
+            null,
+        ),
+        queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+        pausedQueueBySessionId: cleanupPausedQueueBySessionId(
+            state.pausedQueueBySessionId,
+            sessionId,
+            null,
+        ),
     };
 }
 
@@ -4804,6 +4901,7 @@ function applyPersistedHistoryMetadata(
                 history.parent_session_id ??
                 nextSession.parentSessionId ??
                 null,
+            closedAt: history.closed_at ?? nextSession.closedAt ?? null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
             persistedTitle: history.title ?? null,
@@ -4834,6 +4932,7 @@ function applyPersistedHistoryPage(
         version: 1,
         session_id: page.session_id,
         parent_session_id: session.parentSessionId ?? undefined,
+        closed_at: session.closedAt ?? undefined,
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
@@ -4916,6 +5015,7 @@ function createPersistedSession(
             sessionId: `persisted:${history.session_id}`,
             historySessionId: history.session_id,
             parentSessionId: history.parent_session_id ?? null,
+            closedAt: history.closed_at ?? null,
             runtimeSessionId: null,
             vaultPath,
             runtimeId,
@@ -5101,6 +5201,10 @@ function mergeSession(
     existing: AIChatSession | undefined,
     incoming: AIChatSession,
 ): AIChatSession {
+    const incomingHasClosedAt = Object.prototype.hasOwnProperty.call(
+        incoming,
+        "closedAt",
+    );
     const canAcceptBackendStreaming =
         incoming.status === "streaming" &&
         incoming.parentSessionId != null &&
@@ -5136,6 +5240,7 @@ function mergeSession(
                     customTitle: incoming.customTitle ?? null,
                     persistedPreview: incoming.persistedPreview ?? null,
                     parentSessionId: incoming.parentSessionId ?? null,
+                    closedAt: incoming.closedAt ?? null,
                     persistedMessageCount:
                         incoming.persistedMessageCount ??
                         incoming.messages.length,
@@ -5196,6 +5301,9 @@ function mergeSession(
             incoming.parentSessionId ??
             normalizedExisting.parentSessionId ??
             null,
+        closedAt: incomingHasClosedAt
+            ? (incoming.closedAt ?? null)
+            : (normalizedExisting.closedAt ?? null),
         vaultPath: incoming.vaultPath ?? normalizedExisting.vaultPath ?? null,
         isPersistedSession:
             incoming.isPersistedSession ??
@@ -5510,6 +5618,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         version: 1,
         session_id: session.historySessionId || session.sessionId,
         parent_session_id: session.parentSessionId ?? undefined,
+        closed_at: session.closedAt ?? undefined,
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
@@ -6451,6 +6560,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (!session) {
                 return;
             }
+        }
+
+        if (isClosedSubagentSession(session)) {
+            if (source === "queue") {
+                patchQueuedMessage(activeSessionId, currentItem.id, {
+                    status: "failed",
+                });
+            }
+            return;
         }
 
         if (source === "queue") {
@@ -7508,7 +7626,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     : hydrateRuntimesFromSessions(state.runtimes, [
                           scopedSession,
                       ]);
-                const nextSession = mergeSession(existing, scopedSession);
+                let nextSession = mergeSession(existing, scopedSession);
+                const closedQueueState =
+                    existing &&
+                    !isClosedSubagentSession(existing) &&
+                    isClosedSubagentSession(nextSession)
+                        ? clearClosedSubagentQueueState(
+                              state,
+                              scopedSession.sessionId,
+                              nextSession,
+                          )
+                        : null;
+                if (closedQueueState) {
+                    nextSession = closedQueueState.session;
+                }
                 const nextTokenUsageBySessionId =
                     existing && existing.modelId !== nextSession.modelId
                         ? removeSessionMapEntry(
@@ -7519,7 +7650,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const reconciledQueueState =
                     existing &&
                     nextSession.status === "idle" &&
-                    !nextSession.isResumingSession
+                    !nextSession.isResumingSession &&
+                    !isClosedSubagentSession(nextSession)
                         ? reconcileIdleQueuedState(
                               state,
                               scopedSession.sessionId,
@@ -7529,7 +7661,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     nextSession.status === "idle" &&
                     (existing?.status !== "idle" ||
                         Boolean(reconciledQueueState)) &&
-                    !nextSession.isResumingSession;
+                    !nextSession.isResumingSession &&
+                    !isClosedSubagentSession(nextSession);
                 sessionToPersist = nextSession;
 
                 return {
@@ -7559,17 +7692,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         activate || !state.activeSessionId
                             ? nextSession.runtimeId
                             : state.selectedRuntimeId,
-                    composerPartsBySessionId: state.composerPartsBySessionId[
-                        scopedSession.sessionId
-                    ]
-                        ? state.composerPartsBySessionId
-                        : {
-                              ...state.composerPartsBySessionId,
-                              [scopedSession.sessionId]:
-                                  createEmptyComposerParts(),
-                          },
+                    composerPartsBySessionId:
+                        closedQueueState?.composerPartsBySessionId ??
+                        (state.composerPartsBySessionId[scopedSession.sessionId]
+                            ? state.composerPartsBySessionId
+                            : {
+                                  ...state.composerPartsBySessionId,
+                                  [scopedSession.sessionId]:
+                                      createEmptyComposerParts(),
+                              }),
                     tokenUsageBySessionId: nextTokenUsageBySessionId,
                     ...(reconciledQueueState ?? {}),
+                    ...(closedQueueState
+                        ? {
+                              queuedMessagesBySessionId:
+                                  closedQueueState.queuedMessagesBySessionId,
+                              activeQueuedMessageBySessionId:
+                                  closedQueueState.activeQueuedMessageBySessionId,
+                              queuedMessageEditBySessionId:
+                                  closedQueueState.queuedMessageEditBySessionId,
+                              pausedQueueBySessionId:
+                                  closedQueueState.pausedQueueBySessionId,
+                          }
+                        : {}),
                 };
             });
 
@@ -9457,6 +9602,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return;
             }
 
+            if (isClosedSubagentSession(session)) {
+                return;
+            }
+
             if (
                 !isLiveRuntimeSession(session) ||
                 needsFullResumeContextTranscript(session)
@@ -9660,7 +9809,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (
                 !currentSession ||
                 !queuedItem ||
-                queuedItem.status === "sending"
+                queuedItem.status === "sending" ||
+                isClosedSubagentSession(currentSession)
             ) {
                 return;
             }
@@ -9707,6 +9857,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 !session ||
                 session.status !== "idle" ||
                 session.isResumingSession ||
+                isClosedSubagentSession(session) ||
                 Boolean(get().queuedMessageEditBySessionId[sessionId]) ||
                 Boolean(get().pausedQueueBySessionId[sessionId])
             ) {
