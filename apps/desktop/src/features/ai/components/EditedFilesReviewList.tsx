@@ -8,6 +8,7 @@ import {
 import type { ReviewFileItem } from "../diff/editedFilesPresentationModel";
 import type { ReviewHunkId } from "../diff/reviewProjection";
 import {
+    COMPACT_REVIEW_ROW_HEIGHT_PX,
     getAccentButtonStyle,
     getDangerButtonStyle,
     getNeutralButtonStyle,
@@ -24,6 +25,15 @@ const FULL_ROW_ACTION_BUTTON_STYLE: React.CSSProperties = {
     lineHeight: "20px",
     letterSpacing: "0.04em",
     textTransform: "uppercase",
+};
+
+const COMPACT_ACTION_BUTTON_STYLE: React.CSSProperties = {
+    width: 24,
+    height: 24,
+    padding: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
 };
 
 function FullRowActionButton({
@@ -320,23 +330,40 @@ function CompactRow({
 
     return (
         <div
+            data-testid="edited-files-buffer-row"
             className="overflow-hidden"
             style={{
                 borderTop:
                     "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
+                boxSizing: "border-box",
+                height: COMPACT_REVIEW_ROW_HEIGHT_PX,
+                minHeight: COMPACT_REVIEW_ROW_HEIGHT_PX,
+                maxHeight: COMPACT_REVIEW_ROW_HEIGHT_PX,
             }}
         >
-            <div className="flex items-center gap-2.5 px-2.5 py-1.5">
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "6px 14px minmax(0, 1fr) auto auto",
+                    columnGap: 8,
+                    alignItems: "center",
+                    height: "100%",
+                    padding: "0 10px",
+                    minWidth: 0,
+                }}
+            >
                 <div
                     className="h-1.5 w-1.5 shrink-0 rounded-full"
                     style={{ backgroundColor: tone.accent }}
                 />
                 <FileTypeIcon fileName={file.path} opacity={0.74} size={12} />
                 <span
-                    className="min-w-0 flex-1 truncate"
+                    className="min-w-0 truncate"
                     style={{
+                        display: "block",
                         fontSize: "0.84em",
                         fontWeight: 600,
+                        lineHeight: "18px",
                         color: "var(--text-primary)",
                     }}
                 >
@@ -358,8 +385,12 @@ function CompactRow({
                     ) : null}
                 </span>
                 <div
-                    className="flex shrink-0 items-center gap-1 text-right"
-                    style={{ fontSize: "0.76em" }}
+                    className="flex items-center justify-end gap-1 text-right"
+                    style={{
+                        minWidth: 48,
+                        fontSize: "0.76em",
+                        lineHeight: "16px",
+                    }}
                 >
                     {stats.additions > 0 ? (
                         <div
@@ -384,47 +415,27 @@ function CompactRow({
                         </div>
                     ) : null}
                 </div>
-                {/* Open File — external-link icon */}
-                <button
-                    type="button"
-                    title="Open File"
-                    onClick={() => {
-                        if (!canOpen) return;
-                        void openAiEditedFileByAbsolutePath(file.path);
-                    }}
-                    disabled={!canOpen}
-                    className="review-action-btn shrink-0 rounded-md p-1"
-                    style={{
-                        ...getAccentButtonStyle(
-                            canOpen ? tone.accent : "var(--text-secondary)",
-                        ),
-                        opacity: canOpen ? 1 : 0.45,
-                        cursor: canOpen ? "pointer" : "not-allowed",
-                    }}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    >
-                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                        <polyline points="15 3 21 3 21 9" />
-                        <line x1="10" y1="14" x2="21" y2="3" />
-                    </svg>
-                </button>
-                {/* Reject — X icon */}
-                {canReject ? (
+                <div className="flex items-center gap-1">
+                    {/* Open File — external-link icon */}
                     <button
                         type="button"
-                        title="Reject"
-                        onClick={onReject}
-                        className="review-action-btn shrink-0 rounded-md p-1"
-                        style={getDangerButtonStyle()}
+                        title="Open File"
+                        onClick={() => {
+                            if (!canOpen) return;
+                            void openAiEditedFileByAbsolutePath(file.path);
+                        }}
+                        disabled={!canOpen}
+                        className="review-action-btn shrink-0 rounded-md"
+                        style={{
+                            ...getAccentButtonStyle(
+                                canOpen
+                                    ? tone.accent
+                                    : "var(--text-secondary)",
+                            ),
+                            ...COMPACT_ACTION_BUTTON_STYLE,
+                            opacity: canOpen ? 1 : 0.45,
+                            cursor: canOpen ? "pointer" : "not-allowed",
+                        }}
                     >
                         <svg
                             width="12"
@@ -436,32 +447,63 @@ function CompactRow({
                             strokeLinecap="round"
                             strokeLinejoin="round"
                         >
-                            <line x1="18" y1="6" x2="6" y2="18" />
-                            <line x1="6" y1="6" x2="18" y2="18" />
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <polyline points="15 3 21 3 21 9" />
+                            <line x1="10" y1="14" x2="21" y2="3" />
                         </svg>
                     </button>
-                ) : null}
-                {/* Keep — checkmark icon */}
-                <button
-                    type="button"
-                    title="Keep"
-                    onClick={onKeep}
-                    className="review-action-btn shrink-0 rounded-md p-1"
-                    style={getAccentButtonStyle()}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                    {/* Reject — X icon */}
+                    {canReject ? (
+                        <button
+                            type="button"
+                            title="Reject"
+                            onClick={onReject}
+                            className="review-action-btn shrink-0 rounded-md"
+                            style={{
+                                ...getDangerButtonStyle(),
+                                ...COMPACT_ACTION_BUTTON_STYLE,
+                            }}
+                        >
+                            <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <line x1="18" y1="6" x2="6" y2="18" />
+                                <line x1="6" y1="6" x2="18" y2="18" />
+                            </svg>
+                        </button>
+                    ) : null}
+                    {/* Keep — checkmark icon */}
+                    <button
+                        type="button"
+                        title="Keep"
+                        onClick={onKeep}
+                        className="review-action-btn shrink-0 rounded-md"
+                        style={{
+                            ...getAccentButtonStyle(),
+                            ...COMPACT_ACTION_BUTTON_STYLE,
+                        }}
                     >
-                        <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                </button>
+                        <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                    </button>
+                </div>
             </div>
         </div>
     );
