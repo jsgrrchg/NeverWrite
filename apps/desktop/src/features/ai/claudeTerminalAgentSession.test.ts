@@ -51,6 +51,9 @@ describe("claudeTerminalAgentSession", () => {
         vi.mocked(invoke).mockReset();
         useVaultStore.setState({ vaultPath: "/vault" });
         setEditorTabs([]);
+        // The entry is self-healing: it only survives while its terminal is
+        // live, so seed the runtime the default-case tests register against.
+        seedTerminalRuntime("term-1");
     });
 
     afterEach(() => {
@@ -212,6 +215,31 @@ describe("claudeTerminalAgentSession", () => {
             useEditorStore.getState(),
         ).filter((tab) => "sessionId" in tab && tab.kind === "ai-chat");
         expect(chatTabs).toHaveLength(0);
+    });
+
+    it("re-asserts the entry if a store rebuild drops it while the terminal is live", () => {
+        registerClaudeTerminalAgentSession({
+            terminalId: "term-1",
+            title: "Claude Code 1",
+        });
+        expect(useChatStore.getState().sessionsById[SESSION_ID]).toBeDefined();
+
+        // Simulate a backend reconcile rebuilding sessionsById without our
+        // client-only entry (what happens when opening another agent).
+        useChatStore.setState((state) => {
+            const sessionsById = { ...state.sessionsById };
+            delete sessionsById[SESSION_ID];
+            return {
+                sessionsById,
+                sessionOrder: state.sessionOrder.filter(
+                    (id) => id !== SESSION_ID,
+                ),
+            };
+        });
+
+        // The chatStore subscription re-adds it because the terminal is alive.
+        expect(useChatStore.getState().sessionsById[SESSION_ID]).toBeDefined();
+        expect(useChatStore.getState().sessionOrder).toContain(SESSION_ID);
     });
 
     it("prunes agent entries whose terminal is gone, keeping live ones", async () => {

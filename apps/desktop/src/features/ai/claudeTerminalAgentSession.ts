@@ -13,33 +13,36 @@ import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
 // Claude Code launched in a terminal has no ACP backend session, so it never
 // appears in the Agents sidebar on its own. We register a lightweight,
 // non-persisted chat session entry for it, linked to the terminal via
-// `terminalId`, and keep its title/preview in sync with Claude Code's own
-// on-disk session transcript. The entry is removed when its terminal closes.
+// `terminalId`, with title/preview sourced from Claude Code's transcript.
+//
+// chatStore is the source of truth for the sidebar, but it is rebuilt from the
+// backend on several events (vault init, runtime reconnect, …) which would drop
+// a client-only session. So we keep our own registry of live terminal agents
+// and re-assert any entry that goes missing while its terminal is still alive —
+// and remove entries whose terminal has closed.
 
 const SESSION_ID_PREFIX = "claude-terminal:";
 const TRANSCRIPT_POLL_INTERVAL_MS = 4_000;
 
-interface TranscriptInfo {
-    cwd: string;
-    // Claude session UUID when we pinned it at launch (--session-id); null means
-    // fall back to the most recently modified transcript in the project dir.
+interface TerminalAgentEntry {
+    terminalId: string;
+    defaultTitle: string;
     transcriptSessionId: string | null;
+    cwd: string | null;
+    createdAt: number;
+    // Latest transcript-derived values, re-applied if the session is rebuilt.
+    title: string | null;
+    preview: string | null;
+    updatedAt: number;
     lastMtimeMs: number | null;
 }
 
-interface ClaudeTranscriptResult {
-    found: boolean;
-    changed: boolean;
-    mtimeMs: number | null;
-    title: string | null;
-    preview: string | null;
-}
-
-const transcriptInfoByTerminalId = new Map<string, TranscriptInfo>();
+const agentsByTerminalId = new Map<string, TerminalAgentEntry>();
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let pruneUnsubscribe: (() => void) | null = null;
+let terminalUnsubscribe: (() => void) | null = null;
+let chatUnsubscribe: (() => void) | null = null;
 
-function sessionIdForTerminal(terminalId: string) {
+export function claudeTerminalAgentSessionId(terminalId: string) {
     return `${SESSION_ID_PREFIX}${terminalId}`;
 }
 
@@ -49,118 +52,12 @@ export function isClaudeTerminalAgentSession(
     return session.runtimeId === CLAUDE_TERMINAL_RUNTIME_ID;
 }
 
-function installPruneSubscription() {
-    if (pruneUnsubscribe) return;
-    // Terminal lifecycle drives the agent entry: when a terminal runtime is gone
-    // (tab closed), drop its agent session. Firing on every terminal store
-    // change is cheap — prune only touches the handful of claude-terminal
-    // sessions.
-    pruneUnsubscribe = useTerminalRuntimeStore.subscribe(() => {
-        pruneClaudeTerminalAgentSessions();
-    });
-}
-
-// Remove agent entries whose backing terminal runtime no longer exists.
-export function pruneClaudeTerminalAgentSessions() {
-    const liveTerminalIds = new Set(
-        Object.keys(useTerminalRuntimeStore.getState().runtimesById),
-    );
-    const chat = useChatStore.getState();
-    for (const session of Object.values(chat.sessionsById)) {
-        if (
-            isClaudeTerminalAgentSession(session) &&
-            session.terminalId &&
-            !liveTerminalIds.has(session.terminalId)
-        ) {
-            transcriptInfoByTerminalId.delete(session.terminalId);
-            void chat.deleteSession(session.sessionId);
-        }
-    }
-    stopTranscriptPollingIfIdle();
-}
-
-function ensureTranscriptPolling() {
-    if (pollTimer || transcriptInfoByTerminalId.size === 0) return;
-    pollTimer = setInterval(() => {
-        void refreshClaudeTerminalAgentTranscripts();
-    }, TRANSCRIPT_POLL_INTERVAL_MS);
-}
-
-function stopTranscriptPollingIfIdle() {
-    if (pollTimer && transcriptInfoByTerminalId.size === 0) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-    }
-}
-
-// Poll Claude Code's transcript for each tracked terminal and refresh the agent
-// entry's title (first prompt) and preview (latest answer). Reads are skipped at
-// the backend when the file hasn't changed since the last read.
-export async function refreshClaudeTerminalAgentTranscripts() {
-    const chat = useChatStore.getState();
-    for (const [terminalId, info] of [...transcriptInfoByTerminalId]) {
-        const sessionId = sessionIdForTerminal(terminalId);
-        if (!chat.sessionsById[sessionId]) {
-            transcriptInfoByTerminalId.delete(terminalId);
-            continue;
-        }
-
-        let result: ClaudeTranscriptResult;
-        try {
-            result = await invoke<ClaudeTranscriptResult>(
-                "devtools_read_claude_transcript",
-                {
-                    input: {
-                        sessionId: info.transcriptSessionId,
-                        cwd: info.cwd,
-                        sinceMtimeMs: info.lastMtimeMs,
-                    },
-                },
-            );
-        } catch {
-            continue;
-        }
-
-        if (!result?.changed) continue;
-        if (result.mtimeMs != null) info.lastMtimeMs = result.mtimeMs;
-        if (!result.title && !result.preview) continue;
-
-        useChatStore.setState((state) => {
-            const session = state.sessionsById[sessionId];
-            if (!session) return state;
-            return {
-                sessionsById: {
-                    ...state.sessionsById,
-                    [sessionId]: {
-                        ...session,
-                        persistedTitle: result.title ?? session.persistedTitle,
-                        persistedPreview:
-                            result.preview ?? session.persistedPreview,
-                    },
-                },
-            };
-        });
-    }
-    stopTranscriptPollingIfIdle();
-}
-
-// Register (or update) the Agents-sidebar entry for a Claude Code terminal.
-// Idempotent: the session id is derived from the terminal id. Pass the cwd (and
-// the pinned session id, if any) to enable transcript-driven title/preview.
-export function registerClaudeTerminalAgentSession(args: {
-    terminalId: string;
-    title: string;
-    transcriptSessionId?: string | null;
-    cwd?: string | null;
-}) {
-    installPruneSubscription();
-
-    const sessionId = sessionIdForTerminal(args.terminalId);
-    const session: AIChatSession = {
-        sessionId,
-        historySessionId: sessionId,
+function buildSession(entry: TerminalAgentEntry): AIChatSession {
+    return {
+        sessionId: claudeTerminalAgentSessionId(entry.terminalId),
+        historySessionId: claudeTerminalAgentSessionId(entry.terminalId),
         runtimeId: CLAUDE_TERMINAL_RUNTIME_ID,
-        terminalId: args.terminalId,
+        terminalId: entry.terminalId,
         vaultPath: useVaultStore.getState().vaultPath ?? null,
         status: "idle",
         modelId: "",
@@ -170,33 +67,175 @@ export function registerClaudeTerminalAgentSession(args: {
         configOptions: [],
         messages: [],
         attachments: [],
-        // Default label until the transcript yields the first prompt. Use
         // persistedTitle (not customTitle) so a manual rename still wins and the
-        // transcript-derived title can fill in over it.
-        persistedTitle: args.title,
+        // transcript-derived title can fill in over the default label.
+        persistedTitle: entry.title ?? entry.defaultTitle,
+        persistedPreview: entry.preview,
+        persistedCreatedAt: entry.createdAt,
+        persistedUpdatedAt: entry.updatedAt,
     };
+}
 
-    // activate:false so launching a terminal doesn't hijack the active chat;
-    // allowUnknownSession so this brand-new entry is admitted to the list.
+function upsertAgentSession(entry: TerminalAgentEntry) {
+    const sessionId = claudeTerminalAgentSessionId(entry.terminalId);
     const previousActiveSessionId = useChatStore.getState().activeSessionId;
-    useChatStore.getState().upsertSession(session, false, {
-        allowUnknownSession: true,
-    });
-    // upsertSession makes a session active when none was — but a terminal agent
-    // is never a real chat target, so keep the prior active session.
+    // activate:false so it doesn't hijack the active chat; allowUnknownSession
+    // so this client-only entry is admitted to the list.
+    useChatStore
+        .getState()
+        .upsertSession(buildSession(entry), false, { allowUnknownSession: true });
+    // upsertSession makes a session active when none was — a terminal agent is
+    // never a real chat target, so keep the prior active session.
     if (
         previousActiveSessionId !== sessionId &&
         useChatStore.getState().activeSessionId === sessionId
     ) {
         useChatStore.setState({ activeSessionId: previousActiveSessionId });
     }
+}
 
-    if (args.cwd) {
-        transcriptInfoByTerminalId.set(args.terminalId, {
-            cwd: args.cwd,
-            transcriptSessionId: args.transcriptSessionId ?? null,
-            lastMtimeMs: null,
+// Keep chatStore in sync with live terminal agents: re-add any that a store
+// rebuild dropped, and remove any whose terminal has closed.
+function reconcileAgentSessions() {
+    const liveTerminalIds = new Set(
+        Object.keys(useTerminalRuntimeStore.getState().runtimesById),
+    );
+    const chat = useChatStore.getState();
+
+    for (const entry of [...agentsByTerminalId.values()]) {
+        const sessionId = claudeTerminalAgentSessionId(entry.terminalId);
+        if (!liveTerminalIds.has(entry.terminalId)) {
+            agentsByTerminalId.delete(entry.terminalId);
+            if (chat.sessionsById[sessionId]) {
+                void chat.deleteSession(sessionId);
+            }
+            continue;
+        }
+        if (!chat.sessionsById[sessionId]) {
+            upsertAgentSession(entry);
+        }
+    }
+    stopTranscriptPollingIfIdle();
+}
+
+// Back-compat name used elsewhere (and tests): prune == reconcile.
+export function pruneClaudeTerminalAgentSessions() {
+    reconcileAgentSessions();
+}
+
+function installSubscriptions() {
+    if (!terminalUnsubscribe) {
+        terminalUnsubscribe = useTerminalRuntimeStore.subscribe(() => {
+            reconcileAgentSessions();
         });
+    }
+    if (!chatUnsubscribe) {
+        // A store rebuild can drop our client-only entries; re-assert them.
+        chatUnsubscribe = useChatStore.subscribe(() => {
+            reconcileAgentSessions();
+        });
+    }
+}
+
+function ensureTranscriptPolling() {
+    if (pollTimer || agentsByTerminalId.size === 0) return;
+    pollTimer = setInterval(() => {
+        void refreshClaudeTerminalAgentTranscripts();
+    }, TRANSCRIPT_POLL_INTERVAL_MS);
+}
+
+function stopTranscriptPollingIfIdle() {
+    if (pollTimer && agentsByTerminalId.size === 0) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+// Poll Claude Code's transcript for each tracked terminal and refresh the agent
+// entry's title (first prompt) and preview (latest answer).
+export async function refreshClaudeTerminalAgentTranscripts() {
+    for (const entry of [...agentsByTerminalId.values()]) {
+        if (!entry.cwd) continue;
+
+        let result:
+            | {
+                  found: boolean;
+                  changed: boolean;
+                  mtimeMs: number | null;
+                  title: string | null;
+                  preview: string | null;
+              }
+            | undefined;
+        try {
+            result = await invoke("devtools_read_claude_transcript", {
+                input: {
+                    sessionId: entry.transcriptSessionId,
+                    cwd: entry.cwd,
+                    sinceMtimeMs: entry.lastMtimeMs,
+                },
+            });
+        } catch {
+            continue;
+        }
+
+        if (!result?.changed) continue;
+        if (result.mtimeMs != null) entry.lastMtimeMs = result.mtimeMs;
+        if (!result.title && !result.preview) continue;
+
+        if (result.title) entry.title = result.title;
+        if (result.preview) entry.preview = result.preview;
+        entry.updatedAt = Date.now();
+
+        const sessionId = claudeTerminalAgentSessionId(entry.terminalId);
+        const session = useChatStore.getState().sessionsById[sessionId];
+        if (!session) continue;
+        useChatStore.setState((state) => {
+            const current = state.sessionsById[sessionId];
+            if (!current) return state;
+            return {
+                sessionsById: {
+                    ...state.sessionsById,
+                    [sessionId]: {
+                        ...current,
+                        persistedTitle: entry.title ?? current.persistedTitle,
+                        persistedPreview:
+                            entry.preview ?? current.persistedPreview,
+                        persistedUpdatedAt: entry.updatedAt,
+                    },
+                },
+            };
+        });
+    }
+    stopTranscriptPollingIfIdle();
+}
+
+// Register (or update) the Agents-sidebar entry for a Claude Code terminal.
+export function registerClaudeTerminalAgentSession(args: {
+    terminalId: string;
+    title: string;
+    transcriptSessionId?: string | null;
+    cwd?: string | null;
+}) {
+    installSubscriptions();
+
+    const now = Date.now();
+    const existing = agentsByTerminalId.get(args.terminalId);
+    const entry: TerminalAgentEntry = {
+        terminalId: args.terminalId,
+        defaultTitle: args.title,
+        transcriptSessionId: args.transcriptSessionId ?? null,
+        cwd: args.cwd ?? null,
+        createdAt: existing?.createdAt ?? now,
+        title: existing?.title ?? null,
+        preview: existing?.preview ?? null,
+        updatedAt: existing?.updatedAt ?? now,
+        lastMtimeMs: existing?.lastMtimeMs ?? null,
+    };
+    agentsByTerminalId.set(args.terminalId, entry);
+
+    upsertAgentSession(entry);
+
+    if (entry.cwd) {
         ensureTranscriptPolling();
         void refreshClaudeTerminalAgentTranscripts();
     }
@@ -219,11 +258,13 @@ export function focusClaudeTerminalAgentSession(
 }
 
 export function resetClaudeTerminalAgentSessionsForTests() {
-    transcriptInfoByTerminalId.clear();
+    agentsByTerminalId.clear();
     if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
     }
-    pruneUnsubscribe?.();
-    pruneUnsubscribe = null;
+    terminalUnsubscribe?.();
+    terminalUnsubscribe = null;
+    chatUnsubscribe?.();
+    chatUnsubscribe = null;
 }

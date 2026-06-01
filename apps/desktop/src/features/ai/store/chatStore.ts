@@ -8640,6 +8640,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const state = get();
             const session = state.sessionsById[sessionId];
             if (!session) return null;
+            // The claude-code-terminal pseudo-runtime has no ACP backend, so it
+            // can't be resumed — attempting it errors ("AI session not found")
+            // and flips the entry into a bogus reconnecting state.
+            if (isClaudeTerminalRuntimeId(session.runtimeId)) return sessionId;
             if (session.isPendingSessionCreation) return sessionId;
             if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;
