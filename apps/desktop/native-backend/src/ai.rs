@@ -10697,11 +10697,13 @@ mod tests {
         let store_path = temp.path().join("runtime-setup.json");
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
 
         native_ai
             .update_setup(&json!({
                 "runtime_id": GEMINI_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": current_exe,
                     "gemini_api_key": {
                         "action": "set",
                         "value": "gemini-test-secret",
@@ -10736,11 +10738,13 @@ mod tests {
         let store_path = temp.path().join("runtime-setup.json");
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
 
         native_ai
             .update_setup(&json!({
                 "runtime_id": KILO_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": current_exe,
                     "kilo_api_key": {
                         "action": "set",
                         "value": "kilo-test-secret",
@@ -11402,13 +11406,14 @@ mod tests {
     fn legacy_plaintext_runtime_setup_is_migrated_to_secret_store() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
+        let current_exe = std::env::current_exe().unwrap();
         fs::write(
             &store_path,
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "runtimes": {
                     GEMINI_RUNTIME_ID: {
-                        "custom_binary_path": null,
+                        "custom_binary_path": current_exe,
                         "auth_method": "use_gemini",
                         "env": {
                             "GEMINI_API_KEY": "legacy-gemini-secret"
