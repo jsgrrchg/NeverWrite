@@ -217,6 +217,8 @@ struct AiRuntimeSetupPayload {
     #[serde(default)]
     gemini_api_key: Option<AiSecretPatch>,
     #[serde(default)]
+    xai_api_key: Option<AiSecretPatch>,
+    #[serde(default)]
     kilo_api_key: Option<AiSecretPatch>,
     #[serde(default)]
     google_api_key: Option<AiSecretPatch>,
@@ -695,6 +697,7 @@ fn is_secret_runtime_env_key(key: &str) -> bool {
             | "ANTHROPIC_CUSTOM_HEADERS"
             | "GEMINI_API_KEY"
             | "GOOGLE_API_KEY"
+            | "XAI_API_KEY"
             | "OPENCODE_API_KEY"
             | "KILO_API_KEY"
     )
@@ -709,6 +712,7 @@ fn secret_env_keys_for_runtime(runtime_id: &str) -> &'static [&'static str] {
             "ANTHROPIC_CUSTOM_HEADERS",
         ],
         GEMINI_RUNTIME_ID => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        GROK_RUNTIME_ID => &["XAI_API_KEY"],
         KILO_RUNTIME_ID => &["KILO_API_KEY"],
         _ => &[],
     }
@@ -4515,6 +4519,11 @@ fn acp_process_spec(
         )
     })?;
     let mut env = setup.env.clone();
+    for key in secret_env_keys_for_runtime(runtime_id) {
+        if env_secret_present(key) {
+            env.remove(*key);
+        }
+    }
     if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == GEMINI_RUNTIME_ID {
             env.insert(
@@ -4995,6 +5004,15 @@ fn inherited_auth_method(
                     auth_invalidated_at_ms,
                 )
             }),
+        GROK_RUNTIME_ID => env_secret_present("XAI_API_KEY")
+            .then(|| "xai-api-key".to_string())
+            .or_else(|| {
+                inherited_persisted_auth_method(
+                    runtime_id,
+                    include_persisted,
+                    auth_invalidated_at_ms,
+                )
+            }),
         KILO_RUNTIME_ID => env_secret_present("KILO_API_KEY")
             .then(|| "kilo-api-key".to_string())
             .or_else(|| {
@@ -5244,6 +5262,10 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .env
             .get("KILO_API_KEY")
             .is_some_and(|value| !value.is_empty()),
+        "xai-api-key" => setup
+            .env
+            .get("XAI_API_KEY")
+            .is_some_and(|value| !value.is_empty()),
         "gateway" => {
             setup.has_gateway_config
                 && !setup
@@ -5283,6 +5305,7 @@ fn is_local_auth_method(method_id: &str) -> bool {
             | "anthropic-api-key"
             | "use_gemini"
             | "kilo-api-key"
+            | "xai-api-key"
             | "gateway"
             | "gateway-bedrock"
     )
@@ -5331,6 +5354,11 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
             .get("KILO_API_KEY")
             .is_some_and(|value| !value.is_empty())
             .then(|| "kilo-api-key".to_string()),
+        GROK_RUNTIME_ID => setup
+            .env
+            .get("XAI_API_KEY")
+            .is_some_and(|value| !value.is_empty())
+            .then(|| "xai-api-key".to_string()),
         _ => None,
     }
 }
@@ -5374,6 +5402,7 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
         "AWS_BEARER_TOKEN_BEDROCK",
         "GEMINI_API_KEY",
         "GOOGLE_API_KEY",
+        "XAI_API_KEY",
         "OPENCODE_API_KEY",
         "KILO_API_KEY",
         "GOOGLE_CLOUD_PROJECT",
@@ -5454,6 +5483,19 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
                 description: "Use a Gemini Developer API key stored locally.".to_string(),
             },
         ],
+        GROK_RUNTIME_ID => vec![
+            AiAuthMethod {
+                id: "grok-login".to_string(),
+                name: "Grok login".to_string(),
+                description: "Open the Grok CLI sign-in flow in an integrated terminal."
+                    .to_string(),
+            },
+            AiAuthMethod {
+                id: "xai-api-key".to_string(),
+                name: "xAI API key".to_string(),
+                description: "Use an xAI API key stored locally.".to_string(),
+            },
+        ],
         KILO_RUNTIME_ID => vec![
             AiAuthMethod {
                 id: "kilo-login".to_string(),
@@ -5482,6 +5524,7 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
         CODEX_RUNTIME_ID => vec!["chatgpt", "openai-api-key", "codex-api-key"],
         CLAUDE_RUNTIME_ID => claude_auth_method_ids_for_environment(is_claude_remote_environment()),
         GEMINI_RUNTIME_ID => vec!["login_with_google", "use_gemini"],
+        GROK_RUNTIME_ID => vec!["grok-login", "xai-api-key"],
         KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
         OPENCODE_RUNTIME_ID => vec!["opencode-login"],
         _ => vec![],
@@ -5723,6 +5766,11 @@ fn update_auth_state(
         }
         if let Some(patch) = input.google_api_key.clone() {
             touched_auth |= apply_secret_patch(setup, "GOOGLE_API_KEY", patch, "use_gemini");
+        }
+    }
+    if runtime_id == GROK_RUNTIME_ID {
+        if let Some(patch) = input.xai_api_key.clone() {
+            touched_auth |= apply_secret_patch(setup, "XAI_API_KEY", patch, "xai-api-key");
         }
     }
     if runtime_id == KILO_RUNTIME_ID {
@@ -6522,7 +6570,10 @@ mod tests {
     };
     use std::fs;
     use std::sync::mpsc;
+    use std::sync::Mutex as StdMutex;
     use std::time::Duration as StdDuration;
+
+    static ENV_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     fn test_client(event_tx: mpsc::Sender<RpcOutput>) -> NativeAcpClient {
         test_client_with_state(event_tx, Arc::new(Mutex::new(NativeAiInner::default())))
@@ -7074,6 +7125,16 @@ mod tests {
             .capabilities
             .iter()
             .all(|capability| capability != "resume_session"));
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .any(|capability| capability == "xai-api-key"));
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .any(|capability| capability == "grok-login"));
         assert!(diagnostic_executable_names().contains(&"grok"));
     }
 
@@ -9776,6 +9837,54 @@ mod tests {
     }
 
     #[test]
+    fn grok_xai_api_key_setup_persists_across_native_ai_instances() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+
+        let status = native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("xai-api-key")
+        );
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(!encoded.contains("xai-test-secret"));
+        assert!(encoded.contains("XAI_API_KEY"));
+
+        let rehydrated_native_ai = test_native_ai_with_secret_store(store_path, secrets);
+        let status = rehydrated_native_ai
+            .get_setup_status(&json!({ "runtime_id": GROK_RUNTIME_ID }))
+            .unwrap();
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("xai-api-key")
+        );
+        assert!(!status.to_string().contains("xai-test-secret"));
+    }
+
+    #[test]
     fn opencode_login_selection_persists_without_local_secret() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -9994,17 +10103,27 @@ mod tests {
                 },
             }))
             .unwrap();
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "xai_api_key": { "action": "set", "value": "xai-secret" },
+                },
+            }))
+            .unwrap();
 
         let encoded = fs::read_to_string(&store_path).unwrap();
         assert!(!encoded.contains("gemini-secret"));
         assert!(!encoded.contains("openai-secret"));
         assert!(!encoded.contains("claude-secret"));
         assert!(!encoded.contains("kilo-secret"));
+        assert!(!encoded.contains("xai-secret"));
         assert!(encoded.contains("\"secret_env_keys\""));
         assert!(encoded.contains("GEMINI_API_KEY"));
         assert!(encoded.contains("OPENAI_API_KEY"));
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(encoded.contains("KILO_API_KEY"));
+        assert!(encoded.contains("XAI_API_KEY"));
     }
 
     #[test]
@@ -10194,6 +10313,47 @@ mod tests {
     }
 
     #[test]
+    fn logout_removes_persisted_grok_xai_api_key_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+        assert!(store_path.exists());
+
+        native_ai
+            .logout(&json!({ "runtime_id": GROK_RUNTIME_ID }))
+            .unwrap();
+
+        assert!(!store_path.exists());
+        assert_eq!(
+            secrets
+                .get_secret(GROK_RUNTIME_ID, "XAI_API_KEY")
+                .expect("secret store should remain readable"),
+            None
+        );
+        let setup = native_ai.inner.lock().unwrap();
+        let grok_setup = setup
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup entry should remain in memory");
+        assert!(!grok_setup.env.contains_key("XAI_API_KEY"));
+        assert_eq!(grok_setup.auth_method, None);
+        assert!(!grok_setup.auth_ready);
+    }
+
+    #[test]
     fn logout_secret_store_failure_does_not_commit_memory() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -10303,6 +10463,67 @@ mod tests {
             spec.env.get("KILO_API_KEY").map(String::as_str),
             Some("kilo-test-secret")
         );
+    }
+
+    #[test]
+    fn acp_process_spec_injects_xai_api_key_from_setup_env() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(
+            spec.env.get("XAI_API_KEY").map(String::as_str),
+            Some("xai-test-secret")
+        );
+    }
+
+    #[test]
+    fn acp_process_spec_lets_inherited_xai_api_key_override_stored_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-stored-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        assert_eq!(
+            inherited_auth_method(GROK_RUNTIME_ID, true, None),
+            Some("xai-api-key".to_string())
+        );
+        assert_eq!(spec.env.get("XAI_API_KEY"), None);
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
     }
 
     #[test]
