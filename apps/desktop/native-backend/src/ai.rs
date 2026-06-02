@@ -1422,8 +1422,11 @@ impl NativeAi {
     pub(crate) fn set_mode(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let mode_id = required_string(args, &["modeId", "mode_id"])?;
-        if let Some(handle) = self.session_handle(&session_id)? {
-            handle.set_mode(&session_id, &mode_id)?;
+        let runtime_id = self.session_runtime_id(&session_id)?;
+        if runtime_supports_remote_mode_change(&runtime_id) {
+            if let Some(handle) = self.session_handle(&session_id)? {
+                handle.set_mode(&session_id, &mode_id)?;
+            }
         }
         self.update_session(&session_id, |session| {
             session.mode_id = mode_id;
@@ -3511,9 +3514,18 @@ fn session_from_acp_response(
         .as_ref()
         .map(|state| map_session_modes(runtime_id, state))
         .unwrap_or_else(|| default_modes(runtime_id));
-    let mut config_options = config_options
-        .map(|options| map_session_config_options(runtime_id, options))
-        .unwrap_or_else(|| default_config_options(runtime_id, &models, &modes));
+    let mut config_options = match config_options {
+        Some(options) => map_session_config_options(runtime_id, options),
+        None => {
+            let mut options = default_config_options(runtime_id, &models, &modes);
+            align_synthesized_config_options_to_acp_state(
+                &mut options,
+                models_state.as_ref(),
+                modes_state.as_ref(),
+            );
+            options
+        }
+    };
     config_options = ensure_reasoning_config_option(
         runtime_id,
         config_options,
@@ -3643,6 +3655,36 @@ fn map_session_config_options(
             })
         })
         .collect()
+}
+
+fn align_synthesized_config_options_to_acp_state(
+    config_options: &mut [AiConfigOption],
+    models_state: Option<&SessionModelState>,
+    modes_state: Option<&SessionModeState>,
+) {
+    if let Some(model_id) = models_state
+        .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
+        .filter(|value| !value.trim().is_empty())
+    {
+        if let Some(option) = config_options
+            .iter_mut()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        {
+            option.value = model_id;
+        }
+    }
+
+    if let Some(mode_id) = modes_state
+        .map(|state| state.current_mode_id.0.to_string())
+        .filter(|value| !value.trim().is_empty())
+    {
+        if let Some(option) = config_options
+            .iter_mut()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+        {
+            option.value = mode_id;
+        }
+    }
 }
 
 fn map_config_option_category(
@@ -3821,6 +3863,20 @@ fn acp_config_option_remote_command(
     config_options: &[AiConfigOption],
     option_id: &str,
 ) -> AcpConfigOptionRemoteCommand {
+    if runtime_id == GROK_RUNTIME_ID {
+        let category = config_options
+            .iter()
+            .find(|option| option.id == option_id)
+            .map(|option| &option.category);
+        return match category {
+            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
+            Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::LocalOnly,
+            Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
+            None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
+            None => AcpConfigOptionRemoteCommand::LocalOnly,
+        };
+    }
+
     if runtime_id != GEMINI_RUNTIME_ID {
         return AcpConfigOptionRemoteCommand::SetConfigOption;
     }
@@ -4335,6 +4391,10 @@ fn runtime_supports_native_resume(runtime_id: &str) -> bool {
     runtime_definition(runtime_id)
         .map(|definition| definition.supports_native_resume)
         .unwrap_or(false)
+}
+
+fn runtime_supports_remote_mode_change(runtime_id: &str) -> bool {
+    runtime_id != GROK_RUNTIME_ID
 }
 
 trait RuntimeDescriptorAuthTags {
@@ -8930,6 +8990,51 @@ mod tests {
     }
 
     #[test]
+    fn grok_session_uses_acp_models_without_static_model_list() {
+        let models_state = SessionModelState::new(
+            "grok-build",
+            vec![
+                ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5")
+                    .description("Cursor's latest coding model"),
+                ModelInfo::new("grok-build", "Grok Build")
+                    .description("Best for advanced coding tasks"),
+            ],
+        );
+
+        let session = session_from_acp_response(
+            GROK_RUNTIME_ID,
+            "session-1".to_string(),
+            Some(models_state),
+            None,
+            None,
+        );
+
+        assert_eq!(session.model_id, "grok-build");
+        assert_eq!(
+            session
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["grok-composer-2.5-fast", "grok-build"]
+        );
+        let model_config = session
+            .config_options
+            .iter()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+            .expect("model config should be synthesized from ACP models");
+        assert_eq!(model_config.value, "grok-build");
+        assert_eq!(
+            acp_config_option_remote_command(
+                &session.runtime_id,
+                &session.config_options,
+                &model_config.id
+            ),
+            AcpConfigOptionRemoteCommand::SetModel
+        );
+    }
+
+    #[test]
     fn acp_config_mapping_treats_effort_category_as_reasoning() {
         let mapped = map_session_config_options(
             CODEX_RUNTIME_ID,
@@ -8996,6 +9101,51 @@ mod tests {
             acp_config_option_remote_command(CODEX_RUNTIME_ID, &options, "model"),
             AcpConfigOptionRemoteCommand::SetConfigOption
         );
+    }
+
+    #[test]
+    fn grok_config_options_route_model_to_supported_acp_method() {
+        let options = map_session_config_options(
+            GROK_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "grok-build",
+                    vec![
+                        SessionConfigSelectOption::new("grok-composer-2.5-fast", "Composer 2.5"),
+                        SessionConfigSelectOption::new("grok-build", "Grok Build"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Model),
+                SessionConfigOption::select(
+                    "mode",
+                    "Mode",
+                    "default",
+                    vec![SessionConfigSelectOption::new("default", "Default")],
+                )
+                .category(SessionConfigOptionCategory::Mode),
+            ],
+        );
+
+        assert_eq!(
+            acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "model"),
+            AcpConfigOptionRemoteCommand::SetModel
+        );
+        assert_eq!(
+            acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "mode"),
+            AcpConfigOptionRemoteCommand::LocalOnly
+        );
+        assert_eq!(
+            acp_config_option_remote_command(GROK_RUNTIME_ID, &[], "model"),
+            AcpConfigOptionRemoteCommand::SetModel
+        );
+    }
+
+    #[test]
+    fn grok_synthetic_modes_are_local_only() {
+        assert!(!runtime_supports_remote_mode_change(GROK_RUNTIME_ID));
+        assert!(runtime_supports_remote_mode_change(CODEX_RUNTIME_ID));
     }
 
     #[test]

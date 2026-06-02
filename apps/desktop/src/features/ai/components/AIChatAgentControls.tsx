@@ -33,7 +33,11 @@ interface DropdownFieldProps {
     onChange: (value: string) => void;
 }
 
-const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
+const SEARCHABLE_MODEL_RUNTIME_IDS = new Set([
+    "grok-acp",
+    "kilo-acp",
+    "opencode-acp",
+]);
 
 function shouldUseSearchableModelMenu(runtimeId?: string) {
     return (
