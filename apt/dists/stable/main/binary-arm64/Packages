@@ -1,0 +1,19 @@
+Package: neverwrite
+Version: 0.3.2
+Architecture: arm64
+Maintainer: NeverWrite Maintainers <jsgrrchg@users.noreply.github.com>
+Installed-Size: 1839914
+Depends: libgtk-3-0, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libuuid1, libsecret-1-0
+Recommends: libappindicator3-1
+Section: utils
+Priority: optional
+Homepage: https://github.com/jsgrrchg/NeverWrite
+Description: AI-powered writing workspace
+  NeverWrite is an AI-powered writing workspace for power users.
+License: unknown
+Vendor: NeverWrite Maintainers <jsgrrchg@users.noreply.github.com>
+Filename: https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.2/NeverWrite-0.3.2-arm64.deb
+Size: 444051784
+MD5sum: b5820fd9d122b148410618d5977f5d49
+SHA1: 00589eb74b4ea753f49a2202a9fc4e90f2347f90
+SHA256: 16cdb536cb404963a25bbadaaf8d8162245b08c2232a406769b9f29637260926
