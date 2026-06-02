@@ -26,9 +26,12 @@ and terminal-auth routing helpers are in
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
 
-Runtime descriptors returned by the backend currently use default `auto` model
-selection and `default` / `review` modes for every provider. The frontend falls
-back to the static catalog if backend inventory cannot be loaded.
+Runtime descriptors returned by the backend use default `auto` model selection.
+Providers only show modes and slash commands that are either declared by ACP or
+kept as provider-owned fallback behavior. Grok does not receive synthetic
+`default` / `review` modes or hardcoded slash commands when its ACP runtime does
+not advertise them. The frontend falls back to the static catalog if backend
+inventory cannot be loaded.
 
 ## Runtime Discovery
 

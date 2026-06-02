@@ -10,12 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
-    AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    FileSystemCapabilities, Implementation, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LogoutRequest, Meta, NewSessionRequest, PermissionOption,
-    PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, FileSystemCapabilities,
+    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
+    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
     SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -31,13 +32,13 @@ use neverwrite_ai::{
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
     AiToolActivityPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason, ToolDiffState,
     AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
-    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
-    AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
-    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
-    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    AI_AUTH_TERMINAL_STARTED_EVENT, AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT,
+    AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
+    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
+    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
+    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
+    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
+    GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -2927,6 +2928,12 @@ impl NativeAcpClient {
                     .apply_current_mode_update(&session_id, update.current_mode_id.0.to_string());
                 self.emit_session_update_from_result(result);
             }
+            SessionUpdate::AvailableCommandsUpdate(update) => {
+                self.emit(
+                    AI_AVAILABLE_COMMANDS_UPDATED_EVENT,
+                    map_available_commands_update(&session_id, update),
+                );
+            }
             _ => {}
         }
         Ok(())
@@ -3595,7 +3602,7 @@ fn session_from_acp_response(
     let modes = modes_state
         .as_ref()
         .map(|state| map_session_modes(runtime_id, state))
-        .unwrap_or_else(|| default_modes(runtime_id));
+        .unwrap_or_else(|| default_modes_for_acp_session(runtime_id));
     let mut config_options = match config_options {
         Some(options) => map_session_config_options(runtime_id, options),
         None => {
@@ -3619,7 +3626,8 @@ fn session_from_acp_response(
         .unwrap_or_default();
     let mode_id = selected_mode_id(modes_state.as_ref(), &config_options)
         .or_else(|| modes.first().map(|mode| mode.id.clone()))
-        .unwrap_or_else(|| "default".to_string());
+        .or_else(|| default_mode_id_for_runtime(runtime_id))
+        .unwrap_or_default();
 
     AiSession {
         session_id,
@@ -4036,6 +4044,36 @@ fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanU
     }
 }
 
+fn map_available_commands_update(
+    session_id: &str,
+    update: AvailableCommandsUpdate,
+) -> neverwrite_ai::AiAvailableCommandsPayload {
+    neverwrite_ai::AiAvailableCommandsPayload {
+        session_id: session_id.to_string(),
+        commands: update
+            .available_commands
+            .into_iter()
+            .map(map_available_command)
+            .collect(),
+    }
+}
+
+fn map_available_command(command: AvailableCommand) -> neverwrite_ai::AiAvailableCommandPayload {
+    let name = command.name.trim_start_matches('/').to_string();
+    let label = format!("/{name}");
+    let has_input = matches!(command.input, Some(AvailableCommandInput::Unstructured(_)));
+    neverwrite_ai::AiAvailableCommandPayload {
+        id: name.clone(),
+        label: label.clone(),
+        description: command.description,
+        insert_text: if has_input {
+            format!("{label} ")
+        } else {
+            label
+        },
+    }
+}
+
 fn plan_entry_priority_label(priority: &PlanEntryPriority) -> &'static str {
     match priority {
         PlanEntryPriority::High => "high",
@@ -4444,7 +4482,7 @@ fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
         .map(|definition| {
             let runtime_id = definition.id;
             let models = default_models(runtime_id);
-            let modes = default_modes(runtime_id);
+            let modes = default_modes_for_runtime_descriptor(runtime_id);
             let mut capabilities = vec![
                 "create_session".to_string(),
                 "prompt_queueing".to_string(),
@@ -4520,13 +4558,35 @@ fn default_modes(runtime_id: &str) -> Vec<AiModeOption> {
     ]
 }
 
+fn default_modes_for_acp_session(runtime_id: &str) -> Vec<AiModeOption> {
+    if runtime_id == GROK_RUNTIME_ID {
+        Vec::new()
+    } else {
+        default_modes(runtime_id)
+    }
+}
+
+fn default_modes_for_runtime_descriptor(runtime_id: &str) -> Vec<AiModeOption> {
+    if runtime_id == GROK_RUNTIME_ID {
+        Vec::new()
+    } else {
+        default_modes(runtime_id)
+    }
+}
+
+fn default_mode_id_for_runtime(runtime_id: &str) -> Option<String> {
+    (runtime_id != GROK_RUNTIME_ID).then(|| "default".to_string())
+}
+
 fn default_config_options(
     runtime_id: &str,
     models: &[AiModelOption],
     modes: &[AiModeOption],
 ) -> Vec<AiConfigOption> {
-    vec![
-        AiConfigOption {
+    let mut options = Vec::new();
+
+    if !models.is_empty() {
+        options.push(AiConfigOption {
             id: "model".to_string(),
             runtime_id: runtime_id.to_string(),
             category: AiConfigOptionCategory::Model,
@@ -4545,8 +4605,11 @@ fn default_config_options(
                     description: Some(model.description.clone()),
                 })
                 .collect(),
-        },
-        AiConfigOption {
+        });
+    }
+
+    if !modes.is_empty() {
+        options.push(AiConfigOption {
             id: "mode".to_string(),
             runtime_id: runtime_id.to_string(),
             category: AiConfigOptionCategory::Mode,
@@ -4565,8 +4628,10 @@ fn default_config_options(
                     description: Some(mode.description.clone()),
                 })
                 .collect(),
-        },
-    ]
+        });
+    }
+
+    options
 }
 
 fn new_session(runtime_id: &str) -> Result<AiSession, String> {
@@ -4581,7 +4646,7 @@ fn new_session(runtime_id: &str) -> Result<AiSession, String> {
 fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession, String> {
     validate_runtime_id(runtime_id)?;
     let models = default_models(runtime_id);
-    let modes = default_modes(runtime_id);
+    let modes = default_modes_for_acp_session(runtime_id);
     let config_options = default_config_options(runtime_id, &models, &modes);
     Ok(AiSession {
         session_id,
@@ -4597,7 +4662,8 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         mode_id: modes
             .first()
             .map(|mode| mode.id.clone())
-            .unwrap_or_else(|| "default".to_string()),
+            .or_else(|| default_mode_id_for_runtime(runtime_id))
+            .unwrap_or_default(),
         status: AiSessionStatus::Idle,
         efforts_by_model: HashMap::new(),
         models,
@@ -6938,10 +7004,11 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, PlanEntry, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
-        SessionModelState, SessionNotification, SessionUpdate, ToolCallContent, ToolCallId,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        AvailableCommandInput, AvailableCommandsUpdate, ConfigOptionUpdate, Meta, ModelInfo,
+        PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigSelectOption, SessionInfoUpdate, SessionModelState, SessionNotification,
+        SessionUpdate, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        UnstructuredCommandInput,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -9321,6 +9388,14 @@ mod tests {
             .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
             .expect("model config should be synthesized from ACP models");
         assert_eq!(model_config.value, "grok-build");
+        assert!(session.modes.is_empty());
+        assert!(
+            session
+                .config_options
+                .iter()
+                .all(|option| !matches!(option.category, AiConfigOptionCategory::Mode)),
+            "Grok must not receive synthetic modes when ACP does not advertise them"
+        );
         assert_eq!(
             acp_config_option_remote_command(
                 &session.runtime_id,
@@ -9443,6 +9518,60 @@ mod tests {
     fn grok_synthetic_modes_are_local_only() {
         assert!(!runtime_supports_remote_mode_change(GROK_RUNTIME_ID));
         assert!(runtime_supports_remote_mode_change(CODEX_RUNTIME_ID));
+    }
+
+    #[test]
+    fn acp_available_commands_update_is_forwarded_to_renderer() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-commands",
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("login", "Sign in to the provider"),
+                AvailableCommand::new("search", "Search the workspace").input(
+                    AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("query")),
+                ),
+            ])),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("available commands event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_AVAILABLE_COMMANDS_UPDATED_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-commands")
+        );
+        assert_eq!(
+            payload.pointer("/commands/0/label").and_then(Value::as_str),
+            Some("/login")
+        );
+        assert_eq!(
+            payload
+                .pointer("/commands/0/insert_text")
+                .and_then(Value::as_str),
+            Some("/login")
+        );
+        assert_eq!(
+            payload.pointer("/commands/1/label").and_then(Value::as_str),
+            Some("/search")
+        );
+        assert_eq!(
+            payload
+                .pointer("/commands/1/insert_text")
+                .and_then(Value::as_str),
+            Some("/search ")
+        );
     }
 
     #[test]

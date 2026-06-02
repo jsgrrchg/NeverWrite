@@ -340,18 +340,10 @@ describe("AIChatAgentControls", () => {
             <AIChatAgentControls
                 runtimeId="grok-acp"
                 modelId="grok-build"
-                modeId="default"
+                modeId=""
                 effortsByModel={{}}
                 models={[]}
-                modes={[
-                    {
-                        id: "default",
-                        runtimeId: "grok-acp",
-                        name: "Auto",
-                        description: "",
-                        disabled: false,
-                    },
-                ]}
+                modes={[]}
                 configOptions={[
                     {
                         id: "model",
@@ -379,6 +371,8 @@ describe("AIChatAgentControls", () => {
                 onConfigOptionChange={onConfigOptionChange}
             />,
         );
+
+        expect(screen.queryByTitle("Approval Preset")).not.toBeInTheDocument();
 
         fireEvent.click(screen.getByTitle("Model"));
 

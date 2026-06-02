@@ -384,18 +384,20 @@ export function AIChatAgentControls({
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
-            <DropdownField
-                disabled={disabled}
-                label="Approval Preset"
-                value={modeId}
-                options={modes.map((mode) => ({
-                    value: mode.id,
-                    label: formatFallbackLabel(mode.name),
-                    description: mode.description,
-                    disabled: mode.disabled,
-                }))}
-                onChange={onModeChange}
-            />
+            {modes.length > 0 ? (
+                <DropdownField
+                    disabled={disabled}
+                    label="Approval Preset"
+                    value={modeId}
+                    options={modes.map((mode) => ({
+                        value: mode.id,
+                        label: formatFallbackLabel(mode.name),
+                        description: mode.description,
+                        disabled: mode.disabled,
+                    }))}
+                    onChange={onModeChange}
+                />
+            ) : null}
             <DropdownField
                 disabled={disabled}
                 label="Model"

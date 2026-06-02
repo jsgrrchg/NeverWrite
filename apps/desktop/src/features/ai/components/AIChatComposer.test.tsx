@@ -600,7 +600,16 @@ describe("AIChatComposer mention picker", () => {
     });
 
     it("opens the slash picker when the caret is on the root element", async () => {
-        const { composer } = renderComposer();
+        const { composer } = renderComposer({
+            availableCommands: [
+                {
+                    id: "plan",
+                    label: "/plan",
+                    description: "step-by-step plan",
+                    insert_text: "/plan ",
+                },
+            ],
+        });
         composer.textContent = "/pl";
 
         setCaret(composer, 1);
@@ -611,9 +620,63 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
-    it("uses runtime-aware slash fallbacks for Claude sessions", async () => {
+    it("keeps slash command labels visible when descriptions are long", async () => {
+        const { composer } = renderComposer({
+            availableCommands: [
+                {
+                    id: "compact",
+                    label: "/compact",
+                    description:
+                        "Compress conversation history to save context window space",
+                    insert_text: "/compact",
+                },
+            ],
+        });
+        composer.textContent = "/co";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        const label = await screen.findByText("/compact");
+        const description = screen.getByText(
+            "Compress conversation history to save context window space",
+        );
+
+        expect(label).toHaveStyle({ flex: "0 0 auto" });
+        expect(description).toHaveStyle({
+            flex: "1 1 0",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+        });
+    });
+
+    it("shows Codex builtin slash commands while ACP commands are still loading", async () => {
+        const { composer } = renderComposer({
+            runtimeId: "codex-acp",
+            availableCommands: [],
+        });
+        composer.textContent = "/co";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("/compact")).toBeInTheDocument();
+            expect(screen.queryByText("No commands found")).not.toBeInTheDocument();
+        });
+    });
+
+    it("uses only ACP-provided slash commands for Claude sessions", async () => {
         const { composer } = renderComposer({
             runtimeId: "claude-acp",
+            availableCommands: [
+                {
+                    id: "compact",
+                    label: "/compact",
+                    description: "compact thread",
+                    insert_text: "/compact",
+                },
+            ],
         });
         composer.textContent = "/co";
 
@@ -623,6 +686,37 @@ describe("AIChatComposer mention picker", () => {
         await waitFor(() => {
             expect(screen.getByText("/compact")).toBeInTheDocument();
             expect(screen.queryByText("/undo")).not.toBeInTheDocument();
+        });
+    });
+
+    it("uses only ACP-provided slash commands for Grok sessions", async () => {
+        const { composer } = renderComposer({
+            runtimeId: "grok-acp",
+            availableCommands: [
+                {
+                    id: "workspace-search",
+                    label: "/workspace-search",
+                    description: "search workspace",
+                    insert_text: "/workspace-search ",
+                },
+            ],
+        });
+        composer.textContent = "/pl";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.queryByText("/plan")).not.toBeInTheDocument();
+            expect(screen.getByText("No commands found")).toBeInTheDocument();
+        });
+
+        composer.textContent = "/work";
+        setCaret(composer.firstChild as Text, 5);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("/workspace-search")).toBeInTheDocument();
         });
     });
 

@@ -102,8 +102,8 @@ export function AIChatCommandPicker({
                 top: position.y,
                 left: position.x,
                 zIndex: 10010,
-                width: 340,
-                maxWidth: "min(340px, calc(100vw - 24px))",
+                width: 420,
+                maxWidth: "min(420px, calc(100vw - 24px))",
                 maxHeight: 280,
                 overflow: "hidden",
                 borderRadius: 10,
@@ -152,6 +152,7 @@ export function AIChatCommandPicker({
                                     padding: "6px 10px",
                                     textAlign: "left",
                                     cursor: "pointer",
+                                    width: "100%",
                                     minWidth: 0,
                                     transition: "background-color 80ms ease",
                                 }}
@@ -165,7 +166,8 @@ export function AIChatCommandPicker({
                                         whiteSpace: "nowrap",
                                         overflow: "hidden",
                                         textOverflow: "ellipsis",
-                                        flex: 1,
+                                        flex: "0 0 auto",
+                                        maxWidth: "46%",
                                         minWidth: 0,
                                     }}
                                 >
@@ -176,7 +178,10 @@ export function AIChatCommandPicker({
                                         fontSize: 11,
                                         color: "var(--text-secondary)",
                                         opacity: 0.6,
-                                        flexShrink: 0,
+                                        flex: "1 1 0",
+                                        minWidth: 0,
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
                                         whiteSpace: "nowrap",
                                     }}
                                 >

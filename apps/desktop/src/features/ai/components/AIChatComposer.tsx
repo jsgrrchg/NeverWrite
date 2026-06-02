@@ -139,66 +139,53 @@ const EMPTY_SLASH_STATE: SlashState = {
     range: null,
 };
 
-const COMMON_SLASH_COMMANDS: AIChatSlashCommand[] = [
-    {
-        id: "init",
-        label: "/init",
-        description: "starter instructions",
-        insertText: "/init ",
-    },
+// Mirrors the bundled Codex ACP builtins so slash commands are available while
+// the runtime's AvailableCommandsUpdate notification is still in flight.
+const CODEX_BUILTIN_SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "review",
         label: "/review",
-        description: "review changes",
+        description: "Review my current changes and find issues",
         insertText: "/review ",
     },
     {
-        id: "plan",
-        label: "/plan",
-        description: "step-by-step plan",
-        insertText: "/plan ",
-    },
-    {
-        id: "compact",
-        label: "/compact",
-        description: "compact thread",
-        insertText: "/compact",
-    },
-];
-
-const CODEX_SLASH_COMMANDS: AIChatSlashCommand[] = [
-    {
         id: "review-branch",
         label: "/review-branch",
-        description: "review branch",
+        description: "Review the code changes against a specific branch",
         insertText: "/review-branch ",
     },
     {
         id: "review-commit",
         label: "/review-commit",
-        description: "review commit",
+        description: "Review the code changes introduced by a commit",
         insertText: "/review-commit ",
     },
     {
-        id: "undo",
-        label: "/undo",
-        description: "undo last change",
-        insertText: "/undo",
+        id: "init",
+        label: "/init",
+        description: "create an AGENTS.md file with instructions for Codex",
+        insertText: "/init",
+    },
+    {
+        id: "compact",
+        label: "/compact",
+        description: "summarize conversation to prevent hitting the context limit",
+        insertText: "/compact",
     },
     {
         id: "logout",
         label: "/logout",
-        description: "sign out",
+        description: "logout of Codex",
         insertText: "/logout",
     },
 ];
 
-function getFallbackSlashCommands(runtimeId?: string) {
+function getPendingRuntimeSlashCommands(runtimeId?: string) {
     if (runtimeId === "codex-acp") {
-        return [...COMMON_SLASH_COMMANDS, ...CODEX_SLASH_COMMANDS];
+        return CODEX_BUILTIN_SLASH_COMMANDS;
     }
 
-    return COMMON_SLASH_COMMANDS;
+    return [];
 }
 
 function applyComposerPillStyles(
@@ -1079,10 +1066,6 @@ export function AIChatComposer({
     const [externalDragActive, setExternalDragActive] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ComposerContextMenuPayload> | null>(null);
-    const fallbackSlashCommands = useMemo(
-        () => getFallbackSlashCommands(runtimeId),
-        [runtimeId],
-    );
     const [customHeight, setCustomHeight] = useState<number | null>(null);
     const resizeSession = useRef<{
         startY: number;
@@ -1304,7 +1287,7 @@ export function AIChatComposer({
         );
         const commandSource = runtimeCommands.length
             ? runtimeCommands
-            : fallbackSlashCommands;
+            : getPendingRuntimeSlashCommands(runtimeId);
         const normalizedQuery = trigger.query.toLowerCase();
         const items = commandSource.filter((command) => {
             const haystack = [command.id, command.label, command.description]
