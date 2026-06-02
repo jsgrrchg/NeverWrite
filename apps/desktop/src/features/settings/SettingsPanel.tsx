@@ -3340,7 +3340,6 @@ function TerminalSettings({
         claudeCodeSkipPermissions,
         claudeCodeModel,
         claudeCodeContinueSession,
-        claudeCodeMaxTurns,
         setSetting,
     } = useSettingsStore();
 
@@ -3386,10 +3385,6 @@ function TerminalSettings({
             [
                 "Continue last session",
                 "Passes --continue. Resumes your most recent Claude Code conversation instead of starting fresh.",
-            ],
-            [
-                "Max turns",
-                "Passes --max-turns. Stops an agentic session after this many turns. Set to 0 for no limit.",
             ],
         ]);
 
@@ -3535,25 +3530,6 @@ function TerminalSettings({
                             value={claudeCodeContinueSession}
                             onChange={(v) =>
                                 setSetting("claudeCodeContinueSession", v)
-                            }
-                        />
-                    }
-                />
-            )}
-            {showClaudeCode && (
-                <SearchableRow
-                    searchQuery={searchQuery}
-                    section="Claude Code"
-                    label="Max turns"
-                    description="Passes --max-turns N. Stops an agentic run after this many turns to prevent runaway sessions. Set to 0 for no limit."
-                    keywords={["max turns", "limit", "agentic", "turns"]}
-                    control={
-                        <NumberStepper
-                            value={claudeCodeMaxTurns}
-                            min={0}
-                            max={200}
-                            onChange={(v) =>
-                                setSetting("claudeCodeMaxTurns", v)
                             }
                         />
                     }
@@ -4427,8 +4403,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "haiku",
         "Continue last session",
         "resume",
-        "Max turns",
-        "agentic",
         "shell",
         "monospace",
     ],

@@ -44,7 +44,6 @@ export interface Settings {
     claudeCodeSkipPermissions: boolean;
     claudeCodeModel: string; // "" = Claude Code default
     claudeCodeContinueSession: boolean;
-    claudeCodeMaxTurns: number; // 0 = unlimited
 
     // Developers
     fileTreeContentMode: "notes_only" | "all_files";
@@ -198,7 +197,6 @@ const defaults: Settings = {
     claudeCodeSkipPermissions: false,
     claudeCodeModel: "",
     claudeCodeContinueSession: false,
-    claudeCodeMaxTurns: 0,
     fileTreeContentMode: "notes_only",
     fileTreeShowExtensions: false,
     fileTreeExtensionFilter: [],
@@ -488,12 +486,6 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             claudeCodeContinueSession:
                 parsed.state.claudeCodeContinueSession ??
                 defaults.claudeCodeContinueSession,
-            claudeCodeMaxTurns: normalizeIntInRange(
-                parsed.state.claudeCodeMaxTurns,
-                defaults.claudeCodeMaxTurns,
-                0,
-                1000,
-            ),
             fileTreeContentMode: normalizeFileTreeContentMode(
                 parsed.state.fileTreeContentMode,
             ),
@@ -573,7 +565,6 @@ function pickSettings(state: SettingsStore): Settings {
         claudeCodeSkipPermissions: state.claudeCodeSkipPermissions,
         claudeCodeModel: state.claudeCodeModel,
         claudeCodeContinueSession: state.claudeCodeContinueSession,
-        claudeCodeMaxTurns: state.claudeCodeMaxTurns,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
         fileTreeExtensionFilter: state.fileTreeExtensionFilter,

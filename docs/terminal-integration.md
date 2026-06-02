@@ -76,7 +76,6 @@ Terminal settings are stored with the vault-scoped Settings store:
 - `claudeCodeSkipPermissions`
 - `claudeCodeModel`
 - `claudeCodeContinueSession`
-- `claudeCodeMaxTurns`
 
 See [Settings Scope](./settings-scope.md) for the full storage matrix.
 

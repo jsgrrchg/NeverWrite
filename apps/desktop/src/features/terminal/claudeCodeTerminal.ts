@@ -201,7 +201,6 @@ export async function openClaudeCodeTerminalWithContext(
         claudeCodeSkipPermissions,
         claudeCodeModel,
         claudeCodeContinueSession,
-        claudeCodeMaxTurns,
     } = useSettingsStore.getState();
 
     // Pin a fresh session id so we can locate this terminal's transcript exactly.
@@ -247,7 +246,6 @@ export async function openClaudeCodeTerminalWithContext(
     const safeModel = getSafeClaudeCodeModel(claudeCodeModel);
     if (safeModel) args.push("--model", safeModel);
     if (claudeCodeContinueSession) args.push("--continue");
-    if (claudeCodeMaxTurns > 0) args.push("--max-turns", String(claudeCodeMaxTurns));
 
     await store.writeInput(terminalId, buildShellCommand(args));
 

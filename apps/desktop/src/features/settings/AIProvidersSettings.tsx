@@ -1674,8 +1674,8 @@ export function AIProvidersSettings({
                                                     }}
                                                 >
                                                     Model, skip permissions,
-                                                    max turns, and other Claude
-                                                    Code options are in{" "}
+                                                    and other Claude Code
+                                                    options are in{" "}
                                                     <strong
                                                         style={{
                                                             color: "var(--text-primary)",
