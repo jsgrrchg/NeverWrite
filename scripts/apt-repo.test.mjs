@@ -9,6 +9,9 @@ import zlib from "node:zlib";
 
 import {
     APT_DEFAULT_BASE_URL,
+    APT_EXACT_PATH_SUITE,
+    APT_LAYOUT_FLAT_RELEASE,
+    APT_RELEASE_DOWNLOAD_BASE_URL,
     APT_PUBLIC_KEY_FILE_NAME,
     APT_SOURCES_EXAMPLE_FILE_NAME,
     APT_SUPPORTED_ARCHITECTURES,
@@ -128,6 +131,104 @@ function validateFixtureAptRepository(aptDir) {
     );
 }
 
+function writeFixtureFlatAptRepository({ filenamesByArchitecture = {} } = {}) {
+    const rootDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "neverwrite-flat-apt-test-"),
+    );
+    const aptDir = path.join(rootDir, "apt-release");
+    const packageAssetsDir = path.join(rootDir, "release-assets");
+    const releaseFiles = [];
+
+    fs.mkdirSync(aptDir, { recursive: true });
+    fs.mkdirSync(packageAssetsDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(aptDir, APT_PUBLIC_KEY_FILE_NAME),
+        "fixture public key\n",
+        "utf8",
+    );
+    fs.writeFileSync(
+        path.join(aptDir, APT_SOURCES_EXAMPLE_FILE_NAME),
+        buildNeverWriteSourcesExample(APT_RELEASE_DOWNLOAD_BASE_URL, {
+            suite: APT_EXACT_PATH_SUITE,
+            component: null,
+        }),
+        "utf8",
+    );
+
+    const stanzas = [];
+    for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
+        const assetName = buildDebianReleaseAssetName("0.3.0", architecture);
+        const assetPath = path.join(packageAssetsDir, assetName);
+        const assetBytes = Buffer.from(`fixture package ${architecture}\n`);
+        fs.writeFileSync(assetPath, assetBytes);
+
+        stanzas.push(
+            renderPackagesStanza({
+                controlFields: parseDebianControlStanza([
+                    "Package: neverwrite",
+                    "Version: 0.3.0",
+                    `Architecture: ${architecture}`,
+                    "Description: NeverWrite desktop",
+                    "",
+                ].join("\n")),
+                filename: filenamesByArchitecture[architecture] ?? assetName,
+                sizeBytes: assetBytes.length,
+                hashes: getFileHashes(assetPath),
+            }),
+        );
+    }
+
+    const packagesContent = stanzas.join("\n");
+    fs.writeFileSync(path.join(aptDir, "Packages"), packagesContent, "utf8");
+    fs.writeFileSync(
+        path.join(aptDir, "Packages.gz"),
+        zlib.gzipSync(Buffer.from(packagesContent, "utf8")),
+    );
+
+    for (const relativePath of ["Packages", "Packages.gz"]) {
+        const absolutePath = path.join(aptDir, relativePath);
+        releaseFiles.push({
+            relativePath,
+            sizeBytes: fs.statSync(absolutePath).size,
+            hashes: getFileHashes(absolutePath),
+        });
+    }
+
+    fs.writeFileSync(
+        path.join(aptDir, "Release"),
+        buildAptReleaseContent({
+            component: null,
+            files: releaseFiles,
+        }),
+        "utf8",
+    );
+    fs.writeFileSync(path.join(aptDir, "InRelease"), "fixture inrelease\n", "utf8");
+    fs.writeFileSync(path.join(aptDir, "Release.gpg"), "fixture signature\n", "utf8");
+
+    return { rootDir, aptDir, packageAssetsDir };
+}
+
+function validateFixtureFlatAptRepository(aptDir, packageAssetsDir) {
+    return childProcess.spawnSync(
+        process.execPath,
+        [
+            VALIDATE_APT_REPOSITORY_SCRIPT,
+            "--layout",
+            APT_LAYOUT_FLAT_RELEASE,
+            "--apt-dir",
+            aptDir,
+            "--package-assets-dir",
+            packageAssetsDir,
+            "--version",
+            "0.3.0",
+            "--skip-signature-check",
+        ],
+        {
+            encoding: "utf8",
+        },
+    );
+}
+
 test("APT package paths use Debian pool conventions", () => {
     assert.equal(
         buildAptPoolPackageName("0.2.8", "amd64"),
@@ -175,6 +276,18 @@ test("NeverWrite Deb822 source example uses the public APT endpoint", () => {
     assert.match(source, new RegExp(`URIs: ${APT_DEFAULT_BASE_URL}`));
     assert.match(source, /Suites: stable/);
     assert.match(source, /Components: main/);
+    assert.match(source, /Architectures: amd64 arm64/);
+    assert.match(source, /Signed-By: \/etc\/apt\/keyrings\/neverwrite\.asc/);
+});
+
+test("NeverWrite Deb822 source example supports the flat release endpoint", () => {
+    const source = buildNeverWriteSourcesExample(APT_RELEASE_DOWNLOAD_BASE_URL, {
+        suite: APT_EXACT_PATH_SUITE,
+        component: null,
+    });
+    assert.match(source, new RegExp(`URIs: ${APT_RELEASE_DOWNLOAD_BASE_URL}`));
+    assert.match(source, /Suites: \.\//);
+    assert.doesNotMatch(source, /^Components:/m);
     assert.match(source, /Architectures: amd64 arm64/);
     assert.match(source, /Signed-By: \/etc\/apt\/keyrings\/neverwrite\.asc/);
 });
@@ -277,4 +390,42 @@ test("APT repository validator rejects package Filename URLs", (t) => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid Filename/);
     assert.match(result.stderr, /Expected a normalized relative path under "pool\/main\/n\/neverwrite\/"/);
+});
+
+test("APT repository validator accepts flat release asset filenames", (t) => {
+    const { rootDir, aptDir, packageAssetsDir } = writeFixtureFlatAptRepository();
+    t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+    const result = validateFixtureFlatAptRepository(aptDir, packageAssetsDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /APT repository is valid for version 0\.3\.0/);
+});
+
+test("APT repository validator rejects flat package Filename paths", (t) => {
+    const { rootDir, aptDir, packageAssetsDir } = writeFixtureFlatAptRepository({
+        filenamesByArchitecture: {
+            amd64: "pool/main/n/neverwrite/neverwrite_0.3.0_amd64.deb",
+        },
+    });
+    t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+    const result = validateFixtureFlatAptRepository(aptDir, packageAssetsDir);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Expected a GitHub Release asset file name/);
+});
+
+test("APT repository validator rejects flat package Filename URLs", (t) => {
+    const { rootDir, aptDir, packageAssetsDir } = writeFixtureFlatAptRepository({
+        filenamesByArchitecture: {
+            amd64: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.0/NeverWrite-0.3.0-amd64.deb",
+        },
+    });
+    t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+
+    const result = validateFixtureFlatAptRepository(aptDir, packageAssetsDir);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Expected a GitHub Release asset file name/);
 });
