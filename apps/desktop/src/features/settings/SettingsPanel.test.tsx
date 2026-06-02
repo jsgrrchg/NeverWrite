@@ -711,15 +711,7 @@ describe("SettingsPanel", () => {
             true,
         );
 
-        const maxTurnsRow =
-            screen.getByText("Max turns").parentElement?.parentElement;
-        expect(maxTurnsRow).not.toBeNull();
-        const maxTurnsInput =
-            within(maxTurnsRow as HTMLElement).getByDisplayValue("0");
-        fireEvent.focus(maxTurnsInput);
-        fireEvent.change(maxTurnsInput, { target: { value: "12" } });
-        fireEvent.keyDown(maxTurnsInput, { key: "Enter" });
-        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(12);
+        expect(screen.queryByText("Max turns")).not.toBeInTheDocument();
     });
 
     it("checks updater metadata manually without starting an install", async () => {

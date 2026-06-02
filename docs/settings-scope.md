@@ -105,7 +105,6 @@ the same Settings stores.
 | Terminal / Claude Code | `claudeCodeSkipPermissions` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Enables the Claude Code skip-permissions launch flag. |
 | Terminal / Claude Code | `claudeCodeModel` | Per-vault | `""` | `neverwrite:settings:<vault-path>` | Empty string means Claude Code default. |
 | Terminal / Claude Code | `claudeCodeContinueSession` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Adds continue/resume behavior for new Claude Code terminal launches. |
-| Terminal / Claude Code | `claudeCodeMaxTurns` | Per-vault | `0` | `neverwrite:settings:<vault-path>` | `0` means unlimited; storage normalization clamps to `0..1000`. |
 | File Tree | `fileTreeContentMode` | Per-vault | `notes_only` | `neverwrite:settings:<vault-path>` | Valid values are `notes_only` and `all_files`. Affects file tree, file pickers, mentions, and wikilink suggestions. |
 | File Tree | `fileTreeShowExtensions` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Shows full filenames with extensions. |
 | File Tree | `fileTreeExtensionFilter` | Per-vault | `[]` | `neverwrite:settings:<vault-path>` | Lowercase extension allowlist; normalized by stripping leading dots and duplicates. |

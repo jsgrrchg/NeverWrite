@@ -120,7 +120,7 @@ describe("openClaudeCodeTerminalWithContext", () => {
             claudeCodeModel: " claude-sonnet-4-6 ",
             claudeCodeContinueSession: true,
             claudeCodeMaxTurns: 7,
-        });
+        } as Partial<ReturnType<typeof useSettingsStore.getState>>);
 
         const opening = openClaudeCodeTerminalWithContext();
         await attachOpenedTerminalRuntime();
@@ -135,7 +135,7 @@ describe("openClaudeCodeTerminalWithContext", () => {
         });
         expect(getWrittenInputs()).toEqual([
             "cd '/vault root'\n",
-            "claude --dangerously-skip-permissions --model claude-sonnet-4-6 --continue --max-turns 7\n",
+            "claude --dangerously-skip-permissions --model claude-sonnet-4-6 --continue\n",
         ]);
         expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
             "devtools_read_claude_transcript",
