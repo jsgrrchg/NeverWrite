@@ -54,6 +54,12 @@ const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str =
     "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const ELECTRON_AI_USER_INPUT_UNAVAILABLE: &str =
     "Interactive AI user input prompts are not available in Electron yet.";
+const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
+    "Grok login looks invalid or expired. Run Grok login again to reconnect.";
+const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
+    "Stored xAI API key looks invalid. Add a new xAI API key to reconnect Grok.";
+const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
+    "Inherited XAI_API_KEY looks invalid. Update the environment variable to reconnect Grok.";
 const AGENT_WRITE_ORIGIN_WINDOW: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
@@ -1245,7 +1251,7 @@ impl NativeAi {
                 .unwrap_or_default()
         };
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-        let created = start_acp_session(
+        let created = match start_acp_session(
             spec,
             AcpSessionStartMode::New {
                 additional_directories: normalized.kept.clone(),
@@ -1254,7 +1260,21 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
-        )?;
+        ) {
+            Ok(created) => created,
+            Err(error) => {
+                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                    &input.runtime_id,
+                    &setup,
+                    &error,
+                ) {
+                    return Err(format!(
+                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
         let mut session = created.session;
         let handle = created.handle;
         session.discarded_additional_roots = normalized.discarded.clone();
@@ -1340,7 +1360,7 @@ impl NativeAi {
                 .unwrap_or_default()
         };
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-        let created = start_acp_session(
+        let created = match start_acp_session(
             spec,
             AcpSessionStartMode::Load {
                 session_id: input.session_id,
@@ -1350,7 +1370,21 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
-        )?;
+        ) {
+            Ok(created) => created,
+            Err(error) => {
+                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                    &input.runtime_id,
+                    &setup,
+                    &error,
+                ) {
+                    return Err(format!(
+                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
         let mut session = created.session;
         let handle = created.handle;
         session.discarded_additional_roots = normalized.discarded.clone();
@@ -1670,6 +1704,44 @@ impl NativeAi {
             pending.auth_invalidated_at_ms = None;
         }
         pending.message = None;
+        self.setup_store.save(&pending_setup)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        state.setup = pending_setup;
+        state.setup_load_error = None;
+        Ok(())
+    }
+
+    fn invalidate_grok_auth_after_session_start_error(
+        &self,
+        runtime_id: &str,
+        setup_at_start: &RuntimeSetupState,
+        error: &str,
+    ) -> Result<(), String> {
+        if runtime_id != GROK_RUNTIME_ID || !is_grok_auth_error(error) {
+            return Ok(());
+        }
+
+        let Some(source) = grok_auth_failure_source(setup_at_start) else {
+            return Ok(());
+        };
+
+        let (mut pending_setup, setup_load_error) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            (state.setup.clone(), state.setup_load_error.clone())
+        };
+        if setup_load_error.is_some() {
+            pending_setup = self.setup_store.load().map_err(runtime_setup_load_error)?;
+        }
+
+        let setup = pending_setup.entry(runtime_id.to_string()).or_default();
+        apply_grok_auth_failure(setup, source);
         self.setup_store.save(&pending_setup)?;
 
         let mut state = self
@@ -4587,6 +4659,10 @@ fn inherited_auth_method_applies_to_setup(
     setup: &RuntimeSetupState,
     inherited_method: &str,
 ) -> bool {
+    if inherited_method == "xai-api-key" && grok_inherited_xai_api_key_marked_invalid(setup) {
+        return false;
+    }
+
     match setup.auth_method.as_deref() {
         Some(selected_method)
             if is_local_auth_method(selected_method)
@@ -4670,6 +4746,9 @@ fn acp_process_spec(
             env.remove(*key);
         }
     }
+    if runtime_id == GROK_RUNTIME_ID && grok_inherited_xai_api_key_marked_invalid(setup) {
+        env.insert("XAI_API_KEY".to_string(), String::new());
+    }
     if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == GEMINI_RUNTIME_ID {
             env.insert(
@@ -4708,6 +4787,10 @@ fn effective_auth_method_for_acp_process_spec(
     runtime_id: &str,
     setup: &RuntimeSetupState,
 ) -> Option<String> {
+    if runtime_id == GROK_RUNTIME_ID && grok_inherited_xai_api_key_marked_invalid(setup) {
+        return None;
+    }
+
     let inherited_auth_method = inherited_auth_method_for_setup(runtime_id, setup)
         .filter(|method| inherited_auth_method_applies_to_setup(setup, method));
     if let Some(selected_method) = setup.auth_method.as_deref() {
@@ -5616,6 +5699,82 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     ] {
         setup.env.remove(key);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrokAuthFailureSource {
+    Login,
+    StoredXaiApiKey,
+    InheritedXaiApiKey,
+}
+
+fn is_grok_auth_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    [
+        "run grok login",
+        "set xai_api_key",
+        "authentication required",
+        "auth_required",
+        "unauthorized",
+        "401",
+        "invalid api key",
+        "cached_token",
+    ]
+    .into_iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn grok_auth_failure_source(setup: &RuntimeSetupState) -> Option<GrokAuthFailureSource> {
+    match effective_auth_method_for_acp_process_spec(GROK_RUNTIME_ID, setup).as_deref() {
+        Some("grok-login") => Some(GrokAuthFailureSource::Login),
+        Some("xai-api-key") if env_secret_present("XAI_API_KEY") => {
+            Some(GrokAuthFailureSource::InheritedXaiApiKey)
+        }
+        Some("xai-api-key") => Some(GrokAuthFailureSource::StoredXaiApiKey),
+        _ if env_secret_present("XAI_API_KEY") => Some(GrokAuthFailureSource::InheritedXaiApiKey),
+        _ if setup
+            .env
+            .get("XAI_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty()) =>
+        {
+            Some(GrokAuthFailureSource::StoredXaiApiKey)
+        }
+        _ => None,
+    }
+}
+
+fn apply_grok_auth_failure(setup: &mut RuntimeSetupState, source: GrokAuthFailureSource) {
+    match source {
+        GrokAuthFailureSource::Login => {
+            setup.auth_method = Some("grok-login".to_string());
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = false;
+            setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+            setup.message = Some(GROK_LOGIN_INVALIDATED_MESSAGE.to_string());
+        }
+        GrokAuthFailureSource::StoredXaiApiKey => {
+            setup.env.remove("XAI_API_KEY");
+            setup.auth_method = None;
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = true;
+            setup.auth_invalidated_at_ms = None;
+            setup.message = Some(GROK_STORED_XAI_API_KEY_INVALID_MESSAGE.to_string());
+        }
+        GrokAuthFailureSource::InheritedXaiApiKey => {
+            setup.auth_method = Some("xai-api-key".to_string());
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = false;
+            setup.auth_invalidated_at_ms = None;
+            setup.message = Some(GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE.to_string());
+        }
+    }
+    refresh_runtime_setup_flags(GROK_RUNTIME_ID, setup);
+}
+
+fn grok_inherited_xai_api_key_marked_invalid(setup: &RuntimeSetupState) -> bool {
+    setup.auth_method.as_deref() == Some("xai-api-key")
+        && !setup.auth_ready
+        && setup.message.as_deref() == Some(GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE)
 }
 
 fn env_secret_present(key: &str) -> bool {
@@ -8334,6 +8493,10 @@ mod tests {
 
     #[test]
     fn logout_marks_grok_external_auth_invalidated() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
         let temp = tempfile::tempdir().unwrap();
@@ -8358,6 +8521,11 @@ mod tests {
             Some(false)
         );
         assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
         let state = ai.inner.lock().unwrap();
         let setup = state
             .setup
@@ -10301,6 +10469,222 @@ mod tests {
     }
 
     #[test]
+    fn grok_auth_error_detector_matches_cli_auth_failures() {
+        for error in [
+            "Please run grok login to continue",
+            "set XAI_API_KEY before starting",
+            "authentication required",
+            "auth_required",
+            "Unauthorized request",
+            "HTTP 401",
+            "invalid api key",
+            "cached_token is expired",
+        ] {
+            assert!(is_grok_auth_error(error), "{error:?} should be detected");
+        }
+
+        assert!(!is_grok_auth_error("model does not support that option"));
+    }
+
+    #[test]
+    fn grok_login_auth_error_marks_external_auth_invalidated() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let setup_at_start = RuntimeSetupState {
+            auth_method: Some("grok-login".to_string()),
+            auth_ready: true,
+            ..RuntimeSetupState::default()
+        };
+        native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .insert(GROK_RUNTIME_ID.to_string(), setup_at_start.clone());
+
+        native_ai
+            .invalidate_grok_auth_after_session_start_error(
+                GROK_RUNTIME_ID,
+                &setup_at_start,
+                "cached_token unauthorized",
+            )
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should remain");
+        assert_eq!(setup.auth_method.as_deref(), Some("grok-login"));
+        assert!(!setup.auth_ready);
+        assert!(setup.auth_invalidated_at_ms.is_some());
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(GROK_LOGIN_INVALIDATED_MESSAGE)
+        );
+
+        let persisted_setup = native_ai
+            .setup_store
+            .load()
+            .unwrap()
+            .remove(GROK_RUNTIME_ID)
+            .expect("Grok setup should persist invalidated login");
+        assert_eq!(persisted_setup.auth_method.as_deref(), Some("grok-login"));
+        assert!(persisted_setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
+    fn grok_stored_xai_key_auth_error_clears_local_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path, secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-stored-secret",
+                    },
+                },
+            }))
+            .unwrap();
+        assert_eq!(
+            secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"),
+            Some("xai-stored-secret".to_string())
+        );
+
+        let setup_at_start = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should exist");
+        native_ai
+            .invalidate_grok_auth_after_session_start_error(
+                GROK_RUNTIME_ID,
+                &setup_at_start,
+                "401 invalid api key",
+            )
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"), None);
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should remain");
+        assert_eq!(setup.auth_method, None);
+        assert!(!setup.auth_ready);
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(GROK_STORED_XAI_API_KEY_INVALID_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn grok_inherited_xai_key_auth_error_preserves_local_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path, secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-stored-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        let setup_at_start = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should exist");
+        native_ai
+            .invalidate_grok_auth_after_session_start_error(
+                GROK_RUNTIME_ID,
+                &setup_at_start,
+                "unauthorized",
+            )
+            .unwrap();
+
+        let status = native_ai
+            .get_setup_status(&json!({ "runtime_id": GROK_RUNTIME_ID }))
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(
+            secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"),
+            Some("xai-stored-secret".to_string())
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("xai-api-key")
+        );
+        assert_eq!(
+            status.get("message").and_then(Value::as_str),
+            Some(GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE)
+        );
+    }
+
+    #[test]
     fn opencode_login_selection_persists_without_local_secret() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -11046,6 +11430,10 @@ mod tests {
 
     #[test]
     fn acp_auth_handshake_maps_grok_login_to_cached_token() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
             custom_binary_path: Some(current_exe.display().to_string()),
@@ -11058,6 +11446,11 @@ mod tests {
         let handshake_request = acp_auth_handshake_request(&spec)
             .expect("Grok handshake should map login auth")
             .expect("Grok login auth should request an ACP authenticate call");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
 
         assert_eq!(handshake_request.method_id, "cached_token");
         assert_eq!(
