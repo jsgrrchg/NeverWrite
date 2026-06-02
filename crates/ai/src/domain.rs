@@ -96,6 +96,8 @@ pub struct AiSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub runtime_id: String,
     pub model_id: String,

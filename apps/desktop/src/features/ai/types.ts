@@ -341,6 +341,7 @@ export interface AIChatSession {
     historySessionId: string;
     parentSessionId?: string | null;
     runtimeSessionId?: string | null;
+    closedAt?: string | null;
     /**
      * For the "claude-code-terminal" pseudo-runtime: the terminal runtime this
      * agent entry stands in for. Clicking the entry focuses that terminal tab
@@ -411,6 +412,7 @@ export interface AIBackendSessionPayload {
     session_id: string;
     parent_session_id?: string | null;
     runtime_session_id?: string | null;
+    closed_at?: string | null;
     title?: string | null;
     runtime_id: string;
     model_id: string;
@@ -683,6 +685,7 @@ export interface PersistedSessionHistory {
     version: number;
     session_id: string;
     parent_session_id?: string | null;
+    closed_at?: string | null;
     runtime_id?: string;
     model_id: string;
     mode_id: string;

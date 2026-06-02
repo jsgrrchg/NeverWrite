@@ -60,6 +60,8 @@ pub struct PersistedSessionHistory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
     pub model_id: String,
     pub mode_id: String,
@@ -117,6 +119,8 @@ struct PersistedSessionMetadata {
     session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
     model_id: String,
@@ -388,6 +392,7 @@ fn metadata_from_history(
         version: history.version,
         session_id: history.session_id.clone(),
         parent_session_id: history.parent_session_id.clone(),
+        closed_at: history.closed_at.clone(),
         runtime_id: history.runtime_id.clone(),
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
@@ -419,6 +424,7 @@ fn history_from_metadata(
         version: metadata.version,
         session_id: metadata.session_id,
         parent_session_id: metadata.parent_session_id,
+        closed_at: metadata.closed_at,
         runtime_id: metadata.runtime_id,
         model_id: metadata.model_id,
         mode_id: metadata.mode_id,
@@ -443,6 +449,7 @@ fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, Stri
         version: history.version,
         session_id: history.session_id,
         parent_session_id: history.parent_session_id,
+        closed_at: history.closed_at,
         runtime_id: history.runtime_id,
         model_id: history.model_id,
         mode_id: history.mode_id,
@@ -1340,6 +1347,7 @@ pub fn load_all_session_histories(
                     version: history.version,
                     session_id: history.session_id,
                     parent_session_id: history.parent_session_id,
+                    closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
@@ -1369,6 +1377,7 @@ pub fn load_all_session_histories(
                     version: history.version,
                     session_id: history.session_id,
                     parent_session_id: history.parent_session_id,
+                    closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
@@ -1587,6 +1596,7 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
         version: source_meta.version,
         session_id: new_session_id.clone(),
         parent_session_id: None,
+        closed_at: None,
         runtime_id: source_meta.runtime_id,
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
@@ -1665,6 +1675,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -1735,6 +1746,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -1986,6 +1998,7 @@ mod tests {
         let dir = make_temp_dir();
         let mut history = sample_history_with_session_id("child-session");
         history.parent_session_id = Some("parent-session".to_string());
+        history.closed_at = Some("123".to_string());
 
         save_session_history(&dir, &history).expect("child history should persist");
 
@@ -1995,6 +2008,7 @@ mod tests {
             metadata.parent_session_id.as_deref(),
             Some("parent-session")
         );
+        assert_eq!(metadata.closed_at.as_deref(), Some("123"));
 
         let summaries =
             load_all_session_histories(&dir, false).expect("history summaries should load");
@@ -2003,9 +2017,11 @@ mod tests {
             summaries[0].parent_session_id.as_deref(),
             Some("parent-session")
         );
+        assert_eq!(summaries[0].closed_at.as_deref(), Some("123"));
 
         let full = load_all_session_histories(&dir, true).expect("full history should load");
         assert_eq!(full[0].parent_session_id.as_deref(), Some("parent-session"));
+        assert_eq!(full[0].closed_at.as_deref(), Some("123"));
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2134,6 +2150,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -2506,6 +2523,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
