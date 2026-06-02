@@ -178,8 +178,10 @@ auth-method error.
 Saved xAI API keys live in the OS keyring as `XAI_API_KEY`; they are not written
 to `ai/runtime-setup.json`. The JSON setup file only records the selected auth
 method and secret-key marker. If the app process inherits `XAI_API_KEY`, that
-environment value wins over any stored keyring secret and NeverWrite does not
-delete or overwrite the inherited environment variable.
+environment value is preferred by default. A locally saved xAI key that is
+selected and ready is passed to the Grok ACP process explicitly, so it can
+recover from an inherited `XAI_API_KEY` that NeverWrite has marked invalid.
+NeverWrite does not delete or overwrite the inherited environment variable.
 
 Disconnecting Grok in NeverWrite clears local NeverWrite setup state. For stored
 xAI API keys, it also deletes the local keyring secret. For Grok CLI login, it

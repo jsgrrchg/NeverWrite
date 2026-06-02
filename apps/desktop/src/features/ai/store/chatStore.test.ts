@@ -13724,6 +13724,40 @@ describe("chatStore", () => {
         expect(merged.configOptions).toEqual(existing.configOptions);
     });
 
+    it("applies ACP available commands that arrive before the session is upserted", () => {
+        const sessionId = "grok-session-early-commands";
+        const commands = [
+            {
+                id: "plan",
+                label: "Plan",
+                description: "Create a plan.",
+                insert_text: "/plan",
+            },
+        ];
+
+        useChatStore.getState().applyAvailableCommandsUpdate({
+            session_id: sessionId,
+            commands,
+        });
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles(sessionId, []),
+                runtimeId: "grok-acp",
+                modelId: "grok-build",
+            },
+            true,
+        );
+
+        expect(
+            useChatStore.getState().sessionsById[sessionId]?.availableCommands,
+        ).toEqual(commands);
+        expect(
+            useChatStore.getState().pendingAvailableCommandsBySessionId[
+                sessionId
+            ],
+        ).toBeUndefined();
+    });
+
     it("keeps model and mode config option values aligned with incoming session updates", async () => {
         await useChatStore.getState().initialize();
 

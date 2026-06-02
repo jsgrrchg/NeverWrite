@@ -4818,7 +4818,9 @@ fn acp_process_spec(
     })?;
     let mut env = setup.env.clone();
     for key in secret_env_keys_for_runtime(runtime_id) {
-        if env_secret_present(key) {
+        let inherited_secret_should_win = env_secret_present(key)
+            && !setup_secret_env_overrides_inherited(runtime_id, setup, key);
+        if inherited_secret_should_win {
             env.remove(*key);
         }
     }
@@ -4857,6 +4859,18 @@ fn acp_process_spec(
         auth_method,
         auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
     })
+}
+
+fn setup_secret_env_overrides_inherited(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+    env_key: &str,
+) -> bool {
+    runtime_id == GROK_RUNTIME_ID
+        && env_key == "XAI_API_KEY"
+        && setup.auth_method.as_deref() == Some("xai-api-key")
+        && setup.auth_ready
+        && auth_method_has_local_config(setup, "xai-api-key")
 }
 
 fn effective_auth_method_for_acp_process_spec(
@@ -6766,6 +6780,15 @@ fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> boo
                 || lower.contains("login successful")
                 || lower.contains("successfully authenticated")
                 || lower.contains("successfully logged in")
+        }
+        GROK_RUNTIME_ID => {
+            let lower = buffer.to_ascii_lowercase();
+            lower.contains("authentication successful")
+                || lower.contains("login successful")
+                || lower.contains("logged in successfully")
+                || lower.contains("successfully authenticated")
+                || lower.contains("successfully logged in")
+                || lower.contains("successfully signed in")
         }
         _ => false,
     }
@@ -10633,6 +10656,18 @@ mod tests {
     }
 
     #[test]
+    fn grok_auth_terminal_success_output_is_detected_before_exit() {
+        assert!(auth_terminal_output_indicates_success(
+            GROK_RUNTIME_ID,
+            "Grok login successful"
+        ));
+        assert!(!auth_terminal_output_indicates_success(
+            GROK_RUNTIME_ID,
+            "Grok login required"
+        ));
+    }
+
+    #[test]
     fn runtime_secret_store_mode_requires_explicit_memory_value() {
         assert_eq!(
             runtime_secret_store_mode_from_env(Some("memory")),
@@ -11836,6 +11871,38 @@ mod tests {
             Some("xai-api-key".to_string())
         );
         assert_eq!(spec.env.get("XAI_API_KEY"), None);
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_process_spec_lets_ready_stored_xai_key_override_inherited_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-stored-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            auth_ready: true,
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        assert_eq!(
+            spec.env.get("XAI_API_KEY").map(String::as_str),
+            Some("xai-stored-secret")
+        );
         assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
 
         match previous {
