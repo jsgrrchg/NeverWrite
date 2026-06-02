@@ -1081,10 +1081,9 @@ impl NativeAi {
         }
         let setup = pending_setup.entry(runtime_id.clone()).or_default();
 
-        setup.custom_binary_path = input
-            .custom_binary_path
-            .clone()
-            .and_then(normalize_optional_string);
+        if let Some(custom_binary_path) = input.custom_binary_path.clone() {
+            setup.custom_binary_path = normalize_optional_string(custom_binary_path);
+        }
         update_auth_state(setup, &runtime_id, input)?;
         let status = setup_status_for(&runtime_id, setup.clone())?;
         self.setup_store.save(&pending_setup)?;
@@ -7563,6 +7562,65 @@ mod tests {
         assert!(status.auth_ready);
         assert!(!status.onboarding_required);
         assert_eq!(status.auth_method.as_deref(), Some("xai-api-key"));
+    }
+
+    #[test]
+    fn grok_xai_key_update_preserves_custom_binary_path() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path,
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let current_exe = std::env::current_exe().unwrap();
+        let current_exe_display = current_exe.display().to_string();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-first-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": null,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-second-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let setup = native_ai.inner.lock().unwrap();
+        let grok_setup = setup
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should remain configured");
+        assert_eq!(
+            grok_setup.custom_binary_path.as_deref(),
+            Some(current_exe_display.as_str())
+        );
+        assert_eq!(grok_setup.auth_method.as_deref(), Some("xai-api-key"));
+        assert!(grok_setup.auth_ready);
     }
 
     #[test]

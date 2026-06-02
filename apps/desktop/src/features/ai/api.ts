@@ -318,7 +318,9 @@ export async function aiUpdateSetup(input: {
         "ai_update_setup",
         {
             input: {
-                custom_binary_path: input.customBinaryPath ?? null,
+                ...(input.customBinaryPath !== undefined
+                    ? { custom_binary_path: input.customBinaryPath }
+                    : {}),
                 codex_api_key: input.codexApiKey,
                 openai_api_key: input.openaiApiKey,
                 gemini_api_key: input.geminiApiKey,
