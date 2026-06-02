@@ -57,6 +57,19 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
         ],
     },
     {
+        id: "grok-acp",
+        name: "Grok",
+        company: "xAI",
+        description: "Grok CLI running as a native ACP agent.",
+        capabilities: [
+            "attachments",
+            "permissions",
+            "plans",
+            "terminal_output",
+            "create_session",
+        ],
+    },
+    {
         id: "kilo-acp",
         name: "Kilo",
         company: "Kilo Code",

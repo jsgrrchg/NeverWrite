@@ -44,6 +44,7 @@ import type {
 
 const OPENCODE_RUNTIME_ID = "opencode-acp";
 const OPENCODE_AUTH_METHOD_ID = "opencode-login";
+const GROK_RUNTIME_ID = "grok-acp";
 
 function getErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof Error && error.message.trim()) return error.message;
@@ -244,12 +245,15 @@ function setSecretPatch(value: string): AISecretPatch {
 }
 
 function supportsRuntimeBinaryOverride(runtimeId: string): boolean {
-    return runtimeId === OPENCODE_RUNTIME_ID;
+    return runtimeId === OPENCODE_RUNTIME_ID || runtimeId === GROK_RUNTIME_ID;
 }
 
 function getRuntimeBinaryPlaceholder(runtimeId: string): string {
     if (runtimeId === OPENCODE_RUNTIME_ID) {
         return "Custom OpenCode runtime path, for example opencode";
+    }
+    if (runtimeId === GROK_RUNTIME_ID) {
+        return "Custom Grok runtime path, for example grok";
     }
     return "Custom runtime path";
 }
@@ -257,6 +261,9 @@ function getRuntimeBinaryPlaceholder(runtimeId: string): string {
 function getRuntimeBinaryHelpText(runtimeId: string): string {
     if (runtimeId === OPENCODE_RUNTIME_ID) {
         return "Leave empty to use opencode from PATH.";
+    }
+    if (runtimeId === GROK_RUNTIME_ID) {
+        return "Leave empty to use grok from PATH.";
     }
     return "Leave empty to use the bundled runtime or PATH.";
 }
@@ -335,6 +342,15 @@ function getProviderSearchValues(
             ? getRuntimeBinaryHelpText(provider.id)
             : undefined,
         provider.id === OPENCODE_RUNTIME_ID ? "opencode acp" : undefined,
+        provider.id === GROK_RUNTIME_ID ? "grok acp" : undefined,
+        provider.id === GROK_RUNTIME_ID ? "xAI" : undefined,
+        provider.id === GROK_RUNTIME_ID ? "XAI_API_KEY" : undefined,
+        provider.id === GROK_RUNTIME_ID
+            ? "grok --no-auto-update agent stdio"
+            : undefined,
+        provider.id === GROK_RUNTIME_ID
+            ? "NEVERWRITE_GROK_ACP_BIN"
+            : undefined,
         getMethodDisplayName(setupStatus),
         error,
         ...(setupStatus?.authMethods.flatMap((method) => [
