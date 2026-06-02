@@ -48,6 +48,17 @@ const runtimes: AIRuntimeDescriptor[] = [
         modes: [],
         configOptions: [],
     },
+    {
+        runtime: {
+            id: "grok-acp",
+            name: "Grok",
+            description: "Grok runtime",
+            capabilities: [],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
 ];
 
 describe("sessionPresentation history selection", () => {
@@ -93,6 +104,15 @@ describe("sessionPresentation history selection", () => {
         };
 
         expect(getReviewTabTitle(session, runtimes)).toBe("Review Kilo");
+    });
+
+    it("formats review tab titles with Grok runtime ids", () => {
+        const session = {
+            ...createSession("live-session-grok", "history-grok"),
+            runtimeId: "grok-acp",
+        };
+
+        expect(getReviewTabTitle(session, runtimes)).toBe("Review Grok");
     });
 
     it("formats subagent review tab titles with the visible session name", () => {

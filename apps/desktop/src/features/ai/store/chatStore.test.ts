@@ -1835,6 +1835,135 @@ describe("chatStore", () => {
         });
     });
 
+    it("sends Grok setup and auth payloads through the selected runtime", async () => {
+        const grokSetupStatus = {
+            ...readySetupStatus,
+            runtime_id: "grok-acp",
+            binary_path: "/usr/local/bin/grok",
+            binary_source: "custom",
+            auth_method: "xai-api-key",
+            auth_methods: [
+                {
+                    id: "grok-login",
+                    name: "Grok login",
+                    description: "Open the Grok CLI sign-in flow.",
+                },
+                {
+                    id: "xai-api-key",
+                    name: "xAI API key",
+                    description: "Use an xAI API key stored locally.",
+                },
+            ],
+        };
+        const grokDescriptor = {
+            runtime: {
+                ...runtimePayload[0].runtime,
+                id: "grok-acp",
+                name: "Grok ACP",
+            },
+            models: [],
+            modes: [],
+            configOptions: [],
+        };
+        const calls: Array<{ command: string; args: unknown }> = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            calls.push({ command, args });
+            if (command === "ai_update_setup") {
+                return grokSetupStatus;
+            }
+            if (command === "ai_start_auth") {
+                return {
+                    ...grokSetupStatus,
+                    auth_method: "grok-login",
+                    onboarding_required: false,
+                };
+            }
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.setState({
+            selectedRuntimeId: "grok-acp",
+            runtimes: [grokDescriptor],
+            setupStatusByRuntimeId: {
+                "grok-acp": {
+                    ...readySetupStatusState,
+                    runtimeId: "grok-acp",
+                    authReady: false,
+                    onboardingRequired: false,
+                },
+            },
+        });
+
+        await useChatStore.getState().saveSetup({
+            customBinaryPath: "/usr/local/bin/grok",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "unchanged" },
+            xaiApiKey: { action: "set", value: "xai-test-secret" },
+            googleApiKey: { action: "unchanged" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
+            anthropicApiKey: { action: "unchanged" },
+        });
+        await useChatStore.getState().startAuth({
+            runtimeId: "grok-acp",
+            methodId: "grok-login",
+            codexApiKey: { action: "unchanged" },
+            openaiApiKey: { action: "unchanged" },
+            geminiApiKey: { action: "unchanged" },
+            xaiApiKey: { action: "unchanged" },
+            googleApiKey: { action: "unchanged" },
+            gatewayHeaders: { action: "unchanged" },
+            anthropicCustomHeaders: { action: "unchanged" },
+            anthropicAuthToken: { action: "unchanged" },
+            anthropicApiKey: { action: "unchanged" },
+        });
+
+        expect(calls).toContainEqual(
+            expect.objectContaining({
+                command: "ai_update_setup",
+                args: expect.objectContaining({
+                    runtimeId: "grok-acp",
+                    input: expect.objectContaining({
+                        custom_binary_path: "/usr/local/bin/grok",
+                        xai_api_key: {
+                            action: "set",
+                            value: "xai-test-secret",
+                        },
+                    }),
+                }),
+            }),
+        );
+        expect(calls).toContainEqual(
+            expect.objectContaining({
+                command: "ai_start_auth",
+                args: {
+                    input: {
+                        method_id: "grok-login",
+                        runtimeId: "grok-acp",
+                    },
+                    vaultPath: null,
+                },
+            }),
+        );
+        expect(useChatStore.getState().selectedRuntimeId).toBe("grok-acp");
+        expect(
+            useChatStore.getState().setupStatusByRuntimeId["grok-acp"],
+        ).toMatchObject({
+            runtimeId: "grok-acp",
+            authReady: true,
+            authMethod: "grok-login",
+            onboardingRequired: false,
+        });
+    });
+
     it("opens the selected runtime after onboarding completes while another runtime is active", async () => {
         const claudeReadySetupStatus = {
             ...readySetupStatus,
@@ -15243,6 +15372,116 @@ describe("chatStore", () => {
             "aaXa\nBBB\nccc\nDDD",
         );
         expect(buildReviewProjection(remaining!).hunks).toHaveLength(1);
+    });
+
+    it("resolves Grok review hunks without mutating parallel Codex or Kilo sessions", async () => {
+        const codexFile = createTrackedFile(
+            "/notes/codex.md",
+            "codex before",
+            "codex after",
+        );
+        const kiloFile = createTrackedFile(
+            "/notes/kilo.md",
+            "kilo before",
+            "kilo after",
+        );
+        const grokAcceptFile = createTrackedFile(
+            "/notes/grok-accept.md",
+            "alpha\nbeta\ngamma\nomega",
+            "ALPHA\nbeta\nGAMMA\nomega",
+        );
+        const grokRejectFile = createTrackedFile(
+            "/notes/grok-reject.md",
+            "red\nblue\ngreen",
+            "red\nBLUE\ngreen",
+        );
+        const codexSession = {
+            ...createSessionWithTrackedFiles("session-codex-review", [
+                codexFile,
+            ]),
+            runtimeId: "codex-acp",
+        };
+        const kiloSession = {
+            ...createSessionWithTrackedFiles("session-kilo-review", [
+                kiloFile,
+            ]),
+            runtimeId: "kilo-acp",
+        };
+        const grokSession = {
+            ...createSessionWithTrackedFiles("session-grok-review", [
+                grokAcceptFile,
+                grokRejectFile,
+            ]),
+            runtimeId: "grok-acp",
+        };
+
+        useChatStore.setState({
+            activeSessionId: grokSession.sessionId,
+            sessionsById: {
+                [codexSession.sessionId]: codexSession,
+                [kiloSession.sessionId]: kiloSession,
+                [grokSession.sessionId]: grokSession,
+            },
+        });
+
+        const codexBefore =
+            useChatStore.getState().sessionsById[codexSession.sessionId];
+        const kiloBefore =
+            useChatStore.getState().sessionsById[kiloSession.sessionId];
+        const acceptProjection = buildReviewProjection(grokAcceptFile);
+        const rejectProjection = buildReviewProjection(grokRejectFile);
+        expect(acceptProjection.hunks).toHaveLength(2);
+        expect(rejectProjection.hunks).toHaveLength(1);
+
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                grokSession.sessionId,
+                grokAcceptFile.identityKey,
+                "accepted",
+                grokAcceptFile.version,
+                [acceptProjection.hunks[0]!.id],
+            );
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                grokSession.sessionId,
+                grokRejectFile.identityKey,
+                "rejected",
+                grokRejectFile.version,
+                [rejectProjection.hunks[0]!.id],
+            );
+
+        const codexAfter =
+            useChatStore.getState().sessionsById[codexSession.sessionId];
+        const kiloAfter =
+            useChatStore.getState().sessionsById[kiloSession.sessionId];
+        const grokAfter =
+            useChatStore.getState().sessionsById[grokSession.sessionId];
+        const remainingGrokFiles = getVisibleBuffer(grokSession.sessionId);
+        const remainingAcceptFile = remainingGrokFiles.find(
+            (file) => file.identityKey === grokAcceptFile.identityKey,
+        );
+
+        expect(codexAfter).toBe(codexBefore);
+        expect(kiloAfter).toBe(kiloBefore);
+        expect(grokAfter?.runtimeId).toBe("grok-acp");
+        expect(codexAfter?.runtimeId).toBe("codex-acp");
+        expect(kiloAfter?.runtimeId).toBe("kilo-acp");
+        expect(
+            remainingGrokFiles.some(
+                (file) => file.identityKey === grokRejectFile.identityKey,
+            ),
+        ).toBe(false);
+        expect(remainingAcceptFile).toBeDefined();
+        expectTrackedFileToMatchAccumulatedDiff(
+            remainingAcceptFile!,
+            "ALPHA\nbeta\ngamma\nomega",
+            "ALPHA\nbeta\nGAMMA\nomega",
+        );
+        expect(buildReviewProjection(remainingAcceptFile!).hunks).toHaveLength(
+            1,
+        );
     });
 
     it("keeps move-only tracked files pending after accepting the last text hunk", async () => {

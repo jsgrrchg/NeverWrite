@@ -38,6 +38,17 @@ const runtimes: AIRuntimeDescriptor[] = [
         modes: [],
         configOptions: [],
     },
+    {
+        runtime: {
+            id: "grok-acp",
+            name: "Grok",
+            description: "Grok runtime",
+            capabilities: [],
+        },
+        models: [],
+        modes: [],
+        configOptions: [],
+    },
 ];
 
 function MultiSessionReviewHarness() {
@@ -418,5 +429,106 @@ describe("multi-session review integration", () => {
                 }),
             ]),
         );
+    });
+
+    it("keeps Grok review tabs and visible buffers isolated from Codex and Kilo sessions", async () => {
+        setVaultEntries([
+            {
+                id: "notes/codex.md",
+                path: "/vault/notes/codex.md",
+                relative_path: "notes/codex.md",
+                title: "codex.md",
+                file_name: "codex.md",
+                extension: "md",
+                kind: "note",
+                modified_at: 0,
+                created_at: 0,
+                size: 10,
+                mime_type: "text/markdown",
+            },
+            {
+                id: "notes/kilo.md",
+                path: "/vault/notes/kilo.md",
+                relative_path: "notes/kilo.md",
+                title: "kilo.md",
+                file_name: "kilo.md",
+                extension: "md",
+                kind: "note",
+                modified_at: 0,
+                created_at: 0,
+                size: 10,
+                mime_type: "text/markdown",
+            },
+            {
+                id: "notes/grok.md",
+                path: "/vault/notes/grok.md",
+                relative_path: "notes/grok.md",
+                title: "grok.md",
+                file_name: "grok.md",
+                extension: "md",
+                kind: "note",
+                modified_at: 0,
+                created_at: 0,
+                size: 10,
+                mime_type: "text/markdown",
+            },
+        ]);
+
+        const codexSession = createSession("session-codex", [
+            createTrackedFile("/vault/notes/codex.md", 10),
+        ]);
+        const kiloSession = createSession(
+            "session-kilo",
+            [createTrackedFile("/vault/notes/kilo.md", 20)],
+            "kilo-acp",
+        );
+        const grokSession = createSession(
+            "session-grok",
+            [createTrackedFile("/vault/notes/grok.md", 30)],
+            "grok-acp",
+        );
+
+        renderComponent(<MultiSessionReviewHarness />);
+
+        await act(async () => {
+            useChatStore.setState((state) => ({
+                ...state,
+                runtimes,
+                activeSessionId: grokSession.sessionId,
+                sessionsById: {
+                    [codexSession.sessionId]: codexSession,
+                    [kiloSession.sessionId]: kiloSession,
+                    [grokSession.sessionId]: grokSession,
+                },
+            }));
+            openReviewTab(codexSession, runtimes);
+            openReviewTab(kiloSession, runtimes);
+            openReviewTab(grokSession, runtimes);
+            setReviewTabActive(grokSession.sessionId);
+        });
+
+        const reviewTabs = useEditorStore
+            .getState()
+            .tabs.filter((tab) => isReviewTab(tab));
+        expect(reviewTabs).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    sessionId: "session-codex",
+                    title: "Review Codex",
+                }),
+                expect.objectContaining({
+                    sessionId: "session-kilo",
+                    title: "Review Kilo",
+                }),
+                expect.objectContaining({
+                    sessionId: "session-grok",
+                    title: "Review Grok",
+                }),
+            ]),
+        );
+
+        expect(screen.getAllByText("grok.md")).toHaveLength(2);
+        expect(screen.queryByText("codex.md")).not.toBeInTheDocument();
+        expect(screen.queryByText("kilo.md")).not.toBeInTheDocument();
     });
 });

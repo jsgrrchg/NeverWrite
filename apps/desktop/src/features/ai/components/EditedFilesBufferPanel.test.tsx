@@ -521,6 +521,51 @@ describe("EditedFilesBufferPanel", () => {
         expect(reviewTab?.title).toBe("Review Kilo");
     });
 
+    it("opens the full review tab with the Grok runtime title", () => {
+        const session = createSession(
+            "session-review-grok",
+            [createTrackedFile("/vault/src/review-grok.ts")],
+            "grok-acp",
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "grok-acp",
+                        name: "Grok",
+                        description: "Grok runtime",
+                        capabilities: [],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            rejectEditedFile: vi.fn(async () => {}),
+            rejectAllEditedFiles: vi.fn(async () => {}),
+            keepAllEditedFiles: vi.fn(),
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+        const reviewTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) =>
+                    isReviewTab(tab) && tab.sessionId === session.sessionId,
+            );
+
+        expect(reviewTab?.title).toBe("Review Grok");
+    });
+
     it("keeps the expanded compact list bounded and row-stable for many pending edits", () => {
         const files = Array.from({ length: 17 }, (_, index) => {
             const lineCount = index + 12;

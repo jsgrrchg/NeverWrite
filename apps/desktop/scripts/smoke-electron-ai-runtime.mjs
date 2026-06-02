@@ -317,6 +317,134 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   return runtimePath;
 }
 
+async function writeFakeGrokAcpRuntime(runtimeDir) {
+  const runtimePath = path.join(
+    runtimeDir,
+    process.platform === "win32" ? "fake-grok-acp.cmd" : "fake-grok-acp",
+  );
+  const script =
+    process.platform === "win32"
+      ? `@echo off\r\nnode "%~dp0\\fake-grok-acp.mjs"\r\n`
+      : `#!/usr/bin/env node\nimport "./fake-grok-acp.mjs";\n`;
+  const modulePath = path.join(runtimeDir, "fake-grok-acp.mjs");
+  await fs.writeFile(runtimePath, script);
+  await fs.writeFile(
+    modulePath,
+    `
+import { createInterface } from "node:readline";
+
+const sessionId = "fake-grok-acp-session";
+let authenticated = false;
+let authenticatedMethod = null;
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
+}
+function result(id, value) {
+  send({ id, result: value });
+}
+function fail(id, message) {
+  send({ id, error: { code: -32000, message } });
+}
+
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    result(message.id, {
+      protocolVersion: 1,
+      agentCapabilities: {},
+      agentInfo: { name: "fake-grok-acp", title: "Fake Grok ACP", version: "0.0.0" },
+      authMethods: [
+        { id: "cached_token", name: "Cached token" },
+        { id: "xai.api_key", name: "xAI API key" }
+      ]
+    });
+    return;
+  }
+  if (message.method === "authenticate") {
+    const methodId = message.params?.methodId;
+    if (methodId !== "cached_token" && methodId !== "xai.api_key") {
+      fail(message.id, "unsupported auth method");
+      return;
+    }
+    authenticated = true;
+    authenticatedMethod = methodId;
+    result(message.id, {});
+    return;
+  }
+  if (message.method === "session/new") {
+    if (!authenticated) {
+      fail(message.id, "authentication required before session/new");
+      return;
+    }
+    result(message.id, {
+      sessionId,
+      models: {
+        currentModelId: "grok-build",
+        availableModels: [
+          { modelId: "grok-composer-2.5-fast", name: "Composer 2.5" },
+          { modelId: "grok-build", name: "Grok Build" }
+        ]
+      }
+    });
+    return;
+  }
+  if (message.method === "session/set_model") {
+    result(message.id, {});
+    return;
+  }
+  if (message.method === "session/prompt") {
+    if (!authenticated) {
+      fail(message.id, "authentication required before session/prompt");
+      return;
+    }
+    send({
+      method: "session/update",
+      params: {
+        sessionId: message.params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "grok-tool-edit-1",
+          title: "Edit Notes/A.md with Grok",
+          kind: "edit",
+          status: "completed",
+          content: [
+            {
+              type: "diff",
+              path: "Notes/A.md",
+              oldText: "# Alpha\\n",
+              newText: "# Alpha from Grok\\n"
+            }
+          ],
+          locations: [{ path: "Notes/A.md" }]
+        }
+      }
+    });
+    send({
+      method: "session/update",
+      params: {
+        sessionId: message.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Fake Grok reply via " + authenticatedMethod }
+        }
+      }
+    });
+    result(message.id, { stopReason: "end_turn" });
+    return;
+  }
+  if (message.method === "session/cancel") return;
+  send({
+    id: message.id,
+    error: { code: -32601, message: "Method not found" }
+  });
+});
+`.trimStart(),
+  );
+  await fs.chmod(runtimePath, 0o755).catch(() => {});
+  return runtimePath;
+}
+
 async function main() {
   await fs.access(sidecarPath).catch(() => {
     throw new Error(
@@ -332,6 +460,7 @@ async function main() {
     path.join(os.tmpdir(), "neverwrite-fake-acp-"),
   );
   const fakeAcpPath = await writeFakeAcpRuntime(runtimeDir);
+  const fakeGrokAcpPath = await writeFakeGrokAcpRuntime(runtimeDir);
   await writeFixtureVault(vaultPath);
   const client = new SidecarClient(sidecarPath, appDataDir);
 
@@ -343,6 +472,7 @@ async function main() {
       "codex-acp",
       "claude-acp",
       "gemini-acp",
+      "grok-acp",
       "kilo-acp",
       "opencode-acp",
     ]) {
@@ -464,6 +594,77 @@ async function main() {
       cursor,
       isAiEvent("ai://message-completed"),
       "real ACP stream completion",
+    );
+
+    const grokSetup = await client.invoke("ai_update_setup", {
+      runtimeId: "grok-acp",
+      input: {
+        custom_binary_path: fakeGrokAcpPath,
+        xai_api_key: { action: "set", value: "smoke-test-xai-key" },
+      },
+    });
+    assert(
+      grokSetup.binary_ready === true && grokSetup.auth_ready === true,
+      "Grok setup should accept a configured fake ACP runtime",
+    );
+
+    cursor = client.eventCursor();
+    const grokSession = await client.invoke("ai_create_session", {
+      input: {
+        runtime_id: "grok-acp",
+        additional_roots: null,
+      },
+      vaultPath,
+    });
+    assert(grokSession.status === "idle", "Grok session should start idle");
+    assert(
+      grokSession.model_id === "grok-build",
+      "Grok session should use ACP model state",
+    );
+    await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://runtime-connection" &&
+        event.payload?.runtime_id === "grok-acp" &&
+        event.payload?.status === "ready",
+      "Grok runtime ready after authenticated session create",
+    );
+
+    cursor = client.eventCursor();
+    await client.invoke("ai_send_message", {
+      sessionId: grokSession.session_id,
+      content: "Edit with Grok.",
+      attachments: [],
+    });
+    const grokToolActivity = await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://tool-activity" &&
+        event.payload?.tool_call_id === "grok-tool-edit-1",
+      "Grok tool activity with reversible file diff",
+    );
+    const [grokFileDiff] = grokToolActivity.payload?.diffs ?? [];
+    assert(grokFileDiff, "Grok tool activity should include file diffs");
+    assert(grokFileDiff.path === "Notes/A.md", "Grok diff path mismatch");
+    assert(grokFileDiff.kind === "update", "Grok diff kind mismatch");
+    assert(grokFileDiff.is_text === true, "Grok diff should be text");
+    assert(grokFileDiff.reversible === true, "Grok diff should be reversible");
+    assert(
+      grokFileDiff.old_text === "# Alpha\n" &&
+        grokFileDiff.new_text === "# Alpha from Grok\n",
+      "Grok diff should preserve old/new text",
+    );
+    await client.waitEventAfter(
+      cursor,
+      (event) =>
+        event.eventName === "ai://message-delta" &&
+        String(event.payload?.delta ?? "").includes("Fake Grok reply via xai.api_key"),
+      "Grok authenticated ACP stream delta",
+    );
+    await client.waitEventAfter(
+      cursor,
+      isAiEvent("ai://message-completed"),
+      "Grok ACP stream completion",
     );
 
     const history = minimalHistory(session.session_id);

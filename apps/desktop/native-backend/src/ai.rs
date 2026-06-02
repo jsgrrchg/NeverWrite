@@ -3034,21 +3034,32 @@ async fn run_acp_auth_handshake(
     spec: &AcpProcessSpec,
     initialize_response: &InitializeResponse,
 ) -> Result<(), agent_client_protocol::Error> {
-    let Some(request) = acp_auth_handshake_request(spec)
+    let Some(request) = validate_acp_auth_handshake_request(spec, initialize_response)
         .map_err(|message| agent_client_protocol::Error::internal_error().data(message))?
     else {
         return Ok(());
     };
 
+    send_acp_authenticate_request(connection, request.method_id, request.meta).await
+}
+
+fn validate_acp_auth_handshake_request(
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<Option<AcpAuthHandshakeRequest>, String> {
+    let Some(request) = acp_auth_handshake_request(spec)? else {
+        return Ok(None);
+    };
+
     if !acp_initialize_response_has_auth_method(initialize_response, request.method_id) {
-        return Err(agent_client_protocol::Error::internal_error().data(format!(
+        return Err(format!(
             "{} ACP runtime did not advertise required auth method '{}'.",
             runtime_name(&spec.runtime_id),
             request.method_id
-        )));
+        ));
     }
 
-    send_acp_authenticate_request(connection, request.method_id, request.meta).await
+    Ok(Some(request))
 }
 
 fn acp_auth_handshake_request(
@@ -7522,6 +7533,66 @@ mod tests {
     }
 
     #[test]
+    fn setup_status_accepts_grok_xai_api_key() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let status = setup_status_for(
+            GROK_RUNTIME_ID,
+            RuntimeSetupState {
+                custom_binary_path: Some(current_exe.display().to_string()),
+                auth_method: Some("xai-api-key".to_string()),
+                auth_ready: true,
+                env,
+                ..RuntimeSetupState::default()
+            },
+        )
+        .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(status.runtime_id, GROK_RUNTIME_ID);
+        assert!(status.binary_ready);
+        assert!(status.auth_ready);
+        assert!(!status.onboarding_required);
+        assert_eq!(status.auth_method.as_deref(), Some("xai-api-key"));
+    }
+
+    #[test]
+    fn inherited_xai_api_key_marks_grok_ready() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let status = setup_status_for(
+            GROK_RUNTIME_ID,
+            RuntimeSetupState {
+                custom_binary_path: Some(current_exe.display().to_string()),
+                ..RuntimeSetupState::default()
+            },
+        )
+        .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert!(status.binary_ready);
+        assert!(status.auth_ready);
+        assert!(!status.onboarding_required);
+        assert_eq!(status.auth_method.as_deref(), Some("xai-api-key"));
+    }
+
+    #[test]
     fn unsupported_native_resume_fails_before_creating_placeholder_session() {
         let (event_tx, _event_rx) = mpsc::channel();
         let native_ai = NativeAi::new(event_tx);
@@ -10058,6 +10129,20 @@ mod tests {
     }
 
     #[test]
+    fn grok_login_auth_store_detects_non_empty_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"{"token":"redacted"}"#).unwrap();
+
+        assert!(active_grok_auth_file_exists(temp.path(), None));
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GROK_RUNTIME_ID, temp.path(), false),
+            Some("grok-login".to_string())
+        );
+    }
+
+    #[test]
     fn ignores_inactive_or_invalid_opencode_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let auth_file = temp
@@ -10163,6 +10248,29 @@ mod tests {
     }
 
     #[test]
+    fn grok_login_respects_auth_invalidated_at_ms() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"{"token":"redacted"}"#).unwrap();
+        let modified_at_ms = fs::metadata(&auth_file)
+            .unwrap()
+            .modified()
+            .ok()
+            .and_then(system_time_epoch_ms)
+            .unwrap();
+
+        assert!(!active_grok_auth_file_exists(
+            temp.path(),
+            Some(modified_at_ms)
+        ));
+        assert!(active_grok_auth_file_exists(
+            temp.path(),
+            Some(modified_at_ms.saturating_sub(1))
+        ));
+    }
+
+    #[test]
     fn inherited_kilo_login_does_not_satisfy_selected_kilo_api_key() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
@@ -10261,6 +10369,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(default_terminal_auth_method(GROK_RUNTIME_ID), "grok-login");
+        assert_eq!(config.args, vec!["login".to_string()]);
+        assert_eq!(config.display_name, "Grok Login");
+    }
+
+    #[test]
+    fn auth_terminal_launch_config_starts_grok_login() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            GROK_RUNTIME_ID,
+            "grok-login",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(config.program, current_exe);
         assert_eq!(config.args, vec!["login".to_string()]);
         assert_eq!(config.display_name, "Grok Login");
     }
@@ -10466,6 +10595,45 @@ mod tests {
             Some("xai-api-key")
         );
         assert!(!status.to_string().contains("xai-test-secret"));
+    }
+
+    #[test]
+    fn grok_xai_api_key_is_secret_keyring_value() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-keyring-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("XAI_API_KEY"));
+        assert!(!encoded.contains("xai-keyring-secret"));
+        assert_eq!(
+            secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"),
+            Some("xai-keyring-secret".to_string())
+        );
     }
 
     #[test]
@@ -11397,6 +11565,67 @@ mod tests {
     }
 
     #[test]
+    fn grok_acp_process_spec_uses_no_auto_update_agent_stdio() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        assert_eq!(spec.program, current_exe);
+        assert_eq!(
+            spec.args,
+            vec![
+                "--no-auto-update".to_string(),
+                "agent".to_string(),
+                "stdio".to_string()
+            ]
+        );
+        assert_eq!(spec.runtime_id, GROK_RUNTIME_ID);
+        assert!(spec.auth_handshake.is_some());
+    }
+
+    #[test]
+    fn grok_auth_handshake_selects_xai_api_key() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map API key auth")
+            .expect("Grok API key auth should request an ACP authenticate call");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(handshake_request.method_id, "xai.api_key");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn acp_process_spec_lets_inherited_xai_api_key_override_stored_secret() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         let previous = std::env::var_os("XAI_API_KEY");
@@ -11430,6 +11659,41 @@ mod tests {
 
     #[test]
     fn acp_auth_handshake_maps_grok_login_to_cached_token() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("grok-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map login auth")
+            .expect("Grok login auth should request an ACP authenticate call");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(handshake_request.method_id, "cached_token");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn grok_auth_handshake_selects_cached_token() {
         let _guard = ENV_TEST_LOCK.lock().unwrap();
         let previous = std::env::var_os("XAI_API_KEY");
         std::env::remove_var("XAI_API_KEY");
@@ -11553,6 +11817,41 @@ mod tests {
             &response,
             "xai.api_key"
         ));
+    }
+
+    #[test]
+    fn grok_auth_handshake_rejects_missing_advertised_method() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
+            agent_client_protocol::schema::AuthMethod::Agent(
+                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
+            ),
+        ]);
+
+        let error = validate_acp_auth_handshake_request(&spec, &response)
+            .expect_err("Missing xai.api_key should be rejected");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert!(error.contains("Grok ACP runtime did not advertise"));
+        assert!(error.contains("xai.api_key"));
     }
 
     #[test]
