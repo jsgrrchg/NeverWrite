@@ -11,11 +11,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
     AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    FileSystemCapabilities, Implementation, InitializeRequest, LoadSessionRequest, LogoutRequest,
-    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
-    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    FileSystemCapabilities, Implementation, InitializeRequest, InitializeResponse,
+    LoadSessionRequest, LogoutRequest, Meta, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
     SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -796,6 +796,21 @@ struct AcpProcessSpec {
     cwd: PathBuf,
     env: HashMap<String, String>,
     runtime_id: String,
+    auth_method: Option<String>,
+    auth_handshake: Option<AcpAuthHandshake>,
+}
+
+#[derive(Debug, Clone)]
+struct AcpAuthHandshake {
+    env_method_id: &'static str,
+    external_method_id: &'static str,
+    meta: Option<Meta>,
+}
+
+#[derive(Debug, Clone)]
+struct AcpAuthHandshakeRequest {
+    method_id: &'static str,
+    meta: Option<Meta>,
 }
 
 #[derive(Debug, Clone)]
@@ -2926,6 +2941,79 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
         .map_err(|_| "AI runtime authentication disconnected before responding.".to_string())?
 }
 
+async fn send_acp_authenticate_request(
+    connection: &ConnectionTo<Agent>,
+    method_id: impl Into<String>,
+    meta: Option<Meta>,
+) -> Result<(), agent_client_protocol::Error> {
+    let mut request = AuthenticateRequest::new(method_id.into());
+    if let Some(meta) = meta {
+        request = request.meta(meta);
+    }
+    connection.send_request(request).block_task().await?;
+    Ok(())
+}
+
+async fn run_acp_auth_handshake(
+    connection: &ConnectionTo<Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<(), agent_client_protocol::Error> {
+    let Some(request) = acp_auth_handshake_request(spec)
+        .map_err(|message| agent_client_protocol::Error::internal_error().data(message))?
+    else {
+        return Ok(());
+    };
+
+    if !acp_initialize_response_has_auth_method(initialize_response, request.method_id) {
+        return Err(agent_client_protocol::Error::internal_error().data(format!(
+            "{} ACP runtime did not advertise required auth method '{}'.",
+            runtime_name(&spec.runtime_id),
+            request.method_id
+        )));
+    }
+
+    send_acp_authenticate_request(connection, request.method_id, request.meta).await
+}
+
+fn acp_auth_handshake_request(
+    spec: &AcpProcessSpec,
+) -> Result<Option<AcpAuthHandshakeRequest>, String> {
+    let Some(handshake) = spec.auth_handshake.as_ref() else {
+        return Ok(None);
+    };
+    let Some(auth_method) = spec.auth_method.as_deref() else {
+        return Ok(None);
+    };
+
+    let method_id = match auth_method {
+        "xai-api-key" => handshake.env_method_id,
+        "grok-login" => handshake.external_method_id,
+        unsupported => {
+            return Err(format!(
+                "{} auth method '{}' cannot be used for the ACP auth handshake.",
+                runtime_name(&spec.runtime_id),
+                unsupported
+            ));
+        }
+    };
+
+    Ok(Some(AcpAuthHandshakeRequest {
+        method_id,
+        meta: handshake.meta.clone(),
+    }))
+}
+
+fn acp_initialize_response_has_auth_method(
+    initialize_response: &InitializeResponse,
+    method_id: &str,
+) -> bool {
+    initialize_response
+        .auth_methods
+        .iter()
+        .any(|method| method.id().0.as_ref() == method_id)
+}
+
 async fn run_acp_auth_inner(
     spec: AcpProcessSpec,
     auth_command: AcpAuthCommand,
@@ -2976,10 +3064,7 @@ async fn run_acp_auth_inner(
                         .await?;
                     match auth_command {
                         AcpAuthCommand::Authenticate(method_id) => {
-                            connection
-                                .send_request(AuthenticateRequest::new(method_id))
-                                .block_task()
-                                .await?;
+                            send_acp_authenticate_request(&connection, method_id, None).await?;
                         }
                         AcpAuthCommand::Logout => {
                             connection
@@ -3117,7 +3202,7 @@ async fn run_acp_actor_inner(
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
             let response = tokio::select! {
                 response = async {
-                    connection
+                    let initialize_response = connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
                                 .client_capabilities(
@@ -3130,6 +3215,7 @@ async fn run_acp_actor_inner(
                         )
                         .block_task()
                         .await?;
+                    run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
                     emit_event(
                         &event_tx_for_connection,
                         AI_RUNTIME_CONNECTION_EVENT,
@@ -4546,13 +4632,45 @@ fn acp_process_spec(
         env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
             .or_default();
     }
+    let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
     Ok(AcpProcessSpec {
         program,
         args: resolved.args,
         cwd,
         env,
         runtime_id: runtime_id.to_string(),
+        auth_method,
+        auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
     })
+}
+
+fn effective_auth_method_for_acp_process_spec(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+) -> Option<String> {
+    let inherited_auth_method = inherited_auth_method_for_setup(runtime_id, setup)
+        .filter(|method| inherited_auth_method_applies_to_setup(setup, method));
+    if let Some(selected_method) = setup.auth_method.as_deref() {
+        if is_persistable_external_auth_method(runtime_id, selected_method) && !setup.auth_ready {
+            return inherited_auth_method.or_else(|| setup.auth_method.clone());
+        }
+    }
+    setup.auth_method.clone().or(inherited_auth_method)
+}
+
+fn acp_auth_handshake_for_runtime(runtime_id: &str) -> Option<AcpAuthHandshake> {
+    if runtime_id == GROK_RUNTIME_ID {
+        return Some(AcpAuthHandshake {
+            env_method_id: "xai.api_key",
+            external_method_id: "cached_token",
+            meta: Some(grok_acp_auth_meta()),
+        });
+    }
+    None
+}
+
+fn grok_acp_auth_meta() -> Meta {
+    Meta::from_iter([("headless".to_string(), json!(true))])
 }
 
 #[derive(Debug)]
@@ -10727,6 +10845,21 @@ mod tests {
             spec.env.get("XAI_API_KEY").map(String::as_str),
             Some("xai-test-secret")
         );
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map API key auth")
+            .expect("Grok API key auth should request an ACP authenticate call");
+
+        assert_eq!(handshake_request.method_id, "xai.api_key");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -10753,11 +10886,130 @@ mod tests {
             Some("xai-api-key".to_string())
         );
         assert_eq!(spec.env.get("XAI_API_KEY"), None);
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
 
         match previous {
             Some(value) => std::env::set_var("XAI_API_KEY", value),
             None => std::env::remove_var("XAI_API_KEY"),
         }
+    }
+
+    #[test]
+    fn acp_auth_handshake_maps_grok_login_to_cached_token() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("grok-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map login auth")
+            .expect("Grok login auth should request an ACP authenticate call");
+
+        assert_eq!(handshake_request.method_id, "cached_token");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn acp_auth_handshake_uses_inherited_xai_key_when_grok_login_is_unverified() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("grok-login".to_string()),
+            auth_ready: false,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map inherited API key auth")
+            .expect("Inherited xAI API key should request an ACP authenticate call");
+
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+        assert_eq!(handshake_request.method_id, "xai.api_key");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_auth_handshake_is_grok_only_and_requires_selected_auth() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let grok_setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            suppress_persisted_auth: true,
+            ..RuntimeSetupState::default()
+        };
+        let grok_spec = acp_process_spec(
+            GROK_RUNTIME_ID,
+            &grok_setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("Grok ACP process spec should resolve");
+
+        assert!(acp_auth_handshake_request(&grok_spec)
+            .expect("Missing selected auth should not fail")
+            .is_none());
+
+        let codex_setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("codex-api-key".to_string()),
+            ..RuntimeSetupState::default()
+        };
+        let codex_spec = acp_process_spec(
+            CODEX_RUNTIME_ID,
+            &codex_setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("Codex ACP process spec should resolve");
+
+        assert!(acp_auth_handshake_request(&codex_spec)
+            .expect("Non-Grok runtime should not need a handshake")
+            .is_none());
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_initialize_response_auth_method_validation_matches_acp_ids() {
+        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
+            agent_client_protocol::schema::AuthMethod::Agent(
+                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
+            ),
+        ]);
+
+        assert!(acp_initialize_response_has_auth_method(
+            &response,
+            "cached_token"
+        ));
+        assert!(!acp_initialize_response_has_auth_method(
+            &response,
+            "xai.api_key"
+        ));
     }
 
     #[test]
