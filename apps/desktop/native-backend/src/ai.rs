@@ -1648,7 +1648,7 @@ impl NativeAi {
         pending.auth_method = Some(method_id.to_string());
         pending.auth_ready = false;
         pending.suppress_persisted_auth = false;
-        if runtime_id != OPENCODE_RUNTIME_ID {
+        if !is_invalidation_tracked_external_auth_runtime(runtime_id) {
             pending.auth_invalidated_at_ms = None;
         }
         pending.message = None;
@@ -4408,7 +4408,7 @@ fn setup_status_for_with_inherited_auth(
     };
     let inherited_auth_method = inherited_auth_method
         .filter(|method| inherited_auth_method_applies_to_setup(&setup, method));
-    let auth_ready = setup.auth_ready || inherited_auth_method.is_some();
+    let auth_ready = binary_ready && (setup.auth_ready || inherited_auth_method.is_some());
     let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
         setup.message
@@ -4722,6 +4722,7 @@ fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
     match runtime_id {
         CLAUDE_RUNTIME_ID => default_claude_terminal_auth_method(),
         GEMINI_RUNTIME_ID => "login_with_google",
+        GROK_RUNTIME_ID => "grok-login",
         KILO_RUNTIME_ID => "kilo-login",
         OPENCODE_RUNTIME_ID => "opencode-login",
         _ => "terminal-login",
@@ -4781,6 +4782,10 @@ fn auth_terminal_launch_config(
                 gemini_cli_auth_type(method_id).to_string(),
             );
             "Gemini Login".to_string()
+        }
+        (GROK_RUNTIME_ID, "grok-login") => {
+            args.push("login".to_string());
+            "Grok Login".to_string()
         }
         (KILO_RUNTIME_ID, "kilo-login") => {
             args.extend(["auth".to_string(), "login".to_string()]);
@@ -5090,6 +5095,9 @@ fn persisted_cli_auth_method_for_home_with_invalidated_at(
         KILO_RUNTIME_ID if non_empty_file_exists_any(kilo_auth_file_candidates(home)) => {
             Some("kilo-login".to_string())
         }
+        GROK_RUNTIME_ID if active_grok_auth_file_exists(home, auth_invalidated_at_ms) => {
+            Some("grok-login".to_string())
+        }
         OPENCODE_RUNTIME_ID if active_opencode_auth_file_exists(home, auth_invalidated_at_ms) => {
             Some("opencode-login".to_string())
         }
@@ -5144,6 +5152,14 @@ fn opencode_env_auth_present() -> bool {
         .any(|key| env_secret_present(key))
 }
 
+fn grok_auth_file_path(home: &Path) -> PathBuf {
+    home.join(".grok").join("auth.json")
+}
+
+fn active_grok_auth_file_exists(home: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
+    timestamped_non_empty_file_is_active(&grok_auth_file_path(home), auth_invalidated_at_ms)
+}
+
 fn opencode_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
@@ -5180,6 +5196,22 @@ fn active_opencode_auth_file_exists(home: &Path, auth_invalidated_at_ms: Option<
         .any(|path| opencode_auth_file_is_active(&path, auth_invalidated_at_ms))
 }
 
+fn timestamped_non_empty_file_is_active(path: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
+        _ => return false,
+    };
+    if let Some(invalidated_at_ms) = auth_invalidated_at_ms {
+        let Some(modified_at_ms) = metadata.modified().ok().and_then(system_time_epoch_ms) else {
+            return false;
+        };
+        if modified_at_ms <= invalidated_at_ms {
+            return false;
+        }
+    }
+    true
+}
+
 fn opencode_auth_file_status(path: &Path) -> &'static str {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => metadata,
@@ -5200,17 +5232,8 @@ fn opencode_auth_file_status(path: &Path) -> &'static str {
 }
 
 fn opencode_auth_file_is_active(path: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
-        _ => return false,
-    };
-    if let Some(invalidated_at_ms) = auth_invalidated_at_ms {
-        let Some(modified_at_ms) = metadata.modified().ok().and_then(system_time_epoch_ms) else {
-            return false;
-        };
-        if modified_at_ms <= invalidated_at_ms {
-            return false;
-        }
+    if !timestamped_non_empty_file_is_active(path, auth_invalidated_at_ms) {
+        return false;
     }
 
     match std::fs::read_to_string(path)
@@ -5293,8 +5316,12 @@ fn should_persist_auth_method(
 fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
     matches!(
         (runtime_id, method_id),
-        (OPENCODE_RUNTIME_ID, "opencode-login")
+        (GROK_RUNTIME_ID, "grok-login") | (OPENCODE_RUNTIME_ID, "opencode-login")
     )
+}
+
+fn is_invalidation_tracked_external_auth_runtime(runtime_id: &str) -> bool {
+    matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID)
 }
 
 fn is_local_auth_method(method_id: &str) -> bool {
@@ -5386,7 +5413,8 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     setup.auth_ready = false;
     setup.auth_method = None;
     setup.suppress_persisted_auth = true;
-    setup.auth_invalidated_at_ms = (runtime_id == OPENCODE_RUNTIME_ID).then(current_epoch_ms);
+    setup.auth_invalidated_at_ms =
+        is_invalidation_tracked_external_auth_runtime(runtime_id).then(current_epoch_ms);
     setup.has_gateway_config = false;
     setup.has_gateway_url = false;
     setup.message = None;
@@ -8127,6 +8155,40 @@ mod tests {
     }
 
     #[test]
+    fn logout_marks_grok_external_auth_invalidated() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+
+        ai.update_setup(&json!({
+            "runtimeId": GROK_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": temp.path().join("missing-grok"),
+            }
+        }))
+        .expect("setup should update");
+
+        let status = ai
+            .logout(&json!({
+                "runtimeId": GROK_RUNTIME_ID,
+                "vaultPath": temp.path()
+            }))
+            .expect("logout should clear local setup");
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+        let state = ai.inner.lock().unwrap();
+        let setup = state
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should remain in memory");
+        assert!(setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
     fn logout_does_not_require_acp_for_codex_api_keys() {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
@@ -9543,6 +9605,23 @@ mod tests {
     }
 
     #[test]
+    fn detects_active_persisted_grok_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(
+            &auth_file,
+            r#"{"https://accounts.x.ai/sign-in":{"key":"redacted"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GROK_RUNTIME_ID, temp.path(), false),
+            Some("grok-login".to_string())
+        );
+    }
+
+    #[test]
     fn ignores_inactive_or_invalid_opencode_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let auth_file = temp
@@ -9561,6 +9640,19 @@ mod tests {
                 "{raw:?} should not count as active OpenCode auth"
             );
         }
+    }
+
+    #[test]
+    fn ignores_empty_persisted_grok_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, "").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GROK_RUNTIME_ID, temp.path(), false),
+            None
+        );
     }
 
     #[test]
@@ -9598,6 +9690,39 @@ mod tests {
                 Some(modified_at_ms.saturating_sub(1)),
             ),
             Some("opencode-login".to_string())
+        );
+    }
+
+    #[test]
+    fn grok_auth_invalidation_blocks_stale_auth_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"{"token":"redacted"}"#).unwrap();
+        let modified_at_ms = fs::metadata(&auth_file)
+            .unwrap()
+            .modified()
+            .ok()
+            .and_then(system_time_epoch_ms)
+            .unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home_with_invalidated_at(
+                GROK_RUNTIME_ID,
+                temp.path(),
+                false,
+                Some(modified_at_ms),
+            ),
+            None
+        );
+        assert_eq!(
+            persisted_cli_auth_method_for_home_with_invalidated_at(
+                GROK_RUNTIME_ID,
+                temp.path(),
+                false,
+                Some(modified_at_ms.saturating_sub(1)),
+            ),
+            Some("grok-login".to_string())
         );
     }
 
@@ -9681,6 +9806,27 @@ mod tests {
 
         assert_eq!(config.args, vec!["auth".to_string(), "login".to_string()]);
         assert_eq!(config.display_name, "OpenCode Login");
+    }
+
+    #[test]
+    fn auth_terminal_launch_config_uses_grok_login_command() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            GROK_RUNTIME_ID,
+            "grok-login",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(default_terminal_auth_method(GROK_RUNTIME_ID), "grok-login");
+        assert_eq!(config.args, vec!["login".to_string()]);
+        assert_eq!(config.display_name, "Grok Login");
     }
 
     #[test]
@@ -9842,11 +9988,13 @@ mod tests {
         let store_path = temp.path().join("runtime-setup.json");
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
 
         let status = native_ai
             .update_setup(&json!({
                 "runtime_id": GROK_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": current_exe,
                     "xai_api_key": {
                         "action": "set",
                         "value": "xai-test-secret",
@@ -9916,6 +10064,37 @@ mod tests {
     }
 
     #[test]
+    fn grok_login_selection_persists_without_local_secret() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let store = RuntimeSetupStore::with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let mut setup = HashMap::new();
+        setup.insert(
+            GROK_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("grok-login".to_string()),
+                auth_invalidated_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+
+        store.save(&setup).unwrap();
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("grok-login"));
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+
+        let loaded = store.load().unwrap();
+        let grok = loaded
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should reload");
+        assert_eq!(grok.auth_method.as_deref(), Some("grok-login"));
+        assert_eq!(grok.auth_invalidated_at_ms, Some(123));
+    }
+
+    #[test]
     fn opencode_pending_terminal_auth_preserves_disconnect_invalidation_until_verified() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -9963,6 +10142,57 @@ mod tests {
             .get(OPENCODE_RUNTIME_ID)
             .expect("OpenCode setup should persist verified method");
         assert_eq!(verified.auth_method.as_deref(), Some("opencode-login"));
+        assert_eq!(verified.auth_invalidated_at_ms, None);
+    }
+
+    #[test]
+    fn grok_pending_terminal_auth_preserves_disconnect_invalidation_until_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+
+        native_ai
+            .persist_auth_terminal_pending_setup(
+                GROK_RUNTIME_ID,
+                "grok-login",
+                RuntimeSetupState {
+                    auth_invalidated_at_ms: Some(123),
+                    suppress_persisted_auth: true,
+                    ..RuntimeSetupState::default()
+                },
+            )
+            .unwrap();
+
+        let grok = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should be pending");
+        assert_eq!(grok.auth_method.as_deref(), Some("grok-login"));
+        assert!(!grok.auth_ready);
+        assert_eq!(grok.auth_invalidated_at_ms, Some(123));
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+
+        mark_runtime_auth_verified(
+            &native_ai.inner,
+            Some(&native_ai.setup_store),
+            GROK_RUNTIME_ID,
+            "grok-login",
+        );
+
+        let loaded = native_ai.setup_store.load().unwrap();
+        let verified = loaded
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should persist verified method");
+        assert_eq!(verified.auth_method.as_deref(), Some("grok-login"));
         assert_eq!(verified.auth_invalidated_at_ms, None);
     }
 
@@ -10336,7 +10566,10 @@ mod tests {
             .logout(&json!({ "runtime_id": GROK_RUNTIME_ID }))
             .unwrap();
 
-        assert!(!store_path.exists());
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+        assert!(!encoded.contains("xai-test-secret"));
+        assert!(!encoded.contains("XAI_API_KEY"));
         assert_eq!(
             secrets
                 .get_secret(GROK_RUNTIME_ID, "XAI_API_KEY")
@@ -10351,6 +10584,7 @@ mod tests {
         assert!(!grok_setup.env.contains_key("XAI_API_KEY"));
         assert_eq!(grok_setup.auth_method, None);
         assert!(!grok_setup.auth_ready);
+        assert!(grok_setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]

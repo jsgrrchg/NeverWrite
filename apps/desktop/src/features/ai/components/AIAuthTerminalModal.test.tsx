@@ -162,6 +162,46 @@ describe("AIAuthTerminalModal", () => {
         });
     });
 
+    it("recognizes Grok terminal auth success output", async () => {
+        const snapshot = {
+            sessionId: "authterm-grok",
+            runtimeId: "grok-acp",
+            program: "grok",
+            displayName: "Grok sign-in",
+            cwd: "/vault",
+            cols: 100,
+            rows: 28,
+            buffer: "Grok login successful",
+            status: "exited",
+            exitCode: 0,
+            errorMessage: null,
+        };
+        apiMocks.aiStartAuthTerminalSession.mockResolvedValue(snapshot);
+        apiMocks.aiResizeAuthTerminalSession.mockResolvedValue(
+            snapshot as never,
+        );
+
+        renderComponent(
+            <AIAuthTerminalModal
+                open
+                runtimeId="grok-acp"
+                runtimeName="Grok"
+                vaultPath="/vault"
+                onClose={vi.fn()}
+                onRefreshSetup={vi.fn(async () => undefined)}
+            />,
+        );
+
+        await waitFor(() => {
+            expect(screen.getByText("Grok sign-in succeeded")).toBeInTheDocument();
+            expect(
+                screen.getByText(
+                    /Sign-in completed\. You can close this dialog/,
+                ),
+            ).toBeInTheDocument();
+        });
+    });
+
     it("cleans up listeners that resolve after the modal unmounts", async () => {
         const startedDeferred = createDeferred<Mock>();
         const outputDeferred = createDeferred<Mock>();

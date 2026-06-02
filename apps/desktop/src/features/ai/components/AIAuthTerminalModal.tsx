@@ -69,7 +69,7 @@ function authTerminalOutputIndicatesSuccess(runtimeId: string, output: string) {
         );
     }
 
-    if (runtimeId === "opencode-acp") {
+    if (runtimeId === "grok-acp" || runtimeId === "opencode-acp") {
         const normalized = output.toLowerCase();
         return (
             normalized.includes("authentication successful") ||

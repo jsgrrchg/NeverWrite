@@ -15,6 +15,9 @@ describe("authMethods", () => {
                 "login_with_google",
             ),
         ).toBe(true);
+        expect(isIntegratedTerminalAuthMethod("grok-acp", "grok-login")).toBe(
+            true,
+        );
         expect(isIntegratedTerminalAuthMethod("kilo-acp", "kilo-login")).toBe(
             true,
         );
@@ -31,6 +34,9 @@ describe("authMethods", () => {
             isIntegratedTerminalAuthMethod("gemini-acp", "kilo-login"),
         ).toBe(false);
         expect(
+            isIntegratedTerminalAuthMethod("grok-acp", "xai-api-key"),
+        ).toBe(false);
+        expect(
             isIntegratedTerminalAuthMethod("codex-acp", "kilo-login"),
         ).toBe(false);
         expect(
@@ -43,6 +49,7 @@ describe("authMethods", () => {
         expect(isIntegratedTerminalAuthMethodId("login_with_google")).toBe(
             true,
         );
+        expect(isIntegratedTerminalAuthMethodId("grok-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("kilo-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("opencode-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("openai-api-key")).toBe(false);

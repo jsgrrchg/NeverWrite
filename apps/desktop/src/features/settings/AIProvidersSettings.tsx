@@ -86,6 +86,7 @@ function getShortMethodDesc(id: string): string {
         case "claude-ai-login":
         case "console-login":
         case "claude-login":
+        case "grok-login":
         case "kilo-login":
         case OPENCODE_AUTH_METHOD_ID:
             return "Terminal sign-in";
@@ -122,6 +123,8 @@ function getAuthHelpText(id: string): string {
             return "Opens a sign-in terminal for Anthropic Console inside the app.";
         case "claude-login":
             return "Opens a sign-in terminal inside the app.";
+        case "grok-login":
+            return "Opens a Grok sign-in terminal inside the app.";
         case "kilo-login":
             return "Opens a Kilo sign-in terminal inside the app.";
         case OPENCODE_AUTH_METHOD_ID:
@@ -167,6 +170,7 @@ function getActionLabel(
     if (methodId === "chatgpt") return "Continue with ChatGPT";
     if (isClaudeTerminalAuthMethodId(methodId)) return "Open sign-in terminal";
     if (methodId === "login_with_google") return "Open sign-in terminal";
+    if (methodId === "grok-login") return "Open sign-in terminal";
     if (methodId === "kilo-login") return "Open sign-in terminal";
     if (methodId === OPENCODE_AUTH_METHOD_ID) return "Open sign-in terminal";
     if (isApiKeyMethod(methodId)) {
