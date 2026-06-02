@@ -202,10 +202,10 @@ Settings / AI chat UI
   -> chat store, review UI, transcript persistence
 ```
 
-The backend currently supports Codex, Claude, Gemini, Kilo, and OpenCode runtime
-IDs. Codex and Claude have vendored release inputs under `vendor/`; Gemini, Kilo,
-and OpenCode are integrated as external runtimes that must be found on `PATH` or
-configured by override.
+The backend currently supports Codex, Claude, Gemini, Grok, Kilo, and OpenCode
+runtime IDs. Codex and Claude have vendored release inputs under `vendor/`;
+Gemini, Grok, Kilo, and OpenCode are integrated as external runtimes that must
+be found on `PATH` or configured by override.
 
 ACP session notifications are normalized into renderer events for assistant
 message deltas, thinking deltas, tool activity, file diffs, permission requests,

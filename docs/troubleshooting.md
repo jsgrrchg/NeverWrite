@@ -139,6 +139,7 @@ For local troubleshooting, the most useful overrides are:
 NEVERWRITE_CODEX_ACP_BIN
 NEVERWRITE_CLAUDE_ACP_BIN
 NEVERWRITE_GEMINI_ACP_BIN
+NEVERWRITE_GROK_ACP_BIN
 NEVERWRITE_KILO_ACP_BIN
 NEVERWRITE_OPENCODE_ACP_BIN
 ```
@@ -148,8 +149,8 @@ Important packaging expectations:
 - Codex is intended to be bundled as a sidecar runtime in release builds.
 - Claude is intended to be bundled through embedded Node plus vendored runtime
   files.
-- Gemini, Kilo, and OpenCode are integrated but not bundled by default, so they
-  need an external CLI or explicit binary override.
+- Gemini, Grok, Kilo, and OpenCode are integrated but not bundled by default, so
+  they need an external CLI or explicit binary override.
 
 If a provider works in your terminal but not in the app:
 
@@ -165,10 +166,12 @@ Secure credential storage is unavailable. Reconnect this AI provider or configur
 
 For terminal auth issues:
 
-- Integrated terminal auth applies to Claude, Gemini, Kilo, and OpenCode. Codex
-  ChatGPT auth does not use the integrated auth terminal.
-- Confirm the terminal process exits successfully. For Gemini and OpenCode,
-  successful auth output can mark the provider verified before exit.
+- Integrated terminal auth applies to Claude, Gemini, Grok, Kilo, and OpenCode.
+  Codex ChatGPT auth does not use the integrated auth terminal.
+- Confirm the terminal process exits successfully. For Gemini, Grok, and
+  OpenCode, successful auth output can mark the provider verified before exit.
+- For Grok, verify `grok login`, `XAI_API_KEY`, or active CLI auth under
+  `~/.grok/`, currently `~/.grok/auth.json`.
 - If the auth terminal cannot start, check whether the configured runtime command
   exists and whether the requested working directory exists.
 - Reopen Diagnostics after auth; setup status is the source of truth.
