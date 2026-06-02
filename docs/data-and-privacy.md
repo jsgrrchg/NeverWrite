@@ -224,7 +224,7 @@ Secret account names are runtime/key pairs such as `codex:OPENAI_API_KEY` or
 `claude:ANTHROPIC_API_KEY`. Supported secret env keys include `CODEX_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
 `ANTHROPIC_CUSTOM_HEADERS`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and
-`KILO_API_KEY`.
+`KILO_API_KEY`, and `OPENCODE_API_KEY`.
 
 Do not share `runtime-setup.json` without reviewing it: even when secret values
 are not stored there, it can reveal private endpoint URLs, local binary paths,
@@ -352,4 +352,4 @@ the contents.
 - Third-party AI runtime CLIs can store their own auth state outside NeverWrite.
   Check that provider's documentation before sharing provider config folders.
 
-Last updated: May 11, 2026.
+Last updated: June 1, 2026.

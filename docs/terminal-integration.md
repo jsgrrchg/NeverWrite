@@ -1,272 +1,142 @@
-# Terminal: First-Class Integration Plan
+# Terminal Architecture
 
-Related issue: [jsgrrchg/NeverWrite#107](https://github.com/jsgrrchg/NeverWrite/issues/107)
+The terminal is a first-class workspace surface. It is available from workspace
+commands and tab menus without requiring Developer Mode, and terminal tabs
+participate in pane layout, tab persistence, and workspace restore.
 
-## Background
+This page documents the current architecture. Older implementation plans used
+`features/devtools/terminal`; the terminal UI now lives under
+[`apps/desktop/src/features/terminal`](../apps/desktop/src/features/terminal).
+The `devtools_*` command names and `devtools://terminal-*` event names remain
+part of the IPC protocol and should not be renamed just because the renderer
+folder moved.
 
-The terminal is now a first-class workspace surface. It is available from workspace commands and tab menus without requiring Developer Mode.
+## Runtime Boundary
 
-**The PTY backend is a Rust sidecar** (`apps/desktop/native-backend/src/devtools.rs`) using `portable-pty`, spawned and managed by `nativeBackend.ts` over JSON-line stdio. There is no node-pty. This matters for Step 6: any change to env vars or spawn options crosses a language boundary and requires the sidecar binary to be rebuilt and repackaged. `TERM=xterm-256color` is already set at `devtools.rs:345`. `COLORTERM=truecolor` is not.
+The PTY backend is the Rust sidecar in
+[`apps/desktop/native-backend/src/devtools.rs`](../apps/desktop/native-backend/src/devtools.rs).
+It uses `portable-pty`, not `node-pty`, and is reached through the Electron main
+process allowlist in
+[`nativeBackend.ts`](../apps/desktop/src-electron/main/nativeBackend.ts).
 
-The IPC struct is `DevTerminalCreateInput` (Rust, `devtools.rs:55`), currently with only `cwd`, `cols`, `rows`. Adding env var passthrough requires extending this struct in Rust and the corresponding TypeScript call sites.
+Terminal session creation flows through:
 
-The rendering layer (xterm.js v6 in `TerminalViewport.tsx`) is sound but has three gaps: font is hardcoded, the ANSI color palette is only partially wired to theme tokens, and `COLORTERM` is missing from the PTY environment.
-
-There is no viable drop-in replacement for xterm.js today. The most promising future alternative — libghostty-vt (Ghostty's VT parser as a C/WASM library) — is alpha with no usable web bindings yet. We stay on xterm.js and improve the integration.
-
-## Goals
-
-1. Terminal is a first-class workspace feature, usable without enabling Developer Mode.
-2. Font family and font size are user-configurable in Settings.
-3. The terminal looks like it belongs in the app — full ANSI palette from theme tokens.
-4. Claude Code runs correctly inside the terminal without user-side workarounds.
-5. Terminal code lives in a coherent location, not split across `features/terminal/` and `features/devtools/terminal/`.
-
-## Non-goals
-
-- PTY architecture changes (utilityProcess migration, flow control). The sidecar approach is fine.
-- Bundling fonts. Users provide their own.
-- Enumerating system fonts in the UI. No clean cross-platform API without native modules.
-- xterm.js WebGL renderer upgrade. Separate concern, not blocking.
-
----
-
-## Step 1 — Keep the terminal ungated
-
-**Files:** `src/App.tsx:921-943`, `src/features/editor/newTabMenuActions.ts:85-147`, `src/features/editor/EditorPaneBar.tsx`
-
-The "New Terminal" action should stay available from the workspace command palette entry and every pane's `+` menu unconditionally.
-
-Do not add a Developer Mode setting that promises to enable or disable terminal tabs. Terminal availability is not user-gated anymore.
-
-Restart remains a recovery action for active terminal tabs and should not depend on Developer Mode.
-
-**Also do:**
-- Keep the command id as `workspace:new-terminal-tab` and the category as `"Workspace"` — "first-class" means it shows up in the right palette group.
-- Assign a keyboard shortcut. Check for collisions in the existing shortcut registry.
-
-**Do this step last** — only ungate once the full experience (Steps 2–7) is ready.
-
----
-
-## Step 2 — Add terminal settings to the store
-
-**File:** `src/app/store/settingsStore.ts`
-
-Add to the settings interface and default object:
-
-```ts
-terminalFontFamily: string   // default: ""
-terminalFontSize: number     // default: 13
-claudeCodeOptimized: boolean // default: false
+```text
+Terminal tab / runtime store
+  -> invoke("devtools_create_terminal_session")
+  -> Electron main native backend bridge
+  -> Rust devtools PTY session
+  -> devtools://terminal-* events
+  -> terminal runtime store
+  -> TerminalViewport / xterm.js
 ```
 
-The existing persistence merge pattern at `settingsStore.ts:388-393` handles new fields via `?? defaults.X` — follow the same pattern. Empty `terminalFontFamily` means "use the built-in fallback stack" everywhere it's read; never pass an empty string to xterm.js.
+The Rust create input accepts `cwd`, `cols`, `rows`, and `extraEnv`. The sidecar
+sets `TERM=xterm-256color` and `COLORTERM=truecolor`, then applies `extraEnv`.
+Settings currently use that path to add `CLAUDE_CODE_NO_FLICKER=1` for newly
+opened Claude Code terminals when fullscreen rendering is enabled.
 
----
+Any change to PTY spawn behavior crosses the TypeScript/Rust boundary and
+requires rebuilding and repackaging the native sidecar.
 
-## Step 3 — Expose settings in a Terminal section
+## Renderer Pieces
 
-**File:** `src/features/settings/SettingsPanel.tsx`
+The main renderer files are:
 
-`Category` is a tagged union (`SettingsPanel.tsx:3570-3580`) with a matching `CATEGORIES` array and a render switch (~`4497+`). Adding "Terminal" means:
+- [`WorkspaceTerminalHost.tsx`](../apps/desktop/src/features/terminal/WorkspaceTerminalHost.tsx):
+  subscribes to sidecar terminal events and feeds them into the runtime store.
+- [`WorkspaceTerminalView.tsx`](../apps/desktop/src/features/terminal/WorkspaceTerminalView.tsx):
+  mounts the active terminal viewport for a workspace tab.
+- [`TerminalViewport.tsx`](../apps/desktop/src/features/terminal/TerminalViewport.tsx):
+  owns the xterm.js instance, search UI, dictation overlay, WebGL renderer, fit
+  behavior, copy/paste context menu, and replay snapshot capture.
+- [`terminalRuntimeStore.ts`](../apps/desktop/src/features/terminal/terminalRuntimeStore.ts):
+  owns live terminal runtime state and pipes PTY output directly to viewport
+  subscribers instead of storing every chunk in React state.
+- [`useTerminalTabs.ts`](../apps/desktop/src/features/terminal/useTerminalTabs.ts):
+  reads the legacy standalone terminal workspace format used by the migration
+  path.
+- [`claudeCodeTerminal.ts`](../apps/desktop/src/features/terminal/claudeCodeTerminal.ts):
+  launches Claude Code inside a terminal tab, injects safe startup arguments,
+  and registers the terminal as an agent-sidebar entry.
 
-1. Extend the union with `"terminal"`.
-2. Add an entry to `CATEGORIES` (needs an icon — pick from the existing icon set).
-3. Create a `<TerminalSettings>` component.
-4. Add `case "terminal"` in the render switch.
+Output is streamed to xterm through transient output commands. React state tracks
+session metadata, busy/error state, and whether output exists, but the terminal
+viewport is the source of truth for screen content. Reattach/reload support uses
+serialized xterm replay snapshots rather than rebuilding screen content from a
+large React string.
 
-Section contents:
-- **Font family** — text input. Placeholder: `"JetBrainsMono Nerd Font"`. Hint: "Font must be installed on this system."
-- **Font size** — number input, range 8–24. Check whether a number input control already exists in the settings component library before building a new one.
-- **Optimize for Claude Code** — toggle. Label: "Fullscreen rendering (experimental)". Hint: "Sets CLAUDE_CODE_NO_FLICKER=1. Improves rendering but disables scrollback. Only applies to new terminals." Wired to `claudeCodeOptimized`.
+## Settings And Persistence
 
-Do not reintroduce a Developer settings toggle for terminal availability. Terminal tabs are always part of the workspace.
+Terminal settings are stored with the vault-scoped Settings store:
 
----
+- `terminalFontFamily`
+- `terminalFontSize`
+- `claudeCodeOptimized`
+- `claudeCodeSkipPermissions`
+- `claudeCodeModel`
+- `claudeCodeContinueSession`
+- `claudeCodeMaxTurns`
 
-## Step 4 — Font loading in TerminalViewport
+See [Settings Scope](./settings-scope.md) for the full storage matrix.
 
-**Files:** `src/features/devtools/terminal/terminalTheme.ts`, `src/features/devtools/terminal/TerminalViewport.tsx`
+First-class workspace terminal tabs are persisted with the editor session under
+`neverwrite.session.tabs:<vault-path>`. The older standalone terminal workspace
+key, `neverwrite.devtools.terminal.tabs:<vault-path>`, is still read by the
+legacy migration path and keeps its `devtools` prefix for compatibility with
+existing user data. Replay snapshots are stored per terminal id under
+`neverwrite.terminal.replay:<terminal-id>` and are cache/state, not a user-facing
+setting.
 
-### terminalTheme.ts
+## Claude Code Integration
 
-`getTerminalTheme` currently returns a hardcoded font stack. Accept settings values:
+Claude Code is represented in two ways:
 
-```ts
-export function getTerminalTheme(
-  element: HTMLElement | null,
-  opts?: { fontFamily?: string; fontSize?: number }
-): TerminalTheme {
-  const fallback = '"SFMono-Regular", "Cascadia Code", "JetBrains Mono", Menlo, Monaco, Consolas, monospace';
-  return {
-    // ...
-    fontFamily: opts?.fontFamily?.trim() || fallback,
-    fontSize: opts?.fontSize ?? 13,
-  };
-}
+- As an integrated terminal command launched by
+  [`claudeCodeTerminal.ts`](../apps/desktop/src/features/terminal/claudeCodeTerminal.ts).
+- As a lightweight, non-persisted agent-sidebar entry managed by
+  [`claudeTerminalAgentSession.ts`](../apps/desktop/src/features/ai/claudeTerminalAgentSession.ts).
+
+When a Claude Code terminal is opened from file-tree or agent context,
+NeverWrite:
+
+1. Opens a terminal tab in the requested pane.
+2. Waits for the PTY to reach `running`.
+3. Optionally changes directory to the selected vault folder.
+4. Starts `claude` with sanitized settings-derived arguments.
+5. Registers the terminal in the Agents sidebar.
+6. Polls Claude Code transcript files, when a pinned session id is available, to
+   update the sidebar title, preview, and terminal tab title.
+
+`--continue` sessions cannot be pinned to a known transcript id up front, so
+transcript-derived title/preview are intentionally disabled in that mode rather
+than guessed from another terminal's JSONL.
+
+Claude Code prompt prefill still uses a fixed TUI settle delay before injecting
+`@` mentions. That delay is a best-effort heuristic; a future improvement should
+detect a stable ready marker from terminal output or use an upstream CLI flag if
+Claude Code exposes one.
+
+## Validation
+
+For terminal UI and runtime changes, start with targeted Vitest coverage:
+
+```bash
+cd apps/desktop
+npm test -- src/features/terminal src/features/ai/claudeTerminalAgentSession.test.ts
 ```
 
-### TerminalViewport.tsx
+When native commands or PTY behavior change, rebuild the sidecar and run the
+Electron smoke tests:
 
-Before calling `terminal.open(containerEl)`, load the font if one is configured:
-
-```ts
-const { terminalFontFamily, terminalFontSize } = useSettingsStore.getState();
-const fontFamily = terminalFontFamily.trim();
-
-if (fontFamily) {
-  try {
-    await Promise.all([
-      document.fonts.load(`normal ${terminalFontSize}px "${fontFamily}"`),
-      document.fonts.load(`bold ${terminalFontSize}px "${fontFamily}"`),
-    ]);
-    // document.fonts.load() resolves even when the font is absent.
-    // Check that it actually loaded before trusting it.
-    if (!document.fonts.check(`normal ${terminalFontSize}px "${fontFamily}"`)) {
-      console.warn(`[terminal] Font "${fontFamily}" not found, using fallback`);
-      // fontFamily falls back to empty → getTerminalTheme uses fallback stack
-    }
-  } catch {
-    console.warn(`[terminal] Font load failed for "${fontFamily}", using fallback`);
-  }
-}
-
-terminal.open(containerEl);
-fitAddon.fit();
+```bash
+cd apps/desktop
+npm run electron:sidecar:build
+npm run electron:vault-editor:smoke
+npm run electron:ai-runtime:smoke
 ```
 
-The existing `useEffect` at `TerminalViewport.tsx:354-367` that updates `terminal.options.fontFamily` / `fontSize` on settings changes needs `fitAddon.fit()` appended — font changes alter cell metrics and the viewport must reflow. Also update the dep array to include the new settings fields.
+For packaging-sensitive terminal changes, also run the packaged app and sidecar
+smokes described in [Testing and Validation](./testing.md).
 
----
-
-## Step 5 — Wire up the full ANSI palette
-
-**File:** `src/features/devtools/terminal/terminalTheme.ts`
-
-xterm.js v6 `ITheme` accepts all 16 ANSI colors (normal + bright), cursor, selection, and scrollbar. Currently `getTerminalTheme` maps only `--bg-primary`, `--text-primary`, `--accent`, a selection color hardcoded to `rgba(120, 138, 158, 0.28)` (`TerminalViewport.tsx:43`), and nothing else.
-
-**Audit first:** read the existing CSS custom properties in `src/index.css` and the theme definitions to find what color tokens exist. If ANSI-specific tokens exist (e.g. `--ansi-red`, `--syntax-string`), map to them. If not, define a fixed palette per theme variant (light/dark) that draws from the existing semantic tokens — don't attempt to compute 16 colors from 3.
-
-**At minimum, set:**
-- `black` / `brightBlack` — from `--bg-secondary` / `--text-secondary` or equivalent
-- `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white` and their bright variants — from syntax/status color tokens if present
-- `cursor` — `--accent`
-- `selectionBackground` — replace the hardcoded rgba with a token or derived value
-- `scrollbarSliderBackground` / `scrollbarSliderHoverBackground` / `scrollbarSliderActiveBackground`
-
-**Reactivity:** the dep array on the terminal options effect (`TerminalViewport.tsx:360-367`) currently watches only background/cursor/font/text. Adding 16 colors means updating that dep array. CSS vars read via `getComputedStyle` aren't reactive — they only re-read when the React render runs. Verify theme switching actually triggers a re-render (the `useThemeStore` subscription at `TerminalViewport.tsx:104` should handle this, but test it).
-
----
-
-## Step 6a — Rust: extend the PTY spawn input
-
-**File:** `apps/desktop/native-backend/src/devtools.rs`
-
-Extend `DevTerminalCreateInput` to accept additional environment variables:
-
-```rust
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DevTerminalCreateInput {
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-    #[serde(default)]
-    extra_env: HashMap<String, String>,
-}
-```
-
-`#[serde(default)]` makes it backwards-compatible — existing callers that don't send `extraEnv` get an empty map, no IPC break.
-
-In `spawn_session`, after the existing `command.env("TERM", "xterm-256color")`, add:
-
-```rust
-command.env("COLORTERM", "truecolor");
-for (key, value) in &input.extra_env {
-    command.env(key, value);
-}
-```
-
-**Sidecar rebuild:** this requires rebuilding the native backend binary. Update CI to run the Rust build step and ensure the rebuilt binary is included in the package. On macOS, verify code signing still applies to the new binary.
-
-## Step 6b — TypeScript: thread extra_env through and add the Claude Code toggle
-
-**Files:** `src/features/terminal/terminalRuntimeStore.ts`, `src/features/devtools/terminal/useTerminalTabs.ts`
-
-Update the `devtools_create_terminal_session` call sites to pass `extraEnv` when `claudeCodeOptimized` is set in settings:
-
-```ts
-const { claudeCodeOptimized } = useSettingsStore.getState();
-const extraEnv = claudeCodeOptimized ? { CLAUDE_CODE_NO_FLICKER: "1" } : {};
-
-await invoke("devtools_create_terminal_session", { cwd, cols, rows, extraEnv });
-```
-
-`CLAUDE_CODE_NO_FLICKER=1` applies only at session creation. Document this in the Settings UI hint: the toggle only affects newly opened terminals.
-
----
-
-## Step 7 — Consolidate terminal code
-
-**This is a refactor, not a pure rename.** Two directories exist and already cross-import each other:
-
-- `src/features/terminal/` — `WorkspaceTerminalHost`, `WorkspaceTerminalView`, `terminalRuntimeStore`, `legacyTerminalMigration` (plus tests)
-- `src/features/devtools/terminal/` — `TerminalViewport`, `terminalTypes`, `terminalTheme`, `useTerminalTabs`, `terminalSessionTracking` (plus tests)
-
-**Move** the `devtools/terminal/` files into `src/features/terminal/`. Update all imports — including files not in the terminal directories:
-
-- `src/App.tsx`
-- `src/features/editor/EditorPaneBar.tsx`
-- `src/features/ai/components/AIAuthTerminalModal.tsx` ← easy to miss; imports `terminalTypes`
-- Any test files referencing the old paths
-
-**CSS:** `.devtools-terminal-surface` at `src/index.css:607` is referenced by `TerminalViewport.tsx:559`. Decide: rename the CSS class to `.terminal-surface` (update both files) or leave it as-is. If renaming, do it in this commit.
-
-**Event names:** `devtools://terminal-output`, `devtools://terminal-started`, etc. are constants defined in Rust and matched in TypeScript. Leave them as-is — the `devtools://` prefix is in the IPC protocol, not the file path. Document this decision so future readers don't wonder.
-
-**Dead code:** `useTerminalTabs.ts` is only called by `legacyTerminalMigration.ts` for `readPersistedTerminalWorkspace`. Audit whether other exports are still used before moving; delete unused ones rather than dragging them forward.
-
-**Do this as a standalone commit** with zero logic changes so the diff is reviewable and bisectable.
-
----
-
-## Step 8 — Update tests
-
-Several test files assert the developer-gate behaviour and will break after Step 1:
-
-- `src/App.noteWindow.test.tsx` — asserts terminal tab behaviour, references `openTerminal()`
-- `src/features/terminal/WorkspaceTerminalHost.test.tsx`
-- `src/features/terminal/terminalRuntimeStore.test.ts`
-- `src/features/settings/SettingsPanel.test.tsx` — may enumerate categories
-- `src/app/store/settingsStore.ts` — `settingsStore.test.ts` for new fields
-
-Update assertions to reflect ungated behaviour and new settings fields. Add tests for font loading fallback path and `claudeCodeOptimized` env passthrough.
-
----
-
-## Sequence
-
-| Step | Scope | Dependency | Risk |
-|---|---|---|---|
-| 7 — consolidate | Refactor, imports | None | Low — no logic changes |
-| 6a — Rust env passthrough | Rust + sidecar build | None | Medium — crosses language boundary, needs CI |
-| 2 — settings fields | TS store only | None | Low |
-| 5 — full ANSI palette | `terminalTheme.ts` | None | Low — visual only |
-| 6b — TS Claude Code toggle | TS call sites | 6a, 2 | Low |
-| 4 — font loading | `TerminalViewport.tsx` | 2 | Medium — async open() path |
-| 3 — Settings UI | `SettingsPanel.tsx` | 2 | Low |
-| 8 — tests | Test files | All above | Low |
-| 1 — ungate | `App.tsx`, menus | All above | Low |
-
-Steps 7, 6a, 2, and 5 have no dependencies on each other and can be done in parallel.
-
----
-
-## Future / out of scope for this iteration
-
-- **libghostty-vt** — Ghostty's VT parser as a standalone C/WASM library (alpha, Sept 2025). No web bindings yet. When it ships, it's the most accurate available parser; worth evaluating as a drop-in under xterm.js's rendering layer.
-- **WebGL renderer** (`@xterm/addon-webgl`) — up to 9x faster than canvas under heavy output. Not loaded currently. Add after this work settles.
-- **utilityProcess PTY isolation** — migrate the Rust sidecar invocation to use Electron's `utilityProcess` API so sidecar crashes can't bring down the main process. Not urgent for a single-window app.
-- **`CLAUDE_CODE_NO_FLICKER=1` fullscreen rendering** — already exposed as a toggle in Step 3, but Anthropic still marks it experimental. Promote the toggle to non-experimental once Anthropic stabilises scrollback behaviour.
-- **Keyboard shortcut for New Terminal** — decide on a shortcut and register it. Deferred to avoid shortcut collision analysis blocking the main work.
+Last updated: June 1, 2026.

@@ -169,7 +169,7 @@ preferences, workspace state, or privacy-relevant local state.
 | `neverwrite.session.tabs:<vault-path>` | Per-vault | Current workspace | `editorSession.ts` | Editor tabs and workspace restore state. |
 | `neverwrite.chat.tabs:<vault-path>` | Per-vault | Initial chat tab state | `chatTabsStore.ts` | Chat tab workspace for the vault. |
 | `neverwrite.ai.review.view:<vault-or-__global__>:<session-id>` | Per-vault plus session | None | `reviewTabPersistence.ts` | Review tab UI state such as expanded files, scroll, anchors, zoom, and wide mode. |
-| `neverwrite.devtools.terminal.tabs:<vault-path>` | Per-vault | Initial terminal tab | `useTerminalTabs.ts` | Terminal workspace tabs for the vault. |
+| `neverwrite.devtools.terminal.tabs:<vault-path>` | Per-vault legacy migration | Initial terminal tab | `useTerminalTabs.ts` / `legacyTerminalMigration.ts` | Older standalone terminal workspace state, migrated into `neverwrite.session.tabs:<vault-path>`. |
 | `neverwrite.workspace.terminal.legacyMigrated:<vault-path>` | Per-vault migration marker | None | `legacyTerminalMigration.ts` | Marks migration from older terminal workspace state. |
 | `neverwrite.terminal.replay:<terminal-id>` | Per-terminal | None | `terminalRuntimeStore.ts` | Terminal replay buffer snapshot; cache/state, not a setting. |
 | `neverwrite.sidebar.width` | Global layout | `280` | `layoutStore.ts` | Sidebar width. |
@@ -244,4 +244,4 @@ when they are persisted or visible in Settings:
 - Review anchors, resolved hunk positions, and transient review synchronization
   state.
 
-Last updated: May 30, 2026.
+Last updated: June 1, 2026.

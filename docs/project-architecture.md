@@ -202,10 +202,10 @@ Settings / AI chat UI
   -> chat store, review UI, transcript persistence
 ```
 
-The backend currently supports Codex, Claude, Gemini, and Kilo runtime IDs. Codex
-and Claude have vendored release inputs under `vendor/`; Gemini and Kilo are
-integrated as external runtimes that must be found on `PATH` or configured by
-override.
+The backend currently supports Codex, Claude, Gemini, Kilo, and OpenCode runtime
+IDs. Codex and Claude have vendored release inputs under `vendor/`; Gemini, Kilo,
+and OpenCode are integrated as external runtimes that must be found on `PATH` or
+configured by override.
 
 ACP session notifications are normalized into renderer events for assistant
 message deltas, thinking deltas, tool activity, file diffs, permission requests,
@@ -315,4 +315,4 @@ and Electron smoke tests when possible.
   [`apps/web-clipper/src/lib/desktop-api.ts`](../apps/web-clipper/src/lib/desktop-api.ts),
   and [`apps/desktop/src-electron/main/webClipper.ts`](../apps/desktop/src-electron/main/webClipper.ts).
 
-Last updated: May 11, 2026.
+Last updated: June 1, 2026.

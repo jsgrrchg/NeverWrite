@@ -80,10 +80,11 @@ Codex ChatGPT auth is implemented through the ACP `authenticate` request and
 requires a resolved Codex runtime binary before NeverWrite marks it connected.
 Codex does not use the integrated auth terminal.
 
-Claude, Gemini, Kilo, and OpenCode expose integrated terminal auth methods. NeverWrite
-starts the provider CLI in a PTY and marks auth pending before launch. A zero
-exit code marks the provider verified; Gemini can also be marked verified when
-the terminal output contains the success strings recognized by the backend.
+Claude, Gemini, Kilo, and OpenCode expose integrated terminal auth methods.
+NeverWrite starts the provider CLI in a PTY and marks auth pending before
+launch. A zero exit code marks the provider verified; Gemini and OpenCode can
+also be marked verified when terminal output contains success strings recognized
+by the backend.
 
 Claude adapts its visible terminal login methods to the environment. In remote
 or no-browser environments (`NO_BROWSER`, `SSH_CONNECTION`, `SSH_CLIENT`,
@@ -155,9 +156,10 @@ the CLI separately or configure `NEVERWRITE_KILO_ACP_BIN`.
 
 Use OpenCode terminal login from the setup UI, pre-existing OpenCode CLI auth, a
 provider key inherited by the OpenCode CLI, or `/connect` inside OpenCode.
-NeverWrite does not store OpenCode provider secrets in V1; auth remains owned by
-the OpenCode CLI. Disconnecting OpenCode clears NeverWrite's local selection and
-persists an invalidation marker, but it does not delete `opencode/auth.json`.
+The current UI keeps OpenCode auth primarily owned by the OpenCode CLI rather
+than exposing a first-party API key form. Disconnecting OpenCode clears
+NeverWrite's local selection and persists an invalidation marker, but it does
+not delete `opencode/auth.json`.
 
 Because OpenCode is not bundled by default, install the CLI separately or
 configure `NEVERWRITE_OPENCODE_ACP_BIN`. NeverWrite launches sessions as
@@ -255,6 +257,7 @@ Current packaging expectations:
 - Claude is bundled through embedded Node plus vendored runtime files.
 - Gemini is integrated but not bundled by default.
 - Kilo is integrated but not bundled by default.
+- OpenCode is integrated but not bundled by default.
 
 ## Troubleshooting
 
@@ -326,8 +329,8 @@ GUI-launched apps often inherit a different PATH than interactive shells.
 Development can resolve Codex and Claude from vendor paths if those artifacts
 exist. Packaged builds should resolve Codex and Claude from
 `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR`, which Electron sets to the staged
-resources directory. Gemini and Kilo still require an external CLI or explicit
-runtime override in both development and packaged builds.
+resources directory. Gemini, Kilo, and OpenCode still require an external CLI or
+explicit runtime override in both development and packaged builds.
 
 If a provider works in `npm run dev` but not in a packaged app, verify:
 
@@ -364,4 +367,4 @@ cd apps/desktop
 npm run electron:package:unsigned
 ```
 
-Last updated: May 11, 2026.
+Last updated: June 1, 2026.

@@ -22,7 +22,7 @@ Today the repository combines:
 - An Electron desktop app with a Rust sidecar that opens a local vault and keeps working state on disk.
 - A Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking.
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view.
-- An ACP-based AI layer with Codex, Claude, Gemini, and Kilo runtimes.
+- An ACP-based AI layer with Codex, Claude, Gemini, Kilo, and OpenCode runtimes.
 - An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
 - A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback. Compatible with both Firefox and Chromium.
 
@@ -31,8 +31,8 @@ Today the repository combines:
 The current product already includes:
 
 - Local vault opening with progress reporting, persisted snapshots, filesystem watching, and incremental re-sync
-- A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and a developer terminal
-- Native-feeling editing for Markdown notes, CSV files, PDFs, images, and generic text/code files
+- A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and first-class terminal tabs
+- Native-feeling editing for Markdown notes, CSV files, PDFs, images, HTML previews, and generic text/code files
 - Embedded Excalidraw-based concept maps stored as `.excalidraw` files in the vault. The map format is visible and editable by agents.
 - A graph view with global, local, and overview modes plus 2D and 3D rendering
 - AI chat sessions with attachments from the vault, slash commands, transcript persistence, and runtime-specific capabilities
@@ -56,9 +56,11 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - Open, index, and watch a local vault.
 - Recent vaults, pinned vaults, reopen-last-vault behavior
 - File tree with drag and drop, multi-selection, sorting, and context actions
+- File tree modes for curated writing/media files, all vault files, or an explicit extension allowlist
 - Persistent bookmarks per vault
 - Persistent tabs and window session restore
 - Detached note windows and separate vault windows
+- First-class terminal tabs with themed xterm rendering, persistent workspace state, search, and Claude Code integration in the Agents sidebar
 
 ### Editing and reading
 
@@ -69,6 +71,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - Frontmatter/properties editing
 - CSV editing with table and raw fallback views
 - Editable text/code files with syntax highlighting and autosave
+- Sandboxed in-app HTML viewing for `.html` and `.htm` files
 - PDF viewing with visual filters
 - Internal image viewing with fit and zoom
 - App-owned Hunspell-based spellcheck with bundled `en-US` and `es-ES`
@@ -84,7 +87,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 
 ### AI and change control
 
-- ACP runtime integration for Codex, Claude, Gemini, and Kilo
+- ACP runtime integration for Codex, Claude, Gemini, Kilo, and OpenCode
 - Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
 - Session history, transcript viewing, session export, fork, resume, and rename flows
 - Crash recovery for saved chats through `Chat History` and local `.neverwrite/sessions/` transcripts
@@ -207,12 +210,13 @@ The repository already contains broad Vitest coverage in the desktop app and web
 
 ## AI Runtime Notes
 
-NeverWrite currently wires four ACP runtimes:
+NeverWrite currently wires five ACP runtimes:
 
 - `codex-acp`
 - `claude-acp`
 - `gemini-acp`
 - `kilo-acp`
+- `opencode-acp`
 
 Current packaging status:
 
@@ -220,6 +224,7 @@ Current packaging status:
 - Claude is intended to be bundled through an embedded Node runtime plus vendored runtime files.
 - Gemini is integrated in the app, but not bundled by default today.
 - Kilo is integrated in the app, but not bundled by default today.
+- OpenCode is integrated in the app, but not bundled by default today.
 
 Useful runtime overrides during development:
 
@@ -227,6 +232,7 @@ Useful runtime overrides during development:
 - `NEVERWRITE_CLAUDE_ACP_BIN`
 - `NEVERWRITE_GEMINI_ACP_BIN`
 - `NEVERWRITE_KILO_ACP_BIN`
+- `NEVERWRITE_OPENCODE_ACP_BIN`
 
 For release builds, see `apps/desktop/scripts/stage-electron-sidecar.mjs` and `release/appcast/README.md`.
 
