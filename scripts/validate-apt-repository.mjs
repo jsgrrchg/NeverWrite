@@ -8,6 +8,8 @@ import {
     APT_DEFAULT_CODENAME,
     APT_DEFAULT_COMPONENT,
     APT_DEFAULT_SUITE,
+    APT_LAYOUT_CLASSIC,
+    APT_LAYOUT_FLAT_RELEASE,
     APT_PACKAGE_NAME,
     APT_PACKAGE_CHECKSUMS,
     APT_PUBLIC_KEY_FILE_NAME,
@@ -18,9 +20,12 @@ import {
     getAptBinaryPackagesPath,
     getDebianControlField,
     hashFile,
+    listFilesRecursively,
+    normalizeAptLayout,
     normalizeAptComponent,
     normalizeAptSuite,
     normalizeDebianArchitecture,
+    parseDebianReleaseAssetName,
     parseDebianControlStanza,
 } from "./apt-repo-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
@@ -30,9 +35,11 @@ const APT_PACKAGE_FILENAME_PREFIX = "pool/main/n/neverwrite/";
 function parseArgs(argv) {
     const args = {
         aptDir: null,
+        packageAssetsDir: null,
         version: null,
         suite: APT_DEFAULT_SUITE,
         component: APT_DEFAULT_COMPONENT,
+        layout: APT_LAYOUT_CLASSIC,
         skipSignatureCheck: false,
     };
 
@@ -42,6 +49,11 @@ function parseArgs(argv) {
 
         if (arg === "--apt-dir") {
             args.aptDir = path.resolve(next);
+            index += 1;
+            continue;
+        }
+        if (arg === "--package-assets-dir") {
+            args.packageAssetsDir = path.resolve(next);
             index += 1;
             continue;
         }
@@ -60,13 +72,18 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
+        if (arg === "--layout") {
+            args.layout = next;
+            index += 1;
+            continue;
+        }
         if (arg === "--skip-signature-check") {
             args.skipSignatureCheck = true;
             continue;
         }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --apt-dir, --version, --suite, --component, --skip-signature-check.`,
+            `Unknown argument "${arg}". Supported args: --apt-dir, --package-assets-dir, --version, --suite, --component, --layout, --skip-signature-check.`,
         );
     }
 
@@ -79,6 +96,7 @@ function parseArgs(argv) {
         version: args.version ? normalizeReleaseVersion(args.version) : null,
         suite: normalizeAptSuite(args.suite),
         component: normalizeAptComponent(args.component),
+        layout: normalizeAptLayout(args.layout),
     };
 }
 
@@ -120,8 +138,14 @@ function parseReleaseChecksums(releaseFields, fieldName) {
         });
 }
 
-function validateReleaseFile({ aptDir, suite, component }) {
-    const suiteDir = path.join(aptDir, "dists", suite);
+function getReleaseDir({ aptDir, suite, layout }) {
+    return layout === APT_LAYOUT_FLAT_RELEASE
+        ? aptDir
+        : path.join(aptDir, "dists", suite);
+}
+
+function validateReleaseFile({ aptDir, suite, component, layout }) {
+    const suiteDir = getReleaseDir({ aptDir, suite, layout });
     const releasePath = path.join(suiteDir, "Release");
     const releaseFields = parseDebianControlStanza(
         fs.readFileSync(releasePath, "utf8"),
@@ -132,8 +156,10 @@ function validateReleaseFile({ aptDir, suite, component }) {
         Suite: suite,
         Codename: APT_DEFAULT_CODENAME,
         Architectures: APT_SUPPORTED_ARCHITECTURES.join(" "),
-        Components: component,
     };
+    if (layout === APT_LAYOUT_CLASSIC) {
+        expectedFields.Components = component;
+    }
 
     for (const [fieldName, expectedValue] of Object.entries(expectedFields)) {
         const actualValue = getDebianControlField(releaseFields, fieldName);
@@ -164,7 +190,7 @@ function validateReleaseFile({ aptDir, suite, component }) {
     }
 }
 
-function resolvePackageFilename({ aptDir, arch, filename }) {
+function resolveClassicPackageFilename({ aptDir, arch, filename }) {
     const normalizedFilename = path.posix.normalize(filename);
     if (
         filename !== normalizedFilename ||
@@ -192,7 +218,118 @@ function resolvePackageFilename({ aptDir, arch, filename }) {
     return packagePath;
 }
 
-function validatePackagesForArchitecture({
+function findPackageAsset(packageAssetsDir, filename) {
+    if (!packageAssetsDir) {
+        return null;
+    }
+    const matches = listFilesRecursively(packageAssetsDir).filter(
+        (filePath) => path.basename(filePath) === filename,
+    );
+    if (matches.length !== 1) {
+        throw new Error(
+            `Expected exactly one package asset named ${filename} in ${packageAssetsDir}, found ${matches.length}.`,
+        );
+    }
+    return matches[0];
+}
+
+function resolveFlatPackageFilename({
+    packageAssetsDir,
+    arch,
+    filename,
+    version,
+}) {
+    const normalizedFilename = path.posix.normalize(filename);
+    if (
+        filename !== normalizedFilename ||
+        filename.includes("\\") ||
+        filename.includes("/") ||
+        path.posix.isAbsolute(normalizedFilename)
+    ) {
+        throw new Error(
+            `${arch} Packages contains invalid Filename "${filename}". Expected a GitHub Release asset file name without path separators.`,
+        );
+    }
+
+    const metadata = parseDebianReleaseAssetName(normalizedFilename);
+    if (!metadata) {
+        throw new Error(
+            `${arch} Packages contains invalid Filename "${filename}". Expected a NeverWrite Debian release asset name.`,
+        );
+    }
+    if (metadata.architecture !== arch) {
+        throw new Error(
+            `${arch} Packages Filename "${filename}" targets ${metadata.architecture}.`,
+        );
+    }
+    if (version && metadata.version !== version) {
+        throw new Error(
+            `${arch} Packages Filename "${filename}" does not match version ${version}.`,
+        );
+    }
+
+    return findPackageAsset(packageAssetsDir, normalizedFilename);
+}
+
+function validatePackageStanza({
+    aptDir,
+    packageAssetsDir,
+    architecture,
+    version,
+    stanza,
+    layout,
+}) {
+    const arch = normalizeDebianArchitecture(architecture);
+    const packageName = getDebianControlField(stanza, "Package");
+    const packageVersion = getDebianControlField(stanza, "Version");
+    const packageArchitecture = getDebianControlField(stanza, "Architecture");
+    const filename = getDebianControlField(stanza, "Filename");
+    const size = Number.parseInt(getDebianControlField(stanza, "Size"), 10);
+
+    if (packageName !== APT_PACKAGE_NAME) {
+        throw new Error(
+            `${arch} Packages contains unexpected package "${packageName}".`,
+        );
+    }
+    if (packageArchitecture !== arch) {
+        throw new Error(
+            `${arch} Packages contains unexpected Architecture "${packageArchitecture}".`,
+        );
+    }
+    if (!filename) {
+        throw new Error(`${arch} Packages contains package with missing Filename.`);
+    }
+
+    const packagePath =
+        layout === APT_LAYOUT_FLAT_RELEASE
+            ? resolveFlatPackageFilename({
+                  packageAssetsDir,
+                  arch,
+                  filename,
+                  version: packageVersion,
+              })
+            : resolveClassicPackageFilename({ aptDir, arch, filename });
+
+    if (packagePath) {
+        if (fs.statSync(packagePath).size !== size) {
+            throw new Error(`${filename} Size does not match package file.`);
+        }
+        for (const { fieldName, algorithm } of APT_PACKAGE_CHECKSUMS) {
+            const expectedHash = getDebianControlField(stanza, fieldName);
+            if (!expectedHash) {
+                throw new Error(`${filename} is missing ${fieldName}.`);
+            }
+            const actualHash = hashFile(packagePath, algorithm);
+            if (expectedHash !== actualHash) {
+                throw new Error(`${filename} ${fieldName} does not match.`);
+            }
+        }
+    }
+
+    return !version || packageVersion === version;
+}
+
+function validateClassicPackagesForArchitecture({
     aptDir,
     architecture,
     version,
@@ -219,55 +356,71 @@ function validatePackagesForArchitecture({
 
     let foundExpectedVersion = !version;
     for (const stanza of stanzas) {
-        const packageName = getDebianControlField(stanza, "Package");
-        const packageVersion = getDebianControlField(stanza, "Version");
-        const packageArchitecture = getDebianControlField(
-            stanza,
-            "Architecture",
-        );
-        const filename = getDebianControlField(stanza, "Filename");
-        const size = Number.parseInt(getDebianControlField(stanza, "Size"), 10);
-
-        if (packageName !== APT_PACKAGE_NAME) {
-            throw new Error(
-                `${arch} Packages contains unexpected package "${packageName}".`,
-            );
-        }
-        if (packageArchitecture !== arch) {
-            throw new Error(
-                `${arch} Packages contains unexpected Architecture "${packageArchitecture}".`,
-            );
-        }
-        if (!filename) {
-            throw new Error(
-                `${arch} Packages contains package with missing Filename.`,
-            );
-        }
-
-        const packagePath = resolvePackageFilename({ aptDir, arch, filename });
-        assertFileExists(packagePath, `${arch} package file`);
-
-        if (fs.statSync(packagePath).size !== size) {
-            throw new Error(`${filename} Size does not match package file.`);
-        }
-        for (const { fieldName, algorithm } of APT_PACKAGE_CHECKSUMS) {
-            const expectedHash = getDebianControlField(stanza, fieldName);
-            if (!expectedHash) {
-                throw new Error(`${filename} is missing ${fieldName}.`);
-            }
-            const actualHash = hashFile(packagePath, algorithm);
-            if (expectedHash !== actualHash) {
-                throw new Error(`${filename} ${fieldName} does not match.`);
-            }
-        }
-
-        if (version && packageVersion === version) {
+        if (
+            validatePackageStanza({
+                aptDir,
+                architecture: arch,
+                version,
+                stanza,
+                layout: APT_LAYOUT_CLASSIC,
+            })
+        ) {
             foundExpectedVersion = true;
         }
     }
 
     if (!foundExpectedVersion) {
         throw new Error(`${arch} Packages does not contain version ${version}.`);
+    }
+}
+
+function validateFlatPackages({ aptDir, packageAssetsDir, version }) {
+    const packagesPath = path.join(aptDir, "Packages");
+    const packagesGzipPath = path.join(aptDir, "Packages.gz");
+    assertFileExists(packagesPath, "flat Packages index");
+    assertFileExists(packagesGzipPath, "flat Packages.gz index");
+
+    const packagesContent = fs.readFileSync(packagesPath, "utf8");
+    const inflated = zlib.gunzipSync(fs.readFileSync(packagesGzipPath));
+    if (!inflated.equals(Buffer.from(packagesContent, "utf8"))) {
+        throw new Error("Flat Packages.gz does not match Packages.");
+    }
+
+    const stanzas = parseDebianControlFile(packagesContent);
+    if (stanzas.length === 0) {
+        throw new Error("Flat Packages index contains no packages.");
+    }
+
+    const foundArchitectures = new Set();
+    const foundVersionArchitectures = new Set();
+    for (const stanza of stanzas) {
+        const arch = normalizeDebianArchitecture(
+            getDebianControlField(stanza, "Architecture"),
+        );
+        foundArchitectures.add(arch);
+        if (
+            validatePackageStanza({
+                aptDir,
+                packageAssetsDir,
+                architecture: arch,
+                version,
+                stanza,
+                layout: APT_LAYOUT_FLAT_RELEASE,
+            })
+        ) {
+            foundVersionArchitectures.add(arch);
+        }
+    }
+
+    for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
+        if (!foundArchitectures.has(architecture)) {
+            throw new Error(`Flat Packages does not contain ${architecture}.`);
+        }
+        if (version && !foundVersionArchitectures.has(architecture)) {
+            throw new Error(
+                `Flat Packages does not contain version ${version} for ${architecture}.`,
+            );
+        }
     }
 }
 
@@ -294,11 +447,11 @@ function runCommand(command, args, options = {}) {
     return result.stdout ?? "";
 }
 
-function verifySignatures({ aptDir, suite }) {
+function verifySignatures({ aptDir, suite, layout }) {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "neverwrite-apt-gpg-"));
     const keyringPath = path.join(tempDir, "neverwrite-archive-keyring.gpg");
     const publicKeyPath = path.join(aptDir, APT_PUBLIC_KEY_FILE_NAME);
-    const suiteDir = path.join(aptDir, "dists", suite);
+    const suiteDir = getReleaseDir({ aptDir, suite, layout });
 
     try {
         runCommand("gpg", [
@@ -332,17 +485,24 @@ function verifySignatures({ aptDir, suite }) {
     }
 }
 
-function validateSourcesExample(aptDir) {
+function validateSourcesExample(aptDir, layout) {
     const sourcePath = path.join(aptDir, APT_SOURCES_EXAMPLE_FILE_NAME);
     assertFileExists(sourcePath, "Deb822 source example");
     const source = fs.readFileSync(sourcePath, "utf8");
-    for (const expectedLine of [
+    const expectedLines = [
         "Types: deb",
-        "Suites: stable",
-        "Components: main",
+        layout === APT_LAYOUT_FLAT_RELEASE ? "Suites: ./" : "Suites: stable",
         "Architectures: amd64 arm64",
         "Signed-By: /etc/apt/keyrings/neverwrite.asc",
-    ]) {
+    ];
+    if (layout === APT_LAYOUT_CLASSIC) {
+        expectedLines.push("Components: main");
+    } else if (/^Components:/m.test(source)) {
+        throw new Error(
+            `${APT_SOURCES_EXAMPLE_FILE_NAME} must omit Components for the flat release layout.`,
+        );
+    }
+    for (const expectedLine of expectedLines) {
         if (!source.includes(expectedLine)) {
             throw new Error(
                 `${APT_SOURCES_EXAMPLE_FILE_NAME} is missing "${expectedLine}".`,
@@ -353,7 +513,11 @@ function validateSourcesExample(aptDir) {
 
 function main() {
     const args = parseArgs(process.argv.slice(2));
-    const suiteDir = path.join(args.aptDir, "dists", args.suite);
+    const suiteDir = getReleaseDir({
+        aptDir: args.aptDir,
+        suite: args.suite,
+        layout: args.layout,
+    });
 
     assertFileExists(args.aptDir, "APT repository root");
     assertFileExists(path.join(args.aptDir, APT_PUBLIC_KEY_FILE_NAME), "APT public key");
@@ -361,23 +525,36 @@ function main() {
     assertFileExists(path.join(suiteDir, "InRelease"), "APT InRelease");
     assertFileExists(path.join(suiteDir, "Release.gpg"), "APT Release.gpg");
 
-    validateSourcesExample(args.aptDir);
+    validateSourcesExample(args.aptDir, args.layout);
     validateReleaseFile({
         aptDir: args.aptDir,
         suite: args.suite,
         component: args.component,
+        layout: args.layout,
     });
 
-    for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
-        validatePackagesForArchitecture({
+    if (args.layout === APT_LAYOUT_FLAT_RELEASE) {
+        validateFlatPackages({
             aptDir: args.aptDir,
-            architecture,
+            packageAssetsDir: args.packageAssetsDir,
             version: args.version,
         });
+    } else {
+        for (const architecture of APT_SUPPORTED_ARCHITECTURES) {
+            validateClassicPackagesForArchitecture({
+                aptDir: args.aptDir,
+                architecture,
+                version: args.version,
+            });
+        }
     }
 
     if (!args.skipSignatureCheck) {
-        verifySignatures({ aptDir: args.aptDir, suite: args.suite });
+        verifySignatures({
+            aptDir: args.aptDir,
+            suite: args.suite,
+            layout: args.layout,
+        });
     }
 
     console.log(
