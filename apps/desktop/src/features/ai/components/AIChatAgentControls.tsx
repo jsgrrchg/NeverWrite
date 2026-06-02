@@ -34,7 +34,6 @@ interface DropdownFieldProps {
 }
 
 const SEARCHABLE_MODEL_RUNTIME_IDS = new Set([
-    "grok-acp",
     "kilo-acp",
     "opencode-acp",
 ]);

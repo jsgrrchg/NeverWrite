@@ -333,7 +333,7 @@ describe("AIChatAgentControls", () => {
         );
     });
 
-    it("shows a model search field for Grok and filters ACP models", () => {
+    it("shows Grok ACP models without a model search field", () => {
         const onConfigOptionChange = vi.fn();
 
         renderComponent(
@@ -376,14 +376,9 @@ describe("AIChatAgentControls", () => {
 
         fireEvent.click(screen.getByTitle("Model"));
 
-        const search = screen.getByLabelText("Model search");
-        expect(search).toBeInTheDocument();
+        expect(screen.queryByLabelText("Model search")).not.toBeInTheDocument();
         expect(screen.getByText("Composer 2.5")).toBeInTheDocument();
-
-        fireEvent.change(search, { target: { value: "build" } });
-
         expect(screen.getAllByText("Grok Build").length).toBeGreaterThan(0);
-        expect(screen.queryByText("Composer 2.5")).not.toBeInTheDocument();
 
         const grokBuildOption = screen
             .getAllByRole("button", { name: "Grok Build" })
