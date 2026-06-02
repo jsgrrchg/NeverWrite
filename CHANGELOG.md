@@ -34,6 +34,34 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.3.2] - 2026-06-01
+
+### Added
+
+- Added opt-in Vim mode for the editor, including Settings controls, relative line numbers, a Vim status bar, and Vim command handling. Thanks to @Abdulkader-Safi.
+- Added a terminal dictation overlay for composing terminal input before sending it. Thanks to @spamsch.
+- Added Claude Code terminal sessions to the Agents sidebar, with live transcript-derived titles and previews plus focus and close actions. Thanks to @spamsch.
+- Added screenshot retention controls for AI chat screenshots, including automatic cleanup for expired screenshots and a `Forever` option.
+
+### Changed
+
+- Reworked terminal output rendering so PTY output streams directly into xterm, improving reliability and responsiveness under heavy Claude Code output. Thanks to @spamsch.
+- Updated the embedded Claude ACP runtime to `0.39.0`.
+- Clarified recent feature documentation and settings scope docs, including which settings are global and which are vault-scoped.
+- Changed Debian release publishing so updater feeds are published before APT validation.
+
+### Fixed
+
+- Fixed historical AI chat diff cards so older diffs remain inspectable after later file edits.
+- Fixed Pending Changes edited-files tray overflow so large review lists remain usable.
+- Fixed closed subagent sessions so closed child-agent conversations stay closed across store rebuilds and resume paths.
+- Fixed primary-vault window session restoration when the stored vault value is narrowed to a path.
+- Fixed Debian APT repository publication and validation for release assets hosted on GitHub Releases.
+
+### Security
+
+- Updated the Web Clipper workspace dependency metadata to address the transitive `tmp` advisory.
+
 ## [0.3.1] - 2026-05-28
 
 ### Changed
