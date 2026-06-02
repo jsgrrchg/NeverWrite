@@ -37,7 +37,7 @@ use neverwrite_ai::{
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
     AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
-    KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -107,6 +107,7 @@ struct RuntimeDefinition {
 
 const NO_ACP_ARGS: &[&str] = &[];
 const GEMINI_ACP_ARGS: &[&str] = &["--acp"];
+const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
@@ -135,6 +136,15 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "gemini",
         bin_env_var: "NEVERWRITE_GEMINI_ACP_BIN",
         acp_args: GEMINI_ACP_ARGS,
+        supports_native_resume: false,
+    },
+    RuntimeDefinition {
+        id: GROK_RUNTIME_ID,
+        name: "Grok",
+        description: "Grok ACP-compatible agent runtime.",
+        default_executable: "grok",
+        bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
+        acp_args: GROK_ACP_ARGS,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -4685,7 +4695,7 @@ fn runtime_binary_name(base: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn resolve_macos_homebrew_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
-    if runtime_id != OPENCODE_RUNTIME_ID {
+    if !matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID) {
         return None;
     }
     ["/opt/homebrew/bin", "/usr/local/bin"]
@@ -7040,8 +7050,49 @@ mod tests {
         assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(GEMINI_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(GROK_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
+    }
+
+    #[test]
+    fn grok_runtime_is_registered_with_expected_launch_contract() {
+        let definition = runtime_definition(GROK_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name, "Grok");
+        assert_eq!(definition.default_executable, "grok");
+        assert_eq!(definition.bin_env_var, "NEVERWRITE_GROK_ACP_BIN");
+        assert_eq!(definition.acp_args, ["--no-auto-update", "agent", "stdio"]);
+
+        let descriptors = runtime_descriptors();
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.runtime.id == GROK_RUNTIME_ID)
+            .unwrap();
+        assert_eq!(descriptor.runtime.name, "Grok");
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .all(|capability| capability != "resume_session"));
+        assert!(diagnostic_executable_names().contains(&"grok"));
+    }
+
+    #[test]
+    fn grok_setup_status_reports_missing_binary_without_auth_ready() {
+        let status = setup_status_for(
+            GROK_RUNTIME_ID,
+            RuntimeSetupState {
+                custom_binary_path: Some("/neverwrite/missing/grok".to_string()),
+                ..RuntimeSetupState::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(status.runtime_id, GROK_RUNTIME_ID);
+        assert!(!status.binary_ready);
+        assert_eq!(status.binary_source, AiRuntimeBinarySource::Missing);
+        assert!(!status.auth_ready);
+        assert!(status.onboarding_required);
     }
 
     #[test]

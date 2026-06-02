@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const CODEX_RUNTIME_ID: &str = "codex-acp";
 pub const CLAUDE_RUNTIME_ID: &str = "claude-acp";
 pub const GEMINI_RUNTIME_ID: &str = "gemini-acp";
+pub const GROK_RUNTIME_ID: &str = "grok-acp";
 pub const KILO_RUNTIME_ID: &str = "kilo-acp";
 pub const OPENCODE_RUNTIME_ID: &str = "opencode-acp";
 

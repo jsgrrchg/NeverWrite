@@ -22,6 +22,7 @@ and terminal-auth routing helpers are in
 | `codex-acp` | `codex-acp` | Yes. Staged as a sidecar binary. | ChatGPT account, OpenAI API key, Codex API key |
 | `claude-acp` | Claude ACP adapter | Yes. Staged as vendored JS plus embedded Node. | Claude subscription terminal login, Anthropic Console terminal login, Anthropic API key, custom Anthropic-compatible gateway |
 | `gemini-acp` | `gemini --acp` | No. Must be available from PATH or a configured binary override. | Google terminal login, Gemini API key |
+| `grok-acp` | `grok --no-auto-update agent stdio` | No. Must be available from PATH or a configured binary override. | Planned: Grok login, xAI API key |
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
 
@@ -38,6 +39,7 @@ For every provider, the backend resolves the runtime command in this order:
 3. Packaged release resources, when available.
 4. Development vendor fallback for Codex and Claude.
 5. A command found on the app process `PATH`.
+6. macOS Homebrew fallback paths for Grok and OpenCode.
 
 The provider-specific runtime binary overrides are:
 
@@ -46,12 +48,14 @@ The provider-specific runtime binary overrides are:
 | `NEVERWRITE_CODEX_ACP_BIN` | Codex |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Claude |
 | `NEVERWRITE_GEMINI_ACP_BIN` | Gemini |
+| `NEVERWRITE_GROK_ACP_BIN` | Grok |
 | `NEVERWRITE_KILO_ACP_BIN` | Kilo |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | OpenCode |
 
 The values may be absolute paths or command names resolvable on `PATH`. For
-Gemini, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
-`gemini --acp`, `kilo acp`, and `opencode acp`.
+Gemini, Grok, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
+`gemini --acp`, `grok --no-auto-update agent stdio`, `kilo acp`, and
+`opencode acp`.
 
 Packaged builds use `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR` internally to point
 the native backend at staged Electron resources. In normal app usage this is set
@@ -174,6 +178,7 @@ These `NEVERWRITE_*` variables are relevant to AI runtime setup and packaging:
 | `NEVERWRITE_CODEX_ACP_BIN` | Runtime launch override for Codex in dev or local troubleshooting. |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Runtime launch override for Claude in dev or local troubleshooting. |
 | `NEVERWRITE_GEMINI_ACP_BIN` | Runtime launch override for Gemini in dev or local troubleshooting. |
+| `NEVERWRITE_GROK_ACP_BIN` | Runtime launch override for Grok in dev or local troubleshooting. |
 | `NEVERWRITE_KILO_ACP_BIN` | Runtime launch override for Kilo in dev or local troubleshooting. |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | Runtime launch override for OpenCode in dev or local troubleshooting. |
 | `NEVERWRITE_APP_DATA_DIR` | Overrides app data storage, including `ai/runtime-setup.json`; Electron sets this for the sidecar. |
@@ -256,6 +261,7 @@ Current packaging expectations:
 - Codex is bundled as a native sidecar binary.
 - Claude is bundled through embedded Node plus vendored runtime files.
 - Gemini is integrated but not bundled by default.
+- Grok is integrated but not bundled by default.
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
 
@@ -329,8 +335,8 @@ GUI-launched apps often inherit a different PATH than interactive shells.
 Development can resolve Codex and Claude from vendor paths if those artifacts
 exist. Packaged builds should resolve Codex and Claude from
 `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR`, which Electron sets to the staged
-resources directory. Gemini, Kilo, and OpenCode still require an external CLI or
-explicit runtime override in both development and packaged builds.
+resources directory. Gemini, Grok, Kilo, and OpenCode still require an external
+CLI or explicit runtime override in both development and packaged builds.
 
 If a provider works in `npm run dev` but not in a packaged app, verify:
 
