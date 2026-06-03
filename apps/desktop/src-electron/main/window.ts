@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, nativeTheme } from "electron";
+import { app, BrowserWindow, nativeTheme, shell } from "electron";
 import { ELECTRON_IPC } from "../shared/ipc";
 import { writeAppLog } from "./appLogger";
 import { removeWindowVaultRoute } from "./shellState";
@@ -44,6 +44,7 @@ function readTrafficLightPosition(
 
 const windowsByLabel = new Map<string, BrowserWindow>();
 const labelsByWebContentsId = new Map<number, string>();
+const SYSTEM_BROWSER_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 function preloadPath() {
     return fileURLToPath(
@@ -172,6 +173,30 @@ function getOptionalNumber(
     return typeof value === "number" && Number.isFinite(value)
         ? value
         : undefined;
+}
+
+export function shouldOpenInSystemBrowser(url: string) {
+    try {
+        return SYSTEM_BROWSER_PROTOCOLS.has(new URL(url).protocol);
+    } catch {
+        return false;
+    }
+}
+
+function bindExternalWindowOpenHandler(window: BrowserWindow) {
+    window.webContents.setWindowOpenHandler(({ url }) => {
+        if (shouldOpenInSystemBrowser(url)) {
+            void shell.openExternal(url).catch((error: unknown) => {
+                writeAppLog("main", "error", "Failed to open external link", {
+                    url,
+                    error:
+                        error instanceof Error ? error.message : String(error),
+                });
+            });
+        }
+
+        return { action: "deny" };
+    });
 }
 
 function bindWindowLifecycle(label: string, window: BrowserWindow) {
@@ -384,6 +409,7 @@ export function createAppWindow(
         },
     });
 
+    bindExternalWindowOpenHandler(window);
     bindWindowLifecycle(label, window);
 
     const rendererEntry = resolveRendererEntry(search);
