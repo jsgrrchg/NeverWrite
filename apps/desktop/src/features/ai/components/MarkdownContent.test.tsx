@@ -71,6 +71,23 @@ describe("MarkdownContent", () => {
         ).not.toBeInTheDocument();
     });
 
+    it("renders raw http and https URLs as external links", () => {
+        renderComponent(
+            <MarkdownContent
+                content="Read https://example.com/docs and try http://localhost:3000."
+                pillMetrics={pillMetrics}
+            />,
+        );
+
+        expect(
+            screen.getByRole("link", { name: "https://example.com/docs" }),
+        ).toHaveAttribute("href", "https://example.com/docs");
+        expect(
+            screen.getByRole("link", { name: "http://localhost:3000" }),
+        ).toHaveAttribute("href", "http://localhost:3000");
+        expect(document.body).toHaveTextContent("http://localhost:3000.");
+    });
+
     it("opens relative markdown text file links in a new tab from the context menu", async () => {
         const invokeMock = vi.mocked(invoke);
         invokeMock.mockImplementation(async (command, args) => {
