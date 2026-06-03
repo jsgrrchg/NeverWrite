@@ -356,6 +356,102 @@ describe("MultiPaneWorkspace", () => {
         expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
     });
 
+    it("opens dragged Excalidraw vault files as map tabs", async () => {
+        setVaultEntries([
+            {
+                id: "Excalidraw/Board.excalidraw",
+                path: "/vault/Excalidraw/Board.excalidraw",
+                relative_path: "Excalidraw/Board.excalidraw",
+                title: "Board",
+                file_name: "Board.excalidraw",
+                extension: "excalidraw",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 2048,
+                mime_type: "application/json",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "read_vault_file") {
+                throw new Error("Excalidraw drops should open as map tabs");
+            }
+
+            return undefined;
+        });
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]') as HTMLElement | null;
+        const secondaryPane = screen
+            .getByTestId("pane-content-secondary")
+            .closest('[data-editor-pane-id="secondary"]') as HTMLElement | null;
+        expect(primaryPane).not.toBeNull();
+        expect(secondaryPane).not.toBeNull();
+
+        vi.spyOn(primaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 300,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+        vi.spyOn(secondaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 320,
+            y: 0,
+            left: 320,
+            top: 0,
+            right: 620,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        const dragDropListener = onDragDropEventMock.mock.calls.at(-1)?.[0] as
+            | ((event: {
+                  payload: {
+                      type: "drop";
+                      position: { x: number; y: number };
+                      paths: string[];
+                  };
+              }) => void)
+            | undefined;
+        expect(dragDropListener).toBeTypeOf("function");
+
+        await act(async () => {
+            dragDropListener?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 460, y: 120 },
+                    paths: ["/vault/Excalidraw/Board.excalidraw"],
+                },
+            });
+            await flushPromises();
+        });
+
+        const secondaryWorkspacePane = useEditorStore
+            .getState()
+            .panes.find((pane) => pane.id === "secondary");
+        expect(secondaryWorkspacePane?.tabs).toHaveLength(1);
+        expect(secondaryWorkspacePane?.tabs[0]).toMatchObject({
+            kind: "map",
+            relativePath: "Excalidraw/Board.excalidraw",
+            title: "Board",
+        });
+        expect(mockInvoke()).not.toHaveBeenCalledWith(
+            "read_vault_file",
+            expect.anything(),
+        );
+    });
+
     it("copies external files into the hovered file-tree folder", async () => {
         const originalRefreshStructure =
             useVaultStore.getState().refreshStructure;

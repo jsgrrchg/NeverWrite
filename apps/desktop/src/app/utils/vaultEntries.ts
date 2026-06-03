@@ -432,7 +432,18 @@ async function buildVaultEntryTab(
         };
     }
 
-    if (getVaultEntryViewerKind(entry) === "image") {
+    const viewerKind = getVaultEntryViewerKind(entry);
+
+    if (viewerKind === "map") {
+        return {
+            id: crypto.randomUUID(),
+            kind: "map",
+            relativePath: entry.relative_path,
+            title: entry.title || entry.file_name,
+        };
+    }
+
+    if (viewerKind === "image") {
         return {
             id: crypto.randomUUID(),
             kind: "file",
@@ -447,7 +458,7 @@ async function buildVaultEntryTab(
         };
     }
 
-    if (getVaultEntryViewerKind(entry) === "html") {
+    if (viewerKind === "html") {
         return {
             id: crypto.randomUUID(),
             kind: "file",
