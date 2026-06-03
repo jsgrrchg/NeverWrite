@@ -298,34 +298,31 @@ describe("session config options", () => {
             expect(configUpdate).toBeUndefined();
         });
     });
-    describe("unstable_setSessionModel sends config_option_update", () => {
+    describe("setSessionConfigOption(model) returns updated configOptions", () => {
         beforeEach(() => {
             populateSession();
         });
-        it("sends config_option_update when model is changed via setSessionModel", async () => {
-            await agent.unstable_setSessionModel({
+        it("returns configOptions with the new model when changed", async () => {
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-sonnet-4-6",
+                configId: "model",
+                value: "claude-sonnet-4-6",
             });
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            expect(configUpdate).toBeDefined();
-            expect(configUpdate?.update).toMatchObject({
-                sessionUpdate: "config_option_update",
-                configOptions: expect.arrayContaining([
-                    expect.objectContaining({ id: "model", currentValue: "claude-sonnet-4-6" }),
-                ]),
-            });
+            expect(response.configOptions).toEqual(expect.arrayContaining([
+                expect.objectContaining({ id: "model", currentValue: "claude-sonnet-4-6" }),
+            ]));
         });
         it("updates stored configOptions currentValue when model changes", async () => {
-            await agent.unstable_setSessionModel({
+            await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-sonnet-4-6",
+                configId: "model",
+                value: "claude-sonnet-4-6",
             });
             const session = agent.sessions[SESSION_ID];
             const modelOption = session.configOptions.find((o) => o.id === "model");
             expect(modelOption?.currentValue).toBe("claude-sonnet-4-6");
         });
-        it("includes updated effort in config_option_update when model drops effort support", async () => {
+        it("drops effort from returned configOptions when model drops effort support", async () => {
             const session = agent.sessions[SESSION_ID];
             session.modelInfos = [
                 {
@@ -342,17 +339,16 @@ describe("session config options", () => {
                     supportsEffort: false,
                 },
             ];
-            await agent.unstable_setSessionModel({
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-sonnet-4-6",
+                configId: "model",
+                value: "claude-sonnet-4-6",
             });
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            expect(configUpdate).toBeDefined();
-            const effortOption = (configUpdate?.update).configOptions.find((o) => o.id === "effort");
+            const effortOption = response.configOptions.find((o) => o.id === "effort");
             expect(effortOption).toBeUndefined();
             expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
         });
-        it("clamps effort in config_option_update when new model has different supported levels", async () => {
+        it("clamps effort in returned configOptions when new model has different supported levels", async () => {
             // Set current effort to "max" which the new model won't support
             const session = agent.sessions[SESSION_ID];
             const effortOpt = session.configOptions.find((o) => o.id === "effort");
@@ -374,28 +370,28 @@ describe("session config options", () => {
                     supportedEffortLevels: ["low", "medium", "high"],
                 },
             ];
-            await agent.unstable_setSessionModel({
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-sonnet-4-6",
+                configId: "model",
+                value: "claude-sonnet-4-6",
             });
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            const effortOption = (configUpdate?.update).configOptions.find((o) => o.id === "effort");
+            const effortOption = response.configOptions.find((o) => o.id === "effort");
             expect(effortOption).toBeDefined();
-            expect(effortOption.currentValue).toBe("default");
+            expect(effortOption?.currentValue).toBe("default");
             expect(applyFlagSettingsSpy).toHaveBeenCalledWith({ effortLevel: null });
         });
-        it("preserves effort in config_option_update when new model supports same level", async () => {
+        it("preserves effort in returned configOptions when new model supports same level", async () => {
             // Set effort to "low" first
             const session = agent.sessions[SESSION_ID];
             const effortOpt = session.configOptions.find((o) => o.id === "effort");
             if (effortOpt)
                 effortOpt.currentValue = "low";
-            await agent.unstable_setSessionModel({
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-sonnet-4-6",
+                configId: "model",
+                value: "claude-sonnet-4-6",
             });
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            const effortOption = (configUpdate?.update).configOptions.find((o) => o.id === "effort");
+            const effortOption = response.configOptions.find((o) => o.id === "effort");
             expect(effortOption?.currentValue).toBe("low");
             // Effort didn't change, so applyFlagSettings should NOT be called
             expect(applyFlagSettingsSpy).not.toHaveBeenCalled();
@@ -658,10 +654,11 @@ describe("session config options", () => {
             const session = agent.sessions[SESSION_ID];
             expect(session.configOptions.find((o) => o.id === "mode")?.currentValue).toBe("plan");
         });
-        it("setSessionModel also syncs configOptions", async () => {
-            await agent.unstable_setSessionModel({
+        it("setSessionConfigOption(model) also syncs configOptions", async () => {
+            await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-sonnet-4-6",
+                configId: "model",
+                value: "claude-sonnet-4-6",
             });
             const session = agent.sessions[SESSION_ID];
             expect(session.configOptions.find((o) => o.id === "model")?.currentValue).toBe("claude-sonnet-4-6");
@@ -773,38 +770,16 @@ describe("session config options", () => {
         });
         it("drops `auto` from available modes when switching to Haiku", async () => {
             setupHaikuOpusSession("default");
-            await agent.unstable_setSessionModel({
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-haiku-4-5",
+                configId: "model",
+                value: "claude-haiku-4-5",
             });
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            expect(configUpdate).toBeDefined();
-            const modeOption = (configUpdate?.update).configOptions.find((o) => o.id === "mode");
+            const modeOption = response.configOptions.find((o) => o.id === "mode");
             expect(modeOption).toBeDefined();
             const modeValues = modeOption.options.map((o) => o.value);
             expect(modeValues).not.toContain("auto");
             expect(modeValues).toEqual(expect.arrayContaining(["default", "acceptEdits", "plan", "dontAsk"]));
-        });
-        it("clamps to `default` and emits current_mode_update when Opus(auto) → Haiku", async () => {
-            setupHaikuOpusSession("auto");
-            await agent.unstable_setSessionModel({
-                sessionId: SESSION_ID,
-                modelId: "claude-haiku-4-5",
-            });
-            // SDK was synced to "default".
-            expect(setPermissionModeSpy).toHaveBeenCalledWith("default");
-            // current_mode_update was emitted before config_option_update so a
-            // client applying notifications in order observes the mode change
-            // before re-rendering the config-option list.
-            const modeUpdateIdx = sessionUpdates.findIndex((n) => n.update.sessionUpdate === "current_mode_update");
-            const configUpdateIdx = sessionUpdates.findIndex((n) => n.update.sessionUpdate === "config_option_update");
-            expect(modeUpdateIdx).toBeGreaterThanOrEqual(0);
-            expect(configUpdateIdx).toBeGreaterThanOrEqual(0);
-            expect(modeUpdateIdx).toBeLessThan(configUpdateIdx);
-            expect(sessionUpdates[modeUpdateIdx].update.currentModeId).toBe("default");
-            // configOptions reflect the clamped mode.
-            const modeOption = sessionUpdates[configUpdateIdx].update.configOptions.find((o) => o.id === "mode");
-            expect(modeOption.currentValue).toBe("default");
         });
         it("re-adds `auto` when switching from Haiku back to Opus", async () => {
             const session = setupHaikuOpusSession("default");
@@ -817,13 +792,13 @@ describe("session config options", () => {
                 name: m.name,
                 description: m.description,
             }));
-            await agent.unstable_setSessionModel({
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-opus-4-5",
+                configId: "model",
+                value: "claude-opus-4-5",
             });
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            expect(configUpdate).toBeDefined();
-            const modeOption = (configUpdate?.update).configOptions.find((o) => o.id === "mode");
+            const modeOption = response.configOptions.find((o) => o.id === "mode");
+            expect(modeOption).toBeDefined();
             const modeValues = modeOption.options.map((o) => o.value);
             expect(modeValues).toContain("auto");
             // The current mode ("default") is still valid on Opus, so no
@@ -833,23 +808,23 @@ describe("session config options", () => {
         });
         it("preserves the current mode when it remains valid after a model switch", async () => {
             setupHaikuOpusSession("plan");
-            await agent.unstable_setSessionModel({
+            const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,
-                modelId: "claude-haiku-4-5",
+                configId: "model",
+                value: "claude-haiku-4-5",
             });
             // `plan` is in availableModes for both Opus and Haiku, so no clamp.
             expect(setPermissionModeSpy).not.toHaveBeenCalledWith("default");
             const modeUpdates = sessionUpdates.filter((n) => n.update.sessionUpdate === "current_mode_update");
             expect(modeUpdates).toHaveLength(0);
-            const configUpdate = sessionUpdates.find((n) => n.update.sessionUpdate === "config_option_update");
-            const modeOption = (configUpdate?.update).configOptions.find((o) => o.id === "mode");
+            const modeOption = response.configOptions.find((o) => o.id === "mode");
             expect(modeOption.currentValue).toBe("plan");
         });
         it("clamps mode and emits current_mode_update via setSessionConfigOption(model)", async () => {
-            // Mirrors the unstable_setSessionModel(auto → Haiku) test, but goes
-            // through the request/response API. The `current_mode_update` side
-            // effect must still fire so clients learn about the clamp regardless of
-            // which entry point triggered the model switch.
+            // Switching Opus(auto) → Haiku clamps the mode to "default". The
+            // `current_mode_update` side effect must fire so clients learn about the
+            // clamp even though the request/response API returns the new
+            // configOptions rather than emitting a config_option_update.
             setupHaikuOpusSession("auto");
             const response = await agent.setSessionConfigOption({
                 sessionId: SESSION_ID,

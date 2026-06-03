@@ -266,8 +266,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.39.0` (`edde96ebafac2ea5d1c879c17459453472d82916`) with generated `dist/` runtime files required by desktop packaging |
-| `src/acp-agent.ts`, `dist/acp-agent.js` | Replaced upstream local-command metadata regex with a linear scanner to avoid polynomial runtime on uncontrolled input |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.40.0` (`f1736a9371bd2d33e10b2a0b31c65d9c0cf4a18b`) with generated `dist/` runtime files required by desktop packaging |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at

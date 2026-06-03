@@ -92,39 +92,39 @@ const LOCAL_ONLY_COMMANDS = new Set(["/context", "/heapdump", "/extra-usage"]);
 // payload in these XML-like markers that the CLI uses for its own display.
 // The live prompt loop drops them; replay must strip them too or they leak
 // into the UI on session/load.
-const LOCAL_COMMAND_TAG_NAMES = [
+const LOCAL_COMMAND_MARKERS = [
     "command-name",
     "command-message",
     "command-args",
     "local-command-stdout",
     "local-command-stderr",
-];
+].map((tag) => ({ open: `<${tag}>`, close: `</${tag}>` }));
+// Single-pass scanner that removes each `<tag>…</tag>` marker (matching the
+// nearest closing tag of the same name, like a lazy regex would).
 function stripMarkerTags(text) {
-    let stripped = "";
-    let cursor = 0;
-    while (cursor < text.length) {
-        const openStart = text.indexOf("<", cursor);
-        if (openStart === -1) {
-            stripped += text.slice(cursor);
-            break;
+    const dead = new Set();
+    let result = "";
+    let copiedUpTo = 0;
+    let i = 0;
+    while (i < text.length) {
+        if (text[i] === "<") {
+            const marker = LOCAL_COMMAND_MARKERS.find((m) => !dead.has(m.open) && text.startsWith(m.open, i));
+            if (marker) {
+                const end = text.indexOf(marker.close, i + marker.open.length);
+                if (end !== -1) {
+                    result += text.slice(copiedUpTo, i);
+                    i = copiedUpTo = end + marker.close.length;
+                    continue;
+                }
+                // No closing marker remains anywhere ahead, and `indexOf` only ever
+                // searches forward from here on, so stop treating this tag as an
+                // opener — that avoids rescanning the tail for it on every match.
+                dead.add(marker.open);
+            }
         }
-        const tagName = LOCAL_COMMAND_TAG_NAMES.find((name) => text.startsWith(`<${name}>`, openStart));
-        if (!tagName) {
-            stripped += text.slice(cursor, openStart + 1);
-            cursor = openStart + 1;
-            continue;
-        }
-        const openEnd = openStart + tagName.length + 2;
-        const closeTag = `</${tagName}>`;
-        const closeStart = text.indexOf(closeTag, openEnd);
-        if (closeStart === -1) {
-            stripped += text.slice(cursor);
-            break;
-        }
-        stripped += text.slice(cursor, openStart);
-        cursor = closeStart + closeTag.length;
+        i++;
     }
-    return stripped;
+    return result + text.slice(copiedUpTo);
 }
 /**
  * Return user-message content with local-command marker tags removed, or
@@ -1043,19 +1043,6 @@ export class ClaudeAcpAgent {
         await deleteSession(params.sessionId);
         return {};
     }
-    async unstable_setSessionModel(params) {
-        const session = this.sessions[params.sessionId];
-        if (!session) {
-            throw new Error("Session not found");
-        }
-        // Resolve aliases (e.g. "opus", "opus[1m]") to canonical model IDs so
-        // downstream lookups in modelInfos succeed and the effort option isn't
-        // silently dropped.
-        const resolved = resolveModelPreference(session.modelInfos, params.modelId);
-        const modelId = resolved?.value ?? params.modelId;
-        await session.query.setModel(modelId);
-        await this.updateConfigOption(params.sessionId, "model", modelId);
-    }
     async setSessionMode(params) {
         if (!this.sessions[params.sessionId]) {
             throw new Error("Session not found");
@@ -1438,7 +1425,6 @@ export class ClaudeAcpAgent {
                 return {
                     sessionId: params.sessionId,
                     modes: existingSession.modes,
-                    models: existingSession.models,
                     configOptions: existingSession.configOptions,
                 };
             }
@@ -1458,7 +1444,6 @@ export class ClaudeAcpAgent {
         return {
             sessionId: response.sessionId,
             modes: response.modes,
-            models: response.models,
             configOptions: response.configOptions,
         };
     }
@@ -1770,7 +1755,6 @@ export class ClaudeAcpAgent {
         };
         return {
             sessionId,
-            models,
             modes,
             configOptions,
         };

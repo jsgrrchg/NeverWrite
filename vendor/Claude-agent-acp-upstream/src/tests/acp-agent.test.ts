@@ -1204,16 +1204,6 @@ describe("stripLocalCommandMetadata", () => {
     expect(result).toEqual([{ type: "text", text: "hi" }]);
   });
 
-  it("leaves unterminated marker tags unchanged", () => {
-    const text = "<command-args>opus";
-    expect(stripLocalCommandMetadata(text)).toBe(text);
-  });
-
-  it("handles many marker-looking fragments without dropping real prose", () => {
-    const markerLikeNoise = "<command-args".repeat(5000);
-    expect(stripLocalCommandMetadata(`${markerLikeNoise}hi`)).toBe(`${markerLikeNoise}hi`);
-  });
-
   it("leaves non-text blocks alone", () => {
     const image = { type: "image", source: { type: "base64", data: "", media_type: "image/png" } };
     const result = stripLocalCommandMetadata([
