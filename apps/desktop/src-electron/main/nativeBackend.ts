@@ -258,6 +258,7 @@ function buildSidecarPath() {
         "/bin",
         "/usr/sbin",
         "/sbin",
+        path.join(home, ".grok", "bin"),
         path.join(home, ".local", "bin"),
         path.join(home, ".bun", "bin"),
         path.join(home, ".cargo", "bin"),

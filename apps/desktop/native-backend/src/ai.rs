@@ -1031,9 +1031,16 @@ impl NativeAi {
                     Some(message) => setup_load_error_status_for(&runtime_id, message),
                     None => setup_status_for(&runtime_id, setup_status),
                 };
-                let (setup_status, setup_error) = match status {
-                    Ok(status) => (Some(status), None),
-                    Err(error) => (None, Some(error)),
+                let (setup_status, setup_error, resolution_display) = match status {
+                    Ok(status) => {
+                        let resolution_display = if status.binary_ready {
+                            status.binary_path.clone()
+                        } else {
+                            None
+                        };
+                        (Some(status), None, resolution_display)
+                    }
+                    Err(error) => (None, Some(error), None),
                 };
                 json!({
                     "runtime_id": runtime_id,
@@ -1044,8 +1051,7 @@ impl NativeAi {
                     "launch_args": runtime_definition(&runtime_id)
                         .map(|definition| definition.acp_args.to_vec())
                         .unwrap_or_default(),
-                    "resolution_display": find_program_on_path(default_executable_name(&runtime_id))
-                        .map(|path| path.display().to_string()),
+                    "resolution_display": resolution_display,
                     "auth": runtime_auth_diagnostics(&runtime_id),
                 })
             })
@@ -4971,7 +4977,7 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
         };
     }
 
-    if let Some(path) = resolve_macos_homebrew_runtime_fallback(runtime_id) {
+    if let Some(path) = resolve_known_runtime_fallback(runtime_id) {
         return ResolvedAcpCommand {
             display: Some(path.display().to_string()),
             program: Some(path),
@@ -5051,6 +5057,23 @@ fn runtime_binary_name(base: &str) -> String {
     } else {
         base.to_string()
     }
+}
+
+fn resolve_known_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
+    resolve_grok_official_runtime_fallback(runtime_id)
+        .or_else(|| resolve_macos_homebrew_runtime_fallback(runtime_id))
+}
+
+fn resolve_grok_official_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
+    if runtime_id != GROK_RUNTIME_ID {
+        return None;
+    }
+    let home = home_dir()?;
+    let candidate = home
+        .join(".grok")
+        .join("bin")
+        .join(runtime_binary_name(default_executable_name(runtime_id)));
+    find_executable_candidate(candidate, &executable_extensions_for_path_lookup())
 }
 
 #[cfg(target_os = "macos")]
@@ -7601,6 +7624,70 @@ mod tests {
             .iter()
             .any(|capability| capability == "grok-login"));
         assert!(diagnostic_executable_names().contains(&"grok"));
+    }
+
+    #[test]
+    fn grok_setup_status_finds_official_user_install_path() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous_path = std::env::var_os("PATH");
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        let previous_override = std::env::var_os("NEVERWRITE_GROK_ACP_BIN");
+        let temp = tempfile::tempdir().unwrap();
+        let grok_bin = temp
+            .path()
+            .join(".grok")
+            .join("bin")
+            .join(runtime_binary_name("grok"));
+        fs::create_dir_all(grok_bin.parent().unwrap()).unwrap();
+        fs::write(&grok_bin, "").unwrap();
+
+        std::env::set_var("PATH", "");
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var("USERPROFILE", temp.path());
+        std::env::remove_var("NEVERWRITE_GROK_ACP_BIN");
+
+        let status = setup_status_for(GROK_RUNTIME_ID, RuntimeSetupState::default());
+        let spec = acp_process_spec(
+            GROK_RUNTIME_ID,
+            &RuntimeSetupState::default(),
+            temp.path().into(),
+        );
+
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match previous_override {
+            Some(value) => std::env::set_var("NEVERWRITE_GROK_ACP_BIN", value),
+            None => std::env::remove_var("NEVERWRITE_GROK_ACP_BIN"),
+        }
+
+        let status = status.unwrap();
+        let spec = spec.unwrap();
+        assert!(status.binary_ready);
+        assert_eq!(status.binary_source, AiRuntimeBinarySource::Env);
+        let grok_bin_display = grok_bin.to_string_lossy().into_owned();
+        assert_eq!(
+            status.binary_path.as_deref(),
+            Some(grok_bin_display.as_str())
+        );
+        assert_eq!(spec.program, grok_bin);
+        assert_eq!(
+            spec.args,
+            GROK_ACP_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
