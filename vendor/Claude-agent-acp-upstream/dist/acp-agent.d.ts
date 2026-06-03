@@ -1,4 +1,4 @@
-import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModelState, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModelRequest, SetSessionModelResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, TerminalHandle, TerminalOutputResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
+import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, TerminalHandle, TerminalOutputResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
 import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
@@ -18,6 +18,18 @@ type AccumulatedUsage = {
     outputTokens: number;
     cachedReadTokens: number;
     cachedWriteTokens: number;
+};
+/** Internal model-selection state. Mirrors the shape the ACP SDK exposed as
+ *  `SessionModelState` before model selection moved entirely into
+ *  `SessionConfigOption` (category "model"). Retained internally to track the
+ *  current model and build the "model" config option. */
+type SessionModelState = {
+    availableModels: Array<{
+        modelId: string;
+        name: string;
+        description?: string;
+    }>;
+    currentModelId: string;
 };
 type Session = {
     query: Query;
@@ -189,7 +201,6 @@ export declare class ClaudeAcpAgent implements Agent {
     dispose(): Promise<void>;
     closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse>;
     unstable_deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse>;
-    unstable_setSessionModel(params: SetSessionModelRequest): Promise<SetSessionModelResponse | void>;
     setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse>;
     setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse>;
     private applySessionMode;
