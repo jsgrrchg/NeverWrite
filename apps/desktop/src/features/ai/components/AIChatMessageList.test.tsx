@@ -204,7 +204,21 @@ describe("AIChatMessageList streaming run indicator", () => {
         });
     });
 
-    it("bottom-aligns short transcripts near the composer", () => {
+    it("keeps empty new chats top-aligned", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-empty"
+                messages={[]}
+                status="idle"
+            />,
+        );
+
+        expect(
+            view.container.querySelector('[data-selectable="true"]'),
+        ).not.toHaveClass("mt-auto");
+    });
+
+    it("keeps short transcripts top-aligned", () => {
         const view = renderComponent(
             <AIChatMessageList
                 sessionId="session-short"
@@ -216,7 +230,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(getScrollContainer(view.container)).toHaveClass("flex-col");
         expect(
             view.container.querySelector('[data-selectable="true"]'),
-        ).toHaveClass("mt-auto");
+        ).not.toHaveClass("mt-auto");
     });
 
     it("keeps the transcript top-aligned while older messages can load", () => {
