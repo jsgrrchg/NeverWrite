@@ -27,6 +27,16 @@ const ZERO_USAGE = Object.freeze({
     cache_creation_input_tokens: 0,
 });
 const DEFAULT_CONTEXT_WINDOW = 200000;
+/** Floor after `session/cancel` before the adapter forces the active prompt
+ *  loop to return "cancelled". `query.interrupt()` normally makes the SDK
+ *  yield a trailing idle within milliseconds, and the loop returns through its
+ *  usual path — so this timer is armed and cleared, never fired, on healthy
+ *  cancels. It only trips when the SDK is genuinely wedged (e.g. a
+ *  `TaskOutput { block: true }` poll against a hung background task — issue
+ *  #680) and never yields. The value is deliberately loose: it's an
+ *  "obviously stuck" ceiling, not a guess at interrupt latency, so it can't
+ *  pre-empt a slow-but-healthy interrupt. */
+const DEFAULT_FORCE_CANCEL_GRACE_MS = 30_000;
 /** Compute a stable fingerprint of the session-defining params so we can
  *  detect when a loadSession/resumeSession call requires tearing down and
  *  recreating the underlying Query process.  MCP servers are sorted by name
@@ -233,10 +243,12 @@ export function describeAlwaysAllow(suggestions, toolName) {
 // Implement the ACP Agent interface
 export class ClaudeAcpAgent {
     constructor(client, logger) {
-        this.backgroundTerminals = {};
+        /** Grace period before a `session/cancel` forces a wedged prompt loop to
+         *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
+         *  tests can shrink it. */
+        this.forceCancelGraceMs = DEFAULT_FORCE_CANCEL_GRACE_MS;
         this.sessions = {};
         this.client = client;
-        this.toolUseCache = {};
         this.logger = logger ?? console;
     }
     async initialize(request) {
@@ -463,6 +475,12 @@ export class ClaudeAcpAgent {
         // forward it to clients as structured `data`, sparing them from
         // pattern-matching on the human-readable message text.
         let lastAssistantError;
+        // When a streaming classifier refuses a turn, the assistant message carries
+        // stop_reason "refusal" and structured stop_details. We capture the
+        // human-readable explanation here so the terminal `result` can surface it
+        // to the user (the refused assistant message itself usually has no content)
+        // and report ACP's dedicated `refusal` stop reason.
+        let lastRefusalExplanation = null;
         // Tracks whether we're inside a compaction. The SDK emits the terminal
         // `status` (compact_result success/failed) twice for a single failed
         // compaction, and the two messages are indistinguishable — so we report the
@@ -470,6 +488,17 @@ export class ClaudeAcpAgent {
         // `compacting` status sets it again, so every distinct compaction (e.g.
         // repeated auto-compactions in a long turn) is still shown.
         let compactionInProgress = false;
+        // Holds the Anthropic API message id of the assistant message currently
+        // being streamed, captured from `message_start` so every streamed chunk can
+        // be tagged with it. We use the API message id rather than the
+        // per-`stream_event` uuid because the same id is also present on the
+        // consolidated assistant message and in the persisted transcript — so a turn
+        // keeps the same ACP `messageId` whether it is streamed live or replayed
+        // from history. The per-event uuid is unique per event and never persisted.
+        // A single value suffices because every streaming partial arrives with
+        // `parent_tool_use_id === null` (subagent work is folded into tool-result
+        // messages, never surfaced as partial streams).
+        let currentStreamMessageId;
         const userMessage = promptToClaude(params);
         const promptUuid = randomUUID();
         userMessage.uuid = promptUuid;
@@ -495,9 +524,26 @@ export class ClaudeAcpAgent {
         let handedOff = false;
         let errored = false;
         let stopReason = "end_turn";
+        // Wake-up channel so cancel() can force this loop to return "cancelled"
+        // even when query.next() is wedged and never yields again (issue #680).
+        const cancelController = new AbortController();
+        session.cancelController = cancelController;
+        const cancelled = new Promise((resolve) => {
+            cancelController.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
         try {
             while (true) {
-                const { value: message, done } = await session.query.next();
+                const nextMessage = session.query.next();
+                const next = await Promise.race([nextMessage, cancelled]);
+                if (cancelController.signal.aborted) {
+                    // The SDK never yielded after interrupt() (e.g. a wedged TaskOutput
+                    // block). Abandon the in-flight next() — swallowing any later
+                    // rejection so it can't surface as an unhandled rejection — and
+                    // honor the cancel per the ACP contract.
+                    void nextMessage.catch(() => { });
+                    return { stopReason: "cancelled" };
+                }
+                const { value: message, done } = next;
                 if (done || !message) {
                     if (session.cancelled) {
                         return { stopReason: "cancelled" };
@@ -554,28 +600,35 @@ export class ClaudeAcpAgent {
                                 break;
                             }
                             case "compact_boundary": {
-                                // Send used:0 immediately so the client doesn't keep showing
-                                // the stale pre-compaction context size until the next turn.
+                                // Refresh the displayed usage immediately so the client doesn't
+                                // keep showing the stale pre-compaction size (e.g. "944k/1m")
+                                // right after the user sees "Compacting completed", which is
+                                // confusing and wrong.
                                 //
-                                // This is a deliberate approximation: we don't know the exact
-                                // post-compaction token count (only the SDK's next API call
-                                // reveals that). But used:0 is directionally correct — context
-                                // just dropped dramatically — and the real value replaces it
-                                // within seconds when the next result message arrives.
-                                // The alternative (no update) leaves the client showing e.g.
-                                // "944k/1m" right after the user sees "Compacting completed",
-                                // which is confusing and wrong.
+                                // Prefer the SDK's authoritative post-compaction `used` via
+                                // getContextUsage — it reflects the real retained context
+                                // (system prompt + tools + surviving messages), which the
+                                // per-message API usage numbers can't give us until the next
+                                // turn's result. If the control request fails, fall back to the
+                                // used:0 approximation: directionally correct (context just
+                                // dropped dramatically) and replaced within seconds by the next
+                                // result message.
+                                //
+                                // `size` keeps coming from session.contextWindowSize (learned
+                                // from modelUsage / the model heuristic) — getContextUsage's
+                                // window field under-reports extended 1M windows.
                                 //
                                 // The "Compacting completed." text is emitted from the `status`
                                 // handler (keyed on `compact_result`), not here, so the failure
                                 // path gets a message too.
-                                lastAssistantTotalUsage = 0;
+                                const usedTokens = await fetchContextUsedTokens(session.query, this.logger);
                                 lastAssistantUsage = null;
+                                lastAssistantTotalUsage = usedTokens ?? 0;
                                 await this.client.sessionUpdate({
                                     sessionId: message.session_id,
                                     update: {
                                         sessionUpdate: "usage_update",
-                                        used: 0,
+                                        used: lastAssistantTotalUsage,
                                         size: session.contextWindowSize,
                                     },
                                 });
@@ -637,6 +690,63 @@ export class ClaudeAcpAgent {
                                 });
                                 break;
                             }
+                            case "commands_changed": {
+                                // Push the full slash-command list after a mid-session change
+                                // (e.g. skills discovered dynamically as the agent works in a
+                                // subdirectory). The client should REPLACE its cached command
+                                // list with this payload: supportedCommands() is captured once
+                                // at initialize and never reflects mid-session changes, so we
+                                // forward message.commands directly rather than re-querying.
+                                await this.client.sessionUpdate({
+                                    sessionId: message.session_id,
+                                    update: {
+                                        sessionUpdate: "available_commands_update",
+                                        availableCommands: getAvailableSlashCommands(message.commands),
+                                    },
+                                });
+                                break;
+                            }
+                            case "mirror_error": {
+                                // The SDK failed to persist session history (SessionStore
+                                // append rejected/timed out after retry) — potential data loss
+                                // the user should know about rather than a silent gap on
+                                // resume. Log it and surface a warning in the conversation.
+                                this.logger.error(`Session ${message.session_id}: failed to persist history: ${message.error}`);
+                                break;
+                            }
+                            case "permission_denied": {
+                                // A tool call was auto-denied (by a rule, the classifier,
+                                // dontAsk mode, etc.) before running. The tool_use block was
+                                // already emitted as a `tool_call`, so mark it failed with the
+                                // rejection reason — otherwise the client shows a tool call
+                                // that silently never resolves.
+                                const reason = message.decision_reason ?? message.message;
+                                await this.client.sessionUpdate({
+                                    sessionId: message.session_id,
+                                    update: {
+                                        sessionUpdate: "tool_call_update",
+                                        toolCallId: message.tool_use_id,
+                                        status: "failed",
+                                        content: [
+                                            {
+                                                type: "content",
+                                                content: { type: "text", text: `Permission denied: ${reason}` },
+                                            },
+                                        ],
+                                        _meta: {
+                                            claudeCode: {
+                                                toolName: message.tool_name,
+                                                toolResponse: {
+                                                    decisionReasonType: message.decision_reason_type,
+                                                    decisionReason: message.decision_reason,
+                                                    message: message.message,
+                                                },
+                                            },
+                                        },
+                                    },
+                                });
+                                break;
+                            }
                             case "hook_started":
                             case "hook_progress":
                             case "hook_response":
@@ -649,8 +759,6 @@ export class ClaudeAcpAgent {
                             case "plugin_install":
                             case "notification":
                             case "api_retry":
-                            case "mirror_error":
-                            case "permission_denied":
                             case "thinking_tokens":
                                 // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
                                 break;
@@ -704,6 +812,25 @@ export class ClaudeAcpAgent {
                             }
                             break;
                         }
+                        // A refusal can arrive on any result subtype (and may even set
+                        // is_error), so handle it before the subtype switch — otherwise the
+                        // is_error throw below would surface it as an internal error. The
+                        // refused assistant message carries no visible content, so surface
+                        // the classifier's explanation (when available) and report ACP's
+                        // dedicated `refusal` stop reason.
+                        if (message.stop_reason === "refusal" && !isTaskNotification) {
+                            if (lastRefusalExplanation) {
+                                await this.client.sessionUpdate({
+                                    sessionId: params.sessionId,
+                                    update: {
+                                        sessionUpdate: "agent_message_chunk",
+                                        content: { type: "text", text: lastRefusalExplanation },
+                                    },
+                                });
+                            }
+                            stopReason = "refusal";
+                            break;
+                        }
                         switch (message.subtype) {
                             case "success": {
                                 if (message.result.includes("Please run /login")) {
@@ -723,7 +850,7 @@ export class ClaudeAcpAgent {
                                 // Task-notification followups never originate from a user
                                 // slash command, so skip the forwarding for them.
                                 if (isLocalOnlyCommand && !isTaskNotification) {
-                                    for (const notification of toAcpNotifications(message.result, "assistant", params.sessionId, this.toolUseCache, this.client, this.logger)) {
+                                    for (const notification of toAcpNotifications(message.result, "assistant", params.sessionId, session.toolUseCache, this.client, this.logger)) {
                                         await this.client.sessionUpdate(notification);
                                     }
                                 }
@@ -761,6 +888,12 @@ export class ClaudeAcpAgent {
                         break;
                     }
                     case "stream_event": {
+                        // `message_start` carries the Anthropic API message id; capture it
+                        // so the streamed chunks that follow (whose delta events don't carry
+                        // it) can all be tagged with the same, replay-stable id.
+                        if (message.event.type === "message_start") {
+                            currentStreamMessageId = message.event.message.id || undefined;
+                        }
                         if (message.parent_tool_use_id === null &&
                             (message.event.type === "message_start" || message.event.type === "message_delta")) {
                             if (message.event.type === "message_start") {
@@ -808,10 +941,11 @@ export class ClaudeAcpAgent {
                                 });
                             }
                         }
-                        for (const notification of streamEventToAcpNotifications(message, params.sessionId, this.toolUseCache, this.client, this.logger, {
+                        for (const notification of streamEventToAcpNotifications(message, params.sessionId, session.toolUseCache, this.client, this.logger, {
                             clientCapabilities: this.clientCapabilities,
                             cwd: session.cwd,
                             taskState: session.taskState,
+                            messageId: currentStreamMessageId,
                         })) {
                             await this.client.sessionUpdate(notification);
                         }
@@ -821,6 +955,14 @@ export class ClaudeAcpAgent {
                     case "assistant": {
                         if (session.cancelled) {
                             break;
+                        }
+                        // Record the ACP messageId -> SDK uuid mapping for this message. The
+                        // consolidated message carries both ids, so this is where we learn
+                        // the uuid that the SDK's rewind/resume APIs key on for the id we
+                        // hand clients. Not read yet (see Session.messageIdToUuid).
+                        const mappedMessageId = messageIdForGrouping(message);
+                        if (mappedMessageId && typeof message.uuid === "string" && message.uuid.length > 0) {
+                            session.messageIdToUuid.set(mappedMessageId, message.uuid);
                         }
                         // Check for prompt replay
                         if (message.type === "user" && "uuid" in message && message.uuid) {
@@ -854,6 +996,9 @@ export class ClaudeAcpAgent {
                             if (message.error) {
                                 lastAssistantError = message.error;
                             }
+                            if (message.message.stop_reason === "refusal") {
+                                lastRefusalExplanation = message.message.stop_details?.explanation ?? null;
+                            }
                         }
                         // Strip <command-*>/<local-command-stdout> markers and render any
                         // remaining prose. Skill bodies and built-in slash commands (e.g.
@@ -865,11 +1010,12 @@ export class ClaudeAcpAgent {
                             message.message.content.includes("<local-command-stdout>")) {
                             const stripped = stripLocalCommandMetadata(message.message.content);
                             if (typeof stripped === "string") {
-                                for (const notification of toAcpNotifications(stripped, message.message.role, params.sessionId, this.toolUseCache, this.client, this.logger, {
+                                for (const notification of toAcpNotifications(stripped, message.message.role, params.sessionId, session.toolUseCache, this.client, this.logger, {
                                     clientCapabilities: this.clientCapabilities,
                                     parentToolUseId: message.parent_tool_use_id,
                                     cwd: session.cwd,
                                     taskState: session.taskState,
+                                    messageId: messageIdForGrouping(message),
                                 })) {
                                     await this.client.sessionUpdate(notification);
                                 }
@@ -907,21 +1053,51 @@ export class ClaudeAcpAgent {
                             ? // Handled by stream events above
                                 message.message.content.filter((item) => !["text", "thinking"].includes(item.type))
                             : message.message.content;
-                        for (const notification of toAcpNotifications(content, message.message.role, params.sessionId, this.toolUseCache, this.client, this.logger, {
+                        for (const notification of toAcpNotifications(content, message.message.role, params.sessionId, session.toolUseCache, this.client, this.logger, {
                             clientCapabilities: this.clientCapabilities,
                             parentToolUseId: message.parent_tool_use_id,
                             cwd: session.cwd,
                             taskState: session.taskState,
+                            messageId: messageIdForGrouping(message),
                         })) {
                             await this.client.sessionUpdate(notification);
                         }
                         break;
                     }
-                    case "tool_progress":
+                    case "tool_progress": {
+                        await this.client.sessionUpdate({
+                            sessionId: message.session_id,
+                            update: {
+                                sessionUpdate: "tool_call_update",
+                                toolCallId: message.tool_use_id,
+                                status: "in_progress",
+                                _meta: {
+                                    claudeCode: {
+                                        toolName: message.tool_name,
+                                        toolResponse: { elapsedTimeSeconds: message.elapsed_time_seconds },
+                                    },
+                                },
+                            },
+                        });
+                        break;
+                    }
+                    case "rate_limit_event": {
+                        if (lastAssistantTotalUsage !== null) {
+                            await this.client.sessionUpdate({
+                                sessionId: message.session_id,
+                                update: {
+                                    sessionUpdate: "usage_update",
+                                    used: lastAssistantTotalUsage,
+                                    size: session.contextWindowSize,
+                                    _meta: { "_claude/rateLimit": message.rate_limit_info },
+                                },
+                            });
+                        }
+                        break;
+                    }
                     case "tool_use_summary":
                     case "auth_status":
                     case "prompt_suggestion":
-                    case "rate_limit_event":
                         break;
                     default:
                         unreachable(message);
@@ -973,6 +1149,16 @@ export class ClaudeAcpAgent {
             throw error;
         }
         finally {
+            // The loop is returning — interrupt() succeeded or the prompt finished
+            // — so disarm the force-cancel backstop and release the wake-up channel
+            // (only if we still own it; a handoff installs the next prompt's).
+            if (session.forceCancelTimer) {
+                clearTimeout(session.forceCancelTimer);
+                session.forceCancelTimer = undefined;
+            }
+            if (session.cancelController === cancelController) {
+                session.cancelController = undefined;
+            }
             if (!handedOff) {
                 session.promptRunning = false;
                 if (errored) {
@@ -1008,6 +1194,27 @@ export class ClaudeAcpAgent {
             pending.resolve(true);
         }
         session.pendingMessages.clear();
+        // Arm a backstop before interrupting: if a prompt is actively consuming
+        // the query and interrupt() doesn't make the SDK yield (e.g. a wedged
+        // TaskOutput block — issue #680), force the loop to return "cancelled"
+        // after the floor elapses so the pending session/prompt still resolves per
+        // the ACP cancellation contract instead of hanging forever. The loop's
+        // `finally` clears this timer when interrupt() works and it returns through
+        // the normal idle path, so on healthy cancels it is armed but never fires.
+        //
+        // Arm at most once per turn: the floor is an absolute ceiling from the
+        // first cancel, so a client that re-sends cancel (each call still retries
+        // interrupt() below) can't keep pushing the deadline out.
+        if (session.promptRunning &&
+            session.cancelController &&
+            !session.cancelController.signal.aborted &&
+            !session.forceCancelTimer) {
+            const cancelController = session.cancelController;
+            session.forceCancelTimer = setTimeout(() => {
+                this.logger.error(`Session ${params.sessionId}: cancel floor elapsed without the SDK yielding; forcing "cancelled". The underlying query may still be wedged — a new session may be required.`);
+                cancelController.abort();
+            }, this.forceCancelGraceMs);
+        }
         await session.query.interrupt();
     }
     /** Cleanly tear down a session: cancel in-flight work, dispose resources,
@@ -1018,6 +1225,18 @@ export class ClaudeAcpAgent {
             return;
         }
         await this.cancel({ sessionId });
+        // cancel() arms the force-cancel floor and interrupts gracefully, but a
+        // wedged prompt loop only wakes when `cancelController` aborts — closing
+        // the query/abortController below doesn't touch it. Since we're tearing the
+        // session down anyway, wake the loop now so the in-flight prompt() resolves
+        // immediately instead of after the floor, and clear the timer so it can't
+        // outlive the deleted session (it isn't unref'd and would otherwise keep
+        // the event loop alive until it fires).
+        if (session.forceCancelTimer) {
+            clearTimeout(session.forceCancelTimer);
+            session.forceCancelTimer = undefined;
+        }
+        session.cancelController?.abort();
         session.settingsManager.dispose();
         session.abortController.abort();
         session.query.close();
@@ -1145,6 +1364,15 @@ export class ClaudeAcpAgent {
         const toolUseCache = {};
         const messages = await getSessionMessages(sessionId);
         for (const message of messages) {
+            // Backfill the ACP messageId -> SDK uuid mapping for messages we didn't
+            // observe live (resumed/loaded sessions), so rewind/resume can translate
+            // a client-supplied id without an extra getSessionMessages read. Not read
+            // yet (see Session.messageIdToUuid).
+            const replayMessageId = messageIdForGrouping(message);
+            const replaySession = this.sessions[sessionId];
+            if (replaySession && replayMessageId && message.uuid) {
+                replaySession.messageIdToUuid.set(replayMessageId, message.uuid);
+            }
             // @ts-expect-error - untyped in SDK but we handle all of these
             let content = message.message.content;
             // @ts-expect-error - untyped in SDK but we handle all of these
@@ -1162,6 +1390,7 @@ export class ClaudeAcpAgent {
                 clientCapabilities: this.clientCapabilities,
                 cwd: this.sessions[sessionId]?.cwd,
                 taskState: this.sessions[sessionId]?.taskState,
+                messageId: replayMessageId,
             })) {
                 await this.client.sessionUpdate(notification);
             }
@@ -1513,10 +1742,8 @@ export class ClaudeAcpAgent {
         // Extract options from _meta if provided
         const sessionMeta = params._meta;
         const userProvidedOptions = sessionMeta?.claudeCode?.options;
-        // Configure thinking tokens from environment variable
-        const maxThinkingTokens = process.env.MAX_THINKING_TOKENS
-            ? parseInt(process.env.MAX_THINKING_TOKENS, 10)
-            : undefined;
+        // Configure thinking behavior from environment variable
+        const thinking = resolveThinkingConfig(process.env.MAX_THINKING_TOKENS, this.logger);
         // Parse model configuration from environment (e.g. Bedrock model overrides)
         const modelConfig = parseModelConfig(process.env.CLAUDE_MODEL_CONFIG);
         // Disable this for now, not a great way to expose this over ACP at the moment (in progress work so we can revisit)
@@ -1535,7 +1762,7 @@ export class ClaudeAcpAgent {
         const options = {
             systemPrompt,
             settingSources: ["user", "project", "local"],
-            ...(maxThinkingTokens !== undefined && { maxThinkingTokens }),
+            ...(thinking !== undefined && { thinking }),
             ...userProvidedOptions,
             // CLAUDE_MODEL_CONFIG env var is a fallback for model
             // configuration (e.g. Bedrock model ID overrides). When the caller
@@ -1752,6 +1979,8 @@ export class ClaudeAcpAgent {
             emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
             contextWindowSize: inferContextWindowFromModel(models.currentModelId) ?? DEFAULT_CONTEXT_WINDOW,
             taskState,
+            toolUseCache: {},
+            messageIdToUuid: new Map(),
         };
         return {
             sessionId,
@@ -1993,11 +2222,16 @@ function tokenizeModelPreference(model) {
 function scoreModelMatch(model, tokens, contextHint) {
     const haystack = `${model.value} ${model.displayName}`.toLowerCase();
     let score = 0;
+    let nonHintMatched = false;
     for (const token of tokens) {
         if (haystack.includes(token)) {
+            if (token !== contextHint)
+                nonHintMatched = true;
             score += token === contextHint ? 3 : 1;
         }
     }
+    if (contextHint && !nonHintMatched)
+        return 0;
     return score;
 }
 function resolveModelPreference(models, preference) {
@@ -2266,6 +2500,42 @@ export function promptToClaude(prompt) {
     };
 }
 /**
+ * Resolves the ACP `messageId` for a Claude SDK message (live) or a persisted
+ * transcript message (replay) so chunk grouping is identical in both views.
+ *
+ * Assistant turns are keyed by the Anthropic API message id (`message.id`),
+ * which is identical at `message_start`, on the consolidated assistant message,
+ * and in the persisted transcript — unlike the per-`stream_event` uuid, which is
+ * unique per event and never persisted. User messages have no API id, but they
+ * are never streamed, so their (stable) SDK uuid is used instead. ACP message
+ * ids are opaque strings, so no particular format is required.
+ */
+export function messageIdForGrouping(message) {
+    if (message.type === "assistant") {
+        const inner = message.message;
+        const apiId = inner && typeof inner === "object" && "id" in inner
+            ? inner.id
+            : undefined;
+        if (typeof apiId === "string" && apiId.length > 0) {
+            return apiId;
+        }
+    }
+    return typeof message.uuid === "string" && message.uuid.length > 0 ? message.uuid : undefined;
+}
+/**
+ * Stamps an ACP `messageId` onto a session update, but only on the message/
+ * thought chunk variants that carry one — tool_call/plan/etc. updates never do.
+ * No-op when `messageId` is falsy, so callers can pass it through unconditionally.
+ */
+function applyMessageId(update, messageId) {
+    if (messageId &&
+        (update.sessionUpdate === "agent_message_chunk" ||
+            update.sessionUpdate === "user_message_chunk" ||
+            update.sessionUpdate === "agent_thought_chunk")) {
+        update.messageId = messageId;
+    }
+}
+/**
  * Convert an SDKAssistantMessage (Claude) to a SessionNotification (ACP).
  * Only handles text, image, and thinking chunks for now.
  */
@@ -2281,6 +2551,7 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                 text: content,
             },
         };
+        applyMessageId(update, options?.messageId);
         if (options?.parentToolUseId) {
             update._meta = {
                 ...update._meta,
@@ -2353,40 +2624,40 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                 else {
                     // Only register hooks on first encounter to avoid double-firing
                     if (registerHooks && !alreadyCached) {
+                        // Capture the tool name in the closure rather than re-reading the
+                        // cache when the hook fires. The cache entry is pruned at
+                        // tool_result time, and a PostToolUse hook can fire after that, so
+                        // closing over the name keeps the diff working without depending on
+                        // (or pinning) the cache entry's lifetime.
+                        const toolName = chunk.name;
                         registerHookCallback(chunk.id, {
                             onPostToolUseHook: async (toolUseId, toolInput, toolResponse) => {
-                                const toolUse = toolUseCache[toolUseId];
-                                if (toolUse) {
-                                    // Both `Edit` and `Write` produce a structuredPatch in their
-                                    // PostToolUse tool_response. For Edit the diff replaces the
-                                    // optimistic content built at tool_use time. For Write the
-                                    // optimistic content (built from `input.content` alone with
-                                    // `oldText: null`) shows "creation" semantics regardless of
-                                    // whether the file existed; the structuredPatch from the
-                                    // hook lets us emit the real diff for `type: "update"`. The
-                                    // helper returns `{}` if the response shape isn't usable.
-                                    const editDiff = toolUse.name === "Edit" || toolUse.name === "Write"
-                                        ? toolUpdateFromDiffToolResponse(toolResponse)
-                                        : {};
-                                    const update = {
-                                        _meta: {
-                                            claudeCode: {
-                                                toolResponse,
-                                                toolName: toolUse.name,
-                                            },
+                                // Both `Edit` and `Write` produce a structuredPatch in their
+                                // PostToolUse tool_response. For Edit the diff replaces the
+                                // optimistic content built at tool_use time. For Write the
+                                // optimistic content (built from `input.content` alone with
+                                // `oldText: null`) shows "creation" semantics regardless of
+                                // whether the file existed; the structuredPatch from the
+                                // hook lets us emit the real diff for `type: "update"`. The
+                                // helper returns `{}` if the response shape isn't usable.
+                                const editDiff = toolName === "Edit" || toolName === "Write"
+                                    ? toolUpdateFromDiffToolResponse(toolResponse)
+                                    : {};
+                                const update = {
+                                    _meta: {
+                                        claudeCode: {
+                                            toolResponse,
+                                            toolName,
                                         },
-                                        toolCallId: toolUseId,
-                                        sessionUpdate: "tool_call_update",
-                                        ...editDiff,
-                                    };
-                                    await client.sessionUpdate({
-                                        sessionId,
-                                        update,
-                                    });
-                                }
-                                else {
-                                    logger.error(`[claude-agent-acp] Got a tool response for tool use that wasn't tracked: ${toolUseId}`);
-                                }
+                                    },
+                                    toolCallId: toolUseId,
+                                    sessionUpdate: "tool_call_update",
+                                    ...editDiff,
+                                };
+                                await client.sessionUpdate({
+                                    sessionId,
+                                    update,
+                                });
                             },
                         });
                     }
@@ -2509,6 +2780,11 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                         ...toolUpdate,
                     };
                 }
+                // The tool_use is fully resolved now — drop it so a long session doesn't
+                // retain every tool call. The PostToolUse hook (Edit/Write diffs) closes
+                // over the tool name and no longer reads the cache, so pruning here is
+                // safe regardless of hook/result ordering.
+                delete toolUseCache[chunk.tool_use_id];
                 break;
             }
             case "document":
@@ -2537,6 +2813,7 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                     },
                 };
             }
+            applyMessageId(update, options?.messageId);
             output.push({ sessionId, update });
         }
     }
@@ -2551,6 +2828,7 @@ export function streamEventToAcpNotifications(message, sessionId, toolUseCache, 
                 parentToolUseId: message.parent_tool_use_id,
                 cwd: options?.cwd,
                 taskState: options?.taskState,
+                messageId: options?.messageId,
             });
         case "content_block_delta":
             return toAcpNotifications([event.delta], "assistant", sessionId, toolUseCache, client, logger, {
@@ -2558,6 +2836,7 @@ export function streamEventToAcpNotifications(message, sessionId, toolUseCache, 
                 parentToolUseId: message.parent_tool_use_id,
                 cwd: options?.cwd,
                 taskState: options?.taskState,
+                messageId: options?.messageId,
             });
         // No content. `ping` is a Messages-API keep-alive event that the SDK's
         // `BetaRawMessageStreamEvent` union doesn't include even though the
@@ -2593,7 +2872,8 @@ function commonPrefixLength(a, b) {
     return i;
 }
 /** Best-effort first guess of a model's context window from its ID, used only
- *  until a `result` message arrives with the authoritative `modelUsage` value.
+ *  as a fallback when the SDK's authoritative `getContextUsage` is unavailable
+ *  (and until a `result` message arrives with the `modelUsage` value).
  *  Anthropic 1M-context variants encode "1m" as a distinct token in the SDK
  *  model ID (e.g., "claude-opus-4-6-1m"), which `\b1m\b` catches without also
  *  matching things like "10m" or embedded substrings. */
@@ -2601,6 +2881,42 @@ function inferContextWindowFromModel(model) {
     if (/\b1m\b/i.test(model))
         return 1_000_000;
     return null;
+}
+/** Fetch the SDK's authoritative context-window occupancy via the
+ *  `getContextUsage` control request. Unlike the per-message API usage numbers
+ *  (which only count message tokens), this `totalTokens` includes the system
+ *  prompt, tool schemas, MCP tools, and memory-file overhead — the real
+ *  occupancy the user sees. Returns `null` on any control-request failure.
+ *
+ *  Note: we deliberately do NOT use this response's window fields for `size`.
+ *  They have been observed to under-report extended (1M) context windows, so
+ *  the window keeps coming from `modelUsage` / `inferContextWindowFromModel`,
+ *  which handle the 1M variants correctly. */
+async function fetchContextUsedTokens(query, logger) {
+    try {
+        const usage = await query.getContextUsage();
+        return usage.totalTokens;
+    }
+    catch (error) {
+        logger.error("Failed to fetch context usage from SDK:", error);
+        return null;
+    }
+}
+/** Translate the legacy `MAX_THINKING_TOKENS` env var into the SDK's `thinking`
+ *  option. The `maxThinkingTokens` option it used to feed is deprecated and
+ *  reduced to on/off on current models, so map the value to explicit thinking
+ *  config instead: unset → `undefined` (SDK default, adaptive on models that
+ *  support it); `0` → disabled; a positive integer → a fixed token budget.
+ *  Anything else is ignored with a warning. */
+function resolveThinkingConfig(raw, logger) {
+    if (raw === undefined)
+        return undefined;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed) || parsed < 0) {
+        logger.error(`Ignoring MAX_THINKING_TOKENS: expected a non-negative integer, got '${raw}'.`);
+        return undefined;
+    }
+    return parsed === 0 ? { type: "disabled" } : { type: "enabled", budgetTokens: parsed };
 }
 function parseModelConfig(raw) {
     if (!raw)

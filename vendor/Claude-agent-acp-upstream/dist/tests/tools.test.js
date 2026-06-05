@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { toAcpNotifications } from "../acp-agent.js";
 import { toolUpdateFromToolResult, createPostToolUseHook, createTaskHook, toolInfoFromToolUse, planEntries, applyTaskCreate, applyTaskUpdate, parseTaskCreateOutput, taskStateToPlanEntries, } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
@@ -495,14 +495,19 @@ describe("Bash terminal output", () => {
         });
     });
     describe("toAcpNotifications with clientCapabilities", () => {
-        const toolUseCache = {
-            toolu_bash: {
-                type: "tool_use",
-                id: "toolu_bash",
-                name: "Bash",
-                input: { command: "ls -la" },
-            },
-        };
+        // Reset before each test: toAcpNotifications prunes the cache entry once it
+        // maps the tool_result, so a shared object would be empty by the 2nd test.
+        let toolUseCache;
+        beforeEach(() => {
+            toolUseCache = {
+                toolu_bash: {
+                    type: "tool_use",
+                    id: "toolu_bash",
+                    name: "Bash",
+                    input: { command: "ls -la" },
+                },
+            };
+        });
         const bashResult = {
             type: "bash_code_execution_result",
             stdout: "file1.txt\nfile2.txt",
@@ -569,7 +574,17 @@ describe("Bash terminal output", () => {
         });
         it("should include formatted content only when terminal_output is not supported", () => {
             const withSupport = toAcpNotifications([toolResult], "assistant", "test-session", toolUseCache, mockClient, mockLogger, { clientCapabilities: { _meta: { terminal_output: true } } });
-            const withoutSupport = toAcpNotifications([toolResult], "assistant", "test-session", toolUseCache, mockClient, mockLogger);
+            // Fresh cache: the withSupport call above already consumed the entry,
+            // since toAcpNotifications prunes the tool_use once it maps the result.
+            const toolUseCacheWithoutSupport = {
+                toolu_bash: {
+                    type: "tool_use",
+                    id: "toolu_bash",
+                    name: "Bash",
+                    input: { command: "ls -la" },
+                },
+            };
+            const withoutSupport = toAcpNotifications([toolResult], "assistant", "test-session", toolUseCacheWithoutSupport, mockClient, mockLogger);
             // With support: output is delivered via terminal_output _meta, content references the terminal widget
             expect(withSupport).toHaveLength(2);
             expect(withSupport[1].update.content).toEqual([
@@ -600,6 +615,28 @@ describe("Bash terminal output", () => {
             const exitMeta = notifications[1].update._meta;
             expect(exitMeta.claudeCode).toEqual({ toolName: "Bash" });
             expect(exitMeta.terminal_exit).toBeDefined();
+        });
+    });
+    describe("toolUseCache pruning", () => {
+        it("retains the tool_use entry until its result, then prunes it", () => {
+            const toolUseCache = {};
+            const toolUse = {
+                type: "tool_use",
+                id: "toolu_read",
+                name: "Read",
+                input: { file_path: "/tmp/x.txt" },
+            };
+            // tool_use is cached and kept (the matching result hasn't arrived yet).
+            toAcpNotifications([toolUse], "assistant", "s", toolUseCache, mockClient, mockLogger);
+            expect(toolUseCache.toolu_read).toBeDefined();
+            // tool_result resolves it, so the entry is pruned to bound memory.
+            const toolResult = {
+                type: "tool_result",
+                tool_use_id: "toolu_read",
+                content: [{ type: "text", text: "hello" }],
+            };
+            toAcpNotifications([toolResult], "assistant", "s", toolUseCache, mockClient, mockLogger);
+            expect(toolUseCache.toolu_read).toBeUndefined();
         });
     });
     describe("post-tool-use hook sends diff content for Edit tool", () => {

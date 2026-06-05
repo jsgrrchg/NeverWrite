@@ -52,9 +52,9 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.39.0`
-  - upstream commit: `edde96ebafac2ea5d1c879c17459453472d82916`
-  - dependencies match the upstream `0.39.0` release (`@agentclientprotocol/sdk` `0.22.1`, `@anthropic-ai/claude-agent-sdk` `0.3.156`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.42.0`
+  - upstream commit: `d877ee713383332267492a95425523eda65a9735`
+  - dependencies match the upstream `0.42.0` release (`@agentclientprotocol/sdk` `0.24.0`, `@anthropic-ai/claude-agent-sdk` `0.3.165`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 
 ## Current Codex Delta
@@ -81,12 +81,7 @@ metadata paths that NeverWrite depends on.
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.39.0` with one bounded NeverWrite-specific source delta.
-
-Upstream `0.39.0` strips local-command metadata with a regular expression that
-GitHub Advanced Security flags as vulnerable to polynomial runtime on
-uncontrolled input. NeverWrite replaces that expression with an equivalent
-linear scanner in `src/acp-agent.ts` and rebuilds `dist/` from that source.
+`0.42.0` with no expected NeverWrite-specific source delta.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does

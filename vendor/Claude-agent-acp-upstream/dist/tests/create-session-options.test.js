@@ -404,4 +404,55 @@ describe("createSession options merging", () => {
         // ACP-provided MCP server should also be present
         expect(capturedOptions.mcpServers).toHaveProperty("acp-server");
     });
+    describe("thinking config from MAX_THINKING_TOKENS", () => {
+        let originalMaxThinking;
+        beforeEach(() => {
+            originalMaxThinking = process.env.MAX_THINKING_TOKENS;
+            delete process.env.MAX_THINKING_TOKENS;
+        });
+        afterEach(() => {
+            if (originalMaxThinking !== undefined) {
+                process.env.MAX_THINKING_TOKENS = originalMaxThinking;
+            }
+            else {
+                delete process.env.MAX_THINKING_TOKENS;
+            }
+        });
+        it("leaves thinking unset (SDK default) when env var is absent", async () => {
+            await agent.newSession({ cwd: "/test", mcpServers: [] });
+            expect(capturedOptions.thinking).toBeUndefined();
+            // The deprecated option must not be set either.
+            expect(capturedOptions.maxThinkingTokens).toBeUndefined();
+        });
+        it("maps 0 to disabled thinking", async () => {
+            process.env.MAX_THINKING_TOKENS = "0";
+            await agent.newSession({ cwd: "/test", mcpServers: [] });
+            expect(capturedOptions.thinking).toEqual({ type: "disabled" });
+        });
+        it("maps a positive value to a fixed thinking budget", async () => {
+            process.env.MAX_THINKING_TOKENS = "12000";
+            await agent.newSession({ cwd: "/test", mcpServers: [] });
+            expect(capturedOptions.thinking).toEqual({ type: "enabled", budgetTokens: 12000 });
+        });
+        it("ignores a non-numeric value", async () => {
+            process.env.MAX_THINKING_TOKENS = "lots";
+            await agent.newSession({ cwd: "/test", mcpServers: [] });
+            expect(capturedOptions.thinking).toBeUndefined();
+        });
+        it("lets a user-provided thinking option override the env default", async () => {
+            process.env.MAX_THINKING_TOKENS = "12000";
+            await agent.newSession({
+                cwd: "/test",
+                mcpServers: [],
+                _meta: {
+                    claudeCode: {
+                        options: {
+                            thinking: { type: "adaptive" },
+                        },
+                    },
+                },
+            });
+            expect(capturedOptions.thinking).toEqual({ type: "adaptive" });
+        });
+    });
 });

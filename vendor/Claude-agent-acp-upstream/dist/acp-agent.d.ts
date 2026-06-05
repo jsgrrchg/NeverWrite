@@ -1,4 +1,4 @@
-import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, TerminalHandle, TerminalOutputResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
+import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
 import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
@@ -52,6 +52,17 @@ type Session = {
     }>;
     nextPendingOrder: number;
     abortController: AbortController;
+    /** Per-turn signal the active prompt loop races `query.next()` against.
+     *  Aborted by cancel() (after a grace period) to force the loop to return
+     *  "cancelled" when the SDK is wedged and `query.next()` never yields again
+     *  (issue #680). Distinct from `abortController`: this only wakes the loop;
+     *  it does NOT touch the SDK query/subprocess. Undefined when no prompt is
+     *  actively consuming the query. */
+    cancelController?: AbortController;
+    /** Pending grace-period timer that aborts `cancelController`. Cleared when
+     *  the loop returns normally so the backstop never fires after a clean
+     *  cancel. */
+    forceCancelTimer?: ReturnType<typeof setTimeout>;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
     /** Context window size of the last top-level assistant model, carried across
      *  prompts so mid-stream usage_update notifications report a correct `size`
@@ -62,14 +73,30 @@ type Session = {
     /** Accumulated task list for the session, keyed by task ID. Task IDs are
      *  per-session, so this state must not be shared across sessions. */
     taskState: TaskState;
-};
-type BackgroundTerminal = {
-    handle: TerminalHandle;
-    status: "started";
-    lastOutput: TerminalOutputResponse | null;
-} | {
-    status: "aborted" | "exited" | "killed" | "timedOut";
-    pendingOutput: TerminalOutputResponse;
+    /** Caches `tool_use` blocks by id so the matching `tool_result` can recover
+     *  the tool name/input when mapping it to a `tool_call_update`. Per-session
+     *  (tool_use ids are only unique within a session) and pruned at
+     *  `tool_result` time so a long-running session doesn't accumulate every
+     *  tool call for its whole lifetime. */
+    toolUseCache: ToolUseCache;
+    /** Maps the ACP `messageId` we expose to clients (see `messageIdForGrouping`)
+     *  to the SDK message uuid that the Agent SDK's rewind/resume APIs key on
+     *  (`Query.rewindFiles` takes a user-message uuid; `resumeSessionAt` takes an
+     *  `SDKAssistantMessage.uuid`). For assistant turns the two differ — the ACP
+     *  id is the Anthropic API message id (`msg_…`), available at `message_start`
+     *  so streamed chunks can carry it, while the uuid only arrives on the
+     *  consolidated message — so a client can only ask to rewind/fork by the id it
+     *  was given, and we need this table to translate it back.
+     *
+     *  Populated as a byproduct of the message loop (the consolidated message
+     *  carries both ids) and of `replaySessionHistory` on load, so no extra
+     *  `getSessionMessages` read is needed at rewind time. Last-write-wins
+     *  naturally yields the turn-boundary uuid when one `msg_…` spans several
+     *  content-block messages.
+     *
+     *  NOT READ YET — recorded now so the mapping exists if/when we wire up
+     *  fork/rewind. */
+    messageIdToUuid: Map<string, string>;
 };
 export type SDKMessageFilter = {
     type: string;
@@ -177,13 +204,13 @@ export declare class ClaudeAcpAgent implements Agent {
         [key: string]: Session;
     };
     client: AgentSideConnection;
-    toolUseCache: ToolUseCache;
-    backgroundTerminals: {
-        [key: string]: BackgroundTerminal;
-    };
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
     gatewayAuthRequest?: GatewayAuthRequest;
+    /** Grace period before a `session/cancel` forces a wedged prompt loop to
+     *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
+     *  tests can shrink it. */
+    forceCancelGraceMs: number;
     constructor(client: AgentSideConnection, logger?: Logger);
     initialize(request: InitializeRequest): Promise<InitializeResponse>;
     newSession(params: NewSessionRequest): Promise<NewSessionResponse>;
@@ -216,6 +243,22 @@ export declare class ClaudeAcpAgent implements Agent {
 }
 export declare function promptToClaude(prompt: PromptRequest): SDKUserMessage;
 /**
+ * Resolves the ACP `messageId` for a Claude SDK message (live) or a persisted
+ * transcript message (replay) so chunk grouping is identical in both views.
+ *
+ * Assistant turns are keyed by the Anthropic API message id (`message.id`),
+ * which is identical at `message_start`, on the consolidated assistant message,
+ * and in the persisted transcript — unlike the per-`stream_event` uuid, which is
+ * unique per event and never persisted. User messages have no API id, but they
+ * are never streamed, so their (stable) SDK uuid is used instead. ACP message
+ * ids are opaque strings, so no particular format is required.
+ */
+export declare function messageIdForGrouping(message: {
+    type?: string;
+    uuid?: string | null;
+    message?: unknown;
+}): string | undefined;
+/**
  * Convert an SDKAssistantMessage (Claude) to a SessionNotification (ACP).
  * Only handles text, image, and thinking chunks for now.
  */
@@ -225,11 +268,13 @@ export declare function toAcpNotifications(content: string | ContentBlockParam[]
     parentToolUseId?: string | null;
     cwd?: string;
     taskState?: TaskState;
+    messageId?: string;
 }): SessionNotification[];
 export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AgentSideConnection, logger: Logger, options?: {
     clientCapabilities?: ClientCapabilities;
     cwd?: string;
     taskState?: TaskState;
+    messageId?: string;
 }): SessionNotification[];
 export declare function runAcp(): {
     connection: AgentSideConnection;

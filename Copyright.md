@@ -266,7 +266,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.40.0` (`f1736a9371bd2d33e10b2a0b31c65d9c0cf4a18b`) with generated `dist/` runtime files required by desktop packaging |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.42.0` (`d877ee713383332267492a95425523eda65a9735`) with generated `dist/` runtime files required by desktop packaging |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at
