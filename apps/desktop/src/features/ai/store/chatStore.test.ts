@@ -4016,6 +4016,82 @@ describe("chatStore", () => {
         });
     });
 
+    it("restores a divergent suppressed runtime user echo before later timeline events", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "Echo me exactly",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Echo me ",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        useChatStore.getState().applyStatusEvent({
+            session_id: activeSessionId,
+            event_id: "after-first-runtime-user-chunk",
+            kind: "subagent_lifecycle",
+            status: "in_progress",
+            title: "Spawning subagent",
+            detail: "Starting Pauli",
+            emphasis: "neutral",
+        });
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "differently",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(
+            messages.map((message) => ({
+                id: message.id,
+                kind: message.kind,
+                content: message.content,
+            })),
+        ).toEqual([
+            {
+                id: "local-user-1",
+                kind: "text",
+                content: "Echo me exactly",
+            },
+            {
+                id: "runtime-user-1",
+                kind: "text",
+                content: "Echo me differently",
+            },
+            {
+                id: "status:after-first-runtime-user-chunk",
+                kind: "status",
+                content: "Starting Pauli",
+            },
+        ]);
+    });
+
     it("shows parent-sent user chunks in child sessions without a local echo", async () => {
         await useChatStore.getState().initialize();
 
