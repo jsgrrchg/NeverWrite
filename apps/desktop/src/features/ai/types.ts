@@ -485,17 +485,21 @@ export interface AISessionErrorPayload {
 export interface AIMessageStartedPayload {
     session_id: string;
     message_id: string;
+    role?: AIChatRole;
 }
 
 export interface AIMessageDeltaPayload {
     session_id: string;
     message_id: string;
     delta: string;
+    role?: AIChatRole;
 }
 
 export interface AIMessageCompletedPayload {
     session_id: string;
     message_id: string;
+    role?: AIChatRole;
+    turn_complete?: boolean;
 }
 
 export interface AIToolActivityPayload {

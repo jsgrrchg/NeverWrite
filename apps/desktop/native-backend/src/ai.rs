@@ -67,6 +67,8 @@ const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
 const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
+const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
+const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX: &str = "neverwrite:status:turn:";
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
@@ -2167,13 +2169,42 @@ impl AcpSessionHandle {
 struct NativeAcpClient {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
-    message_ids: Arc<Mutex<HashMap<String, String>>>,
+    message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MessageStreamKey {
+    session_id: String,
+    role: MessageRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MessageRole {
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    fn id_kind(self) -> &'static str {
+        match self {
+            Self::User => "user-message",
+            Self::Assistant => "message",
+        }
+    }
 }
 
 impl NativeAcpClient {
@@ -2365,43 +2396,157 @@ impl NativeAcpClient {
         )
     }
 
-    fn begin_message(&self, session_id: &str) -> String {
-        let message_id = self.next_message_id(session_id, "message");
+    fn message_stream_key(session_id: &str, role: MessageRole) -> MessageStreamKey {
+        MessageStreamKey {
+            session_id: session_id.to_string(),
+            role,
+        }
+    }
+
+    fn begin_text_message(&self, session_id: &str, role: MessageRole) -> String {
+        let message_id = self.next_message_id(session_id, role.id_kind());
         if let Ok(mut ids) = self.message_ids.lock() {
-            ids.insert(session_id.to_string(), message_id.clone());
+            ids.insert(
+                Self::message_stream_key(session_id, role),
+                message_id.clone(),
+            );
         }
         self.emit(
             AI_MESSAGE_STARTED_EVENT,
             AiMessageStartedPayload {
                 session_id: session_id.to_string(),
                 message_id: message_id.clone(),
+                role: role.as_str().to_string(),
             },
         );
         message_id
     }
 
-    fn current_message_id(&self, session_id: &str) -> Option<String> {
-        self.message_ids
-            .lock()
-            .ok()
-            .and_then(|ids| ids.get(session_id).cloned())
+    fn current_text_message_id(&self, session_id: &str, role: MessageRole) -> Option<String> {
+        self.message_ids.lock().ok().and_then(|ids| {
+            ids.get(&Self::message_stream_key(session_id, role))
+                .cloned()
+        })
     }
 
-    fn end_message(&self, session_id: &str) {
+    fn end_text_message(&self, session_id: &str, role: MessageRole, turn_complete: bool) {
         let message_id = self
             .message_ids
             .lock()
             .ok()
-            .and_then(|mut ids| ids.remove(session_id));
+            .and_then(|mut ids| ids.remove(&Self::message_stream_key(session_id, role)));
         if let Some(message_id) = message_id {
-            self.emit(
-                AI_MESSAGE_COMPLETED_EVENT,
-                AiMessageCompletedPayload {
-                    session_id: session_id.to_string(),
-                    message_id,
-                },
+            self.emit_text_message_completed(session_id, &message_id, role, turn_complete);
+        }
+    }
+
+    fn emit_text_message_completed(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        role: MessageRole,
+        turn_complete: bool,
+    ) {
+        self.emit(
+            AI_MESSAGE_COMPLETED_EVENT,
+            AiMessageCompletedPayload {
+                session_id: session_id.to_string(),
+                message_id: message_id.to_string(),
+                role: role.as_str().to_string(),
+                turn_complete,
+            },
+        );
+    }
+
+    fn begin_message(&self, session_id: &str) -> String {
+        self.begin_text_message(session_id, MessageRole::Assistant)
+    }
+
+    fn current_message_id(&self, session_id: &str) -> Option<String> {
+        self.current_text_message_id(session_id, MessageRole::Assistant)
+    }
+
+    fn end_message(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::Assistant, true);
+    }
+
+    fn complete_assistant_turn(&self, session_id: &str, fallback_message_id: &str) {
+        if self.current_message_id(session_id).is_some() {
+            self.end_message(session_id);
+        } else {
+            self.emit_text_message_completed(
+                session_id,
+                fallback_message_id,
+                MessageRole::Assistant,
+                true,
             );
         }
+    }
+
+    fn end_message_segment(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::Assistant, false);
+    }
+
+    fn begin_user_message(&self, session_id: &str) -> String {
+        self.begin_text_message(session_id, MessageRole::User)
+    }
+
+    fn current_user_message_id(&self, session_id: &str) -> Option<String> {
+        self.current_text_message_id(session_id, MessageRole::User)
+    }
+
+    fn end_user_message(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::User, false);
+    }
+
+    fn end_text_streams_before_activity(&self, session_id: &str) {
+        self.end_thinking(session_id);
+        self.end_user_message(session_id);
+        self.end_message_segment(session_id);
+    }
+
+    fn remember_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_status_tool_calls.lock() {
+            ids.insert(call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn forget_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_status_tool_calls.lock() {
+            ids.remove(&call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn has_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) -> bool {
+        self.suppressed_status_tool_calls
+            .lock()
+            .ok()
+            .map(|ids| ids.contains(&call_state_key(session_id, tool_call_id)))
+            .unwrap_or(false)
+    }
+
+    fn should_suppress_tool_call_update(&self, session_id: &str, update: &ToolCallUpdate) -> bool {
+        let tool_call_id = &update.tool_call_id.0;
+        if self.has_suppressed_status_tool_call(session_id, tool_call_id) {
+            if tool_call_update_is_terminal(update) {
+                self.forget_suppressed_status_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        if should_suppress_status_tool_call_update(update) {
+            if !tool_call_update_is_terminal(update) {
+                self.remember_suppressed_status_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        false
+    }
+
+    #[cfg(test)]
+    fn has_active_text_message(&self, session_id: &str, role: MessageRole) -> bool {
+        self.current_text_message_id(session_id, role).is_some()
     }
 
     fn begin_thinking(&self, session_id: &str) -> String {
@@ -2441,6 +2586,7 @@ impl NativeAcpClient {
 
     fn mark_session_idle(&self, session_id: &str) {
         self.end_thinking(session_id);
+        self.end_user_message(session_id);
         self.end_message(session_id);
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
@@ -2456,6 +2602,7 @@ impl NativeAcpClient {
 
     fn mark_subagent_closed_by_parent(&self, session_id: &str) {
         self.end_thinking(session_id);
+        self.end_user_message(session_id);
         self.end_message(session_id);
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
@@ -2806,6 +2953,7 @@ impl NativeAcpClient {
         let diffs = self
             .tool_diffs
             .normalized_diffs_for_tool_call(&session_id, &registered);
+        self.end_text_streams_before_activity(&session_id);
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             map_tool_call(
@@ -2852,11 +3000,31 @@ impl NativeAcpClient {
             return Ok(());
         }
         match args.update {
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(text),
+                ..
+            }) => {
+                // User chunks come from the runtime, not the local composer, so they need
+                // their own stream state.
+                let message_id = self
+                    .current_user_message_id(&session_id)
+                    .unwrap_or_else(|| self.begin_user_message(&session_id));
+                self.emit(
+                    AI_MESSAGE_DELTA_EVENT,
+                    AiMessageDeltaPayload {
+                        session_id,
+                        message_id,
+                        delta: text.text,
+                        role: MessageRole::User.as_str().to_string(),
+                    },
+                );
+            }
             SessionUpdate::AgentMessageChunk(ContentChunk {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
                 self.end_thinking(&session_id);
+                self.end_user_message(&session_id);
                 let message_id = self
                     .current_message_id(&session_id)
                     .unwrap_or_else(|| self.begin_message(&session_id));
@@ -2866,6 +3034,7 @@ impl NativeAcpClient {
                         session_id,
                         message_id,
                         delta: text.text,
+                        role: MessageRole::Assistant.as_str().to_string(),
                     },
                 );
             }
@@ -2873,6 +3042,7 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                self.end_user_message(&session_id);
                 let thinking_id = self
                     .current_thinking_id(&session_id)
                     .unwrap_or_else(|| self.begin_thinking(&session_id));
@@ -2884,6 +3054,14 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
+                if should_suppress_status_tool_call(&tool_call) {
+                    self.remember_suppressed_status_tool_call(
+                        &session_id,
+                        &tool_call.tool_call_id.0,
+                    );
+                    return Ok(());
+                }
+                self.end_text_streams_before_activity(&session_id);
                 self.record_terminal_meta(
                     &session_id,
                     &tool_call.tool_call_id.0,
@@ -2895,6 +3073,10 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 let update = tool_call_update_with_merged_meta(update, meta.as_ref());
+                if self.should_suppress_tool_call_update(&session_id, &update) {
+                    return Ok(());
+                }
+                self.end_text_streams_before_activity(&session_id);
                 self.record_terminal_meta(
                     &session_id,
                     &update.tool_call_id.0,
@@ -2906,6 +3088,7 @@ impl NativeAcpClient {
                 self.handle_subagent_lifecycle_breadcrumb(&session_id, meta.as_ref());
             }
             SessionUpdate::Plan(plan) => {
+                self.end_text_streams_before_activity(&session_id);
                 self.emit(
                     AI_PLAN_UPDATED_EVENT,
                     map_plan_update(&session_id, plan, meta.as_ref()),
@@ -3256,6 +3439,7 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -3480,16 +3664,8 @@ async fn handle_acp_command(
                     .map(|_| ())
                     .map_err(|error| error.to_string());
                 client.end_thinking(&session_id);
-                if client.current_message_id(&session_id).is_none() {
-                    client.emit(
-                        AI_MESSAGE_STARTED_EVENT,
-                        AiMessageStartedPayload {
-                            session_id: session_id.clone(),
-                            message_id: message_id.clone(),
-                        },
-                    );
-                }
-                client.end_message(&session_id);
+                client.end_user_message(&session_id);
+                client.complete_assistant_turn(&session_id, &message_id);
                 if let Err(error) = &result {
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
@@ -4290,6 +4466,51 @@ fn map_status_event(
             .to_string(),
         tool_action,
     })
+}
+
+fn is_suppressed_status_title(title: &str) -> bool {
+    matches!(title.trim(), "Preparing input" | "Drafting response")
+}
+
+fn is_internal_status_activity_id(tool_call_id: &str) -> bool {
+    tool_call_id.starts_with(NEVERWRITE_STATUS_EVENT_ID_PREFIX)
+        && !tool_call_id.starts_with(NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX)
+}
+
+fn should_suppress_status_tool_call(tool_call: &ToolCall) -> bool {
+    if !is_suppressed_status_title(&tool_call.title) {
+        return false;
+    }
+
+    is_internal_status_activity_id(&tool_call.tool_call_id.0)
+        || tool_call
+            .meta
+            .as_ref()
+            .and_then(acp_event_type)
+            .is_some_and(|event_type| event_type == "status")
+}
+
+fn should_suppress_status_tool_call_update(update: &ToolCallUpdate) -> bool {
+    let Some(title) = update.fields.title.as_deref() else {
+        return false;
+    };
+    if !is_suppressed_status_title(title) {
+        return false;
+    }
+
+    is_internal_status_activity_id(&update.tool_call_id.0)
+        || update
+            .meta
+            .as_ref()
+            .and_then(acp_event_type)
+            .is_some_and(|event_type| event_type == "status")
+}
+
+fn tool_call_update_is_terminal(update: &ToolCallUpdate) -> bool {
+    matches!(
+        update.fields.status.as_ref(),
+        Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+    )
 }
 
 fn raw_string_field(raw: Option<&Value>, keys: &[&str]) -> Option<String> {
@@ -7077,6 +7298,7 @@ mod tests {
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -7508,6 +7730,15 @@ mod tests {
             CHILD_RUNTIME_SESSION_ID,
             SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
                 "Child agent output",
+            ))),
+        )
+    }
+
+    fn subagent_child_user_message_notification_fixture() -> SessionNotification {
+        SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Parent task for child agent",
             ))),
         )
     }
@@ -8049,6 +8280,10 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
 
         let event = event_rx
             .recv_timeout(StdDuration::from_millis(250))
@@ -8065,10 +8300,240 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
 
-        let message_ids = client.message_ids.lock().unwrap();
-        assert!(message_ids.contains_key(CHILD_RUNTIME_SESSION_ID));
-        assert!(!message_ids.contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+    }
+
+    #[test]
+    fn child_user_message_chunks_emit_user_role_without_touching_assistant_state() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(
+            client.session_notification(subagent_child_user_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+        let user_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("user message id")
+            .to_string();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+        assert_eq!(
+            payload.get("delta").and_then(Value::as_str),
+            Some("Parent task for child agent")
+        );
+
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::User));
+
+        run_client_future(
+            client.session_notification(subagent_child_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
+        let assistant_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("assistant message id")
+            .to_string();
+        assert_ne!(assistant_message_id, user_message_id);
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child assistant message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(assistant_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
+
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn child_user_message_closes_before_child_thinking_starts() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(
+            client.session_notification(subagent_child_user_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        let user_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("user message id")
+            .to_string();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from(
+                "Thinking about the delegated task",
+            ))),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child thinking started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_THINKING_STARTED_EVENT);
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
     }
 
     #[test]
@@ -8144,6 +8609,7 @@ mod tests {
                 .status = AiSessionStatus::Streaming;
         }
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.begin_user_message(CHILD_RUNTIME_SESSION_ID);
         client.begin_message(CHILD_RUNTIME_SESSION_ID);
         while event_rx.try_recv().is_ok() {}
 
@@ -8156,9 +8622,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut saw_message_completed = false;
+        let mut saw_user_message_completed = false;
+        let mut saw_assistant_message_completed = false;
         let mut saw_idle_update = false;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let RpcOutput::Event {
                 event_name,
                 payload,
@@ -8172,7 +8639,14 @@ mod tests {
                 && payload.get("session_id").and_then(Value::as_str)
                     == Some(CHILD_RUNTIME_SESSION_ID)
             {
-                saw_message_completed = true;
+                if payload.get("role").and_then(Value::as_str) == Some(MessageRole::User.as_str()) {
+                    saw_user_message_completed = true;
+                }
+                if payload.get("role").and_then(Value::as_str)
+                    == Some(MessageRole::Assistant.as_str())
+                {
+                    saw_assistant_message_completed = true;
+                }
             }
             if event_name == AI_SESSION_UPDATED_EVENT
                 && payload.get("session_id").and_then(Value::as_str)
@@ -8183,13 +8657,11 @@ mod tests {
             }
         }
 
-        assert!(saw_message_completed);
+        assert!(saw_user_message_completed);
+        assert!(saw_assistant_message_completed);
         assert!(saw_idle_update);
-        assert!(!client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
     }
 
     #[test]
@@ -8226,11 +8698,7 @@ mod tests {
         .unwrap();
 
         assert!(event_rx.try_recv().is_err());
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -8271,11 +8739,7 @@ mod tests {
         .unwrap();
 
         assert!(event_rx.try_recv().is_err());
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -8306,11 +8770,7 @@ mod tests {
         )
         .unwrap();
         while event_rx.try_recv().is_ok() {}
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
 
         let close_meta = Meta::from_iter([
             (
@@ -8367,11 +8827,8 @@ mod tests {
 
         assert!(saw_message_completed);
         assert!(saw_closed_update);
-        assert!(!client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
     }
 
     #[test]
@@ -8470,11 +8927,7 @@ mod tests {
             assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
         }
 
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -10070,6 +10523,264 @@ mod tests {
     }
 
     #[test]
+    fn session_tool_call_suppresses_internal_drafting_status() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:agent-msg-42"),
+            "Drafting response",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress)
+        .meta(Meta::from_iter([(
+            ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+            json!("status"),
+        )]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_internal_drafting_status_update_without_meta() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let update = ToolCallUpdate::new(
+            "neverwrite:status:item:agent-msg-42",
+            ToolCallUpdateFields::new()
+                .title("Drafting response")
+                .status(ToolCallStatus::Completed),
+        );
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(update),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_internal_status_update_without_title_after_suppressed_start() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Before status",
+            ))),
+        )))
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:agent-msg-42"),
+            "Drafting response",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress)
+        .meta(Meta::from_iter([(
+            ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+            json!("status"),
+        )]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+        assert!(client.has_active_text_message("session-1", MessageRole::Assistant));
+
+        let update = ToolCallUpdate::new(
+            "neverwrite:status:item:agent-msg-42",
+            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+        );
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(update),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+        assert!(client.has_active_text_message("session-1", MessageRole::Assistant));
+    }
+
+    #[test]
+    fn session_tool_call_keeps_real_tool_with_suppressed_status_title() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(ToolCallId::from("normal-tool-1"), "Drafting response")
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::Completed);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.get("tool_call_id").and_then(Value::as_str),
+            Some("normal-tool-1")
+        );
+    }
+
+    #[test]
+    fn session_tool_call_closes_active_assistant_segment_without_finishing_turn() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("Before tool"))),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event { payload, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        let first_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("assistant message id")
+            .to_string();
+        let _ = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message delta event");
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                "session-1",
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("tool-1"), "Read file")
+                        .kind(ToolKind::Read)
+                        .status(ToolCallStatus::Completed),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant segment completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(first_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("After tool"))),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event { payload, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("next assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        let next_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("next assistant message id");
+        assert_ne!(next_message_id, first_message_id);
+    }
+
+    #[test]
+    fn complete_assistant_turn_finishes_when_no_segment_is_active() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let message_id = client.begin_message("session-1");
+        let _ = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message started event");
+
+        client.end_message_segment("session-1");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant segment completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        client.complete_assistant_turn("session-1", &message_id);
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("turn completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn session_tool_call_image_generation_meta_emits_image_event() {
         let (event_tx, event_rx) = mpsc::channel();
         let client = test_client(event_tx);
@@ -10253,6 +10964,91 @@ mod tests {
         let (saw_tool_activity_diffs, saw_permission_diffs) = event_thread.join().unwrap();
         assert!(saw_tool_activity_diffs);
         assert!(saw_permission_diffs);
+    }
+
+    #[test]
+    fn permission_request_closes_active_assistant_segment_before_timeline_events() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Before permission",
+            ))),
+        )))
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        let waiters = client.permission_waiters.clone();
+        let event_thread = std::thread::spawn(move || {
+            let mut event_names = Vec::new();
+            let mut completed_turn_complete = None;
+            let mut request_id = None;
+
+            for _ in 0..3 {
+                let event = event_rx
+                    .recv_timeout(StdDuration::from_secs(1))
+                    .expect("permission timeline event");
+                let RpcOutput::Event {
+                    event_name,
+                    payload,
+                } = event
+                else {
+                    continue;
+                };
+
+                if event_name == AI_MESSAGE_COMPLETED_EVENT {
+                    completed_turn_complete = payload.get("turn_complete").and_then(Value::as_bool);
+                }
+                if event_name == AI_PERMISSION_REQUEST_EVENT {
+                    request_id = payload
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                }
+                event_names.push(event_name);
+            }
+
+            let request_id = request_id.expect("permission request id");
+            let sender = waiters
+                .lock()
+                .unwrap()
+                .remove(&request_id)
+                .expect("permission waiter");
+            sender.send(RequestPermissionOutcome::Cancelled).unwrap();
+
+            (event_names, completed_turn_complete)
+        });
+
+        let request = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new()
+                    .title("Write note.md".to_string())
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Pending),
+            ),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+        run_client_future(client.request_permission(request)).unwrap();
+
+        let (event_names, completed_turn_complete) = event_thread.join().unwrap();
+        assert_eq!(
+            event_names,
+            vec![
+                AI_MESSAGE_COMPLETED_EVENT,
+                AI_TOOL_ACTIVITY_EVENT,
+                AI_PERMISSION_REQUEST_EVENT,
+            ]
+        );
+        assert_eq!(completed_turn_complete, Some(false));
+        assert!(!client.has_active_text_message("session-1", MessageRole::Assistant));
     }
 
     #[test]
