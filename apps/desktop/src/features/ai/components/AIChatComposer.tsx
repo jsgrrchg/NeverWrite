@@ -53,6 +53,7 @@ import {
     shouldIncludeVaultEntryInFileScope,
     isTextLikeVaultEntry,
 } from "../../../app/utils/vaultEntries";
+import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
@@ -1674,6 +1675,10 @@ export function AIChatComposer({
         document.body.classList.remove("resizing-composer");
         resizeSession.current = null;
     };
+    const contentColumnClassName =
+        expanded || customHeight != null
+            ? "relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
+            : "relative flex min-w-0 flex-col";
 
     return (
         <div
@@ -1688,10 +1693,16 @@ export function AIChatComposer({
         >
             {contextBar ? (
                 <div className={expanded ? "px-2 pb-1.5" : "px-3 pb-1.5"}>
-                    {contextBar}
+                    <div
+                        className="min-w-0"
+                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                    >
+                        {contextBar}
+                    </div>
                 </div>
             ) : null}
             <div
+                data-testid="chat-composer-shell"
                 className={
                     expanded
                         ? "relative flex h-full min-h-0 flex-1 flex-col"
@@ -1711,99 +1722,108 @@ export function AIChatComposer({
                         : { height: customHeight }),
                 }}
             >
-                {!expanded && (
-                    <div
-                        ref={resizeHandleRef}
-                        onPointerDown={onResizeDown}
-                        onPointerMove={onResizeMove}
-                        onPointerUp={onResizeUp}
-                        onPointerCancel={onResizeUp}
-                        className="group absolute left-0 right-0 flex cursor-row-resize items-center justify-center touch-none"
-                        style={{
-                            top: -4,
-                            height: 9,
-                            zIndex: 2,
-                        }}
-                    >
-                        <div
-                            className="rounded-full transition-colors duration-150"
-                            style={{
-                                width: 32,
-                                height: 3,
-                                backgroundColor: "var(--border)",
-                            }}
-                        />
-                    </div>
-                )}
-                <button
-                    type="button"
-                    tabIndex={-1}
-                    onClick={onToggleExpanded}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor =
-                            "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
-                        e.currentTarget.style.color = "var(--text-primary)";
-                        e.currentTarget.style.opacity = "1";
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = "transparent";
-                        e.currentTarget.style.color = "var(--text-secondary)";
-                        e.currentTarget.style.opacity = "0.45";
-                    }}
-                    className="absolute right-2 top-2 flex items-center justify-center rounded"
-                    style={{
-                        width: 22,
-                        height: 22,
-                        color: "var(--text-secondary)",
-                        backgroundColor: "transparent",
-                        border: "none",
-                        opacity: 0.45,
-                        outline: "none",
-                        zIndex: 1,
-                        transition:
-                            "background-color 100ms ease, color 100ms ease, opacity 100ms ease",
-                    }}
-                    title={expanded ? "Collapse composer" : "Expand composer"}
-                    aria-label={
-                        expanded ? "Collapse composer" : "Expand composer"
-                    }
+                <div
+                    className={contentColumnClassName}
+                    data-testid="chat-composer-content-column"
+                    style={AI_CHAT_CONTENT_COLUMN_STYLE}
                 >
-                    {expanded ? (
-                        <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 14 14"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                    {!expanded && (
+                        <div
+                            ref={resizeHandleRef}
+                            onPointerDown={onResizeDown}
+                            onPointerMove={onResizeMove}
+                            onPointerUp={onResizeUp}
+                            onPointerCancel={onResizeUp}
+                            className="group absolute left-0 right-0 flex cursor-row-resize items-center justify-center touch-none"
+                            style={{
+                                top: -4,
+                                height: 9,
+                                zIndex: 2,
+                            }}
                         >
-                            {/* Collapse: inner brackets at (5,5) and (9,9)
-                                with diagonals out to the outer corners — reads
-                                as arrows pulling inward toward the centre. */}
-                            <path d="M5 1V5H1M9 13V9H13M5 5L1 1M9 9L13 13" />
-                        </svg>
-                    ) : (
-                        <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 14 14"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            {/* Expand: outer brackets at the corners with
-                                diagonals pushing outward — arrows reaching
-                                toward the corners. */}
-                            <path d="M9 1h4v4M5 13H1V9M13 1l-5 5M1 13l5-5" />
-                        </svg>
+                            <div
+                                className="rounded-full transition-colors duration-150"
+                                style={{
+                                    width: 32,
+                                    height: 3,
+                                    backgroundColor: "var(--border)",
+                                }}
+                            />
+                        </div>
                     )}
-                </button>
-                {isEmpty && (
+                    <button
+                        type="button"
+                        tabIndex={-1}
+                        onClick={onToggleExpanded}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                                "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                            e.currentTarget.style.color = "var(--text-primary)";
+                            e.currentTarget.style.opacity = "1";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                                "transparent";
+                            e.currentTarget.style.color =
+                                "var(--text-secondary)";
+                            e.currentTarget.style.opacity = "0.45";
+                        }}
+                        className="absolute right-2 top-2 flex items-center justify-center rounded"
+                        style={{
+                            width: 22,
+                            height: 22,
+                            color: "var(--text-secondary)",
+                            backgroundColor: "transparent",
+                            border: "none",
+                            opacity: 0.45,
+                            outline: "none",
+                            zIndex: 1,
+                            transition:
+                                "background-color 100ms ease, color 100ms ease, opacity 100ms ease",
+                        }}
+                        title={
+                            expanded ? "Collapse composer" : "Expand composer"
+                        }
+                        aria-label={
+                            expanded ? "Collapse composer" : "Expand composer"
+                        }
+                    >
+                        {expanded ? (
+                            <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 14 14"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                {/* Collapse: inner brackets at (5,5) and (9,9)
+                                    with diagonals out to the outer corners — reads
+                                    as arrows pulling inward toward the centre. */}
+                                <path d="M5 1V5H1M9 13V9H13M5 5L1 1M9 9L13 13" />
+                            </svg>
+                        ) : (
+                            <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 14 14"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                {/* Expand: outer brackets at the corners with
+                                    diagonals pushing outward — arrows reaching
+                                    toward the corners. */}
+                                <path d="M9 1h4v4M5 13H1V9M13 1l-5 5M1 13l5-5" />
+                            </svg>
+                        )}
+                    </button>
+                    {isEmpty && (
                     <div
                         className="pointer-events-none absolute left-3.5 top-2.5"
                         style={{
@@ -1824,16 +1844,16 @@ export function AIChatComposer({
                                 ? "Set up a provider in Settings → AI providers"
                                 : `Message ${runtimeName} — @ to include context, / for commands`)}
                     </div>
-                )}
-                <div
-                    ref={bindComposerRef}
-                    contentEditable={!disabled}
-                    suppressContentEditableWarning
-                    role="textbox"
-                    aria-label={AI_MESSAGE_LABEL}
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
+                    )}
+                    <div
+                        ref={bindComposerRef}
+                        contentEditable={!disabled}
+                        suppressContentEditableWarning
+                        role="textbox"
+                        aria-label={AI_MESSAGE_LABEL}
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
                     onContextMenu={(event) => {
                         event.preventDefault();
                         const composer = composerRef.current;
@@ -2308,6 +2328,7 @@ export function AIChatComposer({
                     />
                 )}
                 {bottomAccent}
+                </div>
             </div>
         </div>
     );

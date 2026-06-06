@@ -174,17 +174,21 @@ describe("AIChatSessionView", () => {
         });
     });
 
-    it("aligns lower chat panels and the composer to the shared content column", () => {
+    it("aligns lower chat panels to the shared content column", () => {
         setupWorkspaceSession();
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
         expectColumnAncestor("edited-files-panel");
         expectColumnAncestor("queued-messages-panel");
-        expectColumnAncestor("chat-composer");
+        expect(
+            screen
+                .getByTestId("chat-composer")
+                .closest('[data-testid="chat-content-column"]'),
+        ).toBeNull();
     });
 
-    it("keeps the composer column flexible while the composer is expanded", () => {
+    it("keeps the composer flexible while it is expanded", () => {
         setupWorkspaceSession();
 
         renderComponent(<AIChatSessionView paneId="primary" />);
@@ -195,6 +199,5 @@ describe("AIChatSessionView", () => {
             "data-expanded",
             "true",
         );
-        expect(expectColumnAncestor("chat-composer")).toHaveClass("flex-1");
     });
 });

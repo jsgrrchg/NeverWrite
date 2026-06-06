@@ -14,6 +14,7 @@ import {
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../dragEvents";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
 import { AIChatComposer } from "./AIChatComposer";
+import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { getChatPillMetrics } from "./chatPillMetrics";
 
@@ -42,8 +43,10 @@ function renderComposer({
     availableCommands = [],
     isStopping = false,
     hasPendingSubmitAfterStop = false,
+    expanded = false,
     onMentionAttach = vi.fn(),
     onFolderAttach = vi.fn(),
+    onToggleExpanded = vi.fn(),
     onSubmit = () => {},
     onStop = () => {},
 }: {
@@ -57,12 +60,14 @@ function renderComposer({
     availableCommands?: AIAvailableCommand[];
     isStopping?: boolean;
     hasPendingSubmitAfterStop?: boolean;
+    expanded?: boolean;
     onMentionAttach?: (note: {
         id: string;
         title: string;
         path: string;
     }) => void;
     onFolderAttach?: (folderPath: string, name: string) => void;
+    onToggleExpanded?: () => void;
     onSubmit?: () => void;
     onStop?: () => void;
 } = {}) {
@@ -88,6 +93,8 @@ function renderComposer({
             availableCommands={availableCommands}
             isStopping={isStopping}
             hasPendingSubmitAfterStop={hasPendingSubmitAfterStop}
+            expanded={expanded}
+            onToggleExpanded={onToggleExpanded}
             onChange={onChange}
             onMentionAttach={onMentionAttach}
             onFolderAttach={onFolderAttach}
@@ -112,6 +119,40 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("keeps the composer shell full-width while capping the inner content", () => {
+        renderComposer();
+
+        const shell = screen.getByTestId("chat-composer-shell");
+        const contentColumn = screen.getByTestId(
+            "chat-composer-content-column",
+        );
+
+        expect(shell).toContainElement(contentColumn);
+        expect(shell).not.toHaveStyle({
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+        });
+        expect(contentColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
+        });
+    });
+
+    it("keeps the capped composer content flexible while expanded", () => {
+        renderComposer({ expanded: true });
+
+        const contentColumn = screen.getByTestId(
+            "chat-composer-content-column",
+        );
+
+        expect(contentColumn).toHaveClass("flex-1");
+        expect(contentColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
+        });
+    });
+
     it("lets regular composer pills show their full label", () => {
         expect(getComposerPillLayoutStyle(getChatPillMetrics(14))).toMatchObject(
             {

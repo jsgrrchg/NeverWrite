@@ -70,18 +70,12 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
 
 function ChatContentColumn({
     children,
-    fill = false,
 }: {
     children: ReactNode;
-    fill?: boolean;
 }) {
     return (
         <div
-            className={
-                fill
-                    ? "flex min-h-0 min-w-0 flex-1 flex-col"
-                    : "min-w-0"
-            }
+            className="min-w-0"
             data-testid="chat-content-column"
             style={AI_CHAT_CONTENT_COLUMN_STYLE}
         >
@@ -623,163 +617,149 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         }}
                     />
                 </ChatContentColumn>
-                <ChatContentColumn fill={composerExpanded}>
-                    <AIChatComposer
-                        key={sessionId}
-                        sessionId={sessionId}
-                        parts={composerParts}
-                        notes={noteOptions}
-                        files={fileOptions}
-                        status={session?.status ?? "idle"}
-                        runtimeName={runtimeLabel}
-                        runtimeId={session?.runtimeId}
-                        requireCmdEnterToSend={requireCmdEnterToSend}
-                        composerFontSize={composerFontSize}
-                        composerFontFamily={composerFontFamily}
-                        availableCommands={session?.availableCommands}
-                        isStopping={Boolean(interruptedTurnState?.isStopping)}
-                        hasPendingSubmitAfterStop={Boolean(
-                            interruptedTurnState?.pendingManualSend,
-                        )}
-                        expanded={composerExpanded}
-                        onToggleExpanded={() => setComposerExpanded((v) => !v)}
-                        disabled={
-                            !session ||
-                            isClosedSubagent ||
-                            isPendingSessionCreation ||
-                            activeConnection.status === "loading" ||
-                            Boolean(session.isResumingSession)
-                        }
-                        placeholderText={
-                            isClosedSubagent
-                                ? "This subagent was closed by its parent thread."
-                                : isPendingSessionCreation
-                                  ? pendingSessionError
-                                      ? "Agent unavailable"
-                                      : "Loading agent"
-                                  : undefined
-                        }
-                        contextBar={
-                            <AIChatContextBar
-                                attachments={[
-                                    ...(session?.attachments ?? [])
-                                        .filter(
-                                            (a) =>
-                                                !composerParts.some(
-                                                    (p) =>
-                                                        (p.type ===
-                                                            "mention" &&
-                                                            p.noteId ===
-                                                                a.noteId) ||
-                                                        (p.type ===
-                                                            "file_mention" &&
-                                                            a.type === "file" &&
-                                                            a.path === p.path) ||
-                                                        (p.type ===
-                                                            "folder_mention" &&
-                                                            a.type ===
-                                                                "folder" &&
-                                                            p.folderPath ===
-                                                                a.noteId),
-                                                ),
-                                        )
-                                        .map((attachment) => ({
-                                            id: attachment.id,
-                                            noteId: attachment.noteId,
-                                            label: attachment.label,
-                                            path: attachment.path,
-                                            removable: true,
-                                            type: attachment.type,
-                                            status: attachment.status,
-                                            errorMessage:
-                                                attachment.errorMessage,
-                                        })),
-                                ]}
-                                onRemoveAttachment={handleRemoveAttachment}
-                                onClearAll={handleClearAttachments}
+                <AIChatComposer
+                    key={sessionId}
+                    sessionId={sessionId}
+                    parts={composerParts}
+                    notes={noteOptions}
+                    files={fileOptions}
+                    status={session?.status ?? "idle"}
+                    runtimeName={runtimeLabel}
+                    runtimeId={session?.runtimeId}
+                    requireCmdEnterToSend={requireCmdEnterToSend}
+                    composerFontSize={composerFontSize}
+                    composerFontFamily={composerFontFamily}
+                    availableCommands={session?.availableCommands}
+                    isStopping={Boolean(interruptedTurnState?.isStopping)}
+                    hasPendingSubmitAfterStop={Boolean(
+                        interruptedTurnState?.pendingManualSend,
+                    )}
+                    expanded={composerExpanded}
+                    onToggleExpanded={() => setComposerExpanded((v) => !v)}
+                    disabled={
+                        !session ||
+                        isClosedSubagent ||
+                        isPendingSessionCreation ||
+                        activeConnection.status === "loading" ||
+                        Boolean(session.isResumingSession)
+                    }
+                    placeholderText={
+                        isClosedSubagent
+                            ? "This subagent was closed by its parent thread."
+                            : isPendingSessionCreation
+                              ? pendingSessionError
+                                  ? "Agent unavailable"
+                                  : "Loading agent"
+                              : undefined
+                    }
+                    contextBar={
+                        <AIChatContextBar
+                            attachments={[
+                                ...(session?.attachments ?? [])
+                                    .filter(
+                                        (a) =>
+                                            !composerParts.some(
+                                                (p) =>
+                                                    (p.type === "mention" &&
+                                                        p.noteId ===
+                                                            a.noteId) ||
+                                                    (p.type ===
+                                                        "file_mention" &&
+                                                        a.type === "file" &&
+                                                        a.path === p.path) ||
+                                                    (p.type ===
+                                                        "folder_mention" &&
+                                                        a.type === "folder" &&
+                                                        p.folderPath ===
+                                                            a.noteId),
+                                            ),
+                                    )
+                                    .map((attachment) => ({
+                                        id: attachment.id,
+                                        noteId: attachment.noteId,
+                                        label: attachment.label,
+                                        path: attachment.path,
+                                        removable: true,
+                                        type: attachment.type,
+                                        status: attachment.status,
+                                        errorMessage: attachment.errorMessage,
+                                    })),
+                            ]}
+                            onRemoveAttachment={handleRemoveAttachment}
+                            onClearAll={handleClearAttachments}
+                        />
+                    }
+                    bottomAccent={
+                        contextUsageBarEnabled ? (
+                            <AIChatContextUsageBar
+                                usage={tokenUsage}
+                                cornerRadius={composerExpanded ? 9 : 11}
                             />
-                        }
-                        bottomAccent={
-                            contextUsageBarEnabled ? (
-                                <AIChatContextUsageBar
-                                    usage={tokenUsage}
-                                    cornerRadius={composerExpanded ? 9 : 11}
-                                />
-                            ) : null
-                        }
-                        footer={
-                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                                {!isPendingSessionCreation && (
-                                    <AIChatAgentControls
-                                        disabled={agentControlsDisabled}
-                                        runtimeId={session?.runtimeId}
-                                        modelId={session?.modelId ?? ""}
-                                        modeId={session?.modeId ?? ""}
-                                        effortsByModel={
-                                            session?.effortsByModel ?? {}
-                                        }
-                                        models={agentCatalog.models}
-                                        modes={agentCatalog.modes}
-                                        configOptions={
-                                            agentCatalog.configOptions
-                                        }
-                                        onModelChange={(modelId) => {
-                                            void chatActions.setModel(
-                                                modelId,
-                                                sessionId,
-                                            );
-                                        }}
-                                        onModeChange={(modeId) => {
-                                            void chatActions.setMode(
-                                                modeId,
-                                                sessionId,
-                                            );
-                                        }}
-                                        onConfigOptionChange={(
+                        ) : null
+                    }
+                    footer={
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            {!isPendingSessionCreation && (
+                                <AIChatAgentControls
+                                    disabled={agentControlsDisabled}
+                                    runtimeId={session?.runtimeId}
+                                    modelId={session?.modelId ?? ""}
+                                    modeId={session?.modeId ?? ""}
+                                    effortsByModel={
+                                        session?.effortsByModel ?? {}
+                                    }
+                                    models={agentCatalog.models}
+                                    modes={agentCatalog.modes}
+                                    configOptions={agentCatalog.configOptions}
+                                    onModelChange={(modelId) => {
+                                        void chatActions.setModel(
+                                            modelId,
+                                            sessionId,
+                                        );
+                                    }}
+                                    onModeChange={(modeId) => {
+                                        void chatActions.setMode(
+                                            modeId,
+                                            sessionId,
+                                        );
+                                    }}
+                                    onConfigOptionChange={(optionId, value) => {
+                                        void chatActions.setConfigOption(
                                             optionId,
                                             value,
-                                        ) => {
-                                            void chatActions.setConfigOption(
-                                                optionId,
-                                                value,
-                                                sessionId,
-                                            );
-                                        }}
-                                    />
-                                )}
-                            </div>
-                        }
-                        onChange={(parts) => {
-                            chatActions.setComposerParts(parts, sessionId);
-                        }}
-                        onAttachFile={handleAttachFile}
-                        onPasteImage={handlePasteImage}
-                        onFocus={() => {
-                            if (!sessionId) return;
-                            chatActions.markSessionFocused(sessionId);
-                        }}
-                        onMentionAttach={(note) => {
-                            chatActions.attachNote(note, sessionId);
-                        }}
-                        onFileMentionAttach={(file) => {
-                            chatActions.attachVaultFile(file, sessionId);
-                        }}
-                        onFolderAttach={(folderPath, name) => {
-                            chatActions.attachFolder(
-                                folderPath,
-                                name,
-                                sessionId,
-                            );
-                        }}
-                        onSubmit={() => {
-                            setComposerExpanded(false);
-                            void chatActions.sendMessage(sessionId);
-                        }}
-                        onStop={() => {
-                            void chatActions.stopStreaming(sessionId);
-                        }}
-                    />
-                </ChatContentColumn>
+                                            sessionId,
+                                        );
+                                    }}
+                                />
+                            )}
+                        </div>
+                    }
+                    onChange={(parts) => {
+                        chatActions.setComposerParts(parts, sessionId);
+                    }}
+                    onAttachFile={handleAttachFile}
+                    onPasteImage={handlePasteImage}
+                    onFocus={() => {
+                        if (!sessionId) return;
+                        chatActions.markSessionFocused(sessionId);
+                    }}
+                    onMentionAttach={(note) => {
+                        chatActions.attachNote(note, sessionId);
+                    }}
+                    onFileMentionAttach={(file) => {
+                        chatActions.attachVaultFile(file, sessionId);
+                    }}
+                    onFolderAttach={(folderPath, name) => {
+                        chatActions.attachFolder(folderPath, name, sessionId);
+                    }}
+                    onSubmit={() => {
+                        setComposerExpanded(false);
+                        void chatActions.sendMessage(sessionId);
+                    }}
+                    onStop={() => {
+                        void chatActions.stopStreaming(sessionId);
+                    }}
+                />
             </div>
         </div>
     );
