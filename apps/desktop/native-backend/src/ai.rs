@@ -2167,13 +2167,41 @@ impl AcpSessionHandle {
 struct NativeAcpClient {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
-    message_ids: Arc<Mutex<HashMap<String, String>>>,
+    message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MessageStreamKey {
+    session_id: String,
+    role: MessageRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MessageRole {
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    fn id_kind(self) -> &'static str {
+        match self {
+            Self::User => "user-message",
+            Self::Assistant => "message",
+        }
+    }
 }
 
 impl NativeAcpClient {
@@ -2365,43 +2393,83 @@ impl NativeAcpClient {
         )
     }
 
-    fn begin_message(&self, session_id: &str) -> String {
-        let message_id = self.next_message_id(session_id, "message");
+    fn message_stream_key(session_id: &str, role: MessageRole) -> MessageStreamKey {
+        MessageStreamKey {
+            session_id: session_id.to_string(),
+            role,
+        }
+    }
+
+    fn begin_text_message(&self, session_id: &str, role: MessageRole) -> String {
+        let message_id = self.next_message_id(session_id, role.id_kind());
         if let Ok(mut ids) = self.message_ids.lock() {
-            ids.insert(session_id.to_string(), message_id.clone());
+            ids.insert(
+                Self::message_stream_key(session_id, role),
+                message_id.clone(),
+            );
         }
         self.emit(
             AI_MESSAGE_STARTED_EVENT,
             AiMessageStartedPayload {
                 session_id: session_id.to_string(),
                 message_id: message_id.clone(),
+                role: role.as_str().to_string(),
             },
         );
         message_id
     }
 
-    fn current_message_id(&self, session_id: &str) -> Option<String> {
-        self.message_ids
-            .lock()
-            .ok()
-            .and_then(|ids| ids.get(session_id).cloned())
+    fn current_text_message_id(&self, session_id: &str, role: MessageRole) -> Option<String> {
+        self.message_ids.lock().ok().and_then(|ids| {
+            ids.get(&Self::message_stream_key(session_id, role))
+                .cloned()
+        })
     }
 
-    fn end_message(&self, session_id: &str) {
+    fn end_text_message(&self, session_id: &str, role: MessageRole) {
         let message_id = self
             .message_ids
             .lock()
             .ok()
-            .and_then(|mut ids| ids.remove(session_id));
+            .and_then(|mut ids| ids.remove(&Self::message_stream_key(session_id, role)));
         if let Some(message_id) = message_id {
             self.emit(
                 AI_MESSAGE_COMPLETED_EVENT,
                 AiMessageCompletedPayload {
                     session_id: session_id.to_string(),
                     message_id,
+                    role: role.as_str().to_string(),
                 },
             );
         }
+    }
+
+    fn begin_message(&self, session_id: &str) -> String {
+        self.begin_text_message(session_id, MessageRole::Assistant)
+    }
+
+    fn current_message_id(&self, session_id: &str) -> Option<String> {
+        self.current_text_message_id(session_id, MessageRole::Assistant)
+    }
+
+    fn end_message(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::Assistant);
+    }
+
+    fn begin_user_message(&self, session_id: &str) -> String {
+        self.begin_text_message(session_id, MessageRole::User)
+    }
+
+    fn current_user_message_id(&self, session_id: &str) -> Option<String> {
+        self.current_text_message_id(session_id, MessageRole::User)
+    }
+
+    fn end_user_message(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::User);
+    }
+
+    fn has_active_text_message(&self, session_id: &str, role: MessageRole) -> bool {
+        self.current_text_message_id(session_id, role).is_some()
     }
 
     fn begin_thinking(&self, session_id: &str) -> String {
@@ -2441,6 +2509,7 @@ impl NativeAcpClient {
 
     fn mark_session_idle(&self, session_id: &str) {
         self.end_thinking(session_id);
+        self.end_user_message(session_id);
         self.end_message(session_id);
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
@@ -2456,6 +2525,7 @@ impl NativeAcpClient {
 
     fn mark_subagent_closed_by_parent(&self, session_id: &str) {
         self.end_thinking(session_id);
+        self.end_user_message(session_id);
         self.end_message(session_id);
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
@@ -2852,11 +2922,31 @@ impl NativeAcpClient {
             return Ok(());
         }
         match args.update {
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(text),
+                ..
+            }) => {
+                // User chunks come from the runtime, not the local composer, so they need
+                // their own stream state.
+                let message_id = self
+                    .current_user_message_id(&session_id)
+                    .unwrap_or_else(|| self.begin_user_message(&session_id));
+                self.emit(
+                    AI_MESSAGE_DELTA_EVENT,
+                    AiMessageDeltaPayload {
+                        session_id,
+                        message_id,
+                        delta: text.text,
+                        role: MessageRole::User.as_str().to_string(),
+                    },
+                );
+            }
             SessionUpdate::AgentMessageChunk(ContentChunk {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
                 self.end_thinking(&session_id);
+                self.end_user_message(&session_id);
                 let message_id = self
                     .current_message_id(&session_id)
                     .unwrap_or_else(|| self.begin_message(&session_id));
@@ -2866,6 +2956,7 @@ impl NativeAcpClient {
                         session_id,
                         message_id,
                         delta: text.text,
+                        role: MessageRole::Assistant.as_str().to_string(),
                     },
                 );
             }
@@ -3480,12 +3571,14 @@ async fn handle_acp_command(
                     .map(|_| ())
                     .map_err(|error| error.to_string());
                 client.end_thinking(&session_id);
+                client.end_user_message(&session_id);
                 if client.current_message_id(&session_id).is_none() {
                     client.emit(
                         AI_MESSAGE_STARTED_EVENT,
                         AiMessageStartedPayload {
                             session_id: session_id.clone(),
                             message_id: message_id.clone(),
+                            role: MessageRole::Assistant.as_str().to_string(),
                         },
                     );
                 }
@@ -7512,6 +7605,15 @@ mod tests {
         )
     }
 
+    fn subagent_child_user_message_notification_fixture() -> SessionNotification {
+        SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Parent task for child agent",
+            ))),
+        )
+    }
+
     fn turn_lifecycle_notification_fixture(
         runtime_session_id: &str,
         turn_event_type: &str,
@@ -8049,6 +8151,10 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
 
         let event = event_rx
             .recv_timeout(StdDuration::from_millis(250))
@@ -8065,10 +8171,162 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
 
-        let message_ids = client.message_ids.lock().unwrap();
-        assert!(message_ids.contains_key(CHILD_RUNTIME_SESSION_ID));
-        assert!(!message_ids.contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+    }
+
+    #[test]
+    fn child_user_message_chunks_emit_user_role_without_touching_assistant_state() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(
+            client.session_notification(subagent_child_user_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+        let user_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("user message id")
+            .to_string();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+        assert_eq!(
+            payload.get("delta").and_then(Value::as_str),
+            Some("Parent task for child agent")
+        );
+
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::User));
+
+        run_client_future(
+            client.session_notification(subagent_child_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
+        let assistant_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("assistant message id")
+            .to_string();
+        assert_ne!(assistant_message_id, user_message_id);
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child assistant message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(assistant_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
+
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
     }
 
     #[test]
@@ -8144,6 +8402,7 @@ mod tests {
                 .status = AiSessionStatus::Streaming;
         }
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.begin_user_message(CHILD_RUNTIME_SESSION_ID);
         client.begin_message(CHILD_RUNTIME_SESSION_ID);
         while event_rx.try_recv().is_ok() {}
 
@@ -8156,9 +8415,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut saw_message_completed = false;
+        let mut saw_user_message_completed = false;
+        let mut saw_assistant_message_completed = false;
         let mut saw_idle_update = false;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let RpcOutput::Event {
                 event_name,
                 payload,
@@ -8172,7 +8432,14 @@ mod tests {
                 && payload.get("session_id").and_then(Value::as_str)
                     == Some(CHILD_RUNTIME_SESSION_ID)
             {
-                saw_message_completed = true;
+                if payload.get("role").and_then(Value::as_str) == Some(MessageRole::User.as_str()) {
+                    saw_user_message_completed = true;
+                }
+                if payload.get("role").and_then(Value::as_str)
+                    == Some(MessageRole::Assistant.as_str())
+                {
+                    saw_assistant_message_completed = true;
+                }
             }
             if event_name == AI_SESSION_UPDATED_EVENT
                 && payload.get("session_id").and_then(Value::as_str)
@@ -8183,13 +8450,11 @@ mod tests {
             }
         }
 
-        assert!(saw_message_completed);
+        assert!(saw_user_message_completed);
+        assert!(saw_assistant_message_completed);
         assert!(saw_idle_update);
-        assert!(!client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
     }
 
     #[test]
@@ -8226,11 +8491,7 @@ mod tests {
         .unwrap();
 
         assert!(event_rx.try_recv().is_err());
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -8271,11 +8532,7 @@ mod tests {
         .unwrap();
 
         assert!(event_rx.try_recv().is_err());
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -8306,11 +8563,7 @@ mod tests {
         )
         .unwrap();
         while event_rx.try_recv().is_ok() {}
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
 
         let close_meta = Meta::from_iter([
             (
@@ -8367,11 +8620,8 @@ mod tests {
 
         assert!(saw_message_completed);
         assert!(saw_closed_update);
-        assert!(!client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
     }
 
     #[test]
@@ -8470,11 +8720,7 @@ mod tests {
             assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
         }
 
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state

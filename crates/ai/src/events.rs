@@ -56,6 +56,7 @@ pub struct AiTokenUsagePayload {
 pub struct AiMessageStartedPayload {
     pub session_id: String,
     pub message_id: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,12 +64,14 @@ pub struct AiMessageDeltaPayload {
     pub session_id: String,
     pub message_id: String,
     pub delta: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiMessageCompletedPayload {
     pub session_id: String,
     pub message_id: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
