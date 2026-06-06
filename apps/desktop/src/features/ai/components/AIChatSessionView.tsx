@@ -9,7 +9,14 @@
  * All session data is read reactively from chatStore, which is the single
  * source of truth regardless of where the UI renders.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -37,6 +44,7 @@ import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
+import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
 import {
     appendFileAttachmentPart,
     appendScreenshotPart,
@@ -59,6 +67,28 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
     status: "idle",
     message: null,
 };
+
+function ChatContentColumn({
+    children,
+    fill = false,
+}: {
+    children: ReactNode;
+    fill?: boolean;
+}) {
+    return (
+        <div
+            className={
+                fill
+                    ? "flex min-h-0 min-w-0 flex-1 flex-col"
+                    : "min-w-0"
+            }
+            data-testid="chat-content-column"
+            style={AI_CHAT_CONTENT_COLUMN_STYLE}
+        >
+            {children}
+        </div>
+    );
+}
 
 interface AIChatSessionViewProps {
     paneId?: string;
@@ -555,7 +585,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 />
             )}
 
-            <EditedFilesBufferPanel sessionId={sessionId} />
+            <ChatContentColumn>
+                <EditedFilesBufferPanel sessionId={sessionId} />
+            </ChatContentColumn>
 
             <div
                 className={
@@ -564,171 +596,190 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         : "pt-2"
                 }
             >
-                <QueuedMessagesPanel
-                    items={queuedMessages}
-                    editingItem={queuedMessageEdit?.item ?? null}
-                    onCancel={(messageId) => {
-                        chatActions.removeQueuedMessage(sessionId, messageId);
-                    }}
-                    onClearAll={() => {
-                        chatActions.clearSessionQueue(sessionId);
-                    }}
-                    onEdit={(messageId) => {
-                        chatActions.editQueuedMessage(sessionId, messageId);
-                    }}
-                    onSendNow={(messageId) => {
-                        void chatActions.sendQueuedMessageNow(
-                            sessionId,
-                            messageId,
-                        );
-                    }}
-                    onCancelEdit={() => {
-                        chatActions.cancelQueuedMessageEdit(sessionId);
-                    }}
-                />
-                <AIChatComposer
-                    key={sessionId}
-                    sessionId={sessionId}
-                    parts={composerParts}
-                    notes={noteOptions}
-                    files={fileOptions}
-                    status={session?.status ?? "idle"}
-                    runtimeName={runtimeLabel}
-                    runtimeId={session?.runtimeId}
-                    requireCmdEnterToSend={requireCmdEnterToSend}
-                    composerFontSize={composerFontSize}
-                    composerFontFamily={composerFontFamily}
-                    availableCommands={session?.availableCommands}
-                    isStopping={Boolean(interruptedTurnState?.isStopping)}
-                    hasPendingSubmitAfterStop={Boolean(
-                        interruptedTurnState?.pendingManualSend,
-                    )}
-                    expanded={composerExpanded}
-                    onToggleExpanded={() => setComposerExpanded((v) => !v)}
-                    disabled={
-                        !session ||
-                        isClosedSubagent ||
-                        isPendingSessionCreation ||
-                        activeConnection.status === "loading" ||
-                        Boolean(session.isResumingSession)
-                    }
-                    placeholderText={
-                        isClosedSubagent
-                            ? "This subagent was closed by its parent thread."
-                            : isPendingSessionCreation
-                              ? pendingSessionError
-                                  ? "Agent unavailable"
-                                  : "Loading agent"
-                            : undefined
-                    }
-                    contextBar={
-                        <AIChatContextBar
-                            attachments={[
-                                ...(session?.attachments ?? [])
-                                    .filter(
-                                        (a) =>
-                                            !composerParts.some(
-                                                (p) =>
-                                                    (p.type === "mention" &&
-                                                        p.noteId ===
-                                                            a.noteId) ||
-                                                    (p.type ===
-                                                        "file_mention" &&
-                                                        a.type === "file" &&
-                                                        a.path === p.path) ||
-                                                    (p.type ===
-                                                        "folder_mention" &&
-                                                        a.type === "folder" &&
-                                                        p.folderPath ===
-                                                            a.noteId),
-                                            ),
-                                    )
-                                    .map((attachment) => ({
-                                        id: attachment.id,
-                                        noteId: attachment.noteId,
-                                        label: attachment.label,
-                                        path: attachment.path,
-                                        removable: true,
-                                        type: attachment.type,
-                                        status: attachment.status,
-                                        errorMessage: attachment.errorMessage,
-                                    })),
-                            ]}
-                            onRemoveAttachment={handleRemoveAttachment}
-                            onClearAll={handleClearAttachments}
-                        />
-                    }
-                    bottomAccent={
-                        contextUsageBarEnabled ? (
-                            <AIChatContextUsageBar
-                                usage={tokenUsage}
-                                cornerRadius={composerExpanded ? 9 : 11}
+                <ChatContentColumn>
+                    <QueuedMessagesPanel
+                        items={queuedMessages}
+                        editingItem={queuedMessageEdit?.item ?? null}
+                        onCancel={(messageId) => {
+                            chatActions.removeQueuedMessage(
+                                sessionId,
+                                messageId,
+                            );
+                        }}
+                        onClearAll={() => {
+                            chatActions.clearSessionQueue(sessionId);
+                        }}
+                        onEdit={(messageId) => {
+                            chatActions.editQueuedMessage(sessionId, messageId);
+                        }}
+                        onSendNow={(messageId) => {
+                            void chatActions.sendQueuedMessageNow(
+                                sessionId,
+                                messageId,
+                            );
+                        }}
+                        onCancelEdit={() => {
+                            chatActions.cancelQueuedMessageEdit(sessionId);
+                        }}
+                    />
+                </ChatContentColumn>
+                <ChatContentColumn fill={composerExpanded}>
+                    <AIChatComposer
+                        key={sessionId}
+                        sessionId={sessionId}
+                        parts={composerParts}
+                        notes={noteOptions}
+                        files={fileOptions}
+                        status={session?.status ?? "idle"}
+                        runtimeName={runtimeLabel}
+                        runtimeId={session?.runtimeId}
+                        requireCmdEnterToSend={requireCmdEnterToSend}
+                        composerFontSize={composerFontSize}
+                        composerFontFamily={composerFontFamily}
+                        availableCommands={session?.availableCommands}
+                        isStopping={Boolean(interruptedTurnState?.isStopping)}
+                        hasPendingSubmitAfterStop={Boolean(
+                            interruptedTurnState?.pendingManualSend,
+                        )}
+                        expanded={composerExpanded}
+                        onToggleExpanded={() => setComposerExpanded((v) => !v)}
+                        disabled={
+                            !session ||
+                            isClosedSubagent ||
+                            isPendingSessionCreation ||
+                            activeConnection.status === "loading" ||
+                            Boolean(session.isResumingSession)
+                        }
+                        placeholderText={
+                            isClosedSubagent
+                                ? "This subagent was closed by its parent thread."
+                                : isPendingSessionCreation
+                                  ? pendingSessionError
+                                      ? "Agent unavailable"
+                                      : "Loading agent"
+                                  : undefined
+                        }
+                        contextBar={
+                            <AIChatContextBar
+                                attachments={[
+                                    ...(session?.attachments ?? [])
+                                        .filter(
+                                            (a) =>
+                                                !composerParts.some(
+                                                    (p) =>
+                                                        (p.type ===
+                                                            "mention" &&
+                                                            p.noteId ===
+                                                                a.noteId) ||
+                                                        (p.type ===
+                                                            "file_mention" &&
+                                                            a.type === "file" &&
+                                                            a.path === p.path) ||
+                                                        (p.type ===
+                                                            "folder_mention" &&
+                                                            a.type ===
+                                                                "folder" &&
+                                                            p.folderPath ===
+                                                                a.noteId),
+                                                ),
+                                        )
+                                        .map((attachment) => ({
+                                            id: attachment.id,
+                                            noteId: attachment.noteId,
+                                            label: attachment.label,
+                                            path: attachment.path,
+                                            removable: true,
+                                            type: attachment.type,
+                                            status: attachment.status,
+                                            errorMessage:
+                                                attachment.errorMessage,
+                                        })),
+                                ]}
+                                onRemoveAttachment={handleRemoveAttachment}
+                                onClearAll={handleClearAttachments}
                             />
-                        ) : null
-                    }
-                    footer={
-                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                            {!isPendingSessionCreation && (
-                                <AIChatAgentControls
-                                    disabled={agentControlsDisabled}
-                                    runtimeId={session?.runtimeId}
-                                    modelId={session?.modelId ?? ""}
-                                    modeId={session?.modeId ?? ""}
-                                    effortsByModel={
-                                        session?.effortsByModel ?? {}
-                                    }
-                                    models={agentCatalog.models}
-                                    modes={agentCatalog.modes}
-                                    configOptions={agentCatalog.configOptions}
-                                    onModelChange={(modelId) => {
-                                        void chatActions.setModel(
-                                            modelId,
-                                            sessionId,
-                                        );
-                                    }}
-                                    onModeChange={(modeId) => {
-                                        void chatActions.setMode(
-                                            modeId,
-                                            sessionId,
-                                        );
-                                    }}
-                                    onConfigOptionChange={(optionId, value) => {
-                                        void chatActions.setConfigOption(
+                        }
+                        bottomAccent={
+                            contextUsageBarEnabled ? (
+                                <AIChatContextUsageBar
+                                    usage={tokenUsage}
+                                    cornerRadius={composerExpanded ? 9 : 11}
+                                />
+                            ) : null
+                        }
+                        footer={
+                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                {!isPendingSessionCreation && (
+                                    <AIChatAgentControls
+                                        disabled={agentControlsDisabled}
+                                        runtimeId={session?.runtimeId}
+                                        modelId={session?.modelId ?? ""}
+                                        modeId={session?.modeId ?? ""}
+                                        effortsByModel={
+                                            session?.effortsByModel ?? {}
+                                        }
+                                        models={agentCatalog.models}
+                                        modes={agentCatalog.modes}
+                                        configOptions={
+                                            agentCatalog.configOptions
+                                        }
+                                        onModelChange={(modelId) => {
+                                            void chatActions.setModel(
+                                                modelId,
+                                                sessionId,
+                                            );
+                                        }}
+                                        onModeChange={(modeId) => {
+                                            void chatActions.setMode(
+                                                modeId,
+                                                sessionId,
+                                            );
+                                        }}
+                                        onConfigOptionChange={(
                                             optionId,
                                             value,
-                                            sessionId,
-                                        );
-                                    }}
-                                />
-                            )}
-                        </div>
-                    }
-                    onChange={(parts) => {
-                        chatActions.setComposerParts(parts, sessionId);
-                    }}
-                    onAttachFile={handleAttachFile}
-                    onPasteImage={handlePasteImage}
-                    onFocus={() => {
-                        if (!sessionId) return;
-                        chatActions.markSessionFocused(sessionId);
-                    }}
-                    onMentionAttach={(note) => {
-                        chatActions.attachNote(note, sessionId);
-                    }}
-                    onFileMentionAttach={(file) => {
-                        chatActions.attachVaultFile(file, sessionId);
-                    }}
-                    onFolderAttach={(folderPath, name) => {
-                        chatActions.attachFolder(folderPath, name, sessionId);
-                    }}
-                    onSubmit={() => {
-                        setComposerExpanded(false);
-                        void chatActions.sendMessage(sessionId);
-                    }}
-                    onStop={() => {
-                        void chatActions.stopStreaming(sessionId);
-                    }}
-                />
+                                        ) => {
+                                            void chatActions.setConfigOption(
+                                                optionId,
+                                                value,
+                                                sessionId,
+                                            );
+                                        }}
+                                    />
+                                )}
+                            </div>
+                        }
+                        onChange={(parts) => {
+                            chatActions.setComposerParts(parts, sessionId);
+                        }}
+                        onAttachFile={handleAttachFile}
+                        onPasteImage={handlePasteImage}
+                        onFocus={() => {
+                            if (!sessionId) return;
+                            chatActions.markSessionFocused(sessionId);
+                        }}
+                        onMentionAttach={(note) => {
+                            chatActions.attachNote(note, sessionId);
+                        }}
+                        onFileMentionAttach={(file) => {
+                            chatActions.attachVaultFile(file, sessionId);
+                        }}
+                        onFolderAttach={(folderPath, name) => {
+                            chatActions.attachFolder(
+                                folderPath,
+                                name,
+                                sessionId,
+                            );
+                        }}
+                        onSubmit={() => {
+                            setComposerExpanded(false);
+                            void chatActions.sendMessage(sessionId);
+                        }}
+                        onStop={() => {
+                            void chatActions.stopStreaming(sessionId);
+                        }}
+                    />
+                </ChatContentColumn>
             </div>
         </div>
     );

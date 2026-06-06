@@ -6,13 +6,27 @@ import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import type { AIChatSession } from "../types";
 import { AIChatSessionView } from "./AIChatSessionView";
+import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: () => <div data-testid="chat-message-list" />,
 }));
 
 vi.mock("./AIChatComposer", () => ({
-    AIChatComposer: () => <div data-testid="chat-composer" />,
+    AIChatComposer: ({
+        expanded,
+        onToggleExpanded,
+    }: {
+        expanded?: boolean;
+        onToggleExpanded?: () => void;
+    }) => (
+        <button
+            type="button"
+            data-testid="chat-composer"
+            data-expanded={String(Boolean(expanded))}
+            onClick={onToggleExpanded}
+        />
+    ),
 }));
 
 vi.mock("./AIChatContextBar", () => ({
@@ -62,6 +76,34 @@ function createSession(sessionId: string, title: string): AIChatSession {
     };
 }
 
+function setupWorkspaceSession(sessionId = "session-a") {
+    useChatStore.setState((state) => ({
+        ...state,
+        sessionsById: {
+            [sessionId]: createSession(sessionId, "Workspace chat"),
+        },
+        activeSessionId: sessionId,
+    }));
+    useEditorStore.getState().openChat(sessionId, {
+        title: "Workspace chat",
+        paneId: "primary",
+    });
+}
+
+function expectColumnAncestor(testId: string) {
+    const element = screen.getByTestId(testId);
+    const column = element.closest('[data-testid="chat-content-column"]');
+
+    expect(column).not.toBeNull();
+    expect(column).toHaveStyle({
+        width: "100%",
+        maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+        marginInline: "auto",
+    });
+
+    return column as HTMLElement;
+}
+
 describe("AIChatSessionView", () => {
     beforeEach(() => {
         resetChatStore();
@@ -77,17 +119,7 @@ describe("AIChatSessionView", () => {
     });
 
     it("renames the workspace chat from the local header title on double click", async () => {
-        useChatStore.setState((state) => ({
-            ...state,
-            sessionsById: {
-                "session-a": createSession("session-a", "Workspace chat"),
-            },
-            activeSessionId: "session-a",
-        }));
-        useEditorStore.getState().openChat("session-a", {
-            title: "Workspace chat",
-            paneId: "primary",
-        });
+        setupWorkspaceSession();
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
@@ -109,6 +141,7 @@ describe("AIChatSessionView", () => {
     });
 
     it("removes expired screenshots from the composer", async () => {
+        setupWorkspaceSession();
         useChatStore.setState((state) => ({
             ...state,
             sessionsById: {
@@ -131,10 +164,6 @@ describe("AIChatSessionView", () => {
                 ],
             },
         }));
-        useEditorStore.getState().openChat("session-a", {
-            title: "Workspace chat",
-            paneId: "primary",
-        });
 
         renderComponent(<AIChatSessionView paneId="primary" />);
 
@@ -143,5 +172,29 @@ describe("AIChatSessionView", () => {
                 useChatStore.getState().composerPartsBySessionId["session-a"],
             ).toEqual([{ id: "text-1", type: "text", text: "Review  please" }]);
         });
+    });
+
+    it("aligns lower chat panels and the composer to the shared content column", () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expectColumnAncestor("edited-files-panel");
+        expectColumnAncestor("queued-messages-panel");
+        expectColumnAncestor("chat-composer");
+    });
+
+    it("keeps the composer column flexible while the composer is expanded", () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        fireEvent.click(screen.getByTestId("chat-composer"));
+
+        expect(screen.getByTestId("chat-composer")).toHaveAttribute(
+            "data-expanded",
+            "true",
+        );
+        expect(expectColumnAncestor("chat-composer")).toHaveClass("flex-1");
     });
 });
