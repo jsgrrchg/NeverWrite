@@ -8158,6 +8158,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         applySessionError: ({ session_id, message: rawMessage }) => {
             if (session_id) clearStaleStreamingCheck(session_id);
+            // The error message is appended to the timeline synchronously, so
+            // flush buffered text/thinking deltas first to keep messageOrder in
+            // runtime order (matches the other timeline-inserting handlers).
+            flushDeltasBeforeTimelineInsert();
             set((state) => {
                 const sessionRuntimeId = session_id
                     ? state.sessionsById[session_id]?.runtimeId
