@@ -86,6 +86,22 @@ function getScrollContainer(root: HTMLElement) {
     return container!;
 }
 
+function getMessageColumn(root: HTMLElement) {
+    const column = root.querySelector(
+        '[data-selectable="true"]',
+    ) as HTMLDivElement | null;
+    expect(column).not.toBeNull();
+    return column!;
+}
+
+function expectSharedChatContentColumn(element: HTMLElement) {
+    expect(element).toHaveStyle({
+        width: "100%",
+        maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+        marginInline: "auto",
+    });
+}
+
 describe("AIChatMessageList streaming run indicator", () => {
     afterEach(() => {
         vi.useRealTimers();
@@ -195,14 +211,10 @@ describe("AIChatMessageList streaming run indicator", () => {
             />,
         );
 
-        const messageColumn = view.container.querySelector(
-            '[data-selectable="true"]',
-        );
+        const messageColumn = getMessageColumn(view.container);
 
+        expectSharedChatContentColumn(messageColumn);
         expect(messageColumn).toHaveStyle({
-            width: "100%",
-            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
-            marginInline: "auto",
             fontFamily:
                 '"American Typewriter", "Courier Prime", "Courier New", "Nimbus Mono PS", monospace',
         });
@@ -218,16 +230,60 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         const scrollContainer = getScrollContainer(view.container);
-        const messageColumn = view.container.querySelector(
-            '[data-selectable="true"]',
-        );
+        const messageColumn = getMessageColumn(view.container);
 
         expect(scrollContainer).toHaveClass("flex-1");
-        expect(messageColumn).toHaveStyle({
-            width: "100%",
-            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
-            marginInline: "auto",
+        expectSharedChatContentColumn(messageColumn);
+    });
+
+    it.each([
+        ["narrow", 320],
+        ["wide", 1200],
+    ])(
+        "keeps the shared transcript column responsive in a %s panel",
+        (_label, width) => {
+            const view = renderComponent(
+                <AIChatMessageList
+                    sessionId={`session-${width}`}
+                    messages={createMessages()}
+                    status="idle"
+                />,
+            );
+            const scrollContainer = getScrollContainer(view.container);
+            configureScrollableViewport(scrollContainer, 320, { width });
+
+            expect(scrollContainer.clientWidth).toBe(width);
+            expectSharedChatContentColumn(getMessageColumn(view.container));
+        },
+    );
+
+    it("keeps the shared transcript column during width-change scroll anchoring", () => {
+        let width = 1200;
+        const messages = createLongTranscript(80);
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-resize-column"
+                messages={messages}
+                status="idle"
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getWidth: () => width,
         });
+
+        act(() => {
+            scrollContainer.scrollTop = 2_400;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        width = 360;
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(scrollContainer.clientWidth).toBe(360);
+        expectSharedChatContentColumn(getMessageColumn(view.container));
     });
 
     it("keeps empty new chats top-aligned", () => {
@@ -616,11 +672,9 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         expect(screen.getAllByText("Implement")).toHaveLength(1);
-        expect(screen.getByTestId("chat-pinned-plan-column")).toHaveStyle({
-            width: "100%",
-            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
-            marginInline: "auto",
-        });
+        expectSharedChatContentColumn(
+            screen.getByTestId("chat-pinned-plan-column"),
+        );
         expect(
             view.container.querySelector('[aria-label="Dismiss plan banner"]'),
         ).not.toBeNull();
