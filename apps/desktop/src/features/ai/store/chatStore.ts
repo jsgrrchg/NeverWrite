@@ -1286,6 +1286,7 @@ interface ChatStore {
         session_id: string;
         message_id: string;
         role?: AIChatRole;
+        turn_complete?: boolean;
     }) => void;
     applyThinkingStarted: (payload: {
         session_id: string;
@@ -6033,6 +6034,12 @@ function flushDeltasSync() {
     flushDeltas();
 }
 
+function flushDeltasBeforeTimelineInsert() {
+    // Text/thinking deltas are buffered, while tool/status/plan-like events are
+    // inserted synchronously. Flush first so messageOrder follows runtime order.
+    flushDeltasSync();
+}
+
 function clearBufferedDeltasForSession(sessionId: string) {
     for (const [key, value] of _deltaBuffer.messageDelta.entries()) {
         if (value.session_id === sessionId) {
@@ -8243,10 +8250,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             bufferMessageDelta(session_id, message_id, delta, messageRole);
         },
 
-        applyMessageCompleted: ({ session_id, message_id, role }) => {
+        applyMessageCompleted: ({
+            session_id,
+            message_id,
+            role,
+            turn_complete,
+        }) => {
             flushDeltasSync();
             const messageRole = normalizeRuntimeTextMessageRole(role);
-            if (messageRole === "user") {
+            if (messageRole === "user" || turn_complete === false) {
                 set((state) => {
                     const session = state.sessionsById[session_id];
                     if (!session) return state;
@@ -8415,6 +8427,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
@@ -8556,6 +8569,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8582,6 +8596,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8622,6 +8637,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8687,6 +8703,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
 
@@ -8775,6 +8792,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
 
             set((state) => {
                 const session = state.sessionsById[payload.session_id];

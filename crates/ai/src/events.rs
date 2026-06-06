@@ -72,6 +72,7 @@ pub struct AiMessageCompletedPayload {
     pub session_id: String,
     pub message_id: String,
     pub role: String,
+    pub turn_complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

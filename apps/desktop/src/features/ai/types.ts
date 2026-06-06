@@ -499,6 +499,7 @@ export interface AIMessageCompletedPayload {
     session_id: string;
     message_id: string;
     role?: AIChatRole;
+    turn_complete?: boolean;
 }
 
 export interface AIToolActivityPayload {
