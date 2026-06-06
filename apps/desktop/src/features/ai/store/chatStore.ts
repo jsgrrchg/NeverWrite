@@ -5835,13 +5835,15 @@ function messageDeltaBufferKey(
     return `${sessionId}:${role}:${messageId}`;
 }
 
+// Callers pass an already-normalized session so the transcript is not
+// re-normalized on every runtime user delta.
 function latestLocalUserEchoCandidate(
-    session: AIChatSession,
+    normalizedSession: AIChatSession,
     text: string,
 ): AIChatMessage | null {
-    const normalized = normalizeSessionTranscript(session);
-    for (let index = normalized.messages.length - 1; index >= 0; index -= 1) {
-        const message = normalized.messages[index];
+    const messages = normalizedSession.messages ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
         if (message.role === "user" && message.kind === "text") {
             if (message.title === runtimeTextMessageTitle("user")) {
                 return null;
@@ -5852,14 +5854,14 @@ function latestLocalUserEchoCandidate(
     return null;
 }
 
+// Expects an already-normalized session (see latestLocalUserEchoCandidate).
 function createRuntimeUserEchoMessage(
-    session: AIChatSession,
+    normalizedSession: AIChatSession,
     payload: {
         message_id: string;
         text: string;
     },
 ) {
-    const normalizedSession = normalizeSessionTranscript(session);
     const existingMessage =
         normalizedSession.messagesById?.[payload.message_id] ?? null;
     const workCycleId =
@@ -5885,22 +5887,30 @@ function resolveSuppressedRuntimeUserEcho(
     session: AIChatSession,
     messageId: string,
 ) {
-    const key = messageDeltaBufferKey(session.sessionId, "user", messageId);
+    const normalizedSession = normalizeSessionTranscript(session);
+    const key = messageDeltaBufferKey(
+        normalizedSession.sessionId,
+        "user",
+        messageId,
+    );
     const suppressed = _suppressedRuntimeUserEchoByKey.get(key);
     if (!suppressed) {
-        return normalizeSessionTranscript(session);
+        return normalizedSession;
     }
 
     _suppressedRuntimeUserEchoByKey.delete(key);
-    const localEcho = latestLocalUserEchoCandidate(session, suppressed.text);
+    const localEcho = latestLocalUserEchoCandidate(
+        normalizedSession,
+        suppressed.text,
+    );
     if (
         localEcho?.id === suppressed.local_message_id &&
         localEcho.content === suppressed.text
     ) {
-        return normalizeSessionTranscript(session);
+        return normalizedSession;
     }
 
-    return createRuntimeUserEchoMessage(session, {
+    return createRuntimeUserEchoMessage(normalizedSession, {
         message_id: messageId,
         text: suppressed.text,
     });
