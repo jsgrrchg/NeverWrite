@@ -5,6 +5,7 @@ import type { AIChatMessage } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
 import { resetChatMessageListViewState } from "./chatMessageListViewState";
 import { resetChatRowUiStore } from "../store/chatRowUiStore";
+import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 function createMessages(): AIChatMessage[] {
     return [
@@ -199,8 +200,33 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         expect(messageColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
             fontFamily:
                 '"American Typewriter", "Courier Prime", "Courier New", "Nimbus Mono PS", monospace',
+        });
+    });
+
+    it("constrains the transcript content while keeping the scroll container full-width", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-column"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        const scrollContainer = getScrollContainer(view.container);
+        const messageColumn = view.container.querySelector(
+            '[data-selectable="true"]',
+        );
+
+        expect(scrollContainer).toHaveClass("flex-1");
+        expect(messageColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
         });
     });
 
@@ -590,6 +616,11 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         expect(screen.getAllByText("Implement")).toHaveLength(1);
+        expect(screen.getByTestId("chat-pinned-plan-column")).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
+        });
         expect(
             view.container.querySelector('[aria-label="Dismiss plan banner"]'),
         ).not.toBeNull();

@@ -30,6 +30,7 @@ import {
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
+import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -655,20 +656,26 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                             "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
                     }}
                 >
-                    <PlanMessage
-                        sessionId={sessionId}
-                        message={visiblePinnedPlan}
-                        pillMetrics={pillMetrics}
-                        onDismiss={() =>
-                            dismissPinnedPlan(
-                                rowUiSessionId,
-                                visiblePinnedPlan.id,
-                                {
-                                    pinnedPlanDismissed: true,
-                                },
-                            )
-                        }
-                    />
+                    <div
+                        className="min-w-0"
+                        data-testid="chat-pinned-plan-column"
+                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                    >
+                        <PlanMessage
+                            sessionId={sessionId}
+                            message={visiblePinnedPlan}
+                            pillMetrics={pillMetrics}
+                            onDismiss={() =>
+                                dismissPinnedPlan(
+                                    rowUiSessionId,
+                                    visiblePinnedPlan.id,
+                                    {
+                                        pinnedPlanDismissed: true,
+                                    },
+                                )
+                            }
+                        />
+                    </div>
                 </div>
             )}
             <div
@@ -682,6 +689,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                     className="min-w-0"
                     data-selectable="true"
                     style={{
+                        ...AI_CHAT_CONTENT_COLUMN_STYLE,
                         fontSize: chatFontSize,
                         fontFamily: getEditorFontFamily(chatFontFamily),
                     }}
