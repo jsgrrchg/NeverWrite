@@ -167,6 +167,7 @@ import { checkClaudeCodeInstalled } from "../../terminal/claudeCodeTerminal";
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
 type PersistedSessionHistorySummary = Omit<PersistedSessionHistory, "messages">;
+type RuntimeTextMessageRole = Extract<AIChatRole, "user" | "assistant">;
 let _persistedHistoryCacheVaultPath: string | null = null;
 let _persistedHistoryCacheBySessionId = new Map<
     string,
@@ -1273,15 +1274,18 @@ interface ChatStore {
     applyMessageStarted: (payload: {
         session_id: string;
         message_id: string;
+        role?: AIChatRole;
     }) => void;
     applyMessageDelta: (payload: {
         session_id: string;
         message_id: string;
         delta: string;
+        role?: AIChatRole;
     }) => void;
     applyMessageCompleted: (payload: {
         session_id: string;
         message_id: string;
+        role?: AIChatRole;
     }) => void;
     applyThinkingStarted: (payload: {
         session_id: string;
@@ -5782,7 +5786,15 @@ function planUpdateKeepsSessionStreaming(payload: AIPlanUpdatePayload) {
 // Delta buffering: accumulate rapid deltas and flush to Zustand on rAF
 // ---------------------------------------------------------------------------
 interface DeltaBuffer {
-    messageDelta: Map<string, { message_id: string; text: string }>;
+    messageDelta: Map<
+        string,
+        {
+            session_id: string;
+            message_id: string;
+            role: RuntimeTextMessageRole;
+            text: string;
+        }
+    >;
     thinkingDelta: Map<string, Map<string, string>>;
     flushTimeoutId: number | null;
 }
@@ -5792,6 +5804,114 @@ const _deltaBuffer: DeltaBuffer = {
     thinkingDelta: new Map(),
     flushTimeoutId: null,
 };
+
+function normalizeRuntimeTextMessageRole(
+    role?: AIChatRole | null,
+): RuntimeTextMessageRole {
+    return role === "user" ? "user" : "assistant";
+}
+
+function runtimeTextMessageTitle(role: RuntimeTextMessageRole) {
+    return role === "user" ? "User" : "Assistant";
+}
+
+function messageDeltaBufferKey(
+    sessionId: string,
+    role: RuntimeTextMessageRole,
+    messageId: string,
+) {
+    return `${sessionId}:${role}:${messageId}`;
+}
+
+function findMatchingUserTextMessageId(
+    session: AIChatSession,
+    text: string,
+): string | null {
+    const normalized = normalizeSessionTranscript(session);
+    for (let index = normalized.messages.length - 1; index >= 0; index -= 1) {
+        const message = normalized.messages[index];
+        if (message.role === "user" && message.kind === "text") {
+            return message.content === text ? message.id : null;
+        }
+    }
+    return null;
+}
+
+function appendRuntimeTextDelta(
+    session: AIChatSession,
+    payload: {
+        message_id: string;
+        role: RuntimeTextMessageRole;
+        text: string;
+    },
+) {
+    const normalizedSession = normalizeSessionTranscript(session);
+    const workCycleId =
+        normalizedSession.activeWorkCycleId ??
+        normalizedSession.visibleWorkCycleId ??
+        null;
+    const title = runtimeTextMessageTitle(payload.role);
+    const existingMessage =
+        normalizedSession.messagesById?.[payload.message_id] ?? null;
+
+    if (
+        existingMessage &&
+        existingMessage.role === payload.role &&
+        existingMessage.kind === "text"
+    ) {
+        return replaceSessionMessage(
+            normalizedSession,
+            payload.message_id,
+            (message) => ({
+                ...message,
+                content: message.content + payload.text,
+                title: message.title ?? title,
+                inProgress: true,
+            }),
+        );
+    }
+
+    if (payload.role === "user") {
+        const matchingUserMessageId = findMatchingUserTextMessageId(
+            normalizedSession,
+            payload.text,
+        );
+        if (matchingUserMessageId) {
+            return normalizedSession;
+        }
+    }
+
+    const lastMessageId = normalizedSession.messageOrder?.at(-1) ?? null;
+    const lastMsg = lastMessageId
+        ? normalizedSession.messagesById?.[lastMessageId]
+        : null;
+
+    if (
+        lastMsg &&
+        lastMsg.id === payload.message_id &&
+        lastMsg.role === payload.role &&
+        lastMsg.kind === "text" &&
+        lastMsg.inProgress
+    ) {
+        return appendToMessageContent(
+            normalizedSession,
+            lastMsg.id,
+            payload.text,
+        );
+    }
+
+    const idTaken = existingMessage != null;
+    return appendSessionMessage(normalizedSession, {
+        id: idTaken ? `${payload.message_id}:${Date.now()}` : payload.message_id,
+        role: payload.role,
+        kind: "text",
+        content: payload.text,
+        workCycleId,
+        title,
+        timestamp: Date.now(),
+        inProgress: true,
+    });
+}
 
 function flushDeltas() {
     _deltaBuffer.flushTimeoutId = null;
@@ -5809,50 +5929,20 @@ function flushDeltas() {
         let changed = false;
 
         // Apply message deltas
-        for (const [sessionId, { message_id, text }] of msgEntries) {
-            const session = sessionsById[sessionId];
+        for (const { session_id, message_id, role, text } of msgEntries.values()) {
+            const session = sessionsById[session_id];
             if (!session) continue;
-            const normalizedSession = normalizeSessionTranscript(session);
-            const workCycleId =
-                normalizedSession.activeWorkCycleId ??
-                normalizedSession.visibleWorkCycleId ??
-                null;
-            const lastMessageId =
-                normalizedSession.messageOrder?.at(-1) ?? null;
-            const lastMsg = lastMessageId
-                ? normalizedSession.messagesById?.[lastMessageId]
-                : null;
+            const nextSession = appendRuntimeTextDelta(session, {
+                message_id,
+                role,
+                text,
+            });
 
-            let nextSession: AIChatSession;
-            if (
-                lastMsg &&
-                lastMsg.role === "assistant" &&
-                lastMsg.kind === "text" &&
-                lastMsg.inProgress
-            ) {
-                nextSession = appendToMessageContent(
-                    normalizedSession,
-                    lastMsg.id,
-                    text,
-                );
-            } else {
-                const idTaken =
-                    normalizedSession.messagesById?.[message_id] != null;
-                nextSession = appendSessionMessage(normalizedSession, {
-                    id: idTaken ? `${message_id}:${Date.now()}` : message_id,
-                    role: "assistant" as const,
-                    kind: "text" as const,
-                    content: text,
-                    workCycleId,
-                    title: "Assistant",
-                    timestamp: Date.now(),
-                    inProgress: true,
-                });
-            }
+            if (nextSession === session) continue;
 
             sessionsById = {
                 ...sessionsById,
-                [sessionId]: nextSession,
+                [session_id]: nextSession,
             };
             changed = true;
         }
@@ -5903,12 +5993,19 @@ function bufferMessageDelta(
     session_id: string,
     message_id: string,
     delta: string,
+    role: RuntimeTextMessageRole,
 ) {
-    const existing = _deltaBuffer.messageDelta.get(session_id);
+    const key = messageDeltaBufferKey(session_id, role, message_id);
+    const existing = _deltaBuffer.messageDelta.get(key);
     if (existing) {
         existing.text += delta;
     } else {
-        _deltaBuffer.messageDelta.set(session_id, { message_id, text: delta });
+        _deltaBuffer.messageDelta.set(key, {
+            session_id,
+            message_id,
+            role,
+            text: delta,
+        });
     }
     scheduleDeltaFlush();
 }
@@ -5937,7 +6034,11 @@ function flushDeltasSync() {
 }
 
 function clearBufferedDeltasForSession(sessionId: string) {
-    _deltaBuffer.messageDelta.delete(sessionId);
+    for (const [key, value] of _deltaBuffer.messageDelta.entries()) {
+        if (value.session_id === sessionId) {
+            _deltaBuffer.messageDelta.delete(key);
+        }
+    }
     _deltaBuffer.thinkingDelta.delete(sessionId);
 
     if (
@@ -8121,10 +8222,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
-        applyMessageDelta: ({ session_id, message_id, delta }) => {
+        applyMessageDelta: ({ session_id, message_id, delta, role }) => {
             if (shouldIgnoreLateActivityForSession(get(), session_id)) {
                 return;
             }
+            const messageRole = normalizeRuntimeTextMessageRole(role);
             scheduleStaleStreamingCheck(session_id);
             set((state) => {
                 const session = state.sessionsById[session_id];
@@ -8138,12 +8240,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     },
                 };
             });
-            bufferMessageDelta(session_id, message_id, delta);
+            bufferMessageDelta(session_id, message_id, delta, messageRole);
         },
 
-        applyMessageCompleted: ({ session_id }) => {
-            clearStaleStreamingCheck(session_id);
+        applyMessageCompleted: ({ session_id, message_id, role }) => {
             flushDeltasSync();
+            const messageRole = normalizeRuntimeTextMessageRole(role);
+            if (messageRole === "user") {
+                set((state) => {
+                    const session = state.sessionsById[session_id];
+                    if (!session) return state;
+                    const nextSession = setMessageInProgressState(
+                        session,
+                        message_id,
+                        false,
+                    );
+                    if (nextSession === session) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [session_id]: nextSession,
+                        },
+                    };
+                });
+                persistCurrentSession(session_id);
+                return;
+            }
+
+            clearStaleStreamingCheck(session_id);
             const completedAt = Date.now();
             set((state) => {
                 const session = state.sessionsById[session_id];

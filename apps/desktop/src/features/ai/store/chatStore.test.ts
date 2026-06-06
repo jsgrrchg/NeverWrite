@@ -3776,6 +3776,175 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("creates runtime user text messages from user-role deltas", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Parent task for child agent",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        const message =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages.at(-1);
+        expect(message).toMatchObject({
+            id: "runtime-user-1",
+            role: "user",
+            kind: "text",
+            content: "Parent task for child agent",
+            title: "User",
+            inProgress: true,
+        });
+    });
+
+    it("keeps user and assistant deltas separate in one flush", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Investigate this",
+            role: "user",
+        });
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-1",
+            delta: "On it",
+            role: "assistant",
+        });
+        flushDeltasSync();
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages.map((message) => message.role)).toEqual([
+            "user",
+            "assistant",
+        ]);
+        expect(messages.map((message) => message.content)).toEqual([
+            "Investigate this",
+            "On it",
+        ]);
+    });
+
+    it("completes only the runtime user message for user-role completions", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Investigate this",
+            role: "user",
+        });
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-1",
+            delta: "On it",
+            role: "assistant",
+        });
+        flushDeltasSync();
+
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            role: "user",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(
+            session.messages.find((message) => message.id === "runtime-user-1"),
+        ).toMatchObject({
+            role: "user",
+            inProgress: false,
+        });
+        expect(
+            session.messages.find((message) => message.id === "assistant-1"),
+        ).toMatchObject({
+            role: "assistant",
+            inProgress: true,
+        });
+    });
+
+    it("does not duplicate an exact local composer echo in the same session", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "Echo me exactly",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Echo me exactly",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "local-user-1",
+            role: "user",
+            content: "Echo me exactly",
+        });
+    });
+
+    it("shows parent-sent user chunks in child sessions without a local echo", async () => {
+        await useChatStore.getState().initialize();
+
+        const parentSession = useChatStore.getState().sessionsById[getActiveSessionId()]!;
+        const childSessionId = "child-session-1";
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [childSessionId]: cloneSessionForTest(parentSession, childSessionId, {
+                    parentSessionId: parentSession.sessionId,
+                }),
+            },
+            sessionOrder: [childSessionId, ...state.sessionOrder],
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: childSessionId,
+            message_id: "runtime-user-1",
+            delta: "Parent task for child agent",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        const messages =
+            useChatStore.getState().sessionsById[childSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "runtime-user-1",
+            role: "user",
+            kind: "text",
+            content: "Parent task for child agent",
+        });
+    });
+
     it("loads a session from backend and promotes it to the top of the history", async () => {
         await useChatStore.getState().initialize();
 
