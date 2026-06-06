@@ -5800,11 +5800,22 @@ interface DeltaBuffer {
     flushTimeoutId: number | null;
 }
 
+interface SuppressedRuntimeUserEcho {
+    session_id: string;
+    message_id: string;
+    text: string;
+    local_message_id: string;
+}
+
 const _deltaBuffer: DeltaBuffer = {
     messageDelta: new Map(),
     thinkingDelta: new Map(),
     flushTimeoutId: null,
 };
+const _suppressedRuntimeUserEchoByKey = new Map<
+    string,
+    SuppressedRuntimeUserEcho
+>();
 
 function normalizeRuntimeTextMessageRole(
     role?: AIChatRole | null,
@@ -5824,18 +5835,75 @@ function messageDeltaBufferKey(
     return `${sessionId}:${role}:${messageId}`;
 }
 
-function findMatchingUserTextMessageId(
+function latestLocalUserEchoCandidate(
     session: AIChatSession,
     text: string,
-): string | null {
+): AIChatMessage | null {
     const normalized = normalizeSessionTranscript(session);
     for (let index = normalized.messages.length - 1; index >= 0; index -= 1) {
         const message = normalized.messages[index];
         if (message.role === "user" && message.kind === "text") {
-            return message.content === text ? message.id : null;
+            if (message.title === runtimeTextMessageTitle("user")) {
+                return null;
+            }
+            return message.content.startsWith(text) ? message : null;
         }
     }
     return null;
+}
+
+function createRuntimeUserEchoMessage(
+    session: AIChatSession,
+    payload: {
+        message_id: string;
+        text: string;
+    },
+) {
+    const normalizedSession = normalizeSessionTranscript(session);
+    const existingMessage =
+        normalizedSession.messagesById?.[payload.message_id] ?? null;
+    const workCycleId =
+        normalizedSession.activeWorkCycleId ??
+        normalizedSession.visibleWorkCycleId ??
+        null;
+
+    return appendSessionMessage(normalizedSession, {
+        id: existingMessage
+            ? `${payload.message_id}:${Date.now()}`
+            : payload.message_id,
+        role: "user",
+        kind: "text",
+        content: payload.text,
+        workCycleId,
+        title: runtimeTextMessageTitle("user"),
+        timestamp: Date.now(),
+        inProgress: true,
+    });
+}
+
+function resolveSuppressedRuntimeUserEcho(
+    session: AIChatSession,
+    messageId: string,
+) {
+    const key = messageDeltaBufferKey(session.sessionId, "user", messageId);
+    const suppressed = _suppressedRuntimeUserEchoByKey.get(key);
+    if (!suppressed) {
+        return normalizeSessionTranscript(session);
+    }
+
+    _suppressedRuntimeUserEchoByKey.delete(key);
+    const localEcho = latestLocalUserEchoCandidate(session, suppressed.text);
+    if (
+        localEcho?.id === suppressed.local_message_id &&
+        localEcho.content === suppressed.text
+    ) {
+        return normalizeSessionTranscript(session);
+    }
+
+    return createRuntimeUserEchoMessage(session, {
+        message_id: messageId,
+        text: suppressed.text,
+    });
 }
 
 function appendRuntimeTextDelta(
@@ -5854,12 +5922,18 @@ function appendRuntimeTextDelta(
     const title = runtimeTextMessageTitle(payload.role);
     const existingMessage =
         normalizedSession.messagesById?.[payload.message_id] ?? null;
+    const bufferKey = messageDeltaBufferKey(
+        normalizedSession.sessionId,
+        payload.role,
+        payload.message_id,
+    );
 
     if (
         existingMessage &&
         existingMessage.role === payload.role &&
         existingMessage.kind === "text"
     ) {
+        _suppressedRuntimeUserEchoByKey.delete(bufferKey);
         return replaceSessionMessage(
             normalizedSession,
             payload.message_id,
@@ -5873,12 +5947,28 @@ function appendRuntimeTextDelta(
     }
 
     if (payload.role === "user") {
-        const matchingUserMessageId = findMatchingUserTextMessageId(
+        const suppressed = _suppressedRuntimeUserEchoByKey.get(bufferKey);
+        const accumulatedText = `${suppressed?.text ?? ""}${payload.text}`;
+        const localEcho = latestLocalUserEchoCandidate(
             normalizedSession,
-            payload.text,
+            accumulatedText,
         );
-        if (matchingUserMessageId) {
+        if (localEcho) {
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: accumulatedText,
+                local_message_id: localEcho.id,
+            });
             return normalizedSession;
+        }
+
+        if (suppressed) {
+            _suppressedRuntimeUserEchoByKey.delete(bufferKey);
+            return createRuntimeUserEchoMessage(normalizedSession, {
+                message_id: payload.message_id,
+                text: accumulatedText,
+            });
         }
     }
 
@@ -6044,6 +6134,11 @@ function clearBufferedDeltasForSession(sessionId: string) {
     for (const [key, value] of _deltaBuffer.messageDelta.entries()) {
         if (value.session_id === sessionId) {
             _deltaBuffer.messageDelta.delete(key);
+        }
+    }
+    for (const [key, value] of _suppressedRuntimeUserEchoByKey.entries()) {
+        if (value.session_id === sessionId) {
+            _suppressedRuntimeUserEchoByKey.delete(key);
         }
     }
     _deltaBuffer.thinkingDelta.delete(sessionId);
@@ -8262,8 +8357,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 set((state) => {
                     const session = state.sessionsById[session_id];
                     if (!session) return state;
+                    const baseSession =
+                        messageRole === "user"
+                            ? resolveSuppressedRuntimeUserEcho(
+                                  session,
+                                  message_id,
+                              )
+                            : session;
                     const nextSession = setMessageInProgressState(
-                        session,
+                        baseSession,
                         message_id,
                         false,
                     );
@@ -11910,6 +12012,13 @@ export function resetChatStore() {
     _queueDrainLocks.clear();
     _pendingStopBySessionId.clear();
     _pendingSessionPersistence.clear();
+    _deltaBuffer.messageDelta.clear();
+    _deltaBuffer.thinkingDelta.clear();
+    _suppressedRuntimeUserEchoByKey.clear();
+    if (_deltaBuffer.flushTimeoutId !== null) {
+        window.clearTimeout(_deltaBuffer.flushTimeoutId);
+        _deltaBuffer.flushTimeoutId = null;
+    }
     clearTrackedPersistedReconciliationTimers();
     _sessionPersistenceFlushScheduled = false;
     _sessionPersistenceEpoch += 1;

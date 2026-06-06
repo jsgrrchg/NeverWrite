@@ -3911,6 +3911,111 @@ describe("chatStore", () => {
         });
     });
 
+    it("does not duplicate a chunked local composer echo across flushes", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "Echo me exactly",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Echo me ",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "exactly",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            role: "user",
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "local-user-1",
+            role: "user",
+            content: "Echo me exactly",
+        });
+    });
+
+    it("restores a suppressed runtime user echo when chunks diverge", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "Echo me exactly",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "Echo me ",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "differently",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages.map((message) => message.content)).toEqual([
+            "Echo me exactly",
+            "Echo me differently",
+        ]);
+        expect(messages[1]).toMatchObject({
+            id: "runtime-user-1",
+            role: "user",
+            title: "User",
+            inProgress: true,
+        });
+    });
+
     it("shows parent-sent user chunks in child sessions without a local echo", async () => {
         await useChatStore.getState().initialize();
 

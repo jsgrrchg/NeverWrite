@@ -2172,6 +2172,7 @@ struct NativeAcpClient {
     message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
@@ -2435,16 +2436,26 @@ impl NativeAcpClient {
             .ok()
             .and_then(|mut ids| ids.remove(&Self::message_stream_key(session_id, role)));
         if let Some(message_id) = message_id {
-            self.emit(
-                AI_MESSAGE_COMPLETED_EVENT,
-                AiMessageCompletedPayload {
-                    session_id: session_id.to_string(),
-                    message_id,
-                    role: role.as_str().to_string(),
-                    turn_complete,
-                },
-            );
+            self.emit_text_message_completed(session_id, &message_id, role, turn_complete);
         }
+    }
+
+    fn emit_text_message_completed(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        role: MessageRole,
+        turn_complete: bool,
+    ) {
+        self.emit(
+            AI_MESSAGE_COMPLETED_EVENT,
+            AiMessageCompletedPayload {
+                session_id: session_id.to_string(),
+                message_id: message_id.to_string(),
+                role: role.as_str().to_string(),
+                turn_complete,
+            },
+        );
     }
 
     fn begin_message(&self, session_id: &str) -> String {
@@ -2457,6 +2468,19 @@ impl NativeAcpClient {
 
     fn end_message(&self, session_id: &str) {
         self.end_text_message(session_id, MessageRole::Assistant, true);
+    }
+
+    fn complete_assistant_turn(&self, session_id: &str, fallback_message_id: &str) {
+        if self.current_message_id(session_id).is_some() {
+            self.end_message(session_id);
+        } else {
+            self.emit_text_message_completed(
+                session_id,
+                fallback_message_id,
+                MessageRole::Assistant,
+                true,
+            );
+        }
     }
 
     fn end_message_segment(&self, session_id: &str) {
@@ -2479,6 +2503,45 @@ impl NativeAcpClient {
         self.end_thinking(session_id);
         self.end_user_message(session_id);
         self.end_message_segment(session_id);
+    }
+
+    fn remember_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_status_tool_calls.lock() {
+            ids.insert(call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn forget_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_status_tool_calls.lock() {
+            ids.remove(&call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn has_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) -> bool {
+        self.suppressed_status_tool_calls
+            .lock()
+            .ok()
+            .map(|ids| ids.contains(&call_state_key(session_id, tool_call_id)))
+            .unwrap_or(false)
+    }
+
+    fn should_suppress_tool_call_update(&self, session_id: &str, update: &ToolCallUpdate) -> bool {
+        let tool_call_id = &update.tool_call_id.0;
+        if self.has_suppressed_status_tool_call(session_id, tool_call_id) {
+            if tool_call_update_is_terminal(update) {
+                self.forget_suppressed_status_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        if should_suppress_status_tool_call_update(update) {
+            if !tool_call_update_is_terminal(update) {
+                self.remember_suppressed_status_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        false
     }
 
     #[cfg(test)]
@@ -2890,6 +2953,7 @@ impl NativeAcpClient {
         let diffs = self
             .tool_diffs
             .normalized_diffs_for_tool_call(&session_id, &registered);
+        self.end_text_streams_before_activity(&session_id);
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             map_tool_call(
@@ -2991,6 +3055,10 @@ impl NativeAcpClient {
             SessionUpdate::ToolCall(tool_call) => {
                 let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
                 if should_suppress_status_tool_call(&tool_call) {
+                    self.remember_suppressed_status_tool_call(
+                        &session_id,
+                        &tool_call.tool_call_id.0,
+                    );
                     return Ok(());
                 }
                 self.end_text_streams_before_activity(&session_id);
@@ -3005,7 +3073,7 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 let update = tool_call_update_with_merged_meta(update, meta.as_ref());
-                if should_suppress_status_tool_call_update(&update) {
+                if self.should_suppress_tool_call_update(&session_id, &update) {
                     return Ok(());
                 }
                 self.end_text_streams_before_activity(&session_id);
@@ -3371,6 +3439,7 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -3596,17 +3665,7 @@ async fn handle_acp_command(
                     .map_err(|error| error.to_string());
                 client.end_thinking(&session_id);
                 client.end_user_message(&session_id);
-                if client.current_message_id(&session_id).is_none() {
-                    client.emit(
-                        AI_MESSAGE_STARTED_EVENT,
-                        AiMessageStartedPayload {
-                            session_id: session_id.clone(),
-                            message_id: message_id.clone(),
-                            role: MessageRole::Assistant.as_str().to_string(),
-                        },
-                    );
-                }
-                client.end_message(&session_id);
+                client.complete_assistant_turn(&session_id, &message_id);
                 if let Err(error) = &result {
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
@@ -4445,6 +4504,13 @@ fn should_suppress_status_tool_call_update(update: &ToolCallUpdate) -> bool {
             .as_ref()
             .and_then(acp_event_type)
             .is_some_and(|event_type| event_type == "status")
+}
+
+fn tool_call_update_is_terminal(update: &ToolCallUpdate) -> bool {
+    matches!(
+        update.fields.status.as_ref(),
+        Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+    )
 }
 
 fn raw_string_field(raw: Option<&Value>, keys: &[&str]) -> Option<String> {
@@ -7232,6 +7298,7 @@ mod tests {
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -10502,6 +10569,54 @@ mod tests {
     }
 
     #[test]
+    fn session_tool_call_suppresses_internal_status_update_without_title_after_suppressed_start() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Before status",
+            ))),
+        )))
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:agent-msg-42"),
+            "Drafting response",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress)
+        .meta(Meta::from_iter([(
+            ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+            json!("status"),
+        )]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+        assert!(client.has_active_text_message("session-1", MessageRole::Assistant));
+
+        let update = ToolCallUpdate::new(
+            "neverwrite:status:item:agent-msg-42",
+            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+        );
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(update),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+        assert!(client.has_active_text_message("session-1", MessageRole::Assistant));
+    }
+
+    #[test]
     fn session_tool_call_keeps_real_tool_with_suppressed_status_title() {
         let (event_tx, event_rx) = mpsc::channel();
         let client = test_client(event_tx);
@@ -10616,6 +10731,53 @@ mod tests {
             .and_then(Value::as_str)
             .expect("next assistant message id");
         assert_ne!(next_message_id, first_message_id);
+    }
+
+    #[test]
+    fn complete_assistant_turn_finishes_when_no_segment_is_active() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let message_id = client.begin_message("session-1");
+        let _ = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message started event");
+
+        client.end_message_segment("session-1");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant segment completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        client.complete_assistant_turn("session-1", &message_id);
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("turn completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -10802,6 +10964,91 @@ mod tests {
         let (saw_tool_activity_diffs, saw_permission_diffs) = event_thread.join().unwrap();
         assert!(saw_tool_activity_diffs);
         assert!(saw_permission_diffs);
+    }
+
+    #[test]
+    fn permission_request_closes_active_assistant_segment_before_timeline_events() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Before permission",
+            ))),
+        )))
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        let waiters = client.permission_waiters.clone();
+        let event_thread = std::thread::spawn(move || {
+            let mut event_names = Vec::new();
+            let mut completed_turn_complete = None;
+            let mut request_id = None;
+
+            for _ in 0..3 {
+                let event = event_rx
+                    .recv_timeout(StdDuration::from_secs(1))
+                    .expect("permission timeline event");
+                let RpcOutput::Event {
+                    event_name,
+                    payload,
+                } = event
+                else {
+                    continue;
+                };
+
+                if event_name == AI_MESSAGE_COMPLETED_EVENT {
+                    completed_turn_complete = payload.get("turn_complete").and_then(Value::as_bool);
+                }
+                if event_name == AI_PERMISSION_REQUEST_EVENT {
+                    request_id = payload
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                }
+                event_names.push(event_name);
+            }
+
+            let request_id = request_id.expect("permission request id");
+            let sender = waiters
+                .lock()
+                .unwrap()
+                .remove(&request_id)
+                .expect("permission waiter");
+            sender.send(RequestPermissionOutcome::Cancelled).unwrap();
+
+            (event_names, completed_turn_complete)
+        });
+
+        let request = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new()
+                    .title("Write note.md".to_string())
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Pending),
+            ),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+        run_client_future(client.request_permission(request)).unwrap();
+
+        let (event_names, completed_turn_complete) = event_thread.join().unwrap();
+        assert_eq!(
+            event_names,
+            vec![
+                AI_MESSAGE_COMPLETED_EVENT,
+                AI_TOOL_ACTIVITY_EVENT,
+                AI_PERMISSION_REQUEST_EVENT,
+            ]
+        );
+        assert_eq!(completed_turn_complete, Some(false));
+        assert!(!client.has_active_text_message("session-1", MessageRole::Assistant));
     }
 
     #[test]
