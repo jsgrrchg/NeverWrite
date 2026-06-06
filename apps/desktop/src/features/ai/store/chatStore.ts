@@ -1757,6 +1757,28 @@ function appendSessionMessage(session: AIChatSession, message: AIChatMessage) {
     };
 }
 
+function insertSessionMessageAfter(
+    session: AIChatSession,
+    message: AIChatMessage,
+    afterMessageId: string | null,
+) {
+    const normalized = ensurePersistedTranscriptWindowAnchor(
+        normalizeSessionTranscript(session),
+    );
+    const anchorIndex =
+        afterMessageId != null
+            ? normalized.messageIndexById?.[afterMessageId]
+            : null;
+
+    if (anchorIndex == null) {
+        return appendSessionMessage(normalized, message);
+    }
+
+    const nextMessages = normalized.messages.slice();
+    nextMessages.splice(anchorIndex + 1, 0, message);
+    return replaceSessionTranscript(normalized, nextMessages);
+}
+
 function upsertSessionMessage(
     session: AIChatSession,
     message: AIChatMessage,
@@ -5805,6 +5827,7 @@ interface SuppressedRuntimeUserEcho {
     message_id: string;
     text: string;
     local_message_id: string;
+    insert_after_message_id: string | null;
 }
 
 const _deltaBuffer: DeltaBuffer = {
@@ -5860,6 +5883,7 @@ function createRuntimeUserEchoMessage(
     payload: {
         message_id: string;
         text: string;
+        insert_after_message_id?: string | null;
     },
 ) {
     const existingMessage =
@@ -5869,7 +5893,7 @@ function createRuntimeUserEchoMessage(
         normalizedSession.visibleWorkCycleId ??
         null;
 
-    return appendSessionMessage(normalizedSession, {
+    const message: AIChatMessage = {
         id: existingMessage
             ? `${payload.message_id}:${Date.now()}`
             : payload.message_id,
@@ -5880,7 +5904,17 @@ function createRuntimeUserEchoMessage(
         title: runtimeTextMessageTitle("user"),
         timestamp: Date.now(),
         inProgress: true,
-    });
+    };
+
+    if (payload.insert_after_message_id !== undefined) {
+        return insertSessionMessageAfter(
+            normalizedSession,
+            message,
+            payload.insert_after_message_id,
+        );
+    }
+
+    return appendSessionMessage(normalizedSession, message);
 }
 
 function resolveSuppressedRuntimeUserEcho(
@@ -5913,6 +5947,7 @@ function resolveSuppressedRuntimeUserEcho(
     return createRuntimeUserEchoMessage(normalizedSession, {
         message_id: messageId,
         text: suppressed.text,
+        insert_after_message_id: suppressed.insert_after_message_id,
     });
 }
 
@@ -5969,6 +6004,8 @@ function appendRuntimeTextDelta(
                 message_id: payload.message_id,
                 text: accumulatedText,
                 local_message_id: localEcho.id,
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
             });
             return normalizedSession;
         }
@@ -5978,6 +6015,7 @@ function appendRuntimeTextDelta(
             return createRuntimeUserEchoMessage(normalizedSession, {
                 message_id: payload.message_id,
                 text: accumulatedText,
+                insert_after_message_id: suppressed.insert_after_message_id,
             });
         }
     }
