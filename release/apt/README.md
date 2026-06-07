@@ -50,13 +50,13 @@ Release
 Release.gpg
 Packages
 Packages.gz
-NeverWrite-0.3.2-amd64.deb
-NeverWrite-0.3.2-arm64.deb
+NeverWrite-0.3.3-amd64.deb
+NeverWrite-0.3.3-arm64.deb
 ```
 
 The `.deb` binary packages stay on GitHub Releases with the other release
 assets. The `Filename` field in each `Packages` stanza is the release asset file
-name, for example `NeverWrite-0.3.2-amd64.deb`. APT resolves it relative to the
+name, for example `NeverWrite-0.3.3-amd64.deb`. APT resolves it relative to the
 configured `latest/download` release URL.
 
 GitHub Pages only publishes the install helper files:

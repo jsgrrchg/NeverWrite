@@ -34,6 +34,27 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.3.3] - 2026-06-07
+
+### Added
+
+- Added a native Grok ACP provider, including automatic detection for the official Grok CLI install path.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.42.0`.
+- Removed the Claude Code max-turns setting now that Claude Code manages turn limits internally.
+- Constrained the AI chat transcript, composer, and action panels to a shared readable width.
+- Top-aligned newly streamed chat messages so incoming responses stay easier to scan.
+
+### Fixed
+
+- Fixed dropped Excalidraw files so they open as maps instead of plain files.
+- Fixed AI chat links so raw URLs are clickable and external links open in the system browser.
+- Fixed runtime message timeline ordering so user messages, errors, and subagent activity stay in the correct transcript order.
+- Fixed hook dependency warnings in the AI review UI.
+- Fixed APT release asset publishing for Debian packages.
+
 ## [0.3.2] - 2026-06-01
 
 ### Added
