@@ -1,6 +1,5 @@
 Types: deb
-URIs: https://jsgrrchg.github.io/NeverWrite/apt
-Suites: stable
-Components: main
+URIs: https://github.com/jsgrrchg/NeverWrite/releases/latest/download
+Suites: ./
 Architectures: amd64 arm64
 Signed-By: /etc/apt/keyrings/neverwrite.asc
