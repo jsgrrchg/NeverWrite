@@ -306,7 +306,6 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         },
         [
             expansion.expandedKeys,
-            persistedState?.scrollTop,
             tab.sessionId,
             vaultPath,
         ],
