@@ -17,9 +17,9 @@ use agent_client_protocol::schema::{
     PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, ToolCall, ToolCallContent,
+    ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
@@ -906,11 +906,6 @@ enum AcpCommand {
         content: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
-    SetModel {
-        session_id: String,
-        model_id: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
     SetMode {
         session_id: String,
         mode_id: String,
@@ -936,7 +931,6 @@ enum AcpCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpConfigOptionRemoteCommand {
     SetConfigOption,
-    SetModel,
     SetMode,
     LocalOnly,
 }
@@ -1460,11 +1454,21 @@ impl NativeAi {
     pub(crate) fn set_model(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let model_id = required_string(args, &["modelId", "model_id"])?;
-        if let Some(handle) = self.session_handle(&session_id)? {
-            handle.set_model(&session_id, &model_id)?;
-        }
+        let model_config_option_id = self.session_model_config_option_id(&session_id)?;
+        let config_options = match (self.session_handle(&session_id)?, model_config_option_id) {
+            (Some(handle), Some(option_id)) => {
+                Some(handle.set_config_option(&session_id, &option_id, &model_id)?)
+            }
+            _ => None,
+        };
         self.update_session(&session_id, |session| {
-            session.model_id = model_id;
+            if let Some(config_options) = config_options {
+                let mapped_options =
+                    map_session_config_options(&session.runtime_id, config_options);
+                apply_config_options_to_session(session, mapped_options);
+            } else {
+                apply_model_update_to_session(session, &model_id);
+            }
             Ok(())
         })
     }
@@ -1491,10 +1495,6 @@ impl NativeAi {
         let config_options = match (self.session_handle(&input.session_id)?, remote_command) {
             (Some(handle), AcpConfigOptionRemoteCommand::SetConfigOption) => {
                 Some(handle.set_config_option(&input.session_id, &input.option_id, &input.value)?)
-            }
-            (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
-                handle.set_model(&input.session_id, &input.value)?;
-                None
             }
             (Some(handle), AcpConfigOptionRemoteCommand::SetMode) => {
                 handle.set_mode(&input.session_id, &input.value)?;
@@ -2038,6 +2038,23 @@ impl NativeAi {
         ))
     }
 
+    fn session_model_config_option_id(&self, session_id: &str) -> Result<Option<String>, String> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let managed = state
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+        Ok(managed
+            .session
+            .config_options
+            .iter()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+            .map(|option| option.id.clone()))
+    }
+
     fn session_handle(&self, session_id: &str) -> Result<Option<AcpSessionHandle>, String> {
         let state = self
             .inner
@@ -2102,7 +2119,6 @@ impl AcpSessionStartMode {
 
 struct AcpSessionStartResponse {
     session_id: String,
-    models: Option<SessionModelState>,
     modes: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 }
@@ -2123,14 +2139,6 @@ impl AcpSessionHandle {
         self.request(|response_tx| AcpCommand::Prompt {
             session_id: session_id.to_string(),
             content: content.to_string(),
-            response_tx,
-        })
-    }
-
-    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
-        self.request(|response_tx| AcpCommand::SetModel {
-            session_id: session_id.to_string(),
-            model_id: model_id.to_string(),
             response_tx,
         })
     }
@@ -3529,7 +3537,6 @@ async fn run_acp_actor_inner(
             let mut session = session_from_acp_response(
                 &spec.runtime_id,
                 response.session_id,
-                response.models,
                 response.modes,
                 response.config_options,
             );
@@ -3601,7 +3608,6 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: response.session_id.0.to_string(),
-                models: response.models,
                 modes: response.modes,
                 config_options: response.config_options,
             })
@@ -3622,7 +3628,6 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: session_id.clone(),
-                models: response.models,
                 modes: response.modes,
                 config_options: response.config_options,
             })
@@ -3685,22 +3690,6 @@ async fn handle_acp_command(
                 }
             });
             let _ = response_tx.send(Ok(()));
-        }
-        AcpCommand::SetModel {
-            session_id,
-            model_id,
-            response_tx,
-        } => {
-            let result = connection
-                .send_request(SetSessionModelRequest::new(
-                    SessionId::new(session_id),
-                    model_id,
-                ))
-                .block_task()
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            let _ = response_tx.send(result);
         }
         AcpCommand::SetMode {
             session_id,
@@ -3776,19 +3765,9 @@ async fn handle_acp_command(
 fn session_from_acp_response(
     runtime_id: &str,
     session_id: String,
-    models_state: Option<SessionModelState>,
     modes_state: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 ) -> AiSession {
-    let mapped_models = models_state
-        .as_ref()
-        .map(|state| map_session_models(runtime_id, state))
-        .unwrap_or_default();
-    let models = if mapped_models.models.is_empty() {
-        default_models(runtime_id)
-    } else {
-        mapped_models.models
-    };
     let modes = modes_state
         .as_ref()
         .map(|state| map_session_modes(runtime_id, state))
@@ -3796,22 +3775,21 @@ fn session_from_acp_response(
     let mut config_options = match config_options {
         Some(options) => map_session_config_options(runtime_id, options),
         None => {
+            let models = default_models(runtime_id);
             let mut options = default_config_options(runtime_id, &models, &modes);
-            align_synthesized_config_options_to_acp_state(
-                &mut options,
-                models_state.as_ref(),
-                modes_state.as_ref(),
-            );
+            align_synthesized_config_options_to_acp_state(&mut options, modes_state.as_ref());
             options
         }
     };
-    config_options = ensure_reasoning_config_option(
-        runtime_id,
-        config_options,
-        models_state.as_ref(),
-        &mapped_models.efforts_by_model,
-    );
-    let model_id = selected_model_id(models_state.as_ref(), &config_options)
+    let mapped_models = map_session_models_from_config_options(runtime_id, &config_options);
+    let models = if mapped_models.models.is_empty() {
+        default_models(runtime_id)
+    } else {
+        mapped_models.models
+    };
+    config_options =
+        ensure_reasoning_config_option(runtime_id, config_options, &mapped_models.efforts_by_model);
+    let model_id = selected_model_id(&config_options)
         .or_else(|| models.first().map(|model| model.id.clone()))
         .unwrap_or_default();
     let mode_id = selected_mode_id(modes_state.as_ref(), &config_options)
@@ -3852,11 +3830,20 @@ struct MappedSessionModels {
     efforts_by_model: HashMap<String, Vec<String>>,
 }
 
-fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSessionModels {
+fn map_session_models_from_config_options(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+) -> MappedSessionModels {
     let mut mapped = MappedSessionModels::default();
+    let Some(model_option) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+    else {
+        return mapped;
+    };
 
-    for model in &state.available_models {
-        let model_id = model.model_id.0.as_ref();
+    for model in &model_option.options {
+        let model_id = model.value.as_str();
         let base_model_id = strip_effort_suffix(model_id).to_string();
         if let Some(effort) = extract_effort(model_id) {
             let efforts = mapped
@@ -3875,7 +3862,7 @@ fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSess
         mapped.models.push(AiModelOption {
             id: base_model_id,
             runtime_id: runtime_id.to_string(),
-            name: strip_effort_suffix(&model.name).to_string(),
+            name: strip_effort_suffix(&model.label).to_string(),
             description: model.description.clone().unwrap_or_default(),
         });
     }
@@ -3939,21 +3926,8 @@ fn map_session_config_options(
 
 fn align_synthesized_config_options_to_acp_state(
     config_options: &mut [AiConfigOption],
-    models_state: Option<&SessionModelState>,
     modes_state: Option<&SessionModeState>,
 ) {
-    if let Some(model_id) = models_state
-        .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
-        .filter(|value| !value.trim().is_empty())
-    {
-        if let Some(option) = config_options
-            .iter_mut()
-            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
-        {
-            option.value = model_id;
-        }
-    }
-
     if let Some(mode_id) = modes_state
         .map(|state| state.current_mode_id.0.to_string())
         .filter(|value| !value.trim().is_empty())
@@ -3998,7 +3972,6 @@ fn map_config_option_category(
 fn ensure_reasoning_config_option(
     runtime_id: &str,
     mut config_options: Vec<AiConfigOption>,
-    models_state: Option<&SessionModelState>,
     efforts_by_model: &HashMap<String, Vec<String>>,
 ) -> Vec<AiConfigOption> {
     if config_options
@@ -4008,7 +3981,7 @@ fn ensure_reasoning_config_option(
         return config_options;
     }
 
-    let Some(model_id) = selected_model_id(models_state, &config_options) else {
+    let Some(model_id) = selected_model_id(&config_options) else {
         return config_options;
     };
     let Some(efforts) = efforts_by_model.get(&model_id) else {
@@ -4018,8 +3991,8 @@ fn ensure_reasoning_config_option(
         return config_options;
     }
 
-    let current_effort = models_state
-        .and_then(|state| extract_effort(state.current_model_id.0.as_ref()))
+    let current_effort = selected_model_value(&config_options)
+        .and_then(extract_effort)
         .filter(|effort| efforts.iter().any(|item| item == effort))
         .or_else(|| {
             efforts
@@ -4055,20 +4028,20 @@ fn ensure_reasoning_config_option(
     config_options
 }
 
-fn selected_model_id(
-    models_state: Option<&SessionModelState>,
-    config_options: &[AiConfigOption],
-) -> Option<String> {
+fn selected_model_id(config_options: &[AiConfigOption]) -> Option<String> {
     config_options
         .iter()
         .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
         .map(|option| strip_effort_suffix(&option.value).to_string())
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            models_state
-                .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
-                .filter(|value| !value.trim().is_empty())
-        })
+}
+
+fn selected_model_value(config_options: &[AiConfigOption]) -> Option<&str> {
+    config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|option| option.value.as_str())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn selected_mode_id(
@@ -4105,6 +4078,17 @@ fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<
         session.mode_id = mode_id;
     }
     session.config_options = config_options;
+}
+
+fn apply_model_update_to_session(session: &mut AiSession, model_id: &str) {
+    session.model_id = strip_effort_suffix(model_id).to_string();
+    if let Some(option) = session
+        .config_options
+        .iter_mut()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+    {
+        option.value = model_id.to_string();
+    }
 }
 
 fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
@@ -4149,10 +4133,10 @@ fn acp_config_option_remote_command(
             .find(|option| option.id == option_id)
             .map(|option| &option.category);
         return match category {
-            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
+            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetConfigOption,
             Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::LocalOnly,
             Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-            None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
+            None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
             None => AcpConfigOptionRemoteCommand::LocalOnly,
         };
     }
@@ -4166,15 +4150,14 @@ fn acp_config_option_remote_command(
         .find(|option| option.id == option_id)
         .map(|option| &option.category);
     match category {
-        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
+        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetConfigOption,
         Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::SetMode,
         Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-        None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
+        None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
         None if option_id == "mode" => AcpConfigOptionRemoteCommand::SetMode,
         None => AcpConfigOptionRemoteCommand::LocalOnly,
     }
 }
-
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
     AiPermissionOptionPayload {
         option_id: option.option_id.0.to_string(),
@@ -7279,10 +7262,10 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        AvailableCommandInput, AvailableCommandsUpdate, ConfigOptionUpdate, Meta, ModelInfo,
+        AvailableCommandInput, AvailableCommandsUpdate, ConfigOptionUpdate, Meta,
         PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOption, SessionInfoUpdate, SessionModelState, SessionNotification,
-        SessionUpdate, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
+        ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
         UnstructuredCommandInput,
     };
     use std::fs;
@@ -9867,27 +9850,22 @@ mod tests {
 
     #[test]
     fn acp_session_synthesizes_reasoning_config_from_model_efforts() {
-        let models_state = SessionModelState::new(
-            "gpt-5.5/medium",
-            vec![
-                ModelInfo::new("gpt-5.5/low", "GPT-5.5 (low)"),
-                ModelInfo::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
-                ModelInfo::new("gpt-5.5/high", "GPT-5.5 (high)"),
-                ModelInfo::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
-            ],
-        );
         let config_options = vec![SessionConfigOption::select(
             "model",
             "Model",
-            "gpt-5.5",
-            vec![SessionConfigSelectOption::new("gpt-5.5", "GPT-5.5")],
+            "gpt-5.5/medium",
+            vec![
+                SessionConfigSelectOption::new("gpt-5.5/low", "GPT-5.5 (low)"),
+                SessionConfigSelectOption::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
+                SessionConfigSelectOption::new("gpt-5.5/high", "GPT-5.5 (high)"),
+                SessionConfigSelectOption::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+            ],
         )
         .category(SessionConfigOptionCategory::Model)];
 
         let session = session_from_acp_response(
             CODEX_RUNTIME_ID,
             "session-1".to_string(),
-            Some(models_state),
             None,
             Some(config_options),
         );
@@ -9925,23 +9903,25 @@ mod tests {
     }
 
     #[test]
-    fn grok_session_uses_acp_models_without_static_model_list() {
-        let models_state = SessionModelState::new(
+    fn grok_session_uses_acp_model_config_without_static_model_list() {
+        let config_options = vec![SessionConfigOption::select(
+            "model",
+            "Model",
             "grok-build",
             vec![
-                ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5")
+                SessionConfigSelectOption::new("grok-composer-2.5-fast", "Composer 2.5")
                     .description("Cursor's latest coding model"),
-                ModelInfo::new("grok-build", "Grok Build")
+                SessionConfigSelectOption::new("grok-build", "Grok Build")
                     .description("Best for advanced coding tasks"),
             ],
-        );
+        )
+        .category(SessionConfigOptionCategory::Model)];
 
         let session = session_from_acp_response(
             GROK_RUNTIME_ID,
             "session-1".to_string(),
-            Some(models_state),
             None,
-            None,
+            Some(config_options),
         );
 
         assert_eq!(session.model_id, "grok-build");
@@ -9973,7 +9953,7 @@ mod tests {
                 &session.config_options,
                 &model_config.id
             ),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::SetConfigOption
         );
     }
 
@@ -10030,7 +10010,7 @@ mod tests {
 
         assert_eq!(
             acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::SetConfigOption
         );
         assert_eq!(
             acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "mode"),
@@ -10073,7 +10053,7 @@ mod tests {
 
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::SetConfigOption
         );
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "mode"),
@@ -10081,7 +10061,7 @@ mod tests {
         );
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &[], "model"),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::LocalOnly
         );
     }
 
