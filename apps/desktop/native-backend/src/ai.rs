@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -11,10 +11,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
     AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, FileSystemCapabilities,
+    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, CreateElicitationRequest,
+    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationContentValue,
+    ElicitationMode, ElicitationPropertySchema, ElicitationScope, FileSystemCapabilities,
     Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
-    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
+    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
@@ -30,14 +32,16 @@ use neverwrite_ai::{
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
     AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
-    AiToolActivityPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason, ToolDiffState,
-    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT,
-    AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
-    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
-    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
-    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
+    AiToolActivityPayload, AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload,
+    AiUserInputRequestPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason,
+    ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT,
+    AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
+    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
+    AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
+    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
+    AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
     GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
@@ -53,8 +57,6 @@ use crate::RpcOutput;
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str =
     "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
-const ELECTRON_AI_USER_INPUT_UNAVAILABLE: &str =
-    "Interactive AI user input prompts are not available in Electron yet.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -312,6 +314,7 @@ struct AiRespondUserInputInput {
     session_id: String,
     request_id: String,
     answers: HashMap<String, Vec<String>>,
+    action: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -835,6 +838,27 @@ struct AcpSessionHandle {
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
 }
 
+struct ElicitationWaiter {
+    session_id: String,
+    fields: HashMap<String, ElicitationFieldSpec>,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+#[derive(Debug, Clone)]
+struct ElicitationFieldSpec {
+    kind: ElicitationFieldKind,
+    option_values_by_label: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElicitationFieldKind {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    StringArray,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum AiAuthTerminalStatus {
@@ -942,6 +966,7 @@ pub(crate) struct NativeAi {
     setup_store: RuntimeSetupStore,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     auth_terminal_sessions: Arc<Mutex<HashMap<String, AuthTerminalHandle>>>,
     auth_terminal_counter: Arc<AtomicU64>,
 }
@@ -971,6 +996,7 @@ impl NativeAi {
             setup_store,
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
+            user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
             auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
             auth_terminal_counter: Arc::new(AtomicU64::new(1)),
         }
@@ -1270,6 +1296,7 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
+            Arc::clone(&self.user_input_waiters),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1380,6 +1407,7 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
+            Arc::clone(&self.user_input_waiters),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1560,6 +1588,7 @@ impl NativeAi {
 
     pub(crate) fn cancel_turn(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
+        self.cancel_user_input_waiters_for_session(&session_id);
         let session = {
             let mut state = self
                 .inner
@@ -1590,15 +1619,34 @@ impl NativeAi {
 
     pub(crate) fn respond_user_input(&self, args: &Value) -> Result<Value, String> {
         let input: AiRespondUserInputInput = input_from_args(args)?;
-        let _ = input.request_id;
-        let _ = input.answers;
-        let runtime_id = self.session_runtime_id(&input.session_id)?;
-        self.emit_runtime_feature_unavailable(&runtime_id, ELECTRON_AI_USER_INPUT_UNAVAILABLE);
-        Err(ELECTRON_AI_USER_INPUT_UNAVAILABLE.to_string())
+        let waiter = self
+            .user_input_waiters
+            .lock()
+            .map_err(|error| format!("Internal AI user input state error: {error}"))?
+            .remove(&input.request_id)
+            .ok_or_else(|| format!("AI user input request not found: {}", input.request_id))?;
+        if waiter.session_id != input.session_id {
+            return Err(format!(
+                "AI user input request {} belongs to a different session.",
+                input.request_id
+            ));
+        }
+
+        let response = create_elicitation_response_from_user_input(
+            input.action.as_deref(),
+            input.answers,
+            &waiter.fields,
+        )?;
+        waiter
+            .response_tx
+            .send(response)
+            .map_err(|_| "AI user input request was closed.".to_string())?;
+        self.load_session(&json!({ "sessionId": input.session_id }))
     }
 
     pub(crate) fn delete_runtime_session(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
+        self.cancel_user_input_waiters_for_session(&session_id);
         let mut state = self
             .inner
             .lock()
@@ -1627,6 +1675,7 @@ impl NativeAi {
             .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
         for session_id in session_ids {
+            self.cancel_user_input_waiters_for_session(&session_id);
             state.sessions.remove(&session_id);
             state.session_order.retain(|id| id != &session_id);
             self.tool_diffs.clear_session(&session_id);
@@ -2067,15 +2116,10 @@ impl NativeAi {
             .ok_or_else(|| format!("AI session not found: {session_id}"))
     }
 
-    fn emit_runtime_feature_unavailable(&self, runtime_id: &str, message: &str) {
-        self.emit_json(
-            "ai://runtime-connection",
-            json!({
-                "runtime_id": runtime_id,
-                "status": "error",
-                "message": message,
-            }),
-        );
+    fn cancel_user_input_waiters_for_session(&self, session_id: &str) {
+        cancel_user_input_waiters_matching(&self.user_input_waiters, |waiter| {
+            waiter.session_id == session_id
+        });
     }
 
     fn emit_session(&self, event_name: &str, session: &AiSession) {
@@ -2188,6 +2232,7 @@ struct NativeAcpClient {
     message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
@@ -2242,6 +2287,10 @@ impl NativeAcpClient {
                 },
             ),
         }
+    }
+
+    fn cancel_all_user_input_waiters(&self) {
+        cancel_user_input_waiters_matching(&self.user_input_waiters, |_| true);
     }
 
     fn apply_config_options_update(
@@ -3005,6 +3054,52 @@ impl NativeAcpClient {
         Ok(RequestPermissionResponse::new(outcome))
     }
 
+    async fn create_elicitation(
+        &self,
+        request: CreateElicitationRequest,
+    ) -> agent_client_protocol::Result<CreateElicitationResponse> {
+        let ElicitationMode::Form(form) = request.mode else {
+            return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+        };
+        let ElicitationScope::Session(scope) = form.scope else {
+            return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+        };
+        let runtime_session_id = scope.session_id.0.to_string();
+        let session_id = self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+        let request_id = format!(
+            "user-input-{}",
+            SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let (questions, fields) = map_elicitation_form_questions(&form.requested_schema);
+        let (response_tx, response_rx) = oneshot::channel();
+        self.user_input_waiters
+            .lock()
+            .map_err(|error| {
+                agent_client_protocol::Error::internal_error()
+                    .data(format!("Internal AI user input state error: {error}"))
+            })?
+            .insert(
+                request_id.clone(),
+                ElicitationWaiter {
+                    session_id: session_id.clone(),
+                    fields,
+                    response_tx,
+                },
+            );
+        self.emit(
+            AI_USER_INPUT_REQUEST_EVENT,
+            AiUserInputRequestPayload {
+                session_id: session_id.clone(),
+                request_id,
+                title: request.message,
+                questions,
+            },
+        );
+        Ok(response_rx
+            .await
+            .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+    }
+
     async fn session_notification(
         &self,
         args: SessionNotification,
@@ -3152,6 +3247,7 @@ fn start_acp_session(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
@@ -3174,6 +3270,7 @@ fn start_acp_session(
                 session_state,
                 tool_diffs,
                 agent_writes,
+                user_input_waiters,
                 command_rx,
                 created_tx,
             )
@@ -3398,6 +3495,7 @@ async fn run_acp_actor(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
@@ -3408,6 +3506,7 @@ async fn run_acp_actor(
         session_state,
         tool_diffs,
         agent_writes,
+        user_input_waiters,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -3424,6 +3523,7 @@ async fn run_acp_actor_inner(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -3455,6 +3555,7 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        user_input_waiters,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
@@ -3467,6 +3568,7 @@ async fn run_acp_actor_inner(
     let session_created_for_connection = Arc::clone(&session_created);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
+    let client_for_shutdown = client.clone();
 
     let result = Client
         .builder()
@@ -3480,6 +3582,23 @@ async fn run_acp_actor_inner(
                     let client = client.clone();
                     cx.spawn(async move {
                         let result = client.request_permission(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: CreateElicitationRequest,
+                            responder,
+                            cx: ConnectionTo<Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.create_elicitation(request).await;
                         responder.respond_with_result(result)?;
                         Ok(())
                     })?;
@@ -3567,6 +3686,8 @@ async fn run_acp_actor_inner(
             }
         })
         .await;
+
+    client_for_shutdown.cancel_all_user_input_waiters();
 
     match result {
         Ok(()) => Ok(()),
@@ -4214,6 +4335,320 @@ fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanU
                 status: plan_entry_status_label(&entry.status).to_string(),
             })
             .collect(),
+    }
+}
+
+fn map_elicitation_form_questions(
+    schema: &agent_client_protocol::schema::ElicitationSchema,
+) -> (
+    Vec<AiUserInputQuestionPayload>,
+    HashMap<String, ElicitationFieldSpec>,
+) {
+    schema
+        .properties
+        .iter()
+        .map(|(id, property)| {
+            let (header, question, kind, options) = elicitation_question_parts(id, property);
+            let option_values_by_label = options
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|option| (option.label.clone(), option.description.clone()))
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+            (
+                AiUserInputQuestionPayload {
+                    id: id.clone(),
+                    header,
+                    question,
+                    is_other: false,
+                    is_secret: false,
+                    options,
+                },
+                (
+                    id.clone(),
+                    ElicitationFieldSpec {
+                        kind,
+                        option_values_by_label,
+                    },
+                ),
+            )
+        })
+        .fold(
+            (Vec::new(), HashMap::new()),
+            |(mut questions, mut fields), (question, (id, field))| {
+                questions.push(question);
+                fields.insert(id, field);
+                (questions, fields)
+            },
+        )
+}
+
+fn elicitation_question_parts(
+    id: &str,
+    property: &ElicitationPropertySchema,
+) -> (
+    String,
+    String,
+    ElicitationFieldKind,
+    Option<Vec<AiUserInputQuestionOptionPayload>>,
+) {
+    match property {
+        ElicitationPropertySchema::String(schema) => {
+            let options = schema
+                .one_of
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| AiUserInputQuestionOptionPayload {
+                            label: item.title.clone(),
+                            description: item.value.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    schema.enum_values.as_ref().map(|values| {
+                        values
+                            .iter()
+                            .map(|value| AiUserInputQuestionOptionPayload {
+                                label: value.clone(),
+                                description: value.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                });
+            (
+                schema
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| humanize_field_id(id)),
+                schema.description.clone().unwrap_or_else(|| {
+                    schema
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id)))
+                }),
+                ElicitationFieldKind::String,
+                options,
+            )
+        }
+        ElicitationPropertySchema::Number(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id))),
+            ElicitationFieldKind::Number,
+            None,
+        ),
+        ElicitationPropertySchema::Integer(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id))),
+            ElicitationFieldKind::Integer,
+            None,
+        ),
+        ElicitationPropertySchema::Boolean(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Choose {}", humanize_field_id(id))),
+            ElicitationFieldKind::Boolean,
+            Some(vec![
+                AiUserInputQuestionOptionPayload {
+                    label: "Yes".to_string(),
+                    description: "true".to_string(),
+                },
+                AiUserInputQuestionOptionPayload {
+                    label: "No".to_string(),
+                    description: "false".to_string(),
+                },
+            ]),
+        ),
+        ElicitationPropertySchema::Array(schema) => {
+            let options = match &schema.items {
+                MultiSelectItems::Untitled(items) => items
+                    .values
+                    .iter()
+                    .map(|value| AiUserInputQuestionOptionPayload {
+                        label: value.clone(),
+                        description: value.clone(),
+                    })
+                    .collect(),
+                MultiSelectItems::Titled(items) => items
+                    .options
+                    .iter()
+                    .map(|item| AiUserInputQuestionOptionPayload {
+                        label: item.title.clone(),
+                        description: item.value.clone(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (
+                schema
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| humanize_field_id(id)),
+                schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("Choose {}", humanize_field_id(id))),
+                ElicitationFieldKind::StringArray,
+                Some(options),
+            )
+        }
+        _ => (
+            humanize_field_id(id),
+            format!("Provide {}", humanize_field_id(id)),
+            ElicitationFieldKind::String,
+            None,
+        ),
+    }
+}
+
+fn create_elicitation_response_from_user_input(
+    action: Option<&str>,
+    answers: HashMap<String, Vec<String>>,
+    fields: &HashMap<String, ElicitationFieldSpec>,
+) -> Result<CreateElicitationResponse, String> {
+    match action.unwrap_or(if answers.is_empty() {
+        "cancel"
+    } else {
+        "accept"
+    }) {
+        "cancel" => return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        "decline" | "skip" => {
+            return Ok(CreateElicitationResponse::new(ElicitationAction::Decline));
+        }
+        "accept" => {}
+        other => return Err(format!("Unsupported user input action: {other}")),
+    }
+
+    let mut content = BTreeMap::new();
+    for (id, values) in answers {
+        let Some(field) = fields.get(&id) else {
+            continue;
+        };
+        if let Some(value) = elicitation_content_value_from_answers(&values, field) {
+            content.insert(id, value);
+        }
+    }
+    Ok(CreateElicitationResponse::new(ElicitationAction::Accept(
+        ElicitationAcceptAction::new().content(content),
+    )))
+}
+
+fn cancel_user_input_waiters_matching(
+    waiters: &Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    matches_waiter: impl Fn(&ElicitationWaiter) -> bool,
+) {
+    let waiters_to_cancel = waiters
+        .lock()
+        .map(|mut waiters| {
+            let request_ids = waiters
+                .iter()
+                .filter_map(|(request_id, waiter)| {
+                    matches_waiter(waiter).then(|| request_id.clone())
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| waiters.remove(&request_id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for waiter in waiters_to_cancel {
+        let _ = waiter
+            .response_tx
+            .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+    }
+}
+
+fn elicitation_content_value_from_answers(
+    values: &[String],
+    field: &ElicitationFieldSpec,
+) -> Option<ElicitationContentValue> {
+    match field.kind {
+        ElicitationFieldKind::StringArray => {
+            let mapped = values
+                .iter()
+                .map(|value| elicitation_answer_value(value, field))
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>();
+            Some(ElicitationContentValue::StringArray(mapped))
+        }
+        ElicitationFieldKind::Boolean => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            match mapped.to_ascii_lowercase().as_str() {
+                "true" | "yes" | "1" => ElicitationContentValue::Boolean(true),
+                "false" | "no" | "0" => ElicitationContentValue::Boolean(false),
+                _ => ElicitationContentValue::String(mapped),
+            }
+        }),
+        ElicitationFieldKind::Integer => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            mapped
+                .parse::<i64>()
+                .map(ElicitationContentValue::Integer)
+                .unwrap_or(ElicitationContentValue::String(mapped))
+        }),
+        ElicitationFieldKind::Number => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            mapped
+                .parse::<f64>()
+                .map(ElicitationContentValue::Number)
+                .unwrap_or(ElicitationContentValue::String(mapped))
+        }),
+        ElicitationFieldKind::String => values
+            .first()
+            .map(|value| ElicitationContentValue::String(elicitation_answer_value(value, field))),
+    }
+}
+
+fn elicitation_answer_value(value: &str, field: &ElicitationFieldSpec) -> String {
+    field
+        .option_values_by_label
+        .get(value)
+        .cloned()
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn humanize_field_id(id: &str) -> String {
+    let mut result = String::new();
+    for (index, word) in id
+        .split(['_', '-', '.'])
+        .filter(|part| !part.is_empty())
+        .enumerate()
+    {
+        if index > 0 {
+            result.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            result.extend(first.to_uppercase());
+            result.push_str(chars.as_str());
+        }
+    }
+    if result.is_empty() {
+        id.to_string()
+    } else {
+        result
     }
 }
 
@@ -7262,11 +7697,12 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        AvailableCommandInput, AvailableCommandsUpdate, ConfigOptionUpdate, Meta,
+        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema, ConfigOptionUpdate,
+        ElicitationFormMode, ElicitationSchema, ElicitationSessionScope, EnumOption, Meta,
         PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
         SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
-        ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-        UnstructuredCommandInput,
+        StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
+        ToolKind, UnstructuredCommandInput,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -7289,6 +7725,7 @@ mod tests {
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
             suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
@@ -9955,6 +10392,169 @@ mod tests {
             ),
             AcpConfigOptionRemoteCommand::SetConfigOption
         );
+    }
+
+    #[test]
+    fn acp_form_elicitation_emits_user_input_request() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let waiters = Arc::clone(&client.user_input_waiters);
+        let request = CreateElicitationRequest::new(
+            ElicitationFormMode::new(
+                ElicitationSessionScope::new("session-1"),
+                ElicitationSchema::new()
+                    .property(
+                        "scope",
+                        StringPropertySchema::new()
+                            .title("Scope")
+                            .description("Choose a scope")
+                            .one_of(vec![
+                                EnumOption::new("safe", "Safe"),
+                                EnumOption::new("wide", "Wide"),
+                            ]),
+                        true,
+                    )
+                    .property(
+                        "confirmed",
+                        BooleanPropertySchema::new()
+                            .title("Confirm")
+                            .description("Continue?"),
+                        false,
+                    ),
+            ),
+            "Input requested",
+        );
+
+        let handle = thread::spawn(move || run_client_future(client.create_elicitation(request)));
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("user input event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_USER_INPUT_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.pointer("/title").and_then(Value::as_str),
+            Some("Input requested")
+        );
+        let request_id = payload
+            .pointer("/request_id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_string();
+        assert_eq!(
+            payload
+                .pointer("/questions/1/options/0/label")
+                .and_then(Value::as_str),
+            Some("Safe")
+        );
+        assert_eq!(
+            payload
+                .pointer("/questions/0/options/0/label")
+                .and_then(Value::as_str),
+            Some("Yes")
+        );
+        cancel_user_input_waiters_matching(&waiters, |waiter| waiter.session_id == "session-1");
+        let response = handle.join().unwrap().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(
+            !waiters.lock().unwrap().contains_key(&request_id),
+            "waiter should be removed after cancellation"
+        );
+    }
+
+    #[test]
+    fn respond_user_input_resolves_elicitation_waiter_with_accept() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.user_input_waiters.lock().unwrap().insert(
+            "user-input-1".to_string(),
+            ElicitationWaiter {
+                session_id: "session-1".to_string(),
+                fields: HashMap::from([
+                    (
+                        "scope".to_string(),
+                        ElicitationFieldSpec {
+                            kind: ElicitationFieldKind::String,
+                            option_values_by_label: HashMap::from([(
+                                "Safe".to_string(),
+                                "safe".to_string(),
+                            )]),
+                        },
+                    ),
+                    (
+                        "confirmed".to_string(),
+                        ElicitationFieldSpec {
+                            kind: ElicitationFieldKind::Boolean,
+                            option_values_by_label: HashMap::from([(
+                                "Yes".to_string(),
+                                "true".to_string(),
+                            )]),
+                        },
+                    ),
+                ]),
+                response_tx,
+            },
+        );
+
+        ai.respond_user_input(&json!({
+            "session_id": "session-1",
+            "request_id": "user-input-1",
+            "action": "accept",
+            "answers": {
+                "scope": ["Safe"],
+                "confirmed": ["Yes"]
+            }
+        }))
+        .unwrap();
+        let response = run_client_future(response_rx).unwrap();
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("scope"),
+            Some(&ElicitationContentValue::String("safe".to_string()))
+        );
+        assert_eq!(
+            content.get("confirmed"),
+            Some(&ElicitationContentValue::Boolean(true))
+        );
+    }
+
+    #[test]
+    fn user_input_actions_map_to_elicitation_decline_and_cancel() {
+        let fields = HashMap::new();
+        let decline =
+            create_elicitation_response_from_user_input(Some("decline"), HashMap::new(), &fields)
+                .unwrap();
+        assert!(matches!(decline.action, ElicitationAction::Decline));
+
+        let cancel =
+            create_elicitation_response_from_user_input(Some("cancel"), HashMap::new(), &fields)
+                .unwrap();
+        assert!(matches!(cancel.action, ElicitationAction::Cancel));
     }
 
     #[test]
