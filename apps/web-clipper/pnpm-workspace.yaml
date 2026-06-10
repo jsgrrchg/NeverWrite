@@ -3,4 +3,6 @@ packages:
 
 overrides:
     node-notifier>uuid: 11.1.1
+    shell-quote: 1.8.4
     web-ext-run>tmp: 0.2.6
+    ws: ^8.20.1
