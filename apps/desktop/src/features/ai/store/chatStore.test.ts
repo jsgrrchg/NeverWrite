@@ -1,4 +1,4 @@
-import { invoke } from "@neverwrite/runtime";
+import { invoke, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isChatTab,
@@ -48,6 +48,7 @@ import { resetClaudeCodeInstalledCacheForTests } from "../../terminal/claudeCode
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "../utils/runtimeMetadata";
 
 const invokeMock = vi.mocked(invoke);
+const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 
@@ -447,6 +448,13 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         };
     }
 
+    if (command === "ai_respond_url_elicitation") {
+        return {
+            ...sessionPayload,
+            status: "streaming",
+        };
+    }
+
     if (command === "ai_load_session_histories") {
         return [];
     }
@@ -541,6 +549,7 @@ describe("chatStore", () => {
             currentSelection: null,
         });
         invokeMock.mockImplementation(defaultInvokeImplementation);
+        openUrlMock.mockResolvedValue(undefined);
     });
 
     afterEach(() => {
@@ -2470,6 +2479,35 @@ describe("chatStore", () => {
                                     },
                                 ],
                             },
+                            {
+                                id: "url-elicitation:url-stale-1",
+                                role: "assistant",
+                                kind: "url_elicitation_request",
+                                content: "https://example.com/auth",
+                                title: "Authorize access",
+                                timestamp: 13,
+                                meta: {
+                                    status: "pending",
+                                },
+                                url_elicitation_request_id: "url-stale-1",
+                                url_elicitation_id: "elicitation-stale-1",
+                                url_elicitation_url: "https://example.com/auth",
+                            },
+                            {
+                                id: "url-elicitation:url-final-1",
+                                role: "assistant",
+                                kind: "url_elicitation_request",
+                                content: "https://example.com/done",
+                                title: "Completed access",
+                                timestamp: 14,
+                                meta: {
+                                    status: "completed",
+                                    action: "complete",
+                                },
+                                url_elicitation_request_id: "url-final-1",
+                                url_elicitation_id: "elicitation-final-1",
+                                url_elicitation_url: "https://example.com/done",
+                            },
                         ],
                     },
                 ];
@@ -2495,11 +2533,15 @@ describe("chatStore", () => {
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
         ]);
         expect(session.messageOrder).toEqual([
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
         ]);
         expect(session.messagesById?.["assistant:init"]?.content).toBe(
             "Recovered text",
@@ -2507,6 +2549,82 @@ describe("chatStore", () => {
         expect(session.lastTurnStartedMessageId).toBe("status:init-turn");
         expect(session.lastAssistantMessageId).toBe("assistant:init");
         expect(session.activePlanMessageId).toBe("plan:init");
+        expect(
+            session.messagesById?.["restored:url-elicitation:url-stale-1"],
+        ).toMatchObject({
+            kind: "url_elicitation_request",
+            urlElicitationRequestId: undefined,
+            meta: {
+                status: "cancelled",
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        });
+        expect(
+            session.messagesById?.["restored:url-elicitation:url-final-1"],
+        ).toMatchObject({
+            kind: "url_elicitation_request",
+            urlElicitationRequestId: undefined,
+            meta: {
+                status: "completed",
+                action: "complete",
+            },
+        });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: "codex-session-existing",
+            request_id: "url-stale-1",
+            elicitation_id: "elicitation-live-1",
+            title: "Authorize access again",
+            url: "https://example.com/live-auth",
+            status: "pending",
+        });
+        const afterLiveRequest =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(afterLiveRequest.messages.map((message) => message.id)).toEqual([
+            "status:init-turn",
+            "assistant:init",
+            "plan:init",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
+            "url-elicitation:url-stale-1",
+        ]);
+        expect(afterLiveRequest.messagesById?.["url-elicitation:url-stale-1"])
+            .toMatchObject({
+                kind: "url_elicitation_request",
+                urlElicitationRequestId: "url-stale-1",
+                urlElicitationUrl: "https://example.com/live-auth",
+                meta: {
+                    status: "pending",
+                },
+            });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: "codex-session-existing",
+            request_id: "url-final-1",
+            elicitation_id: "elicitation-live-2",
+            title: "Authorize access one more time",
+            url: "https://example.com/live-auth-2",
+            status: "pending",
+        });
+        const afterFinalCollision =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(afterFinalCollision.messages.map((message) => message.id)).toEqual([
+            "status:init-turn",
+            "assistant:init",
+            "plan:init",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
+            "url-elicitation:url-stale-1",
+            "url-elicitation:url-final-1",
+        ]);
+        expect(afterFinalCollision.messagesById?.["url-elicitation:url-final-1"])
+            .toMatchObject({
+                kind: "url_elicitation_request",
+                urlElicitationRequestId: "url-final-1",
+                urlElicitationUrl: "https://example.com/live-auth-2",
+                meta: {
+                    status: "pending",
+                },
+            });
         expect(session.models).toEqual([
             {
                 id: "test-model",
@@ -10599,6 +10717,454 @@ describe("chatStore", () => {
         });
     });
 
+    it("tracks URL elicitation requests and opens URLs explicitly", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-1",
+            elicitation_id: "elicitation-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+            scope: "session",
+            runtime_session_id: "runtime-session-1",
+            tool_call_id: "tool-1",
+        });
+
+        let session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-1)).toMatchObject({
+            id: "url-elicitation:url-1",
+            kind: "url_elicitation_request",
+            urlElicitationRequestId: "url-1",
+            urlElicitationId: "elicitation-1",
+            urlElicitationUrl: "https://example.com/auth",
+            meta: {
+                status: "pending",
+                toolCallId: "tool-1",
+            },
+        });
+
+        await useChatStore.getState().openUrlElicitation("url-1");
+
+        expect(openUrlMock).toHaveBeenCalledWith("https://example.com/auth");
+        session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "pending",
+            opened: true,
+        });
+    });
+
+    it("does not downgrade URL elicitations completed while Open is in flight", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let resolveOpen!: () => void;
+        openUrlMock.mockImplementation(
+            () =>
+                new Promise<void>((resolve) => {
+                    resolveOpen = resolve;
+                }),
+        );
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-open-race-1",
+            elicitation_id: "elicitation-open-race-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        const openPromise = useChatStore
+            .getState()
+            .openUrlElicitation("url-open-race-1");
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-open-race-1",
+            elicitation_id: "elicitation-open-race-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "completed",
+        });
+        resolveOpen();
+        await openPromise;
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "completed",
+            completedByRuntime: true,
+        });
+    });
+
+    it("responds to URL elicitation completion and cancellation", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const commands: unknown[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                commands.push(args);
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-complete-1",
+            elicitation_id: "elicitation-complete-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-complete-1", "complete");
+
+        let session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "completed",
+            action: "complete",
+        });
+        expect(commands[0]).toMatchObject({
+            input: {
+                session_id: activeSessionId,
+                request_id: "url-complete-1",
+                action: "complete",
+            },
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-cancel-1",
+            elicitation_id: "elicitation-cancel-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-cancel-1", "cancel");
+
+        session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "cancelled",
+            action: "cancel",
+        });
+        expect(commands[1]).toMatchObject({
+            input: {
+                request_id: "url-cancel-1",
+                action: "cancel",
+            },
+        });
+    });
+
+    it("marks URL elicitation completed from backend notifications", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-1",
+            elicitation_id: "elicitation-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-1",
+            elicitation_id: "elicitation-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "completed",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            urlElicitationUrl: "https://example.com/auth",
+            meta: {
+                status: "completed",
+                completedByRuntime: true,
+            },
+        });
+    });
+
+    it("keeps URL elicitation completed when backend completion wins the response race", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                useChatStore.getState().applyUrlElicitationRequest({
+                    session_id: activeSessionId,
+                    request_id: "url-race-1",
+                    elicitation_id: "elicitation-race-1",
+                    title: "Authorize access",
+                    url: "https://example.com/auth",
+                    status: "completed",
+                });
+                throw new Error(
+                    "AI URL elicitation request already completed by runtime: url-race-1",
+                );
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-race-1",
+            elicitation_id: "elicitation-race-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-race-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "completed",
+                completedByRuntime: true,
+            },
+        });
+        expect(
+            session.messages.some(
+                (message) =>
+                    message.kind === "error" &&
+                    message.content.includes("URL elicitation request not found"),
+            ),
+        ).toBe(false);
+    });
+
+    it("treats runtime-completed URL elicitation waiters as idempotent responses", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                throw new Error(
+                    "AI URL elicitation request already completed by runtime: url-completed-1",
+                );
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-completed-1",
+            elicitation_id: "elicitation-completed-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-completed-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "completed",
+                action: "complete",
+                completedByRuntime: true,
+            },
+        });
+        expect(
+            session.messages.some(
+                (message) =>
+                    message.kind === "error" &&
+                    message.content.includes(
+                        "URL elicitation request already completed",
+                    ),
+            ),
+        ).toBe(false);
+    });
+
+    it("surfaces missing URL elicitation waiters as errors", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                throw new Error("AI URL elicitation request not found: url-missing-1");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-missing-1",
+            elicitation_id: "elicitation-missing-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-missing-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-2)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "error",
+                action: "complete",
+            },
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "AI URL elicitation request not found: url-missing-1",
+        });
+    });
+
+    it("rejects unsafe URL elicitation opens in the client", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-unsafe-1",
+            elicitation_id: "elicitation-unsafe-1",
+            title: "Authorize access",
+            url: "javascript:alert(1)",
+            status: "pending",
+        });
+
+        await useChatStore.getState().openUrlElicitation("url-unsafe-1");
+
+        expect(openUrlMock).not.toHaveBeenCalled();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-2)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "error",
+                opened: false,
+            },
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "Only http and https URLs can be opened from AI URL requests.",
+        });
+    });
+
+    it("cancels pending URL elicitations when the runtime disconnects", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-disconnect-1",
+            elicitation_id: "elicitation-disconnect-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        useChatStore.getState().applyRuntimeConnection({
+            runtime_id: "codex-acp",
+            status: "error",
+            message: "runtime disconnected",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const urlMessage = session.messages.find(
+            (message) =>
+                message.urlElicitationRequestId === "url-disconnect-1",
+        );
+        expect(urlMessage?.meta).toMatchObject({
+            status: "cancelled",
+            action: "cancel",
+        });
+    });
+
+    it("marks pending URL elicitations cancelled when stopping a turn", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-stop-1",
+            elicitation_id: "elicitation-stop-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore.getState().stopStreaming(activeSessionId);
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("idle");
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "cancelled",
+                action: "cancel",
+            },
+        });
+    });
+
+    it("marks URL elicitation requests as errored when backend response fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                throw new Error("url waiter closed");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-fail-1",
+            elicitation_id: "elicitation-fail-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-fail-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-2)?.meta).toMatchObject({
+            status: "error",
+            action: "complete",
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "url waiter closed",
+        });
+    });
+
     it("resumes the active persisted history into a live ACP session", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -10872,6 +11438,17 @@ describe("chatStore", () => {
                             content: "The saved context matters",
                             timestamp: 10,
                         },
+                        {
+                            id: "url-elicitation:url-resume",
+                            role: "assistant",
+                            kind: "url_elicitation_request",
+                            content: "https://example.com/auth",
+                            timestamp: 11,
+                            urlElicitationRequestId: "url-resume",
+                            urlElicitationId: "elicitation-resume",
+                            urlElicitationUrl: "https://example.com/auth",
+                            meta: { status: "completed" },
+                        },
                     ],
                 },
             },
@@ -10899,6 +11476,7 @@ describe("chatStore", () => {
 
         expect(sentContent).toContain("Saved transcript:");
         expect(sentContent).toContain("User: The saved context matters");
+        expect(sentContent).not.toContain("https://example.com/auth");
         expect(sentContent).toContain("New user message: Keep going");
         expect(
             invokeMock.mock.calls.some(

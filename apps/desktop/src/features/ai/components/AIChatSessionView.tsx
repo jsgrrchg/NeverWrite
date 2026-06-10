@@ -577,6 +577,19 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             action,
                         );
                     }}
+                    onUrlElicitationOpen={(requestId) => {
+                        void chatActions.openUrlElicitation(
+                            requestId,
+                            sessionId,
+                        );
+                    }}
+                    onUrlElicitationResponse={(requestId, action) => {
+                        void chatActions.respondUrlElicitation(
+                            requestId,
+                            action,
+                            sessionId,
+                        );
+                    }}
                 />
             )}
 

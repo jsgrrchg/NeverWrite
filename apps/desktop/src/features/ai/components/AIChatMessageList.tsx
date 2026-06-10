@@ -16,6 +16,7 @@ import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import type {
     AIChatMessage,
     AIChatSessionStatus,
+    AIUrlElicitationAction,
     AIUserInputAction,
 } from "../types";
 import { getChatPillMetrics } from "./chatPillMetrics";
@@ -54,6 +55,11 @@ interface AIChatMessageListProps {
         requestId: string,
         answers: Record<string, string[]>,
         action?: AIUserInputAction,
+    ) => void;
+    onUrlElicitationOpen?: (requestId: string) => void;
+    onUrlElicitationResponse?: (
+        requestId: string,
+        action: AIUrlElicitationAction,
     ) => void;
 }
 
@@ -251,6 +257,11 @@ function renderTimelineRow(
             answers: Record<string, string[]>,
             action?: AIUserInputAction,
         ) => void;
+        onUrlElicitationOpen?: (requestId: string) => void;
+        onUrlElicitationResponse?: (
+            requestId: string,
+            action: AIUrlElicitationAction,
+        ) => void;
         onDismissMessage?: (messageId: string) => void;
     },
 ) {
@@ -278,6 +289,14 @@ function renderTimelineRow(
             onUserInputResponse={
                 options.readOnly ? undefined : options.onUserInputResponse
             }
+            onUrlElicitationOpen={
+                options.readOnly ? undefined : options.onUrlElicitationOpen
+            }
+            onUrlElicitationResponse={
+                options.readOnly
+                    ? undefined
+                    : options.onUrlElicitationResponse
+            }
             onDismissMessage={
                 options.readOnly ? undefined : options.onDismissMessage
             }
@@ -300,6 +319,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     onLoadOlderMessages,
     onPermissionResponse,
     onUserInputResponse,
+    onUrlElicitationOpen,
+    onUrlElicitationResponse,
 }: AIChatMessageListProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const wasNearBottomRef = useRef(true);
@@ -457,6 +478,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             visibleWorkCycleId,
             onPermissionResponse,
             onUserInputResponse,
+            onUrlElicitationOpen,
+            onUrlElicitationResponse,
             onDismissMessage: handleDismissMessage,
         }),
         [
@@ -464,6 +487,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             handleDismissMessage,
             onPermissionResponse,
             onUserInputResponse,
+            onUrlElicitationOpen,
+            onUrlElicitationResponse,
             pillMetrics,
             readOnly,
             sessionId,

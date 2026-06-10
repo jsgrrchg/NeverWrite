@@ -22,6 +22,8 @@ import type {
     AIPlanUpdatePayload,
     AIStatusEventPayload,
     AITokenUsagePayload,
+    AIUrlElicitationAction,
+    AIUrlElicitationRequestPayload,
     AIUserInputAction,
     AIToolActivityPayload,
     AIUserInputRequestPayload,
@@ -53,6 +55,8 @@ export const AI_STATUS_EVENT = "ai://status-event";
 export const AI_IMAGE_GENERATION_EVENT = "ai://image-generation";
 export const AI_PERMISSION_REQUEST_EVENT = "ai://permission-request";
 export const AI_USER_INPUT_REQUEST_EVENT = "ai://user-input-request";
+export const AI_URL_ELICITATION_REQUEST_EVENT =
+    "ai://url-elicitation-request";
 export const AI_PLAN_UPDATED_EVENT = "ai://plan-updated";
 export const AI_AVAILABLE_COMMANDS_UPDATED_EVENT =
     "ai://available-commands-updated";
@@ -624,6 +628,25 @@ export async function aiRespondUserInput(
     return normalizeBackendSession(session);
 }
 
+export async function aiRespondUrlElicitation(
+    sessionId: string,
+    requestId: string,
+    action: AIUrlElicitationAction,
+) {
+    assertRuntimeSessionId(sessionId, "respond to a URL elicitation request");
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_respond_url_elicitation",
+        {
+            input: {
+                session_id: sessionId,
+                request_id: requestId,
+                action,
+            },
+        },
+    );
+    return normalizeBackendSession(session);
+}
+
 export async function aiGetTextFileHash(
     vaultPath: string,
     path: string,
@@ -907,6 +930,17 @@ export async function listenToAiUserInputRequest(
 ): Promise<UnlistenFn> {
     return listen<AIUserInputRequestPayload>(
         AI_USER_INPUT_REQUEST_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiUrlElicitationRequest(
+    callback: (payload: AIUrlElicitationRequestPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIUrlElicitationRequestPayload>(
+        AI_URL_ELICITATION_REQUEST_EVENT,
         (event) => {
             callback(event.payload);
         },

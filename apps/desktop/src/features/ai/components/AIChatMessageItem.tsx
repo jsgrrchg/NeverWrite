@@ -17,6 +17,7 @@ import type {
     AIChatSession,
     AIFileDiff,
     AIPermissionOption,
+    AIUrlElicitationAction,
     AIUserInputAction,
 } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
@@ -342,6 +343,11 @@ interface AIChatMessageItemProps {
         requestId: string,
         answers: Record<string, string[]>,
         action?: AIUserInputAction,
+    ) => void;
+    onUrlElicitationOpen?: (requestId: string) => void;
+    onUrlElicitationResponse?: (
+        requestId: string,
+        action: AIUrlElicitationAction,
     ) => void;
     onDismissMessage?: (messageId: string) => void;
 }
@@ -3245,6 +3251,192 @@ function UserInputRequestMessage({
     );
 }
 
+function UrlElicitationRequestMessage({
+    message,
+    onOpen,
+    onRespond,
+}: {
+    message: AIChatMessage;
+    onOpen?: (requestId: string) => void;
+    onRespond?: (requestId: string, action: AIUrlElicitationAction) => void;
+}) {
+    const status = String(message.meta?.status ?? "pending");
+    const isOpening = status === "opening";
+    const isResponding = status === "responding";
+    const isCompleted = status === "completed";
+    const isCancelled = status === "cancelled";
+    const isError = status === "error";
+    const isActionable =
+        status === "pending" || status === "error" || status === "opening";
+    const isDisabled = isOpening || isResponding || isCompleted || isCancelled;
+    const requestId = message.urlElicitationRequestId;
+    const url = message.urlElicitationUrl ?? message.content;
+    const hasOpened = Boolean(message.meta?.opened);
+
+    const footerText = isOpening
+        ? "Opening URL..."
+        : isResponding
+          ? "Sending confirmation..."
+          : isCompleted
+            ? "Completed."
+            : isCancelled
+              ? "Cancelled."
+              : isError
+                ? "Failed. Try again."
+                : "Waiting for confirmation...";
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                border: "1px solid color-mix(in srgb, #2563eb 22%, var(--border))",
+                backgroundColor:
+                    "color-mix(in srgb, #2563eb 4%, var(--bg-secondary))",
+            }}
+        >
+            <div
+                className="flex items-center gap-2 px-3 py-2"
+                style={{
+                    borderBottom:
+                        "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                }}
+            >
+                <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    stroke="#2563eb"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="shrink-0"
+                    aria-hidden="true"
+                >
+                    <path d="M5.25 8.75L8.75 5.25" />
+                    <path d="M6 3.5l.8-.8a2.3 2.3 0 013.25 3.25l-.8.8" />
+                    <path d="M8 10.5l-.8.8a2.3 2.3 0 01-3.25-3.25l.8-.8" />
+                </svg>
+                <span
+                    className="min-w-0 flex-1 font-medium"
+                    style={{
+                        color: "var(--text-primary)",
+                        fontSize: "0.85em",
+                    }}
+                >
+                    {message.title ?? "Open URL"}
+                </span>
+            </div>
+
+            <div className="flex flex-col gap-2 px-3 py-3">
+                <div
+                    title={url}
+                    className="min-w-0 truncate rounded-md px-2.5 py-2"
+                    style={{
+                        color: "var(--text-primary)",
+                        backgroundColor:
+                            "color-mix(in srgb, #2563eb 6%, var(--bg-tertiary))",
+                        border: "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                        fontSize: "0.79em",
+                    }}
+                >
+                    {url}
+                </div>
+                {hasOpened && !isCompleted && !isCancelled ? (
+                    <div
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.76em",
+                        }}
+                    >
+                        URL opened.
+                    </div>
+                ) : null}
+            </div>
+
+            {requestId ? (
+                <div
+                    className="flex flex-wrap gap-2 px-3 py-2"
+                    style={{
+                        borderTop:
+                            "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                    }}
+                >
+                    <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => onOpen?.(requestId)}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "var(--text-primary)",
+                            backgroundColor:
+                                "color-mix(in srgb, #2563eb 8%, var(--bg-tertiary))",
+                            border: "1px solid color-mix(in srgb, #2563eb 20%, var(--border))",
+                            opacity: isDisabled ? 0.5 : 1,
+                            cursor: isDisabled ? "default" : "pointer",
+                        }}
+                    >
+                        Open
+                    </button>
+                    <button
+                        type="button"
+                        disabled={!isActionable || isDisabled}
+                        onClick={() => onRespond?.(requestId, "cancel")}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "var(--text-secondary)",
+                            backgroundColor:
+                                "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--text-secondary) 18%, transparent)",
+                            opacity: !isActionable || isDisabled ? 0.5 : 1,
+                            cursor:
+                                !isActionable || isDisabled
+                                    ? "default"
+                                    : "pointer",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        disabled={!isActionable || isDisabled}
+                        onClick={() => onRespond?.(requestId, "complete")}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "#fff",
+                            backgroundColor: "#2563eb",
+                            border: "1px solid color-mix(in srgb, #2563eb 35%, transparent)",
+                            opacity: !isActionable || isDisabled ? 0.5 : 1,
+                            cursor:
+                                !isActionable || isDisabled
+                                    ? "default"
+                                    : "pointer",
+                        }}
+                    >
+                        Done
+                    </button>
+                </div>
+            ) : null}
+
+            <div
+                className="px-3 py-1.5"
+                style={{
+                    color: "var(--text-secondary)",
+                    borderTop:
+                        "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                    opacity: 0.72,
+                    fontSize: "0.79em",
+                }}
+            >
+                {footerText}
+            </div>
+        </div>
+    );
+}
+
 export const AIChatMessageItem = memo(function AIChatMessageItem({
     message,
     sessionId,
@@ -3254,6 +3446,8 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     visibleWorkCycleId = null,
     onPermissionResponse,
     onUserInputResponse,
+    onUrlElicitationOpen,
+    onUrlElicitationResponse,
     onDismissMessage,
 }: AIChatMessageItemProps) {
     const diffPresentationMode = readOnly
@@ -3337,6 +3531,16 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 message={message}
                 sessionId={sessionId}
                 onUserInputResponse={onUserInputResponse}
+            />
+        );
+    }
+
+    if (message.kind === "url_elicitation_request") {
+        return (
+            <UrlElicitationRequestMessage
+                message={message}
+                onOpen={onUrlElicitationOpen}
+                onRespond={onUrlElicitationResponse}
             />
         );
     }

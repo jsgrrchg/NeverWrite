@@ -98,7 +98,8 @@ Claude 0.44 compatibility work is:
 - `fs`: advertised
 - `elicitation.form`: advertised; the native backend bridges form requests into
   NeverWrite's user-input UI
-- `elicitation.url`: not advertised unless a complete URL completion UX is added
+- `elicitation.url`: advertised; the native backend bridges URL requests into a
+  compact timeline confirmation UI
 
 ## Updating Vendored Runtimes
 

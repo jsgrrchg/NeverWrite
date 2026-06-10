@@ -238,6 +238,7 @@ export type AIChatMessageKind =
     | "status"
     | "permission"
     | "user_input_request"
+    | "url_elicitation_request"
     | "image"
     | "error";
 
@@ -263,6 +264,25 @@ export interface AIUserInputRequestPayload {
 }
 
 export type AIUserInputAction = "accept" | "decline" | "skip" | "cancel";
+export type AIUrlElicitationAction = "complete" | "cancel";
+export type AIUrlElicitationStatus =
+    | "pending"
+    | "opening"
+    | "completed"
+    | "cancelled"
+    | "error";
+
+export interface AIUrlElicitationRequestPayload {
+    session_id: string;
+    request_id: string;
+    elicitation_id: string;
+    title: string;
+    url: string;
+    status?: AIUrlElicitationStatus;
+    scope?: string;
+    runtime_session_id?: string | null;
+    tool_call_id?: string | null;
+}
 
 export interface AIPlanEntry {
     content: string;
@@ -315,6 +335,11 @@ export type AIBufferedSessionTimelineEvent =
           type: "user_input_request";
           payload: AIUserInputRequestPayload;
           timestamp: number;
+      }
+    | {
+          type: "url_elicitation_request";
+          payload: AIUrlElicitationRequestPayload;
+          timestamp: number;
       };
 
 export interface AIChatMessage {
@@ -333,6 +358,9 @@ export interface AIChatMessage {
     reviewDiffs?: AIFileDiff[];
     userInputRequestId?: string;
     userInputQuestions?: AIUserInputQuestion[];
+    urlElicitationRequestId?: string;
+    urlElicitationId?: string;
+    urlElicitationUrl?: string;
     planEntries?: AIPlanEntry[];
     planDetail?: string;
     toolAction?: AIToolActivityAction | null;
@@ -682,6 +710,9 @@ export interface PersistedMessage {
     review_diffs?: AIFileDiff[];
     user_input_request_id?: string;
     user_input_questions?: AIUserInputQuestion[];
+    url_elicitation_request_id?: string;
+    url_elicitation_id?: string;
+    url_elicitation_url?: string;
     plan_entries?: AIPlanEntry[];
     plan_detail?: string;
     tool_action?: AIToolActivityAction | null;

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -11,13 +11,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
     AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, CreateElicitationRequest,
-    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
-    ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
-    ElicitationPropertySchema, ElicitationScope, FileSystemCapabilities, Implementation,
-    InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
-    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
-    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    CancelNotification, ClientCapabilities, CompleteElicitationNotification, ContentBlock,
+    ContentChunk, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
+    ElicitationUrlCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
+    InitializeResponse, LoadSessionRequest, LogoutRequest, Meta, MultiSelectItems,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
+    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
@@ -33,17 +34,18 @@ use neverwrite_ai::{
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
     AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
-    AiToolActivityPayload, AiUserInputQuestionOptionPayload, AiUserInputQuestionPayload,
-    AiUserInputRequestPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason,
-    ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT,
-    AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
+    AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
+    DiscardedAdditionalRootReason, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
+    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
     AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
     AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
     AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
-    GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID,
+    OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -76,6 +78,7 @@ const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const MAX_COMPLETED_URL_ELICITATION_IDS: usize = 256;
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
 const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
@@ -96,10 +99,14 @@ fn neverwrite_acp_client_capabilities(_runtime_id: &str) -> ClientCapabilities {
     // Capability matrix for this integration stage:
     // - fs: supported and advertised.
     // - elicitation.form: supported by NeverWrite's user-input bridge.
-    // - elicitation.url: not advertised until NeverWrite has explicit URL completion UX.
+    // - elicitation.url: supported by NeverWrite's URL completion bridge.
     ClientCapabilities::new()
         .fs(FileSystemCapabilities::new())
-        .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
+        .elicitation(
+            ElicitationCapabilities::new()
+                .form(ElicitationFormCapabilities::new())
+                .url(ElicitationUrlCapabilities::new()),
+        )
 }
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
@@ -318,6 +325,13 @@ struct AiRespondUserInputInput {
     request_id: String,
     answers: HashMap<String, Vec<String>>,
     action: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiRespondUrlElicitationInput {
+    session_id: String,
+    request_id: String,
+    action: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -847,6 +861,17 @@ struct ElicitationWaiter {
     response_tx: oneshot::Sender<CreateElicitationResponse>,
 }
 
+struct UrlElicitationWaiter {
+    session_id: String,
+    elicitation_id: String,
+    title: String,
+    url: String,
+    scope: String,
+    runtime_session_id: Option<String>,
+    tool_call_id: Option<String>,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
 #[derive(Debug, Clone)]
 struct ElicitationFieldSpec {
     kind: ElicitationFieldKind,
@@ -970,6 +995,8 @@ pub(crate) struct NativeAi {
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     auth_terminal_sessions: Arc<Mutex<HashMap<String, AuthTerminalHandle>>>,
     auth_terminal_counter: Arc<AtomicU64>,
 }
@@ -1000,6 +1027,8 @@ impl NativeAi {
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
+            url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
+            completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
             auth_terminal_counter: Arc::new(AtomicU64::new(1)),
         }
@@ -1300,6 +1329,8 @@ impl NativeAi {
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
             Arc::clone(&self.user_input_waiters),
+            Arc::clone(&self.url_elicitation_waiters),
+            Arc::clone(&self.completed_url_elicitations),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1411,6 +1442,8 @@ impl NativeAi {
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
             Arc::clone(&self.user_input_waiters),
+            Arc::clone(&self.url_elicitation_waiters),
+            Arc::clone(&self.completed_url_elicitations),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1592,6 +1625,7 @@ impl NativeAi {
     pub(crate) fn cancel_turn(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         self.cancel_user_input_waiters_for_session(&session_id);
+        self.cancel_url_elicitation_waiters_for_session(&session_id);
         let session = {
             let mut state = self
                 .inner
@@ -1647,9 +1681,54 @@ impl NativeAi {
         self.load_session(&json!({ "sessionId": input.session_id }))
     }
 
+    pub(crate) fn respond_url_elicitation(&self, args: &Value) -> Result<Value, String> {
+        let input: AiRespondUrlElicitationInput = input_from_args(args)?;
+        let response = create_url_elicitation_response(&input.action)?;
+        let waiter = {
+            let mut waiters = self
+                .url_elicitation_waiters
+                .lock()
+                .map_err(|error| format!("Internal AI URL elicitation state error: {error}"))?;
+            if let Some(waiter) = waiters.get(&input.request_id) {
+                if waiter.session_id != input.session_id {
+                    return Err(format!(
+                        "AI URL elicitation request {} belongs to a different session.",
+                        input.request_id
+                    ));
+                }
+            }
+            waiters.remove(&input.request_id)
+        };
+        let Some(waiter) = waiter else {
+            let completed_by_runtime = self
+                .completed_url_elicitations
+                .lock()
+                .map_err(|error| {
+                    format!("Internal AI URL elicitation completion state error: {error}")
+                })?
+                .contains(&input.request_id);
+            if completed_by_runtime {
+                return Err(format!(
+                    "AI URL elicitation request already completed by runtime: {}",
+                    input.request_id
+                ));
+            }
+            return Err(format!(
+                "AI URL elicitation request not found: {}",
+                input.request_id
+            ));
+        };
+        waiter
+            .response_tx
+            .send(response)
+            .map_err(|_| "AI URL elicitation request was closed.".to_string())?;
+        self.load_session(&json!({ "sessionId": input.session_id }))
+    }
+
     pub(crate) fn delete_runtime_session(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         self.cancel_user_input_waiters_for_session(&session_id);
+        self.cancel_url_elicitation_waiters_for_session(&session_id);
         let mut state = self
             .inner
             .lock()
@@ -1679,6 +1758,7 @@ impl NativeAi {
             .collect::<Vec<_>>();
         for session_id in session_ids {
             self.cancel_user_input_waiters_for_session(&session_id);
+            self.cancel_url_elicitation_waiters_for_session(&session_id);
             state.sessions.remove(&session_id);
             state.session_order.retain(|id| id != &session_id);
             self.tool_diffs.clear_session(&session_id);
@@ -2125,6 +2205,12 @@ impl NativeAi {
         });
     }
 
+    fn cancel_url_elicitation_waiters_for_session(&self, session_id: &str) {
+        cancel_url_elicitation_waiters_matching(&self.url_elicitation_waiters, |waiter| {
+            waiter.session_id == session_id
+        });
+    }
+
     fn emit_session(&self, event_name: &str, session: &AiSession) {
         self.emit_json(event_name, json!(session));
     }
@@ -2236,6 +2322,8 @@ struct NativeAcpClient {
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
@@ -2294,6 +2382,7 @@ impl NativeAcpClient {
 
     fn cancel_all_user_input_waiters(&self) {
         cancel_user_input_waiters_matching(&self.user_input_waiters, |_| true);
+        cancel_url_elicitation_waiters_matching(&self.url_elicitation_waiters, |_| true);
     }
 
     fn apply_config_options_update(
@@ -3061,46 +3150,154 @@ impl NativeAcpClient {
         &self,
         request: CreateElicitationRequest,
     ) -> agent_client_protocol::Result<CreateElicitationResponse> {
-        let ElicitationMode::Form(form) = request.mode else {
-            return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
-        };
-        let ElicitationScope::Session(scope) = form.scope else {
-            return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
-        };
-        let runtime_session_id = scope.session_id.0.to_string();
-        let session_id = self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
-        let request_id = format!(
-            "user-input-{}",
-            SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let (questions, fields) = map_elicitation_form_questions(&form.requested_schema);
-        let (response_tx, response_rx) = oneshot::channel();
-        self.user_input_waiters
+        match request.mode {
+            ElicitationMode::Form(form) => {
+                let ElicitationScope::Session(scope) = form.scope else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let runtime_session_id = scope.session_id.0.to_string();
+                let session_id =
+                    self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+                let request_id = format!(
+                    "user-input-{}",
+                    SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let (questions, fields) = map_elicitation_form_questions(&form.requested_schema);
+                let (response_tx, response_rx) = oneshot::channel();
+                self.user_input_waiters
+                    .lock()
+                    .map_err(|error| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(format!("Internal AI user input state error: {error}"))
+                    })?
+                    .insert(
+                        request_id.clone(),
+                        ElicitationWaiter {
+                            session_id: session_id.clone(),
+                            fields,
+                            response_tx,
+                        },
+                    );
+                self.emit(
+                    AI_USER_INPUT_REQUEST_EVENT,
+                    AiUserInputRequestPayload {
+                        session_id: session_id.clone(),
+                        request_id,
+                        title: request.message,
+                        questions,
+                    },
+                );
+                Ok(response_rx
+                    .await
+                    .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+            }
+            ElicitationMode::Url(url_mode) => {
+                let Some(url) = safe_http_url(&url_mode.url) else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let ElicitationScope::Session(scope) = url_mode.scope else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let runtime_session_id = scope.session_id.0.to_string();
+                let session_id =
+                    self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+                let request_id = format!(
+                    "url-elicitation-{}",
+                    SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let elicitation_id = url_mode.elicitation_id.0.to_string();
+                let tool_call_id = scope.tool_call_id.map(|id| id.0.to_string());
+                let title = request.message;
+                let (response_tx, response_rx) = oneshot::channel();
+                self.url_elicitation_waiters
+                    .lock()
+                    .map_err(|error| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(format!("Internal AI URL elicitation state error: {error}"))
+                    })?
+                    .insert(
+                        request_id.clone(),
+                        UrlElicitationWaiter {
+                            session_id: session_id.clone(),
+                            elicitation_id: elicitation_id.clone(),
+                            title: title.clone(),
+                            url: url.clone(),
+                            scope: "session".to_string(),
+                            runtime_session_id: Some(runtime_session_id.clone()),
+                            tool_call_id: tool_call_id.clone(),
+                            response_tx,
+                        },
+                    );
+                self.emit(
+                    AI_URL_ELICITATION_REQUEST_EVENT,
+                    AiUrlElicitationRequestPayload {
+                        session_id: session_id.clone(),
+                        request_id,
+                        elicitation_id,
+                        title,
+                        url,
+                        status: "pending".to_string(),
+                        scope: "session".to_string(),
+                        runtime_session_id: Some(runtime_session_id),
+                        tool_call_id,
+                    },
+                );
+                Ok(response_rx
+                    .await
+                    .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+            }
+            _ => Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        }
+    }
+
+    async fn complete_elicitation(
+        &self,
+        notification: CompleteElicitationNotification,
+    ) -> agent_client_protocol::Result<()> {
+        let elicitation_id = notification.elicitation_id.0.to_string();
+        let completed = self
+            .url_elicitation_waiters
             .lock()
+            .map(|mut waiters| {
+                let request_id = waiters.iter().find_map(|(request_id, waiter)| {
+                    (waiter.elicitation_id == elicitation_id).then(|| request_id.clone())
+                })?;
+                waiters
+                    .remove(&request_id)
+                    .map(|waiter| (request_id, waiter))
+            })
             .map_err(|error| {
                 agent_client_protocol::Error::internal_error()
-                    .data(format!("Internal AI user input state error: {error}"))
-            })?
-            .insert(
+                    .data(format!("Internal AI URL elicitation state error: {error}"))
+            })?;
+
+        if let Some((request_id, waiter)) = completed {
+            remember_completed_url_elicitation(
+                &self.completed_url_elicitations,
                 request_id.clone(),
-                ElicitationWaiter {
-                    session_id: session_id.clone(),
-                    fields,
-                    response_tx,
+            );
+            let _ =
+                waiter
+                    .response_tx
+                    .send(CreateElicitationResponse::new(ElicitationAction::Accept(
+                        ElicitationAcceptAction::new(),
+                    )));
+            self.emit(
+                AI_URL_ELICITATION_REQUEST_EVENT,
+                AiUrlElicitationRequestPayload {
+                    session_id: waiter.session_id,
+                    request_id,
+                    elicitation_id,
+                    title: waiter.title,
+                    url: waiter.url,
+                    status: "completed".to_string(),
+                    scope: waiter.scope,
+                    runtime_session_id: waiter.runtime_session_id,
+                    tool_call_id: waiter.tool_call_id,
                 },
             );
-        self.emit(
-            AI_USER_INPUT_REQUEST_EVENT,
-            AiUserInputRequestPayload {
-                session_id: session_id.clone(),
-                request_id,
-                title: request.message,
-                questions,
-            },
-        );
-        Ok(response_rx
-            .await
-            .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+        }
+        Ok(())
     }
 
     async fn session_notification(
@@ -3251,6 +3448,8 @@ fn start_acp_session(
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
@@ -3274,6 +3473,8 @@ fn start_acp_session(
                 tool_diffs,
                 agent_writes,
                 user_input_waiters,
+                url_elicitation_waiters,
+                completed_url_elicitations,
                 command_rx,
                 created_tx,
             )
@@ -3499,6 +3700,8 @@ async fn run_acp_actor(
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
@@ -3510,6 +3713,8 @@ async fn run_acp_actor(
         tool_diffs,
         agent_writes,
         user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -3527,6 +3732,8 @@ async fn run_acp_actor_inner(
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -3559,6 +3766,8 @@ async fn run_acp_actor_inner(
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
         user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
@@ -3615,6 +3824,16 @@ async fn run_acp_actor_inner(
                 let client = client.clone();
                 async move |notification: SessionNotification, _cx: ConnectionTo<Agent>| {
                     client.session_notification(notification).await
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: CompleteElicitationNotification,
+                            _cx: ConnectionTo<Agent>| {
+                    client.complete_elicitation(notification).await
                 }
             },
             agent_client_protocol::on_receive_notification!(),
@@ -4581,6 +4800,67 @@ fn cancel_user_input_waiters_matching(
             .response_tx
             .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
     }
+}
+
+fn cancel_url_elicitation_waiters_matching(
+    waiters: &Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    matches_waiter: impl Fn(&UrlElicitationWaiter) -> bool,
+) {
+    let waiters_to_cancel = waiters
+        .lock()
+        .map(|mut waiters| {
+            let request_ids = waiters
+                .iter()
+                .filter_map(|(request_id, waiter)| {
+                    matches_waiter(waiter).then(|| request_id.clone())
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| waiters.remove(&request_id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for waiter in waiters_to_cancel {
+        let _ = waiter
+            .response_tx
+            .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+    }
+}
+
+fn create_url_elicitation_response(action: &str) -> Result<CreateElicitationResponse, String> {
+    match action {
+        "complete" | "done" | "accept" => Ok(CreateElicitationResponse::new(
+            ElicitationAction::Accept(ElicitationAcceptAction::new()),
+        )),
+        "cancel" => Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        other => Err(format!("Unsupported URL elicitation action: {other}")),
+    }
+}
+
+fn remember_completed_url_elicitation(
+    completed_url_elicitations: &Arc<Mutex<VecDeque<String>>>,
+    request_id: String,
+) {
+    if let Ok(mut completed_requests) = completed_url_elicitations.lock() {
+        completed_requests.retain(|known_request_id| known_request_id != &request_id);
+        if completed_requests.len() >= MAX_COMPLETED_URL_ELICITATION_IDS {
+            completed_requests.pop_front();
+        }
+        completed_requests.push_back(request_id);
+    }
+}
+
+fn safe_http_url(raw_url: &str) -> Option<String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let Ok(parsed) = reqwest::Url::parse(trimmed) else {
+        return None;
+    };
+    (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+        .then(|| parsed.to_string())
 }
 
 fn elicitation_content_value_from_answers(
@@ -7700,8 +7980,9 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema, ConfigOptionUpdate,
-        ElicitationFormMode, ElicitationSchema, ElicitationSessionScope, EnumOption, Meta,
+        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema,
+        CompleteElicitationNotification, ConfigOptionUpdate, ElicitationFormMode,
+        ElicitationSchema, ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta,
         PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
         SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
         StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
@@ -7729,6 +8010,8 @@ mod tests {
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
             user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
+            url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
+            completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
@@ -7865,7 +8148,7 @@ mod tests {
     }
 
     #[test]
-    fn client_capabilities_advertise_form_elicitation_without_url() {
+    fn client_capabilities_advertise_form_and_url_elicitation() {
         let capabilities = neverwrite_acp_client_capabilities(CLAUDE_RUNTIME_ID);
         let elicitation = capabilities
             .elicitation
@@ -7876,8 +8159,8 @@ mod tests {
             "form elicitation should be advertised"
         );
         assert!(
-            elicitation.url.is_none(),
-            "url elicitation should stay disabled until URL completion UX exists"
+            elicitation.url.is_some(),
+            "url elicitation should be advertised with the completion UX"
         );
     }
 
@@ -10489,6 +10772,355 @@ mod tests {
             !waiters.lock().unwrap().contains_key(&request_id),
             "waiter should be removed after cancellation"
         );
+    }
+
+    #[test]
+    fn acp_url_elicitation_emits_url_request() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let waiters = Arc::clone(&client.url_elicitation_waiters);
+        let request = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new("session-1").tool_call_id("tool-1"),
+                "elicitation-1",
+                "https://example.com/auth",
+            ),
+            "Open this page",
+        );
+
+        let handle = thread::spawn(move || run_client_future(client.create_elicitation(request)));
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("url elicitation event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_URL_ELICITATION_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.pointer("/title").and_then(Value::as_str),
+            Some("Open this page")
+        );
+        assert_eq!(
+            payload.pointer("/url").and_then(Value::as_str),
+            Some("https://example.com/auth")
+        );
+        assert_eq!(
+            payload.pointer("/elicitation_id").and_then(Value::as_str),
+            Some("elicitation-1")
+        );
+        assert_eq!(
+            payload.pointer("/tool_call_id").and_then(Value::as_str),
+            Some("tool-1")
+        );
+        assert_eq!(
+            payload.pointer("/status").and_then(Value::as_str),
+            Some("pending")
+        );
+
+        let request_id = payload
+            .pointer("/request_id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_string();
+        assert!(
+            waiters.lock().unwrap().contains_key(&request_id),
+            "url waiter should be registered"
+        );
+        cancel_url_elicitation_waiters_matching(&waiters, |waiter| {
+            waiter.session_id == "session-1"
+        });
+        let response = handle.join().unwrap().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+    }
+
+    #[test]
+    fn acp_url_elicitation_rejects_unsafe_urls_without_event() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let request = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new("session-1"),
+                "elicitation-unsafe",
+                "file:///tmp/secret",
+            ),
+            "Open this page",
+        );
+
+        let response = run_client_future(client.create_elicitation(request)).unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(
+            event_rx.recv_timeout(StdDuration::from_millis(50)).is_err(),
+            "unsafe URL should not be emitted"
+        );
+    }
+
+    #[test]
+    fn safe_http_url_normalizes_and_requires_http_host() {
+        assert_eq!(
+            safe_http_url("  https://example.com/auth  ").as_deref(),
+            Some("https://example.com/auth")
+        );
+        assert_eq!(safe_http_url("http://"), None);
+        assert_eq!(safe_http_url("javascript:alert(1)"), None);
+        assert_eq!(safe_http_url("https://example.com/bad path"), None);
+    }
+
+    #[test]
+    fn respond_url_elicitation_resolves_waiter_with_accept() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        ai.respond_url_elicitation(&json!({
+            "input": {
+                "session_id": "session-1",
+                "request_id": "url-1",
+                "action": "complete"
+            }
+        }))
+        .unwrap();
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(ai.url_elicitation_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_url_elicitation_response_does_not_consume_waiter() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, _response_rx) = oneshot::channel();
+        ai.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        let action_error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-1",
+                    "request_id": "url-1",
+                    "action": "bogus"
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            action_error,
+            "Unsupported URL elicitation action: bogus"
+        );
+        assert!(ai
+            .url_elicitation_waiters
+            .lock()
+            .unwrap()
+            .contains_key("url-1"));
+
+        let session_error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-2",
+                    "request_id": "url-1",
+                    "action": "complete"
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            session_error,
+            "AI URL elicitation request url-1 belongs to a different session."
+        );
+        assert!(ai
+            .url_elicitation_waiters
+            .lock()
+            .unwrap()
+            .contains_key("url-1"));
+    }
+
+    #[test]
+    fn respond_url_elicitation_reports_runtime_completed_request() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        ai.completed_url_elicitations
+            .lock()
+            .unwrap()
+            .push_back("url-1".to_string());
+
+        let error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-1",
+                    "request_id": "url-1",
+                    "action": "complete"
+                }
+            }))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "AI URL elicitation request already completed by runtime: url-1"
+        );
+    }
+
+    #[test]
+    fn completed_url_elicitation_ids_are_pruned_fifo() {
+        let completed = Arc::new(Mutex::new(VecDeque::new()));
+        for index in 0..=MAX_COMPLETED_URL_ELICITATION_IDS {
+            remember_completed_url_elicitation(&completed, format!("url-{index}"));
+        }
+
+        let completed = completed.lock().unwrap();
+        assert_eq!(completed.len(), MAX_COMPLETED_URL_ELICITATION_IDS);
+        assert!(!completed.contains(&"url-0".to_string()));
+        assert_eq!(completed.front().map(String::as_str), Some("url-1"));
+        let newest_request_id = format!("url-{MAX_COMPLETED_URL_ELICITATION_IDS}");
+        assert_eq!(
+            completed.back().map(String::as_str),
+            Some(newest_request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn complete_elicitation_notification_marks_url_waiter_complete() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let (response_tx, response_rx) = oneshot::channel();
+        client.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        run_client_future(
+            client.complete_elicitation(CompleteElicitationNotification::new("elicitation-1")),
+        )
+        .unwrap();
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(client
+            .completed_url_elicitations
+            .lock()
+            .unwrap()
+            .contains(&"url-1".to_string()));
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("completion event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_URL_ELICITATION_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/request_id").and_then(Value::as_str),
+            Some("url-1")
+        );
+        assert_eq!(
+            payload.pointer("/status").and_then(Value::as_str),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn cancel_url_elicitation_waiters_for_session_sends_cancel() {
+        let waiters = Arc::new(Mutex::new(HashMap::new()));
+        let (response_tx, response_rx) = oneshot::channel();
+        waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        cancel_url_elicitation_waiters_matching(&waiters, |waiter| {
+            waiter.session_id == "session-1"
+        });
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(waiters.lock().unwrap().is_empty());
     }
 
     #[test]

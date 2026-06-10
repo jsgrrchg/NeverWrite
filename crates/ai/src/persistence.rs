@@ -46,6 +46,12 @@ pub struct PersistedMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input_questions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_elicitation_request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_elicitation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_elicitation_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_entries: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_detail: Option<String>,
@@ -271,6 +277,7 @@ fn derive_preview(messages: &[PersistedMessage]) -> Option<String> {
             "plan" => format!("Plan: {content}"),
             "permission" => format!("Permission: {content}"),
             "user_input_request" => format!("Input: {content}"),
+            "url_elicitation_request" => format!("URL request: {content}"),
             "error" => format!("Error: {content}"),
             _ => content,
         };
@@ -1705,6 +1712,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
@@ -1723,6 +1733,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
@@ -2180,6 +2193,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
@@ -2198,6 +2214,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: Some("Do the thing".to_string()),
                     tool_action: None,
@@ -2405,6 +2424,9 @@ mod tests {
             review_diffs: None,
             user_input_request_id: None,
             user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
@@ -2451,6 +2473,9 @@ mod tests {
             ])),
             user_input_request_id: None,
             user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
@@ -2479,6 +2504,9 @@ mod tests {
                     "is_secret": false
                 }
             ])),
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
@@ -2497,6 +2525,9 @@ mod tests {
             review_diffs: None,
             user_input_request_id: None,
             user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: Some(serde_json::json!([
                 {
                     "content": "Confirm restore",

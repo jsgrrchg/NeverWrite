@@ -61,6 +61,8 @@ function getMessageKindLabel(message: AIChatMessage) {
             return "Permission";
         case "user_input_request":
             return "Input request";
+        case "url_elicitation_request":
+            return "URL request";
         case "image":
             return "Image";
         case "error":
