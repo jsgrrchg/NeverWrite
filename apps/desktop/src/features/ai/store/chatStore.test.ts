@@ -11165,6 +11165,191 @@ describe("chatStore", () => {
         });
     });
 
+    it("keeps interaction-only activity out of the edited files buffer and still resolves review hunks", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-read-no-diff",
+            title: "Read file",
+            kind: "read",
+            status: "completed",
+            target: "/vault/notes/context.md",
+            summary: "Read context.md",
+        });
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "permission-no-diff",
+            tool_call_id: "tool-permission-no-diff",
+            title: "Run command",
+            target: "npm test",
+            options: [
+                {
+                    option_id: "allow_once",
+                    name: "Allow once",
+                    kind: "allow_once",
+                },
+            ],
+            diffs: [],
+        });
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "ask-no-diff",
+            title: "Need a choice",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which scope should I use?",
+                    is_other: false,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Use the narrow scope.",
+                        },
+                    ],
+                },
+            ],
+        });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-no-diff",
+            elicitation_id: "elicitation-no-diff",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accept-hunk",
+            title: "Edit accept.md",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/notes/accept.md",
+            summary: "Edited accept.md",
+            diffs: [
+                {
+                    path: "/vault/notes/accept.md",
+                    kind: "update",
+                    old_text: "alpha\nbeta\n",
+                    new_text: "alpha\nBETA\n",
+                },
+            ],
+        });
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-reject-hunk",
+            title: "Edit reject.md",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/notes/reject.md",
+            summary: "Edited reject.md",
+            diffs: [
+                {
+                    path: "/vault/notes/reject.md",
+                    kind: "update",
+                    old_text: "one\ntwo\n",
+                    new_text: "one\nTWO\n",
+                },
+            ],
+        });
+
+        let entries = getVisibleBuffer(activeSessionId);
+        expect(entries.map((entry) => entry.path).sort()).toEqual([
+            "/vault/notes/accept.md",
+            "/vault/notes/reject.md",
+        ]);
+
+        const hashByPath = new Map(
+            entries.map((entry) => [entry.path, hashTextContent(entry.currentText)]),
+        );
+        const restoredFiles: unknown[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String((args as { path?: unknown }).path)
+                        : "";
+                const matchingEntry = entries.find(
+                    (entry) =>
+                        entry.path === path ||
+                        entry.path.endsWith(`/${path.replace(/^\/+/, "")}`),
+                );
+                return matchingEntry
+                    ? hashByPath.get(matchingEntry.path)
+                    : hashTextContent("");
+            }
+
+            if (command === "ai_restore_text_file") {
+                restoredFiles.push(args);
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const acceptEntry = entries.find((entry) =>
+            entry.path.endsWith("accept.md"),
+        )!;
+        const acceptProjection = buildReviewProjection(acceptEntry);
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                acceptEntry.identityKey,
+                "accepted",
+                acceptEntry.version,
+                [acceptProjection.hunks[0]!.id],
+            );
+
+        entries = getVisibleBuffer(activeSessionId);
+        expect(entries.map((entry) => entry.path)).toEqual([
+            "/vault/notes/reject.md",
+        ]);
+
+        const rejectEntry = entries[0]!;
+        const rejectProjection = buildReviewProjection(rejectEntry);
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                rejectEntry.identityKey,
+                "rejected",
+                rejectEntry.version,
+                [rejectProjection.hunks[0]!.id],
+            );
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(restoredFiles).toContainEqual({
+            vaultPath: "/vault",
+            path: "notes/reject.md",
+            previousPath: null,
+            content: "one\ntwo\n",
+        });
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(
+            session.messages.filter((message) =>
+                ["permission", "user_input_request", "url_elicitation_request"].includes(
+                    message.kind,
+                ),
+            ),
+        ).toHaveLength(3);
+    });
+
     it("resumes the active persisted history into a live ACP session", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
