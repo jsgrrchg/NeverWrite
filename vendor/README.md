@@ -22,6 +22,9 @@ What is currently required by the app/build pipeline:
   - used by the desktop build to validate and stage the embedded Claude runtime
 - `Claude-agent-acp-upstream/dist/`
   - compiled runtime files that are copied into the desktop bundle
+- `Claude-agent-acp-upstream/node_modules/`
+  - production dependencies are installed by the Electron sidecar staging step
+    and copied into the packaged embedded Claude runtime
 
 What is vendored mainly for auditability and maintenance, not direct runtime use:
 
@@ -87,6 +90,14 @@ The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does
 not track generated output in git.
+
+Electron release packaging treats the staged Claude runtime as incomplete unless
+the packaged resources include:
+
+- `native-backend/embedded/claude-agent-acp/dist/index.js`
+- `native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
 The only expected local non-source delta is the vendor `.gitignore`: NeverWrite
 keeps `dist/` visible to Git so newly emitted runtime files are not missed.

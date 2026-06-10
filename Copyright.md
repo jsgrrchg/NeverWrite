@@ -128,7 +128,16 @@ dictionary licenses.
 | @agentclientprotocol/claude-agent-acp   | 0.44.0  | Apache-2.0                      |
 | @agentclientprotocol/sdk                | 0.25.0  | Apache-2.0                      |
 | @anthropic-ai/claude-agent-sdk          | 0.3.170 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.170 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 0.103.0 | MIT                             |
+| @modelcontextprotocol/sdk               | 1.29.0  | MIT                             |
 | zod                                     | 4.4.3   | MIT                             |
+
+The packaged desktop app stages the Claude ACP adapter as vendored JavaScript
+under `native-backend/embedded/claude-agent-acp/` with production dependencies
+installed from the vendored lockfile. Platform-specific
+`@anthropic-ai/claude-agent-sdk-*` packages are included only for the target
+being packaged.
 
 ---
 

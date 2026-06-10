@@ -291,6 +291,17 @@ Runtime staging is handled by
 - Installs required Claude production dependencies and target-specific optional packages.
 - Copies resources to `apps/desktop/out/native-backend/`.
 
+The Electron builder config stages `apps/desktop/out/native-backend/` into the
+packaged `native-backend/` resources directory and runs
+[`verify-electron-bundle.mjs`](../apps/desktop/scripts/verify-electron-bundle.mjs)
+as an `afterPack` hook. That verification treats these Claude runtime files as
+release-critical resources:
+
+- `native-backend/embedded/claude-agent-acp/dist/index.js`
+- `native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
+
 The release workflow
 [`release-desktop.yml`](../.github/workflows/release-desktop.yml) builds the
 target-specific Codex sidecar, downloads embedded Node for the target, exports
