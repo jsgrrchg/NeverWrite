@@ -72,7 +72,7 @@ describe("authorization", () => {
             _meta: { gateway: { baseUrl: "https://gateway.example", headers: { "x-api-key": "test" } } },
         });
         await agent.newSession({
-            cwd: "testRoot",
+            cwd: process.cwd(),
             mcpServers: [],
             _meta: {
                 claudeCode: {
@@ -110,7 +110,7 @@ describe("authorization", () => {
             },
         });
         await agent.newSession({
-            cwd: "testRoot",
+            cwd: process.cwd(),
             mcpServers: [],
         });
         expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({

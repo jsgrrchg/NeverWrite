@@ -274,6 +274,22 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
                     : [],
             };
         }
+        case "AskUserQuestion": {
+            const input = toolUse.input;
+            const questions = Array.isArray(input?.questions) ? input.questions : [];
+            return {
+                title: questions.length === 1 && questions[0]?.question
+                    ? questions[0].question
+                    : "Asking for your input",
+                kind: "other",
+                content: questions
+                    .filter((q) => typeof q?.question === "string")
+                    .map((q) => ({
+                    type: "content",
+                    content: { type: "text", text: q.question },
+                })),
+            };
+        }
         case "Other": {
             const input = toolUse.input;
             let output;

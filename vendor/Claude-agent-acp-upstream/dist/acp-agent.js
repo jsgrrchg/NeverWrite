@@ -1,9 +1,11 @@
 import { AgentSideConnection, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
 import { deleteSession, getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import packageJson from "../package.json" with { type: "json" };
+import { applyAskElicitationResponse, askUserQuestionsToCreateRequest, createElicitationResponseToElicitResult, extractAskUserQuestions, mcpElicitationToCreateRequest, } from "./elicitation.js";
 import { SettingsManager } from "./settings.js";
 import { applyTaskCreate, applyTaskUpdate, createPostToolUseHook, createTaskHook, parseTaskCreateOutput, planEntries, registerHookCallback, taskStateToPlanEntries, toolInfoFromToolUse, toolUpdateFromDiffToolResponse, toolUpdateFromToolResult, } from "./tools.js";
 import { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
@@ -499,6 +501,21 @@ export class ClaudeAcpAgent {
         // `parent_tool_use_id === null` (subagent work is folded into tool-result
         // messages, never surfaced as partial streams).
         let currentStreamMessageId;
+        // Per-message-id record of which assistant content actually streamed live via
+        // `stream_event` deltas, split by block type. The `assistant` case below
+        // normally drops `text`/`thinking` blocks on the assumption they already
+        // reached the client as `agent_message_chunk`/`agent_thought_chunk`. That
+        // breaks behind Anthropic-protocol gateways that return a turn as a single
+        // non-streamed block (common with OpenAI-compatible proxies): no
+        // `content_block_delta` fires, so the assembled block is the only copy the
+        // client will ever see. We keep the filter per (id, block type) for content
+        // that did stream, and fall back to forwarding what did not. Split by type so
+        // a gateway that streams text but not thinking (or vice versa) doesn't lose
+        // the un-streamed block. Only top-level (`parent_tool_use_id === null`)
+        // streams are recorded — subagent text is never streamed and must stay
+        // filtered, as it is internal to the tool call.
+        const streamedTextIds = new Set();
+        const streamedThinkingIds = new Set();
         const userMessage = promptToClaude(params);
         const promptUuid = randomUUID();
         userMessage.uuid = promptUuid;
@@ -755,11 +772,28 @@ export class ClaudeAcpAgent {
                             case "task_notification":
                             case "task_progress":
                             case "task_updated":
-                            case "elicitation_complete":
+                                break;
+                            case "elicitation_complete": {
+                                // A url-mode MCP elicitation finished server-side. Let the client
+                                // dismiss any UI it opened for it. Only meaningful when the
+                                // client supports url elicitation; ignore failures otherwise.
+                                if (this.clientCapabilities?.elicitation?.url) {
+                                    try {
+                                        await this.client.unstable_completeElicitation({
+                                            elicitationId: message.elicitation_id,
+                                        });
+                                    }
+                                    catch (error) {
+                                        this.logger.error(`Failed to complete elicitation: ${error}`);
+                                    }
+                                }
+                                break;
+                            }
                             case "plugin_install":
                             case "notification":
                             case "api_retry":
                             case "thinking_tokens":
+                            case "model_refusal_fallback":
                                 // Todo: process via status api: https://docs.claude.com/en/docs/claude-code/hooks#hook-output
                                 break;
                             default:
@@ -893,6 +927,21 @@ export class ClaudeAcpAgent {
                         // it) can all be tagged with the same, replay-stable id.
                         if (message.event.type === "message_start") {
                             currentStreamMessageId = message.event.message.id || undefined;
+                        }
+                        // Record that this top-level message id actually streamed text/
+                        // thinking, so the `assistant` case below knows its assembled blocks
+                        // are duplicates (filter them) rather than the only copy (forward
+                        // them). Gated on `parent_tool_use_id === null` so a subagent stream
+                        // can't attribute its content to the top-level message id.
+                        if (currentStreamMessageId &&
+                            message.parent_tool_use_id === null &&
+                            message.event.type === "content_block_delta") {
+                            if (message.event.delta.type === "text_delta") {
+                                streamedTextIds.add(currentStreamMessageId);
+                            }
+                            else if (message.event.delta.type === "thinking_delta") {
+                                streamedThinkingIds.add(currentStreamMessageId);
+                            }
                         }
                         if (message.parent_tool_use_id === null &&
                             (message.event.type === "message_start" || message.event.type === "message_delta")) {
@@ -1049,10 +1098,46 @@ export class ClaudeAcpAgent {
                             message.message.content[0].text.includes("Please run /login")) {
                             throw RequestError.authRequired();
                         }
-                        const content = message.type === "assistant"
-                            ? // Handled by stream events above
-                                message.message.content.filter((item) => !["text", "thinking"].includes(item.type))
-                            : message.message.content;
+                        let content;
+                        if (message.type === "assistant" && message.parent_tool_use_id === null) {
+                            // Top-level assistant message: drop text/thinking blocks already
+                            // streamed live as chunks, and forward (as a fallback) any that were
+                            // not, so non-streaming gateways still deliver the final answer.
+                            const id = messageIdForGrouping(message);
+                            content = message.message.content.filter((item) => {
+                                // Non-text blocks (tool_use, etc.) always pass through; their own
+                                // dedupe (`toolUseCache`) collapses the streamed/assembled pair.
+                                if (item.type !== "text" && item.type !== "thinking") {
+                                    return true;
+                                }
+                                // Already delivered live as a chunk of this exact type — drop the
+                                // duplicate. Checked per type so streaming one (e.g. text) doesn't
+                                // suppress an un-streamed block of the other (e.g. thinking).
+                                const streamedLive = id !== undefined &&
+                                    (item.type === "text" ? streamedTextIds : streamedThinkingIds).has(id);
+                                if (streamedLive) {
+                                    return false;
+                                }
+                                // Empty assembled blocks carry nothing (some gateways emit an empty
+                                // `thinking` block before the real text) — don't forward stray
+                                // empty chunks.
+                                const text = item.type === "text" ? item.text : item.thinking;
+                                if (text.length === 0) {
+                                    return false;
+                                }
+                                return true;
+                            });
+                        }
+                        else if (message.type === "assistant") {
+                            // Subagent assistant message (`parent_tool_use_id !== null`). It is
+                            // never streamed live and its text/thinking is internal to the tool
+                            // call — keep dropping it so subagent prose doesn't leak into the
+                            // top-level feed.
+                            content = message.message.content.filter((item) => item.type !== "text" && item.type !== "thinking");
+                        }
+                        else {
+                            content = message.message.content;
+                        }
                         for (const notification of toAcpNotifications(content, message.message.role, params.sessionId, session.toolUseCache, this.client, this.logger, {
                             clientCapabilities: this.clientCapabilities,
                             parentToolUseId: message.parent_tool_use_id,
@@ -1253,7 +1338,7 @@ export class ClaudeAcpAgent {
         await this.teardownSession(params.sessionId);
         return {};
     }
-    async unstable_deleteSession(params) {
+    async deleteSession(params) {
         // Tear down any active in-memory state first so the on-disk file isn't
         // recreated by an outstanding query writing to it.
         if (this.sessions[params.sessionId]) {
@@ -1415,6 +1500,13 @@ export class ClaudeAcpAgent {
                     message: "Session not found",
                 };
             }
+            // AskUserQuestion is surfaced to us as a normal permission check (the SDK
+            // routes it through canUseTool whenever a callback is registered, rather
+            // than the interactive dialog). Present it as an ACP form elicitation and
+            // feed the answers back as updatedInput for the tool's own call() to read.
+            if (toolName === "AskUserQuestion" && this.clientCapabilities?.elicitation?.form) {
+                return this.handleAskUserQuestion(sessionId, toolInput, toolUseID, signal);
+            }
             if (toolName === "ExitPlanMode") {
                 const optionsAll = [
                     { kind: "allow_always", name: 'Yes, and use "auto" mode', optionId: "auto" },
@@ -1539,6 +1631,62 @@ export class ClaudeAcpAgent {
                 };
             }
         };
+    }
+    /**
+     * Handle elicitation requests that originate from MCP servers by forwarding
+     * them to the client over ACP. Modes the client did not advertise (or
+     * requests we can't represent) are declined.
+     */
+    handleMcpElicitation(sessionId, support) {
+        return async (request, { signal }) => {
+            const isUrl = request.mode === "url";
+            if ((isUrl && !support.url) || (!isUrl && !support.form)) {
+                return { action: "decline" };
+            }
+            const createRequest = mcpElicitationToCreateRequest(request, sessionId);
+            if (!createRequest) {
+                return { action: "decline" };
+            }
+            try {
+                const response = await this.client.unstable_createElicitation(createRequest);
+                if (signal.aborted) {
+                    return { action: "cancel" };
+                }
+                return createElicitationResponseToElicitResult(response);
+            }
+            catch (error) {
+                this.logger.error(`Failed to forward MCP elicitation: ${error}`);
+                return { action: "decline" };
+            }
+        };
+    }
+    /**
+     * Present the built-in AskUserQuestion tool's questions as an ACP form
+     * elicitation and return the answers as the tool's `updatedInput`. Called from
+     * `canUseTool` since that is where the SDK routes the tool's permission check.
+     */
+    async handleAskUserQuestion(sessionId, toolInput, toolUseID, signal) {
+        const questions = extractAskUserQuestions(toolInput);
+        if (!questions) {
+            return { behavior: "deny", message: "AskUserQuestion called with no valid questions." };
+        }
+        const createRequest = askUserQuestionsToCreateRequest(questions, sessionId, toolUseID);
+        let response;
+        try {
+            response = await this.client.unstable_createElicitation(createRequest);
+        }
+        catch (error) {
+            this.logger.error(`Failed to present AskUserQuestion elicitation: ${error}`);
+            return { behavior: "deny", message: "Could not present the question to the user." };
+        }
+        if (signal.aborted) {
+            throw new Error("Tool use aborted");
+        }
+        const outcome = applyAskElicitationResponse(response, toolInput, questions);
+        if (outcome.action === "cancel") {
+            throw new Error("Tool use aborted");
+        }
+        return { behavior: "allow", updatedInput: outcome.updatedInput };
     }
     async sendAvailableCommandsUpdate(sessionId) {
         const session = this.sessions[sessionId];
@@ -1676,7 +1824,34 @@ export class ClaudeAcpAgent {
             configOptions: response.configOptions,
         };
     }
+    /**
+     * Ensures the requested `cwd` is an absolute path that points at an existing
+     * directory before we create a session. Throws an `invalidParams` error with
+     * an actionable message so clients (e.g. Zed) can surface it to the user
+     * instead of failing later with an opaque SDK error.
+     */
+    async validateCwd(cwd) {
+        if (!path.isAbsolute(cwd)) {
+            throw RequestError.invalidParams({ cwd }, `\`cwd\` must be an absolute path, but received: ${cwd}`);
+        }
+        let stats;
+        try {
+            stats = await fs.stat(cwd);
+        }
+        catch {
+            throw RequestError.invalidParams({ cwd }, `\`cwd\` does not exist on the machine running the agent: ${cwd}`);
+        }
+        if (!stats.isDirectory()) {
+            throw RequestError.invalidParams({ cwd }, `\`cwd\` is not a directory: ${cwd}`);
+        }
+    }
     async createSession(params, creationOpts = {}) {
+        // Validate `cwd` up front. The ACP spec requires an absolute path, and the
+        // directory must actually exist on the machine running the agent. Without
+        // this check a session is created against a missing directory and the
+        // failure only surfaces later as a confusing "native binary failed to
+        // launch" error from the SDK (see issue #749).
+        await this.validateCwd(params.cwd);
         // We want to create a new session id unless it is resume,
         // but not resume + forkSession.
         let sessionId;
@@ -1746,8 +1921,17 @@ export class ClaudeAcpAgent {
         const thinking = resolveThinkingConfig(process.env.MAX_THINKING_TOKENS, this.logger);
         // Parse model configuration from environment (e.g. Bedrock model overrides)
         const modelConfig = parseModelConfig(process.env.CLAUDE_MODEL_CONFIG);
-        // Disable this for now, not a great way to expose this over ACP at the moment (in progress work so we can revisit)
-        const disallowedTools = ["AskUserQuestion"];
+        // Elicitation modes the connected client advertised. We only forward
+        // elicitations (and only re-enable AskUserQuestion) for modes the client
+        // can actually render.
+        const elicitationSupport = {
+            form: !!this.clientCapabilities?.elicitation?.form,
+            url: !!this.clientCapabilities?.elicitation?.url,
+        };
+        // AskUserQuestion surfaces as a `permission_ask_user_question` dialog that
+        // we render as a form elicitation. Without form-elicitation support there
+        // is no way to present it over ACP, so keep it disabled in that case.
+        const disallowedTools = elicitationSupport.form ? [] : ["AskUserQuestion"];
         // Resolve which built-in tools to expose.
         // Explicit tools array from _meta.claudeCode.options takes precedence.
         // disableBuiltInTools is a legacy shorthand for tools: [] — kept for
@@ -1791,6 +1975,13 @@ export class ClaudeAcpAgent {
             allowDangerouslySkipPermissions: ALLOW_BYPASS,
             permissionMode,
             canUseTool: this.canUseTool(sessionId),
+            // Forward MCP elicitation requests onto ACP elicitation. Only attached
+            // when the client advertised support, so non-supporting clients keep the
+            // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
+            // canUseTool, not here.)
+            ...(elicitationSupport.form || elicitationSupport.url
+                ? { onElicitation: this.handleMcpElicitation(sessionId, elicitationSupport) }
+                : {}),
             pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE ?? (await claudeCliPath()),
             extraArgs: {
                 ...userProvidedOptions?.extraArgs,
@@ -2798,6 +2989,7 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
             case "compaction_delta":
             case "advisor_tool_result":
             case "mid_conv_system":
+            case "fallback":
                 break;
             default:
                 unreachable(chunk, logger);

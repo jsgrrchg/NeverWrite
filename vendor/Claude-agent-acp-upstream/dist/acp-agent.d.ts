@@ -227,7 +227,7 @@ export declare class ClaudeAcpAgent implements Agent {
     /** Tear down all active sessions. Called when the ACP connection closes. */
     dispose(): Promise<void>;
     closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse>;
-    unstable_deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse>;
+    deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse>;
     setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse>;
     setSessionConfigOption(params: SetSessionConfigOptionRequest): Promise<SetSessionConfigOptionResponse>;
     private applySessionMode;
@@ -235,10 +235,29 @@ export declare class ClaudeAcpAgent implements Agent {
     readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>;
     writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
     canUseTool(sessionId: string): CanUseTool;
+    /**
+     * Handle elicitation requests that originate from MCP servers by forwarding
+     * them to the client over ACP. Modes the client did not advertise (or
+     * requests we can't represent) are declined.
+     */
+    private handleMcpElicitation;
+    /**
+     * Present the built-in AskUserQuestion tool's questions as an ACP form
+     * elicitation and return the answers as the tool's `updatedInput`. Called from
+     * `canUseTool` since that is where the SDK routes the tool's permission check.
+     */
+    private handleAskUserQuestion;
     private sendAvailableCommandsUpdate;
     private updateConfigOption;
     private applyConfigOptionValue;
     private getOrCreateSession;
+    /**
+     * Ensures the requested `cwd` is an absolute path that points at an existing
+     * directory before we create a session. Throws an `invalidParams` error with
+     * an actionable message so clients (e.g. Zed) can surface it to the user
+     * instead of failing later with an opaque SDK error.
+     */
+    private validateCwd;
     private createSession;
 }
 export declare function promptToClaude(prompt: PromptRequest): SDKUserMessage;

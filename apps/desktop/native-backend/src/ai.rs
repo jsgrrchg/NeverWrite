@@ -88,6 +88,14 @@ const CODEX_ACP_TURN_STARTED_EVENT_TYPE: &str = "turn_started";
 const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
 const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
 const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
+
+fn neverwrite_acp_client_capabilities(_runtime_id: &str) -> ClientCapabilities {
+    // Capability matrix for this integration stage:
+    // - fs: supported and advertised.
+    // - elicitation.form: in scope, but not advertised until elicitation/create has a handler.
+    // - elicitation.url: not advertised until NeverWrite has explicit URL completion UX.
+    ClientCapabilities::new().fs(FileSystemCapabilities::new())
+}
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE: &str = "resume_end";
@@ -3333,9 +3341,9 @@ async fn run_acp_auth_inner(
                     connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
-                                .client_capabilities(
-                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
-                                )
+                                .client_capabilities(neverwrite_acp_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
                                 .client_info(
                                     Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
                                         .title("NeverWrite"),
@@ -3487,9 +3495,9 @@ async fn run_acp_actor_inner(
                     let initialize_response = connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
-                                .client_capabilities(
-                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
-                                )
+                                .client_capabilities(neverwrite_acp_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
                                 .client_info(
                                     Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
                                         .title("NeverWrite"),
