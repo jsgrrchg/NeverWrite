@@ -92,12 +92,12 @@ The only expected local non-source delta is the vendor `.gitignore`: NeverWrite
 keeps `dist/` visible to Git so newly emitted runtime files are not missed.
 
 NeverWrite advertises ACP client capabilities through the native backend, not by
-patching the vendored Claude runtime. The initial capability matrix for the
+patching the vendored Claude runtime. The active capability matrix for the
 Claude 0.44 compatibility work is:
 
 - `fs`: advertised
-- `elicitation.form`: in scope, but activation is blocked until the backend can
-  answer `elicitation/create`
+- `elicitation.form`: advertised; the native backend bridges form requests into
+  NeverWrite's user-input UI
 - `elicitation.url`: not advertised unless a complete URL completion UX is added
 
 ## Updating Vendored Runtimes

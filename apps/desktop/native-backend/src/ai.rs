@@ -12,9 +12,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use agent_client_protocol::schema::{
     AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
     CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, CreateElicitationRequest,
-    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationContentValue,
-    ElicitationMode, ElicitationPropertySchema, ElicitationScope, FileSystemCapabilities,
-    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
+    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
+    ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
+    ElicitationPropertySchema, ElicitationScope, FileSystemCapabilities, Implementation,
+    InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
     MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
     PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
@@ -94,9 +95,11 @@ const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
 fn neverwrite_acp_client_capabilities(_runtime_id: &str) -> ClientCapabilities {
     // Capability matrix for this integration stage:
     // - fs: supported and advertised.
-    // - elicitation.form: in scope, but not advertised until elicitation/create has a handler.
+    // - elicitation.form: supported by NeverWrite's user-input bridge.
     // - elicitation.url: not advertised until NeverWrite has explicit URL completion UX.
-    ClientCapabilities::new().fs(FileSystemCapabilities::new())
+    ClientCapabilities::new()
+        .fs(FileSystemCapabilities::new())
+        .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
 }
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
@@ -7859,6 +7862,23 @@ mod tests {
         let normalized = normalize_additional_roots(Some(vec![a.clone(), b.clone()]));
         assert!(normalized.kept.is_empty());
         assert_eq!(normalized.discarded.len(), 2);
+    }
+
+    #[test]
+    fn client_capabilities_advertise_form_elicitation_without_url() {
+        let capabilities = neverwrite_acp_client_capabilities(CLAUDE_RUNTIME_ID);
+        let elicitation = capabilities
+            .elicitation
+            .expect("elicitation capabilities should be advertised");
+
+        assert!(
+            elicitation.form.is_some(),
+            "form elicitation should be advertised"
+        );
+        assert!(
+            elicitation.url.is_none(),
+            "url elicitation should stay disabled until URL completion UX exists"
+        );
     }
 
     #[test]
