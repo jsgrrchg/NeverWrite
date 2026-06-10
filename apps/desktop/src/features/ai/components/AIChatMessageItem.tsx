@@ -17,6 +17,7 @@ import type {
     AIChatSession,
     AIFileDiff,
     AIPermissionOption,
+    AIUserInputAction,
 } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
@@ -340,6 +341,7 @@ interface AIChatMessageItemProps {
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
+        action?: AIUserInputAction,
     ) => void;
     onDismissMessage?: (messageId: string) => void;
 }
@@ -2953,13 +2955,16 @@ function UserInputRequestMessage({
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
+        action?: AIUserInputAction,
     ) => void;
 }) {
     const status = String(message.meta?.status ?? "pending");
     const questions = message.userInputQuestions ?? [];
-    const isPending = status === "pending";
+    const isPending = status === "pending" || status === "error";
     const isResponding = status === "responding";
     const isResolved = status === "resolved";
+    const isError = status === "error";
+    const answered = message.meta?.answered !== false;
     const { rowState, updateRow } = useChatRowUiEntry(sessionId, message.id);
     const selectedOptions = rowState?.userInputSelectedOptions ?? {};
     const textAnswers = rowState?.userInputTextAnswers ?? {};
@@ -2968,7 +2973,7 @@ function UserInputRequestMessage({
     const submitAnswers = (cancelled = false) => {
         if (!message.userInputRequestId) return;
         if (cancelled) {
-            onUserInputResponse?.(message.userInputRequestId, {});
+            onUserInputResponse?.(message.userInputRequestId, {}, "cancel");
             return;
         }
 
@@ -2991,7 +2996,7 @@ function UserInputRequestMessage({
             {},
         );
 
-        onUserInputResponse?.(message.userInputRequestId, answers);
+        onUserInputResponse?.(message.userInputRequestId, answers, "accept");
     };
 
     return (
@@ -3216,7 +3221,7 @@ function UserInputRequestMessage({
                 </div>
             ) : null}
 
-            {(isResponding || isResolved) && (
+            {(isResponding || isResolved || isError) && (
                 <div
                     className="px-3 py-1.5"
                     style={{
@@ -3227,7 +3232,13 @@ function UserInputRequestMessage({
                         fontSize: "0.79em",
                     }}
                 >
-                    {isResponding ? "Sending input..." : "Input sent."}
+                    {isResponding
+                        ? "Sending input..."
+                        : isError
+                          ? "Input failed. Try again."
+                          : answered
+                            ? "Input sent."
+                            : "Input skipped."}
                 </div>
             )}
         </div>

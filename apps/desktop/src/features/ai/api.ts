@@ -22,6 +22,7 @@ import type {
     AIPlanUpdatePayload,
     AIStatusEventPayload,
     AITokenUsagePayload,
+    AIUserInputAction,
     AIToolActivityPayload,
     AIUserInputRequestPayload,
     AIRuntimeDescriptor,
@@ -606,6 +607,7 @@ export async function aiRespondUserInput(
     sessionId: string,
     requestId: string,
     answers: Record<string, string[]>,
+    action: AIUserInputAction = "accept",
 ) {
     assertRuntimeSessionId(sessionId, "respond to a user input request");
     const session = await invoke<AIBackendSessionPayload>(
@@ -615,6 +617,7 @@ export async function aiRespondUserInput(
                 session_id: sessionId,
                 request_id: requestId,
                 answers,
+                action,
             },
         },
     );

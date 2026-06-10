@@ -127,6 +127,7 @@ import {
     type AITokenUsage,
     type AITokenUsagePayload,
     type AIToolActivityPayload,
+    type AIUserInputAction,
     type AIUserInputRequestPayload,
     type AIRuntimeConnectionPayload,
     type AIRuntimeConnectionState,
@@ -1356,6 +1357,7 @@ interface ChatStore {
         requestId: string,
         answers: Record<string, string[]>,
         sessionId?: string,
+        action?: AIUserInputAction,
     ) => Promise<void>;
     rejectEditedFile: (sessionId: string, identityKey: string) => Promise<void>;
     rejectAllEditedFiles: (sessionId: string) => Promise<void>;
@@ -10416,11 +10418,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        respondUserInput: async (requestId, answers, sessionId) => {
+        respondUserInput: async (
+            requestId,
+            answers,
+            sessionId,
+            action = "accept",
+        ) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             const session = get().sessionsById[resolvedSessionId];
             if (!session) return;
+            const answered = action === "accept";
 
             if (
                 !runtimeSupportsCapability(
@@ -10437,7 +10445,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionsById: {
                             ...state.sessionsById,
                             [resolvedSessionId]: appendSessionError(
-                                currentSession,
+                                updateUserInputMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        answered: false,
+                                        action,
+                                    },
+                                ),
                                 "This runtime does not support interactive user input requests in this build.",
                             ),
                         },
@@ -10461,7 +10477,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             requestId,
                             {
                                 status: "responding",
-                                answered: true,
+                                answered,
+                                action,
                             },
                         ),
                     },
@@ -10473,6 +10490,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     resolvedSessionId,
                     requestId,
                     answers,
+                    action,
                 );
                 get().upsertSession(session);
                 set((state) => {
@@ -10483,11 +10501,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionsById: {
                             ...state.sessionsById,
                             [resolvedSessionId]: updateUserInputMessageState(
-                                currentSession,
+                                {
+                                    ...currentSession,
+                                    status:
+                                        currentSession.status ===
+                                        "waiting_user_input"
+                                            ? "streaming"
+                                            : currentSession.status,
+                                },
                                 requestId,
                                 {
                                     status: "resolved",
-                                    answered: true,
+                                    answered,
+                                    action,
                                 },
                             ),
                         },
@@ -10512,8 +10538,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 },
                                 requestId,
                                 {
-                                    status: "pending",
+                                    status: "error",
                                     answered: false,
+                                    action,
                                 },
                             ),
                         },

@@ -569,11 +569,12 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             optionId,
                         );
                     }}
-                    onUserInputResponse={(requestId, answers) => {
+                    onUserInputResponse={(requestId, answers, action) => {
                         void chatActions.respondUserInput(
                             requestId,
                             answers,
                             sessionId,
+                            action,
                         );
                     }}
                 />

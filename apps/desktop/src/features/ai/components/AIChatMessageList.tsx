@@ -13,7 +13,11 @@ import {
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
-import type { AIChatMessage, AIChatSessionStatus } from "../types";
+import type {
+    AIChatMessage,
+    AIChatSessionStatus,
+    AIUserInputAction,
+} from "../types";
 import { getChatPillMetrics } from "./chatPillMetrics";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import {
@@ -49,6 +53,7 @@ interface AIChatMessageListProps {
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
+        action?: AIUserInputAction,
     ) => void;
 }
 
@@ -244,6 +249,7 @@ function renderTimelineRow(
         onUserInputResponse?: (
             requestId: string,
             answers: Record<string, string[]>,
+            action?: AIUserInputAction,
         ) => void;
         onDismissMessage?: (messageId: string) => void;
     },

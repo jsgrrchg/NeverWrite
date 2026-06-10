@@ -262,6 +262,8 @@ export interface AIUserInputRequestPayload {
     questions: AIUserInputQuestion[];
 }
 
+export type AIUserInputAction = "accept" | "decline" | "skip" | "cancel";
+
 export interface AIPlanEntry {
     content: string;
     priority: "high" | "medium" | "low" | string;

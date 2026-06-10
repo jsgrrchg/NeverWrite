@@ -10377,10 +10377,44 @@ describe("chatStore", () => {
         });
     });
 
-    it("keeps Claude user input requests deferred instead of calling the backend", async () => {
+    it("sends Claude user input responses to the backend when the runtime supports user input", async () => {
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_user_input") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (
+                              args as {
+                                  input?: {
+                                      session_id?: string;
+                                      request_id?: string;
+                                      answers?: Record<string, string[]>;
+                                      action?: string;
+                                  };
+                              }
+                          ).input
+                        : undefined;
+
+                expect(input).toMatchObject({
+                    session_id: activeSessionId,
+                    request_id: "input-claude-1",
+                    answers: { scope: ["Safe"] },
+                    action: "accept",
+                });
+                return {
+                    ...sessionPayload,
+                    runtime_id: "claude-acp",
+                    status: "streaming" as const,
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
 
         useChatStore.setState((state) => ({
             runtimes: [
@@ -10389,7 +10423,11 @@ describe("chatStore", () => {
                         id: "claude-acp",
                         name: "Claude ACP",
                         description: "Claude runtime",
-                        capabilities: ["attachments", "permissions"],
+                        capabilities: [
+                            "attachments",
+                            "permissions",
+                            "user_input",
+                        ],
                     },
                     models: [],
                     modes: [],
@@ -10431,17 +10469,134 @@ describe("chatStore", () => {
             .respondUserInput("input-claude-1", { scope: ["Safe"] });
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        expect(session.status).toBe("waiting_user_input");
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "resolved",
+            answered: true,
+            action: "accept",
+        });
         expect(session.messages.at(-1)).toMatchObject({
-            kind: "error",
-            content:
-                "This runtime does not support interactive user input requests in this build.",
+            kind: "user_input_request",
+            userInputRequestId: "input-claude-1",
         });
         expect(
             invokeMock.mock.calls.some(
                 ([command]) => command === "ai_respond_user_input",
             ),
-        ).toBe(false);
+        ).toBe(true);
+    });
+
+    it("marks cancelled user input requests as resolved without answers", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_user_input") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (
+                              args as {
+                                  input?: {
+                                      answers?: Record<string, string[]>;
+                                      action?: string;
+                                  };
+                              }
+                          ).input
+                        : undefined;
+
+                expect(input?.answers).toEqual({});
+                expect(input?.action).toBe("cancel");
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "input-cancel-1",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-cancel-1", {}, activeSessionId, "cancel");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "resolved",
+            answered: false,
+            action: "cancel",
+        });
+    });
+
+    it("marks user input requests as errored when the backend response fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_user_input") {
+                throw new Error("input waiter closed");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "input-fail-1",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-fail-1", { scope: ["Safe"] });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-2)?.meta).toMatchObject({
+            status: "error",
+            answered: false,
+            action: "accept",
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "input waiter closed",
+        });
     });
 
     it("resumes the active persisted history into a live ACP session", async () => {
