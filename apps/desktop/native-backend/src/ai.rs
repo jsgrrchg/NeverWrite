@@ -20,7 +20,7 @@ use agent_client_protocol::schema::{
     NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
     PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, SetSessionModeRequest, ToolCall, ToolCallContent,
     ToolCallStatus, ToolCallUpdate, ToolKind,
@@ -58,8 +58,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::RpcOutput;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str =
-    "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
+const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -131,7 +130,14 @@ struct RuntimeDefinition {
     default_executable: &'static str,
     bin_env_var: &'static str,
     acp_args: &'static [&'static str],
+    acp_protocol: AcpProtocolFlavor,
     supports_native_resume: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpProtocolFlavor {
+    Current14,
+    Legacy12,
 }
 
 const NO_ACP_ARGS: &[&str] = &[];
@@ -147,6 +153,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "codex",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: true,
     },
     RuntimeDefinition {
@@ -156,6 +163,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -165,6 +173,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "gemini",
         bin_env_var: "NEVERWRITE_GEMINI_ACP_BIN",
         acp_args: GEMINI_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -174,6 +183,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "grok",
         bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
         acp_args: GROK_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -183,6 +193,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "kilo",
         bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -192,6 +203,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "opencode",
         bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
 ];
@@ -963,6 +975,11 @@ enum AcpCommand {
         mode_id: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
+    SetModel {
+        session_id: String,
+        model_id: String,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
     SetConfigOption {
         session_id: String,
         option_id: String,
@@ -984,6 +1001,7 @@ enum AcpCommand {
 enum AcpConfigOptionRemoteCommand {
     SetConfigOption,
     SetMode,
+    SetModel,
     LocalOnly,
 }
 
@@ -1521,7 +1539,17 @@ impl NativeAi {
         let model_config_option_id = self.session_model_config_option_id(&session_id)?;
         let config_options = match (self.session_handle(&session_id)?, model_config_option_id) {
             (Some(handle), Some(option_id)) => {
-                Some(handle.set_config_option(&session_id, &option_id, &model_id)?)
+                match self.session_config_option_remote_command(&session_id, &option_id)? {
+                    AcpConfigOptionRemoteCommand::SetConfigOption => {
+                        Some(handle.set_config_option(&session_id, &option_id, &model_id)?)
+                    }
+                    AcpConfigOptionRemoteCommand::SetModel => {
+                        handle.set_model(&session_id, &model_id)?;
+                        None
+                    }
+                    AcpConfigOptionRemoteCommand::SetMode
+                    | AcpConfigOptionRemoteCommand::LocalOnly => None,
+                }
             }
             _ => None,
         };
@@ -1562,6 +1590,10 @@ impl NativeAi {
             }
             (Some(handle), AcpConfigOptionRemoteCommand::SetMode) => {
                 handle.set_mode(&input.session_id, &input.value)?;
+                None
+            }
+            (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
+                handle.set_model(&input.session_id, &input.value)?;
                 None
             }
             (_, AcpConfigOptionRemoteCommand::LocalOnly) | (None, _) => None,
@@ -2280,6 +2312,14 @@ impl AcpSessionHandle {
         self.request(|response_tx| AcpCommand::SetMode {
             session_id: session_id.to_string(),
             mode_id: mode_id.to_string(),
+            response_tx,
+        })
+    }
+
+    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::SetModel {
+            session_id: session_id.to_string(),
+            model_id: model_id.to_string(),
             response_tx,
         })
     }
@@ -3300,6 +3340,28 @@ impl NativeAcpClient {
         Ok(())
     }
 
+    async fn request_permission_acp12(
+        &self,
+        args: acp12::schema::RequestPermissionRequest,
+    ) -> acp12::Result<acp12::schema::RequestPermissionResponse> {
+        let args = acp12_to_current(args).map_err(acp12_internal_error)?;
+        let response = self
+            .request_permission(args)
+            .await
+            .map_err(current_error_to_acp12)?;
+        current_to_acp12(response).map_err(acp12_internal_error)
+    }
+
+    async fn session_notification_acp12(
+        &self,
+        notification: acp12::schema::SessionNotification,
+    ) -> acp12::Result<()> {
+        let notification = acp12_to_current(notification).map_err(acp12_internal_error)?;
+        self.session_notification(notification)
+            .await
+            .map_err(current_error_to_acp12)
+    }
+
     async fn session_notification(
         &self,
         args: SessionNotification,
@@ -3315,6 +3377,9 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 // User chunks come from the runtime, not the local composer, so they need
                 // their own stream state.
                 let message_id = self
@@ -3334,6 +3399,9 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 self.end_thinking(&session_id);
                 self.end_user_message(&session_id);
                 let message_id = self
@@ -3353,6 +3421,9 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 self.end_user_message(&session_id);
                 let thinking_id = self
                     .current_thinking_id(&session_id)
@@ -3438,6 +3509,57 @@ impl NativeAcpClient {
         }
         Ok(())
     }
+
+    fn should_suppress_internal_text_chunk_for_session(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> bool {
+        self.session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|metadata| metadata.session.runtime_id.clone())
+            })
+            .is_some_and(|runtime_id| should_suppress_internal_text_chunk(&runtime_id, text))
+    }
+}
+
+fn acp12_to_current<T, U>(value: T) -> Result<U, String>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("Failed to convert ACP 0.12 payload: {error}"))
+}
+
+fn current_to_acp12<T, U>(value: T) -> Result<U, String>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("Failed to convert ACP 0.14 payload: {error}"))
+}
+
+fn acp12_internal_error(message: String) -> acp12::Error {
+    acp12::Error::internal_error().data(message)
+}
+
+fn current_error_to_acp12(error: agent_client_protocol::Error) -> acp12::Error {
+    acp12_internal_error(error.to_string())
+}
+
+fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
+    // ACP 0.12 does not expose the newer elicitation capability flags through the
+    // umbrella `unstable` feature. Gemini and Grok stay on the legacy surface.
+    acp12::schema::ClientCapabilities::new().fs(acp12::schema::FileSystemCapabilities::new())
 }
 
 fn start_acp_session(
@@ -3453,6 +3575,7 @@ fn start_acp_session(
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
+    let flavor = acp_protocol_flavor(&spec.runtime_id);
     let handle = AcpSessionHandle {
         command_tx: command_tx.clone(),
     };
@@ -3465,20 +3588,40 @@ fn start_acp_session(
             }
         };
         runtime.block_on(async move {
-            run_acp_actor(
-                spec,
-                start_mode,
-                event_tx,
-                session_state,
-                tool_diffs,
-                agent_writes,
-                user_input_waiters,
-                url_elicitation_waiters,
-                completed_url_elicitations,
-                command_rx,
-                created_tx,
-            )
-            .await;
+            match flavor {
+                AcpProtocolFlavor::Current14 => {
+                    run_acp_actor(
+                        spec,
+                        start_mode,
+                        event_tx,
+                        session_state,
+                        tool_diffs,
+                        agent_writes,
+                        user_input_waiters,
+                        url_elicitation_waiters,
+                        completed_url_elicitations,
+                        command_rx,
+                        created_tx,
+                    )
+                    .await;
+                }
+                AcpProtocolFlavor::Legacy12 => {
+                    run_acp12_actor(
+                        spec,
+                        start_mode,
+                        event_tx,
+                        session_state,
+                        tool_diffs,
+                        agent_writes,
+                        user_input_waiters,
+                        url_elicitation_waiters,
+                        completed_url_elicitations,
+                        command_rx,
+                        created_tx,
+                    )
+                    .await;
+                }
+            }
         });
     });
     let session = created_rx
@@ -3511,6 +3654,7 @@ enum AcpAuthCommand {
 
 fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
+    let flavor = acp_protocol_flavor(&spec.runtime_id);
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -3519,7 +3663,14 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
                 return;
             }
         };
-        let result = runtime.block_on(run_acp_auth_inner(spec, auth_command));
+        let result = match flavor {
+            AcpProtocolFlavor::Current14 => {
+                runtime.block_on(run_acp_auth_inner(spec, auth_command))
+            }
+            AcpProtocolFlavor::Legacy12 => {
+                runtime.block_on(run_acp12_auth_inner(spec, auth_command))
+            }
+        };
         let _ = result_tx.send(result);
     });
 
@@ -3553,6 +3704,37 @@ async fn run_acp_auth_handshake(
     };
 
     send_acp_authenticate_request(connection, request.method_id, request.meta).await
+}
+
+async fn send_acp12_authenticate_request(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    method_id: impl Into<String>,
+    meta: Option<Meta>,
+) -> Result<(), acp12::Error> {
+    let mut request = acp12::schema::AuthenticateRequest::new(method_id.into());
+    if let Some(meta) = meta {
+        let legacy_meta: acp12::schema::Meta =
+            current_to_acp12(meta).map_err(acp12_internal_error)?;
+        request = request.meta(legacy_meta);
+    }
+    connection.send_request(request).block_task().await?;
+    Ok(())
+}
+
+async fn run_acp12_auth_handshake(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &acp12::schema::InitializeResponse,
+) -> Result<(), acp12::Error> {
+    let initialize_response =
+        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
+    let Some(request) = validate_acp_auth_handshake_request(spec, &initialize_response)
+        .map_err(acp12_internal_error)?
+    else {
+        return Ok(());
+    };
+
+    send_acp12_authenticate_request(connection, request.method_id, request.meta).await
 }
 
 fn validate_acp_auth_handshake_request(
@@ -3692,6 +3874,91 @@ async fn run_acp_auth_inner(
     result.map_err(|error| error.to_string())
 }
 
+async fn run_acp12_auth_inner(
+    spec: AcpProcessSpec,
+    auth_command: AcpAuthCommand,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::null());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
+
+    let result = acp12::Client
+        .builder()
+        .name("neverwrite")
+        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
+            let auth_result = tokio::select! {
+                response = async {
+                    connection
+                        .send_request(
+                            acp12::schema::InitializeRequest::new(
+                                acp12::schema::ProtocolVersion::LATEST,
+                            )
+                                .client_capabilities(neverwrite_acp12_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
+                                .client_info(
+                                    acp12::schema::Implementation::new(
+                                        "neverwrite",
+                                        env!("CARGO_PKG_VERSION"),
+                                    )
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    match auth_command {
+                        AcpAuthCommand::Authenticate(method_id) => {
+                            send_acp12_authenticate_request(&connection, method_id, None).await?;
+                        }
+                        AcpAuthCommand::Logout => {
+                            connection
+                                .send_request(acp12::schema::LogoutRequest::new())
+                                .block_task()
+                                .await?;
+                        }
+                    }
+                    Ok::<(), acp12::Error>(())
+                } => response,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(acp12::Error::internal_error().data(message));
+                }
+            };
+
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            auth_result
+        })
+        .await;
+
+    result.map_err(|error| error.to_string())
+}
+
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -3721,6 +3988,231 @@ async fn run_acp_actor(
     .await;
     if let Err(error) = result {
         let _ = created_tx.send(Err(error));
+    }
+}
+
+async fn run_acp12_actor(
+    spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
+    created_tx: mpsc::Sender<Result<AiSession, String>>,
+) {
+    let result = run_acp12_actor_inner(
+        spec,
+        start_mode,
+        event_tx,
+        session_state,
+        tool_diffs,
+        agent_writes,
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        &mut command_rx,
+        created_tx.clone(),
+    )
+    .await;
+    if let Err(error) = result {
+        let _ = created_tx.send(Err(error));
+    }
+}
+
+async fn run_acp12_actor_inner(
+    spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
+    created_tx: mpsc::Sender<Result<AiSession, String>>,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let client = NativeAcpClient {
+        event_tx: event_tx.clone(),
+        session_state,
+        message_ids: Arc::new(Mutex::new(HashMap::new())),
+        thinking_ids: Arc::new(Mutex::new(HashMap::new())),
+        permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        tool_diffs,
+        agent_writes,
+        terminal_output: Arc::new(Mutex::new(HashMap::new())),
+        terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let permission_waiters = client.permission_waiters.clone();
+    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let session_created = Arc::new(AtomicBool::new(false));
+    let session_created_for_connection = Arc::clone(&session_created);
+    let disconnect_runtime_id = spec.runtime_id.clone();
+    let event_tx_for_connection = event_tx.clone();
+    let client_for_shutdown = client.clone();
+
+    let result = acp12::Client
+        .builder()
+        .name("neverwrite")
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: acp12::schema::RequestPermissionRequest,
+                            responder,
+                            cx: acp12::ConnectionTo<acp12::Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.request_permission_acp12(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            acp12::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: acp12::schema::SessionNotification,
+                            _cx: acp12::ConnectionTo<acp12::Agent>| {
+                    client.session_notification_acp12(notification).await
+                }
+            },
+            acp12::on_receive_notification!(),
+        )
+        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
+            let response = tokio::select! {
+                response = async {
+                    let initialize_response = connection
+                        .send_request(
+                            acp12::schema::InitializeRequest::new(
+                                acp12::schema::ProtocolVersion::LATEST,
+                            )
+                                .client_capabilities(neverwrite_acp12_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
+                                .client_info(
+                                    acp12::schema::Implementation::new(
+                                        "neverwrite",
+                                        env!("CARGO_PKG_VERSION"),
+                                    )
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    run_acp12_auth_handshake(&connection, &spec, &initialize_response).await?;
+                    emit_event(
+                        &event_tx_for_connection,
+                        AI_RUNTIME_CONNECTION_EVENT,
+                        json!(AiRuntimeConnectionPayload {
+                            runtime_id: spec.runtime_id.clone(),
+                            status: "ready".to_string(),
+                            message: None,
+                        }),
+                    );
+                    let initialize_model_state = acp12_initialize_model_state(&initialize_response);
+                    start_acp12_runtime_session(
+                        &connection,
+                        &spec,
+                        &start_mode,
+                        initialize_model_state,
+                    )
+                    .await
+                } => response?,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(acp12::Error::internal_error().data(message));
+                }
+            };
+            let mut session = session_from_acp_response(
+                &spec.runtime_id,
+                response.session_id,
+                response.modes,
+                response.config_options,
+            );
+            session.additional_roots =
+                additional_roots_to_strings(start_mode.additional_directories());
+            client
+                .tool_diffs
+                .register_session_cwd(&session.session_id, spec.cwd.clone());
+            session_created_for_connection.store(true, Ordering::Relaxed);
+            let _ = created_tx.send(Ok(session));
+            loop {
+                tokio::select! {
+                    maybe_command = command_rx.recv() => {
+                        let Some(command) = maybe_command else {
+                            return Ok(());
+                        };
+                        handle_acp12_command(command, &connection, &client, &permission_waiters).await;
+                    }
+                    wait_result = child.wait() => {
+                        let message = wait_result
+                            .map(acp_child_exit_message)
+                            .unwrap_or_else(|error| {
+                                format!("Failed to wait for AI runtime process: {error}")
+                            });
+                        return Err(acp12::Error::internal_error().data(message));
+                    }
+                }
+            }
+        })
+        .await;
+
+    client_for_shutdown.cancel_all_user_input_waiters();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if session_created.load(Ordering::Relaxed) => {
+            emit_event(
+                &event_tx,
+                AI_RUNTIME_CONNECTION_EVENT,
+                json!(AiRuntimeConnectionPayload {
+                    runtime_id: disconnect_runtime_id,
+                    status: "error".to_string(),
+                    message: Some(format!(
+                        "The AI runtime process disconnected unexpectedly: {error}"
+                    )),
+                }),
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -3978,6 +4470,147 @@ async fn start_acp_runtime_session(
     }
 }
 
+async fn start_acp12_runtime_session(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    spec: &AcpProcessSpec,
+    start_mode: &AcpSessionStartMode,
+    initialize_model_state: Option<acp12::schema::SessionModelState>,
+) -> Result<AcpSessionStartResponse, acp12::Error> {
+    let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
+    match start_mode {
+        AcpSessionStartMode::New {
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(
+                    acp12::schema::NewSessionRequest::new(cwd).additional_directories(
+                        additional_wire_paths(&spec.runtime_id, additional_directories),
+                    ),
+                )
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: response.session_id.0.to_string(),
+                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
+                config_options: acp12_session_config_options(
+                    response.config_options,
+                    response.models.or_else(|| initialize_model_state.clone()),
+                )
+                .map_err(acp12_internal_error)?,
+            })
+        }
+        AcpSessionStartMode::Load {
+            session_id,
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(
+                    acp12::schema::LoadSessionRequest::new(
+                        acp12::schema::SessionId::new(session_id.clone()),
+                        cwd,
+                    )
+                    .additional_directories(additional_wire_paths(
+                        &spec.runtime_id,
+                        additional_directories,
+                    )),
+                )
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: session_id.clone(),
+                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
+                config_options: acp12_session_config_options(
+                    response.config_options,
+                    response.models.or_else(|| initialize_model_state.clone()),
+                )
+                .map_err(acp12_internal_error)?,
+            })
+        }
+    }
+}
+
+fn acp12_initialize_model_state(
+    response: &acp12::schema::InitializeResponse,
+) -> Option<acp12::schema::SessionModelState> {
+    response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("modelState").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn acp12_session_config_options(
+    legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
+    legacy_models: Option<acp12::schema::SessionModelState>,
+) -> Result<Option<Vec<SessionConfigOption>>, String> {
+    let mut options: Option<Vec<SessionConfigOption>> = acp12_to_current(legacy_options)?;
+    let Some(model_option) = acp12_model_state_to_config_option(legacy_models) else {
+        return Ok(options);
+    };
+
+    let options = options.get_or_insert_with(Vec::new);
+    if !options.iter().any(|option| {
+        matches!(
+            map_config_option_category(&option.id.0, option.category.as_ref()),
+            AiConfigOptionCategory::Model
+        )
+    }) {
+        options.insert(0, model_option);
+    }
+
+    Ok(Some(options.clone()))
+}
+
+fn acp12_model_state_to_config_option(
+    state: Option<acp12::schema::SessionModelState>,
+) -> Option<SessionConfigOption> {
+    let state = state?;
+    if state.available_models.is_empty() {
+        return None;
+    }
+
+    let options: Vec<SessionConfigSelectOption> = state
+        .available_models
+        .into_iter()
+        .map(|model| {
+            let mut option =
+                SessionConfigSelectOption::new(model.model_id.0.to_string(), model.name);
+            if let Some(description) = model.description {
+                option = option.description(description);
+            }
+            if let Some(meta) = model.meta {
+                option = option.meta(meta);
+            }
+            option
+        })
+        .collect();
+
+    Some(
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            state.current_model_id.0.to_string(),
+            options,
+        )
+        .category(SessionConfigOptionCategory::Model),
+    )
+}
+
+fn config_select_option_agent_type(meta: Option<&Meta>) -> Option<String> {
+    meta.and_then(|meta| meta.get("agentType"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_grok_model_switch_error(error: &str) -> String {
+    if error.contains("MODEL_SWITCH_INCOMPATIBLE_AGENT") {
+        return "Start a new Grok chat to switch models.".to_string();
+    }
+
+    error.to_string()
+}
+
 fn new_session_request(
     runtime_id: &str,
     cwd: PathBuf,
@@ -4047,8 +4680,17 @@ async fn handle_acp_command(
                 .block_task()
                 .await
                 .map(|_| ())
-                .map_err(|error| error.to_string());
+                .map_err(|error| normalize_grok_model_switch_error(&error.to_string()));
             let _ = response_tx.send(result);
+        }
+        AcpCommand::SetModel {
+            session_id: _,
+            model_id: _,
+            response_tx,
+        } => {
+            let _ = response_tx.send(Err(
+                "ACP 0.14 model changes must use session config options.".to_string(),
+            ));
         }
         AcpCommand::SetConfigOption {
             session_id,
@@ -4105,18 +4747,155 @@ async fn handle_acp_command(
     }
 }
 
+async fn handle_acp12_command(
+    command: AcpCommand,
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    client: &NativeAcpClient,
+    permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+) {
+    match command {
+        AcpCommand::Prompt {
+            session_id,
+            content,
+            response_tx,
+        } => {
+            let connection = connection.clone();
+            let client = client.clone();
+            tokio::spawn(async move {
+                let message_id = client.begin_message(&session_id);
+                let result = connection
+                    .send_request(acp12::schema::PromptRequest::new(
+                        acp12::schema::SessionId::new(session_id.clone()),
+                        vec![acp12::schema::ContentBlock::from(content)],
+                    ))
+                    .block_task()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                client.end_thinking(&session_id);
+                client.end_user_message(&session_id);
+                client.complete_assistant_turn(&session_id, &message_id);
+                if let Err(error) = &result {
+                    client.emit(
+                        AI_SESSION_ERROR_EVENT,
+                        AiSessionErrorPayload {
+                            session_id: Some(session_id),
+                            message: error.clone(),
+                        },
+                    );
+                }
+            });
+            let _ = response_tx.send(Ok(()));
+        }
+        AcpCommand::SetMode {
+            session_id,
+            mode_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionModeRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    mode_id,
+                ))
+                .block_task()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::SetModel {
+            session_id,
+            model_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionModelRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    model_id,
+                ))
+                .block_task()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::SetConfigOption {
+            session_id,
+            option_id,
+            value,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionConfigOptionRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    option_id,
+                    value.as_str(),
+                ))
+                .block_task()
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|response| acp12_to_current(response.config_options));
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::Cancel {
+            session_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_notification(acp12::schema::CancelNotification::new(
+                    acp12::schema::SessionId::new(session_id),
+                ))
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::RespondPermission {
+            request_id,
+            option_id,
+            response_tx,
+        } => {
+            let outcome = option_id
+                .map(|value| {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
+                })
+                .unwrap_or(RequestPermissionOutcome::Cancelled);
+            let result = permission_waiters
+                .lock()
+                .map_err(|error| error.to_string())
+                .and_then(|mut waiters| {
+                    waiters
+                        .remove(&request_id)
+                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
+                })
+                .and_then(|sender| {
+                    sender
+                        .send(outcome)
+                        .map_err(|_| "Permission request was closed.".to_string())
+                });
+            let _ = response_tx.send(result);
+        }
+    }
+}
+
 fn session_from_acp_response(
     runtime_id: &str,
     session_id: String,
     modes_state: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 ) -> AiSession {
+    let mut config_options =
+        config_options.map(|options| map_session_config_options(runtime_id, options));
     let modes = modes_state
         .as_ref()
         .map(|state| map_session_modes(runtime_id, state))
+        .or_else(|| {
+            config_options
+                .as_ref()
+                .map(|options| map_session_modes_from_config_options(runtime_id, options))
+                .filter(|modes| !modes.is_empty())
+        })
         .unwrap_or_else(|| default_modes_for_acp_session(runtime_id));
-    let mut config_options = match config_options {
-        Some(options) => map_session_config_options(runtime_id, options),
+    let mut config_options = match config_options.take() {
+        Some(options) => options,
         None => {
             let models = default_models(runtime_id);
             let mut options = default_config_options(runtime_id, &models, &modes);
@@ -4167,6 +4946,22 @@ fn acp_child_exit_message(status: std::process::ExitStatus) -> String {
     }
 }
 
+fn should_suppress_internal_text_chunk(runtime_id: &str, text: &str) -> bool {
+    if !matches!(runtime_id, GEMINI_RUNTIME_ID | GROK_RUNTIME_ID) {
+        return false;
+    }
+
+    let trimmed = text.trim();
+    let Some(mode_id) = trimmed.strip_prefix("[MODE_UPDATE]") else {
+        return false;
+    };
+    let mode_id = mode_id.trim();
+    !mode_id.is_empty()
+        && mode_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
 #[derive(Default)]
 struct MappedSessionModels {
     models: Vec<AiModelOption>,
@@ -4207,6 +5002,7 @@ fn map_session_models_from_config_options(
             runtime_id: runtime_id.to_string(),
             name: strip_effort_suffix(&model.label).to_string(),
             description: model.description.clone().unwrap_or_default(),
+            agent_type: model.agent_type.clone(),
         });
     }
 
@@ -4222,6 +5018,30 @@ fn map_session_modes(runtime_id: &str, state: &SessionModeState) -> Vec<AiModeOp
             runtime_id: runtime_id.to_string(),
             name: mode.name.clone(),
             description: mode.description.clone().unwrap_or_default(),
+            disabled: false,
+        })
+        .collect()
+}
+
+fn map_session_modes_from_config_options(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+) -> Vec<AiModeOption> {
+    let Some(mode_option) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+    else {
+        return Vec::new();
+    };
+
+    mode_option
+        .options
+        .iter()
+        .map(|option| AiModeOption {
+            id: option.value.clone(),
+            runtime_id: runtime_id.to_string(),
+            name: option.label.clone(),
+            description: option.description.clone().unwrap_or_default(),
             disabled: false,
         })
         .collect()
@@ -4260,6 +5080,7 @@ fn map_session_config_options(
                         value: item.value.0.to_string(),
                         label: item.name,
                         description: item.description,
+                        agent_type: config_select_option_agent_type(item.meta.as_ref()),
                     })
                     .collect(),
             })
@@ -4288,10 +5109,19 @@ fn map_config_option_category(
     option_id: &str,
     category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
-    let normalized_id = option_id.to_ascii_lowercase();
+    let normalized_id = normalize_config_option_key(option_id);
+    if normalized_id == "model" {
+        return AiConfigOptionCategory::Model;
+    }
+    if normalized_id == "mode"
+        || normalized_id == "permissionmode"
+        || normalized_id == "approvalmode"
+    {
+        return AiConfigOptionCategory::Mode;
+    }
     if matches!(
         normalized_id.as_str(),
-        "reasoning_effort" | "thought_level" | "effort"
+        "reasoningeffort" | "thoughtlevel" | "effort" | "reasoning"
     ) {
         return AiConfigOptionCategory::Reasoning;
     }
@@ -4310,6 +5140,14 @@ fn map_config_option_category(
         }
         _ => AiConfigOptionCategory::Other,
     }
+}
+
+fn normalize_config_option_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != '_' && *character != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn ensure_reasoning_config_option(
@@ -4359,6 +5197,7 @@ fn ensure_reasoning_config_option(
                 value: effort.clone(),
                 label: reasoning_effort_label(effort),
                 description: None,
+                agent_type: None,
             })
             .collect(),
     };
@@ -4476,7 +5315,7 @@ fn acp_config_option_remote_command(
             .find(|option| option.id == option_id)
             .map(|option| &option.category);
         return match category {
-            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetConfigOption,
+            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
             Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::LocalOnly,
             Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
             None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
@@ -4493,7 +5332,7 @@ fn acp_config_option_remote_command(
         .find(|option| option.id == option_id)
         .map(|option| &option.category);
     match category {
-        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetConfigOption,
+        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
         Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::SetMode,
         Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
         None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
@@ -5412,6 +6251,12 @@ fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
         .find(|definition| definition.id == runtime_id)
 }
 
+fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
+    runtime_definition(runtime_id)
+        .map(|definition| definition.acp_protocol)
+        .unwrap_or(AcpProtocolFlavor::Current14)
+}
+
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
     RUNTIME_DEFINITIONS
         .iter()
@@ -5467,11 +6312,16 @@ impl RuntimeDescriptorAuthTags for AiRuntimeDescriptor {
 }
 
 fn default_models(runtime_id: &str) -> Vec<AiModelOption> {
+    if matches!(runtime_id, GEMINI_RUNTIME_ID | GROK_RUNTIME_ID) {
+        return Vec::new();
+    }
+
     vec![AiModelOption {
         id: "auto".to_string(),
         runtime_id: runtime_id.to_string(),
         name: "Auto".to_string(),
         description: "Use the runtime default model.".to_string(),
+        agent_type: None,
     }]
 }
 
@@ -5539,6 +6389,7 @@ fn default_config_options(
                     value: model.id.clone(),
                     label: model.name.clone(),
                     description: Some(model.description.clone()),
+                    agent_type: model.agent_type.clone(),
                 })
                 .collect(),
         });
@@ -5562,6 +6413,7 @@ fn default_config_options(
                     value: mode.id.clone(),
                     label: mode.name.clone(),
                     description: Some(mode.description.clone()),
+                    agent_type: None,
                 })
                 .collect(),
         });
@@ -6104,7 +6956,7 @@ fn auth_terminal_launch_config(
                 "Unsupported terminal auth method for {}: {}",
                 runtime_name(runtime_id),
                 method_id
-            ))
+            ));
         }
     };
 
@@ -10693,8 +11545,235 @@ mod tests {
                 &session.config_options,
                 &model_config.id
             ),
-            AcpConfigOptionRemoteCommand::SetConfigOption
+            AcpConfigOptionRemoteCommand::SetModel
         );
+    }
+
+    #[test]
+    fn gemini_and_grok_use_legacy_acp12_protocol() {
+        assert_eq!(
+            acp_protocol_flavor(GEMINI_RUNTIME_ID),
+            AcpProtocolFlavor::Legacy12
+        );
+        assert_eq!(
+            acp_protocol_flavor(GROK_RUNTIME_ID),
+            AcpProtocolFlavor::Legacy12
+        );
+    }
+
+    #[test]
+    fn current_runtimes_keep_acp14_protocol() {
+        for runtime_id in [
+            CLAUDE_RUNTIME_ID,
+            CODEX_RUNTIME_ID,
+            KILO_RUNTIME_ID,
+            OPENCODE_RUNTIME_ID,
+        ] {
+            assert_eq!(
+                acp_protocol_flavor(runtime_id),
+                AcpProtocolFlavor::Current14
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_session_without_model_config_does_not_synthesize_auto_model() {
+        let session = session_from_acp_response(
+            GEMINI_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(Vec::new()),
+        );
+
+        assert!(session.models.is_empty());
+        assert_eq!(session.model_id, "");
+        assert!(
+            session
+                .config_options
+                .iter()
+                .all(|option| !matches!(option.category, AiConfigOptionCategory::Model)),
+            "Gemini must not receive a synthetic Auto model when ACP exposes no model option"
+        );
+    }
+
+    #[test]
+    fn config_options_infer_core_categories_from_ids() {
+        let options = map_session_config_options(
+            GEMINI_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "gemini-2.5-pro",
+                    vec![SessionConfigSelectOption::new(
+                        "gemini-2.5-pro",
+                        "Gemini 2.5 Pro",
+                    )],
+                ),
+                SessionConfigOption::select(
+                    "permission-mode",
+                    "Mode",
+                    "yolo",
+                    vec![SessionConfigSelectOption::new("yolo", "YOLO")],
+                ),
+                SessionConfigOption::select(
+                    "reasoningEffort",
+                    "Reasoning",
+                    "high",
+                    vec![SessionConfigSelectOption::new("high", "High")],
+                ),
+            ],
+        );
+
+        assert!(matches!(options[0].category, AiConfigOptionCategory::Model));
+        assert!(matches!(options[1].category, AiConfigOptionCategory::Mode));
+        assert!(matches!(
+            options[2].category,
+            AiConfigOptionCategory::Reasoning
+        ));
+    }
+
+    #[test]
+    fn session_modes_derive_from_mode_config_option_when_mode_state_missing() {
+        let session = session_from_acp_response(
+            GEMINI_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(vec![SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "yolo",
+                vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("yolo", "YOLO"),
+                ],
+            )]),
+        );
+
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "yolo"]
+        );
+        assert_eq!(session.mode_id, "yolo");
+    }
+
+    #[test]
+    fn acp12_model_state_is_exposed_as_model_config_option() {
+        let config_options = acp12_session_config_options(
+            None,
+            Some(acp12::schema::SessionModelState::new(
+                "gemini-2.5-pro",
+                vec![
+                    acp12::schema::ModelInfo::new("gemini-2.5-flash", "Gemini 2.5 Flash").meta(
+                        acp12::schema::Meta::from_iter([(
+                            "agentType".to_string(),
+                            serde_json::json!("flash-agent"),
+                        )]),
+                    ),
+                    acp12::schema::ModelInfo::new("gemini-2.5-pro", "Gemini 2.5 Pro").meta(
+                        acp12::schema::Meta::from_iter([(
+                            "agentType".to_string(),
+                            serde_json::json!("pro-agent"),
+                        )]),
+                    ),
+                ],
+            )),
+        )
+        .expect("legacy model state should map")
+        .expect("model option should be synthesized");
+
+        let mapped = map_session_config_options(GEMINI_RUNTIME_ID, config_options);
+
+        assert_eq!(mapped.len(), 1);
+        assert!(matches!(mapped[0].category, AiConfigOptionCategory::Model));
+        assert_eq!(mapped[0].value, "gemini-2.5-pro");
+        assert_eq!(
+            mapped[0]
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Gemini 2.5 Flash", "Gemini 2.5 Pro"]
+        );
+        assert_eq!(
+            mapped[0]
+                .options
+                .iter()
+                .map(|option| option.agent_type.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("flash-agent"), Some("pro-agent")]
+        );
+    }
+
+    #[test]
+    fn acp12_initialize_meta_model_state_is_parsed() {
+        let model_state = acp12::schema::SessionModelState::new(
+            "grok-build",
+            vec![
+                acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5"),
+                acp12::schema::ModelInfo::new("grok-build", "Grok Build"),
+            ],
+        );
+        let response = acp12::schema::InitializeResponse::new(
+            acp12::schema::ProtocolVersion::LATEST,
+        )
+        .meta(acp12::schema::Meta::from_iter([(
+            "modelState".to_string(),
+            serde_json::to_value(model_state).expect("model state should serialize"),
+        )]));
+
+        let parsed = acp12_initialize_model_state(&response).expect("modelState should be present");
+
+        assert_eq!(parsed.current_model_id.0.as_ref(), "grok-build");
+        assert_eq!(
+            parsed
+                .available_models
+                .iter()
+                .map(|model| model.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Composer 2.5", "Grok Build"]
+        );
+    }
+
+    #[test]
+    fn acp12_initialize_meta_model_state_ignores_unknown_shapes() {
+        let response = acp12::schema::InitializeResponse::new(
+            acp12::schema::ProtocolVersion::LATEST,
+        )
+        .meta(acp12::schema::Meta::from_iter([(
+            "modelState".to_string(),
+            serde_json::json!({ "unexpected": true }),
+        )]));
+
+        assert!(acp12_initialize_model_state(&response).is_none());
+    }
+
+    #[test]
+    fn internal_mode_update_text_chunks_are_suppressed() {
+        assert!(should_suppress_internal_text_chunk(
+            GEMINI_RUNTIME_ID,
+            "[MODE_UPDATE] yolo"
+        ));
+        assert!(should_suppress_internal_text_chunk(
+            GROK_RUNTIME_ID,
+            "  [MODE_UPDATE] default\n"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            GEMINI_RUNTIME_ID,
+            "[MODE_UPDATE]"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            CODEX_RUNTIME_ID,
+            "[MODE_UPDATE] yolo"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            GEMINI_RUNTIME_ID,
+            "Please mention [MODE_UPDATE] yolo in the document"
+        ));
     }
 
     #[test]
@@ -10958,10 +12037,7 @@ mod tests {
                 }
             }))
             .unwrap_err();
-        assert_eq!(
-            action_error,
-            "Unsupported URL elicitation action: bogus"
-        );
+        assert_eq!(action_error, "Unsupported URL elicitation action: bogus");
         assert!(ai
             .url_elicitation_waiters
             .lock()
@@ -11262,7 +12338,7 @@ mod tests {
 
         assert_eq!(
             acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetConfigOption
+            AcpConfigOptionRemoteCommand::SetModel
         );
         assert_eq!(
             acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "mode"),
@@ -11305,7 +12381,7 @@ mod tests {
 
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetConfigOption
+            AcpConfigOptionRemoteCommand::SetModel
         );
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "mode"),
