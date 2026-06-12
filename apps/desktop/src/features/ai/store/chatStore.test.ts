@@ -14869,6 +14869,118 @@ describe("chatStore", () => {
         ).toEqual(["low", "medium", "high", "xhigh"]);
     });
 
+    it("preserves legacy ACP model config value when modelId is empty", () => {
+        const session = createSessionWithTrackedFiles("grok-session-1", [], "wc-grok");
+
+        useChatStore.getState().upsertSession(
+            {
+                ...session,
+                runtimeId: "grok-acp",
+                modelId: "",
+                configOptions: [
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "grok-build",
+                        options: [
+                            {
+                                value: "grok-composer-2.5-fast",
+                                label: "Composer 2.5",
+                            },
+                            {
+                                value: "grok-build",
+                                label: "Grok Build",
+                            },
+                        ],
+                    },
+                ],
+            },
+            true,
+        );
+
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["grok-session-1"]?.configOptions.find(
+                    (option) => option.id === "model",
+                )?.value,
+        ).toBe("grok-build");
+    });
+
+    it("blocks incompatible Grok model switches after a chat has started", async () => {
+        const session = createSessionWithTrackedFiles("grok-session-1", [], "wc-grok");
+
+        useChatStore.getState().upsertSession(
+            {
+                ...session,
+                runtimeId: "grok-acp",
+                runtimeState: "live",
+                modelId: "",
+                messages: [
+                    {
+                        id: "assistant-1",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Already started",
+                        timestamp: 10,
+                    },
+                ],
+                configOptions: [
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "grok-build",
+                        options: [
+                            {
+                                value: "grok-composer-2.5-fast",
+                                label: "Composer 2.5",
+                                agentType: "cursor",
+                            },
+                            {
+                                value: "grok-build",
+                                label: "Grok Build",
+                                agentType: "grok-build-plan",
+                            },
+                        ],
+                    },
+                ],
+            },
+            true,
+        );
+
+        await useChatStore
+            .getState()
+            .setConfigOption(
+                "model",
+                "grok-composer-2.5-fast",
+                "grok-session-1",
+            );
+
+        const grokSession =
+            useChatStore.getState().sessionsById["grok-session-1"]!;
+        expect(grokSession.configOptions[0]?.value).toBe("grok-build");
+        expect(grokSession.status).toBe("error");
+        expect(
+            grokSession.messages.some(
+                (message) =>
+                    message.kind === "error" &&
+                    message.content ===
+                        "Start a new Grok chat to switch to Composer 2.5.",
+            ),
+        ).toBe(true);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_set_config_option",
+            ),
+        ).toBe(false);
+    });
+
     it('keeps setModel observably aligned with setConfigOption("model") for live ACP sessions', async () => {
         await useChatStore.getState().initialize();
 

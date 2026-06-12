@@ -146,6 +146,7 @@ export interface AIModelOption {
     runtimeId: string;
     name: string;
     description: string;
+    agentType?: string;
 }
 
 export interface AIModeOption {
@@ -160,6 +161,7 @@ export interface AIConfigSelectOption {
     value: string;
     label: string;
     description?: string;
+    agentType?: string;
 }
 
 export interface AIConfigOption {
@@ -465,6 +467,7 @@ export interface AIBackendSessionPayload {
             value: string;
             label: string;
             description?: string | null;
+            agent_type?: string | null;
         }>;
     }>;
 }
@@ -481,6 +484,7 @@ export interface AIBackendRuntimeDescriptorPayload {
         runtime_id: string;
         name: string;
         description: string;
+        agent_type?: string | null;
     }>;
     modes: Array<{
         id: string;

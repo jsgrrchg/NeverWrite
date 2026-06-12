@@ -82,6 +82,7 @@ function normalizeConfigOption(
             value: item.value,
             label: item.label,
             description: item.description ?? undefined,
+            agentType: item.agent_type ?? undefined,
         })),
     };
 }
@@ -111,6 +112,7 @@ export function normalizeBackendSession(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: session.modes.map((mode) => ({
             id: mode.id,
@@ -146,6 +148,7 @@ function normalizeRuntimeDescriptor(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: descriptor.modes.map((mode) => ({
             id: mode.id,

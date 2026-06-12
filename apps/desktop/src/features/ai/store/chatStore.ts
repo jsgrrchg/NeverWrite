@@ -255,6 +255,12 @@ interface AIRuntimeCatalogSnapshot {
     configOptions: AIRuntimeDescriptor["configOptions"];
 }
 
+const ACP_RUNTIMES_WITHOUT_SYNTHETIC_DEFAULT_MODELS = new Set([
+    "gemini-acp",
+    "grok-acp",
+]);
+const GROK_RUNTIME_ID = "grok-acp";
+
 interface QueuedMessageEditState {
     item: QueuedChatMessage;
     originalIndex: number;
@@ -424,11 +430,17 @@ function saveRuntimeCatalogCache(
 ) {
     try {
         const current = loadRuntimeCatalogCache();
+        const sanitized = sanitizeRuntimeCatalogSnapshot(runtimeId, snapshot);
+        if (!hasRuntimeCatalog(sanitized)) {
+            const { [runtimeId]: _removed, ...rest } = current;
+            safeStorageSetItem(AI_RUNTIME_CACHE_KEY, JSON.stringify(rest));
+            return;
+        }
         safeStorageSetItem(
             AI_RUNTIME_CACHE_KEY,
             JSON.stringify({
                 ...current,
-                [runtimeId]: snapshot,
+                [runtimeId]: sanitized,
             }),
         );
     } catch {
@@ -549,6 +561,70 @@ function hasRuntimeCatalog(snapshot: AIRuntimeCatalogSnapshot) {
     );
 }
 
+function runtimeDropsSyntheticAutoModel(runtimeId: string) {
+    return ACP_RUNTIMES_WITHOUT_SYNTHETIC_DEFAULT_MODELS.has(runtimeId);
+}
+
+function isSyntheticAutoModel(model: AIRuntimeDescriptor["models"][number]) {
+    return model.id === "auto";
+}
+
+function isSyntheticAutoModelConfigOption(
+    option: AIRuntimeDescriptor["configOptions"][number],
+) {
+    return (
+        option.category === "model" &&
+        option.value === "auto" &&
+        option.options.length <= 1 &&
+        option.options.every((item) => item.value === "auto")
+    );
+}
+
+function sanitizeRuntimeCatalogSnapshot(
+    runtimeId: string,
+    snapshot: AIRuntimeCatalogSnapshot,
+): AIRuntimeCatalogSnapshot {
+    if (!runtimeDropsSyntheticAutoModel(runtimeId)) {
+        return snapshot;
+    }
+
+    const models = snapshot.models.filter(
+        (model) => !isSyntheticAutoModel(model),
+    );
+    const configOptions = snapshot.configOptions
+        .filter((option) => !isSyntheticAutoModelConfigOption(option))
+        .map((option) => {
+            if (option.category !== "model") {
+                return option;
+            }
+
+            const options = option.options.filter(
+                (item) => item.value !== "auto",
+            );
+            if (options.length === option.options.length) {
+                return option;
+            }
+
+            return {
+                ...option,
+                value:
+                    option.value === "auto"
+                        ? (options[0]?.value ?? "")
+                        : option.value,
+                options,
+            };
+        })
+        .filter(
+            (option) => option.category !== "model" || option.options.length > 0,
+        );
+
+    return {
+        models,
+        modes: snapshot.modes,
+        configOptions,
+    };
+}
+
 function getRuntimeCatalogSnapshot(
     session: Pick<AIChatSession, "models" | "modes" | "configOptions">,
 ): AIRuntimeCatalogSnapshot {
@@ -557,6 +633,23 @@ function getRuntimeCatalogSnapshot(
         modes: session.modes,
         configOptions: session.configOptions,
     };
+}
+
+function selectedSessionConfigValue(
+    session: Pick<AIChatSession, "modelId" | "modeId">,
+    option: AIRuntimeDescriptor["configOptions"][number],
+): string {
+    if (option.category === "model") {
+        return session.modelId.trim().length > 0
+            ? session.modelId
+            : option.value;
+    }
+
+    if (option.category === "mode") {
+        return session.modeId;
+    }
+
+    return option.value;
 }
 
 function secretPatchChanged(patch: AISecretPatch) {
@@ -575,6 +668,7 @@ function getPersistedHistoryCatalogSnapshot(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: (history.modes ?? []).map((mode) => ({
             id: mode.id,
@@ -595,6 +689,7 @@ function getPersistedHistoryCatalogSnapshot(
                 value: item.value,
                 label: item.label,
                 description: item.description ?? undefined,
+                agentType: item.agent_type ?? undefined,
             })),
         })),
     };
@@ -604,6 +699,22 @@ function hydrateSessionCatalogFromSnapshot(
     session: AIChatSession,
     snapshot: AIRuntimeCatalogSnapshot,
 ): AIChatSession {
+    const sessionCatalog = sanitizeRuntimeCatalogSnapshot(
+        session.runtimeId,
+        getRuntimeCatalogSnapshot(session),
+    );
+    session = {
+        ...session,
+        modelId:
+            runtimeDropsSyntheticAutoModel(session.runtimeId) &&
+            session.modelId === "auto"
+                ? ""
+                : session.modelId,
+        models: sessionCatalog.models,
+        modes: sessionCatalog.modes,
+        configOptions: sessionCatalog.configOptions,
+    };
+    snapshot = sanitizeRuntimeCatalogSnapshot(session.runtimeId, snapshot);
     if (!hasRuntimeCatalog(snapshot)) {
         return session;
     }
@@ -620,11 +731,7 @@ function hydrateSessionCatalogFromSnapshot(
                   ...option,
                   value:
                       optionValues.get(option.id) ??
-                      (option.category === "model"
-                          ? session.modelId
-                          : option.category === "mode"
-                            ? session.modeId
-                            : option.value),
+                      selectedSessionConfigValue(session, option),
               }));
 
     if (
@@ -652,12 +759,7 @@ function synchronizeSessionConfigSelections(
 
     let changed = false;
     const configOptions = session.configOptions.map((option) => {
-        const nextValue =
-            option.category === "model"
-                ? session.modelId
-                : option.category === "mode"
-                  ? session.modeId
-                  : option.value;
+        const nextValue = selectedSessionConfigValue(session, option);
 
         if (nextValue === option.value) {
             return option;
@@ -915,6 +1017,69 @@ function supportsModelSelection(
     return session.models.some((model) => model.id === modelId);
 }
 
+function getSelectedSessionModelId(
+    session: Pick<AIChatSession, "modelId" | "configOptions">,
+) {
+    return getModelConfigOption(session)?.value ?? session.modelId;
+}
+
+function getSessionModelAgentType(
+    session: Pick<AIChatSession, "models" | "configOptions">,
+    modelId: string,
+) {
+    const modelConfigOption = getModelConfigOption(session);
+    const configOptionAgentType = modelConfigOption?.options.find(
+        (option) => option.value === modelId,
+    )?.agentType;
+    if (configOptionAgentType) {
+        return configOptionAgentType;
+    }
+
+    return session.models.find((model) => model.id === modelId)?.agentType;
+}
+
+function getSessionModelLabel(
+    session: Pick<AIChatSession, "models" | "configOptions">,
+    modelId: string,
+) {
+    const modelConfigOption = getModelConfigOption(session);
+    return (
+        modelConfigOption?.options.find((option) => option.value === modelId)
+            ?.label ??
+        session.models.find((model) => model.id === modelId)?.name ??
+        modelId
+    );
+}
+
+function sessionHasAgentTurns(session: AIChatSession) {
+    return session.messages.length > 0 || (session.persistedMessageCount ?? 0) > 0;
+}
+
+function getBlockedGrokModelSwitchMessage(
+    session: AIChatSession,
+    targetModelId: string,
+) {
+    if (session.runtimeId !== GROK_RUNTIME_ID || !sessionHasAgentTurns(session)) {
+        return null;
+    }
+
+    const currentModelId = getSelectedSessionModelId(session);
+    if (!currentModelId || currentModelId === targetModelId) {
+        return null;
+    }
+
+    const currentAgentType = getSessionModelAgentType(session, currentModelId);
+    const targetAgentType = getSessionModelAgentType(session, targetModelId);
+    if (!currentAgentType || !targetAgentType || currentAgentType === targetAgentType) {
+        return null;
+    }
+
+    return `Start a new Grok chat to switch to ${getSessionModelLabel(
+        session,
+        targetModelId,
+    )}.`;
+}
+
 function applyLocalModelSelection(
     session: AIChatSession,
     modelId: string,
@@ -1138,6 +1303,9 @@ function mergeRuntimeCatalog(
     runtime: AIRuntimeDescriptor,
     snapshot: AIRuntimeCatalogSnapshot | undefined,
 ): AIRuntimeDescriptor {
+    snapshot = snapshot
+        ? sanitizeRuntimeCatalogSnapshot(runtime.runtime.id, snapshot)
+        : undefined;
     if (!snapshot || !hasRuntimeCatalog(snapshot)) {
         return runtime;
     }
@@ -5782,6 +5950,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                   runtime_id: model.runtimeId,
                   name: model.name,
                   description: model.description,
+                  ...(model.agentType
+                      ? { agent_type: model.agentType }
+                      : {}),
               }))
             : undefined,
         modes: hasCatalog
@@ -5806,6 +5977,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                       value: item.value,
                       label: item.label,
                       description: item.description ?? null,
+                      ...(item.agentType
+                          ? { agent_type: item.agentType }
+                          : {}),
                   })),
               }))
             : undefined,
@@ -9820,6 +9994,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 applyLocal: (session) =>
                     applyLocalModelSelection(session, modelId),
                 applyRemote: async (session) => {
+                    const blockedMessage = getBlockedGrokModelSwitchMessage(
+                        session,
+                        modelId,
+                    );
+                    if (blockedMessage) {
+                        throw new Error(blockedMessage);
+                    }
+
                     const modelConfig = getModelConfigOption(session);
                     return modelConfig &&
                         modelConfig.options.some(
@@ -9855,8 +10037,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 change: { kind: "config", optionId, value },
                 applyLocal: (session) =>
                     applyLocalConfigOptionSelection(session, optionId, value),
-                applyRemote: (session) =>
-                    aiSetConfigOption(session.sessionId, optionId, value),
+                applyRemote: (session) => {
+                    const blockedMessage =
+                        optionId === "model"
+                            ? getBlockedGrokModelSwitchMessage(session, value)
+                            : null;
+                    if (blockedMessage) {
+                        throw new Error(blockedMessage);
+                    }
+
+                    return aiSetConfigOption(session.sessionId, optionId, value);
+                },
                 persistPreference: () =>
                     persistConfigOptionSelectionPreference(optionId, value),
                 errorMessage: "Failed to update the session option.",
