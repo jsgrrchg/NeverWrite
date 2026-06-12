@@ -188,6 +188,19 @@ npm run electron:ai-runtime:smoke
 cargo test -p neverwrite-native-backend ai
 ```
 
+Gemini and Grok use NeverWrite's legacy ACP compatibility path. If either
+runtime does not expose real model options during session startup, the chat
+composer intentionally hides the model selector instead of showing a synthetic
+`Auto` model.
+
+Grok can reject model switches after a chat has started when the target model
+requires a different provider-side `agentType`. Start a new Grok chat with the
+desired model when the UI reports that the switch is incompatible.
+
+Gemini may emit internal `update_topic` activity for provider-owned chat
+metadata. NeverWrite filters those events from the timeline, so their absence
+does not indicate that Gemini thinking or tool events are broken.
+
 ## Web Clipper
 
 The web clipper talks to the desktop app at:

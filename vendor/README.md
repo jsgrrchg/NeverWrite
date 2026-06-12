@@ -7,6 +7,7 @@ integration and release packaging, especially:
 
 - `codex-acp`
 - `Claude-agent-acp-upstream`
+- `acp12`
 
 Why this lives in git:
 
@@ -25,6 +26,9 @@ What is currently required by the app/build pipeline:
 - `Claude-agent-acp-upstream/node_modules/`
   - production dependencies are installed by the Electron sidecar staging step
     and copied into the packaged embedded Claude runtime
+- `acp12/`
+  - used as Rust compatibility crates by the native backend for Gemini and Grok
+    legacy ACP sessions
 
 What is vendored mainly for auditability and maintenance, not direct runtime use:
 
@@ -32,6 +36,7 @@ What is vendored mainly for auditability and maintenance, not direct runtime use
 - `Claude-agent-acp-upstream/src/tests/`
 - `Claude-agent-acp-upstream/dist/tests/`
 - `Claude-agent-acp-upstream/docs/`
+- `acp12/agent-client-protocol*/`
 - assorted upstream config files (`tsconfig`, `vitest`, `eslint`, lockfiles)
 
 That means the directory is intentionally reproducible, but not yet minimal.
@@ -60,6 +65,12 @@ That means the directory is intentionally reproducible, but not yet minimal.
   - upstream commit: `85a45b28952f9070376165eff1dd764a0612f73d`
   - dependencies match the upstream `0.44.0` release (`@agentclientprotocol/sdk` `0.25.0`, `@anthropic-ai/claude-agent-sdk` `0.3.170`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
+- `acp12/`
+  - local package names: `agent-client-protocol-legacy` and
+    `agent-client-protocol-schema-legacy`
+  - used by the native backend for Gemini and Grok legacy ACP compatibility
+  - kept separate from the current ACP path so Claude, Codex, Kilo, and OpenCode
+    can continue to use the current protocol integration
 
 ## Current Codex Delta
 
@@ -77,10 +88,11 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 
 When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
-The desktop backend and `crates/ai` are now aligned with
-`agent-client-protocol = 0.12.1`, matching the vendored Codex ACP runtime.
-The native backend tests cover the reconstructed diff, permission, and status
-metadata paths that NeverWrite depends on.
+The desktop backend now supports a mixed ACP world: current ACP integration for
+Claude, Codex, Kilo, and OpenCode, plus the vendored
+`agent-client-protocol-legacy` crates for Gemini and Grok. The native backend
+tests cover the reconstructed diff, permission, status metadata, and legacy
+runtime compatibility paths that NeverWrite depends on.
 
 ## Current Claude Delta
 
