@@ -144,6 +144,7 @@ const NO_ACP_ARGS: &[&str] = &[];
 const GEMINI_ACP_ARGS: &[&str] = &["--acp"];
 const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
+const GEMINI_TOPIC_TOOL_NAME: &str = "update_topic";
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
     RuntimeDefinition {
@@ -2365,6 +2366,7 @@ struct NativeAcpClient {
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
+    suppressed_gemini_topic_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
@@ -2722,8 +2724,65 @@ impl NativeAcpClient {
             .unwrap_or(false)
     }
 
+    fn remember_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_gemini_topic_tool_calls.lock() {
+            ids.insert(call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn forget_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_gemini_topic_tool_calls.lock() {
+            ids.remove(&call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn has_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) -> bool {
+        self.suppressed_gemini_topic_tool_calls
+            .lock()
+            .ok()
+            .map(|ids| ids.contains(&call_state_key(session_id, tool_call_id)))
+            .unwrap_or(false)
+    }
+
+    fn session_runtime_id(&self, session_id: &str) -> Option<String> {
+        self.session_state.lock().ok().and_then(|state| {
+            state
+                .sessions
+                .get(session_id)
+                .map(|metadata| metadata.session.runtime_id.clone())
+        })
+    }
+
+    fn should_suppress_gemini_topic_tool_call(
+        &self,
+        session_id: &str,
+        tool_call: &ToolCall,
+    ) -> bool {
+        if self.session_runtime_id(session_id).as_deref() != Some(GEMINI_RUNTIME_ID) {
+            return false;
+        }
+
+        should_suppress_gemini_topic_tool_call(tool_call)
+    }
+
     fn should_suppress_tool_call_update(&self, session_id: &str, update: &ToolCallUpdate) -> bool {
         let tool_call_id = &update.tool_call_id.0;
+        if self.has_suppressed_gemini_topic_tool_call(session_id, tool_call_id) {
+            if tool_call_update_is_terminal(update) {
+                self.forget_suppressed_gemini_topic_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        if self.session_runtime_id(session_id).as_deref() == Some(GEMINI_RUNTIME_ID)
+            && should_suppress_gemini_topic_tool_call_update(update)
+        {
+            if !tool_call_update_is_terminal(update) {
+                self.remember_suppressed_gemini_topic_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
         if self.has_suppressed_status_tool_call(session_id, tool_call_id) {
             if tool_call_update_is_terminal(update) {
                 self.forget_suppressed_status_tool_call(session_id, tool_call_id);
@@ -3436,6 +3495,17 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
+                if self.should_suppress_gemini_topic_tool_call(&session_id, &tool_call) {
+                    if tool_call.status != ToolCallStatus::Completed
+                        && tool_call.status != ToolCallStatus::Failed
+                    {
+                        self.remember_suppressed_gemini_topic_tool_call(
+                            &session_id,
+                            &tool_call.tool_call_id.0,
+                        );
+                    }
+                    return Ok(());
+                }
                 if should_suppress_status_tool_call(&tool_call) {
                     self.remember_suppressed_status_tool_call(
                         &session_id,
@@ -4068,6 +4138,7 @@ async fn run_acp12_actor_inner(
         url_elicitation_waiters,
         completed_url_elicitations,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -4261,6 +4332,7 @@ async fn run_acp_actor_inner(
         url_elicitation_waiters,
         completed_url_elicitations,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -6052,6 +6124,47 @@ fn should_suppress_status_tool_call_update(update: &ToolCallUpdate) -> bool {
             .as_ref()
             .and_then(acp_event_type)
             .is_some_and(|event_type| event_type == "status")
+}
+
+fn is_gemini_topic_tool_title(title: &str) -> bool {
+    let title = title.trim();
+    title.starts_with("Update topic to:") || title.starts_with("Update tactical intent:")
+}
+
+fn is_gemini_topic_tool_name(name: &str) -> bool {
+    name.trim() == GEMINI_TOPIC_TOOL_NAME
+}
+
+fn gemini_topic_tool_name_from_meta(meta: Option<&Meta>) -> Option<String> {
+    let meta = meta?;
+    ["tool_name", "toolName", "name", "tool"]
+        .iter()
+        .find_map(|key| meta_string(meta, key))
+}
+
+fn gemini_topic_tool_name_from_raw(raw: Option<&Value>) -> Option<String> {
+    raw_string_field(raw, &["tool_name", "toolName", "name", "tool"])
+}
+
+fn should_suppress_gemini_topic_tool_call(tool_call: &ToolCall) -> bool {
+    gemini_topic_tool_name_from_meta(tool_call.meta.as_ref())
+        .as_deref()
+        .is_some_and(is_gemini_topic_tool_name)
+        || gemini_topic_tool_name_from_raw(tool_call.raw_input.as_ref())
+            .as_deref()
+            .is_some_and(is_gemini_topic_tool_name)
+        || is_gemini_topic_tool_title(&tool_call.title)
+}
+
+fn should_suppress_gemini_topic_tool_call_update(update: &ToolCallUpdate) -> bool {
+    gemini_topic_tool_name_from_meta(update.meta.as_ref())
+        .as_deref()
+        .is_some_and(is_gemini_topic_tool_name)
+        || update
+            .fields
+            .title
+            .as_deref()
+            .is_some_and(is_gemini_topic_tool_title)
 }
 
 fn tool_call_update_is_terminal(update: &ToolCallUpdate) -> bool {
@@ -8865,6 +8978,7 @@ mod tests {
             url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
             completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+            suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -12962,6 +13076,112 @@ mod tests {
         assert_eq!(
             payload.get("tool_call_id").and_then(Value::as_str),
             Some("normal-tool-1")
+        );
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_gemini_update_topic_tool() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, GEMINI_RUNTIME_ID, "session-1");
+        let client = test_client_with_state(event_tx, session_state);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("gemini-topic-1"),
+            "Update topic to: \"Editing cuento.md\"",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed)
+        .raw_input(json!({
+            "tool_name": GEMINI_TOPIC_TOOL_NAME,
+            "title": "Editing cuento.md",
+            "summary": "Editing the selected paragraph.",
+        }))
+        .content(vec![ToolCallContent::from(
+            "## Topic: **Editing cuento.md**\n\n**Summary:**\nEditing the selected paragraph.",
+        )]);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_gemini_topic_update_after_suppressed_start() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, GEMINI_RUNTIME_ID, "session-1");
+        let client = test_client_with_state(event_tx, session_state);
+
+        let started = ToolCall::new(
+            ToolCallId::from("gemini-topic-1"),
+            "Update topic to: \"Editing cuento.md\"",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress);
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(started),
+        )))
+        .unwrap();
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+
+        let completed = ToolCallUpdate::new(
+            "gemini-topic-1",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from(
+                    "## Topic: **Editing cuento.md**",
+                )]),
+        );
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(completed),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_keeps_update_topic_title_for_non_gemini_runtime() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "session-1");
+        let client = test_client_with_state(event_tx, session_state);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("topic-looking-tool"),
+            "Update topic to: \"Editing cuento.md\"",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.get("tool_call_id").and_then(Value::as_str),
+            Some("topic-looking-tool")
         );
     }
 
