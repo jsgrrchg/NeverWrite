@@ -2426,6 +2426,57 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
+const RESUME_CONTEXT_PROMPT_HEADER =
+    "Use the saved transcript below as prior conversation context for this session.";
+const SAVED_TRANSCRIPT_MARKER = "Saved transcript:";
+const NEW_USER_MESSAGE_MARKER = "New user message:";
+const ATTACHED_SELECTION_OPEN_TAG = "<attached_selection";
+
+function isResumeContextPromptText(text: string) {
+    return (
+        text.includes(RESUME_CONTEXT_PROMPT_HEADER) &&
+        text.includes(SAVED_TRANSCRIPT_MARKER) &&
+        text.includes(NEW_USER_MESSAGE_MARKER)
+    );
+}
+
+function isPotentialResumeContextPromptText(text: string) {
+    const trimmed = text.trimStart();
+    return (
+        trimmed.includes(RESUME_CONTEXT_PROMPT_HEADER) ||
+        isResumeContextPromptText(text)
+    );
+}
+
+function extractResumeContextNewUserMessage(text: string) {
+    const index = text.lastIndexOf(NEW_USER_MESSAGE_MARKER);
+    if (index < 0) return null;
+    return text.slice(index + NEW_USER_MESSAGE_MARKER.length).trim();
+}
+
+function hasAttachedSelectionMarkup(text: string) {
+    return text.includes(ATTACHED_SELECTION_OPEN_TAG);
+}
+
+function isInternalRuntimeUserEchoMessage(message: AIChatMessage) {
+    if (message.role !== "user" || message.kind !== "text") {
+        return false;
+    }
+
+    return (
+        isPotentialResumeContextPromptText(message.content) ||
+        hasAttachedSelectionMarkup(message.content)
+    );
+}
+
+function sanitizePersistedDisplayText(value?: string | null) {
+    if (!value) return null;
+    return isPotentialResumeContextPromptText(value) ||
+        hasAttachedSelectionMarkup(value)
+        ? null
+        : value;
+}
+
 function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     if (!session.resumeContextPending) {
         return prompt;
@@ -2441,6 +2492,7 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
                 message.kind !== "url_elicitation_request" &&
                 message.kind !== "status",
         )
+        .filter((message) => !isInternalRuntimeUserEchoMessage(message))
         .map((message) => {
             const role =
                 message.role === "assistant"
@@ -5222,11 +5274,11 @@ function applyPersistedHistoryMetadata(
             closedAt: history.closed_at ?? nextSession.closedAt ?? null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
-            persistedTitle: history.title ?? null,
-            customTitle: history.custom_title ?? null,
+            persistedTitle: sanitizePersistedDisplayText(history.title),
+            customTitle: sanitizePersistedDisplayText(history.custom_title),
             additionalRoots:
                 history.additional_roots ?? nextSession.additionalRoots ?? [],
-            persistedPreview: history.preview ?? null,
+            persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart,
         },
@@ -5361,9 +5413,9 @@ function createPersistedSession(
             runtimeState: "persisted_only",
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
-            persistedTitle: history.title ?? null,
-            customTitle: history.custom_title ?? null,
-            persistedPreview: history.preview ?? null,
+            persistedTitle: sanitizePersistedDisplayText(history.title),
+            customTitle: sanitizePersistedDisplayText(history.custom_title),
+            persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart:
                 persistedMessageCount === 0
@@ -5901,6 +5953,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
     const messages = getSessionTranscriptMessages(session)
         .filter((m) => !m.inProgress)
         .filter((m) => !isTransientRecoveryStatusMessage(m))
+        .filter((m) => !isInternalRuntimeUserEchoMessage(m))
         .filter((m) => m.kind !== "permission")
         .map((m) => ({
             id: m.id,
@@ -6122,6 +6175,7 @@ interface SuppressedRuntimeUserEcho {
     text: string;
     local_message_id: string;
     insert_after_message_id: string | null;
+    drop_on_completion?: boolean;
 }
 
 const _deltaBuffer: DeltaBuffer = {
@@ -6152,6 +6206,25 @@ function messageDeltaBufferKey(
     return `${sessionId}:${role}:${messageId}`;
 }
 
+function normalizeRuntimeEchoText(text: string) {
+    return text.replace(/\s+/g, " ").trim();
+}
+
+function isLocalUserEchoText(localText: string, runtimeText: string) {
+    const local = normalizeRuntimeEchoText(localText);
+    const runtime = normalizeRuntimeEchoText(runtimeText);
+    if (!local || !runtime) {
+        return false;
+    }
+
+    return (
+        local === runtime ||
+        local.startsWith(runtime) ||
+        local.endsWith(runtime) ||
+        local.includes(runtime)
+    );
+}
+
 // Callers pass an already-normalized session so the transcript is not
 // re-normalized on every runtime user delta.
 function latestLocalUserEchoCandidate(
@@ -6165,7 +6238,7 @@ function latestLocalUserEchoCandidate(
             if (message.title === runtimeTextMessageTitle("user")) {
                 return null;
             }
-            return message.content.startsWith(text) ? message : null;
+            return isLocalUserEchoText(message.content, text) ? message : null;
         }
     }
     return null;
@@ -6227,13 +6300,20 @@ function resolveSuppressedRuntimeUserEcho(
     }
 
     _suppressedRuntimeUserEchoByKey.delete(key);
+    if (
+        suppressed.drop_on_completion ||
+        isPotentialResumeContextPromptText(suppressed.text)
+    ) {
+        return normalizedSession;
+    }
+
     const localEcho = latestLocalUserEchoCandidate(
         normalizedSession,
         suppressed.text,
     );
     if (
         localEcho?.id === suppressed.local_message_id &&
-        localEcho.content === suppressed.text
+        isLocalUserEchoText(localEcho.content, suppressed.text)
     ) {
         return normalizedSession;
     }
@@ -6273,12 +6353,29 @@ function appendRuntimeTextDelta(
         existingMessage.kind === "text"
     ) {
         _suppressedRuntimeUserEchoByKey.delete(bufferKey);
+        const nextText = existingMessage.content + payload.text;
+        if (
+            payload.role === "user" &&
+            isPotentialResumeContextPromptText(nextText)
+        ) {
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: nextText,
+                local_message_id: "",
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+                drop_on_completion: true,
+            });
+            return removeSessionMessage(normalizedSession, payload.message_id);
+        }
+
         return replaceSessionMessage(
             normalizedSession,
             payload.message_id,
             (message) => ({
                 ...message,
-                content: message.content + payload.text,
+                content: nextText,
                 title: message.title ?? title,
                 inProgress: true,
             }),
@@ -6288,6 +6385,27 @@ function appendRuntimeTextDelta(
     if (payload.role === "user") {
         const suppressed = _suppressedRuntimeUserEchoByKey.get(bufferKey);
         const accumulatedText = `${suppressed?.text ?? ""}${payload.text}`;
+        if (isPotentialResumeContextPromptText(accumulatedText)) {
+            const newUserMessage =
+                extractResumeContextNewUserMessage(accumulatedText);
+            const localEcho = newUserMessage
+                ? latestLocalUserEchoCandidate(
+                      normalizedSession,
+                      newUserMessage,
+                  )
+                : null;
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: accumulatedText,
+                local_message_id: localEcho?.id ?? "",
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+                drop_on_completion: true,
+            });
+            return normalizedSession;
+        }
+
         const localEcho = latestLocalUserEchoCandidate(
             normalizedSession,
             accumulatedText,
@@ -6526,29 +6644,31 @@ async function waitForPersistedTranscriptIdle(sessionId: string) {
 function restoreMessagesFromHistory(
     history: PersistedSessionHistory,
 ): AIChatMessage[] {
-    return history.messages.map((m) =>
-        normalizeRestoredMessage({
-            id: m.id,
-            role: m.role as AIChatRole,
-            kind: m.kind as AIChatMessageKind,
-            content: m.content,
-            timestamp: m.timestamp,
-            title: m.title,
-            meta: m.meta,
-            permissionRequestId: m.permission_request_id,
-            permissionOptions: m.permission_options,
-            diffs: m.diffs,
-            reviewDiffs: m.review_diffs,
-            userInputRequestId: m.user_input_request_id,
-            userInputQuestions: m.user_input_questions,
-            urlElicitationRequestId: m.url_elicitation_request_id,
-            urlElicitationId: m.url_elicitation_id,
-            urlElicitationUrl: m.url_elicitation_url,
-            planEntries: m.plan_entries,
-            planDetail: m.plan_detail,
-            toolAction: m.tool_action,
-        }),
-    );
+    return history.messages
+        .map((m) =>
+            normalizeRestoredMessage({
+                id: m.id,
+                role: m.role as AIChatRole,
+                kind: m.kind as AIChatMessageKind,
+                content: m.content,
+                timestamp: m.timestamp,
+                title: m.title,
+                meta: m.meta,
+                permissionRequestId: m.permission_request_id,
+                permissionOptions: m.permission_options,
+                diffs: m.diffs,
+                reviewDiffs: m.review_diffs,
+                userInputRequestId: m.user_input_request_id,
+                userInputQuestions: m.user_input_questions,
+                urlElicitationRequestId: m.url_elicitation_request_id,
+                urlElicitationId: m.url_elicitation_id,
+                urlElicitationUrl: m.url_elicitation_url,
+                planEntries: m.plan_entries,
+                planDetail: m.plan_detail,
+                toolAction: m.tool_action,
+            }),
+        )
+        .filter((message) => !isInternalRuntimeUserEchoMessage(message));
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {

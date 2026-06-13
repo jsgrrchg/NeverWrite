@@ -2927,6 +2927,110 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("filters internal runtime user echoes when loading persisted transcript pages", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 200,
+                        message_count: 3,
+                        title:
+                            "Use the saved transcript below as prior conversation context for this session.",
+                        preview:
+                            '<attached_selection name="leaked">secret</attached_selection>',
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "history-1",
+                    total_messages: 3,
+                    start_index: 0,
+                    end_index: 3,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Clean prompt",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "leaked-selection",
+                            role: "user",
+                            kind: "text",
+                            content:
+                                '<attached_selection name="leaked">secret</attached_selection>',
+                            timestamp: 11,
+                        },
+                        {
+                            id: "leaked-resume",
+                            role: "user",
+                            kind: "text",
+                            title: "User",
+                            content:
+                                "User: Use the saved transcript below as prior conversation context for this session.\n\nSaved transcript:\nUser: leaked\n\nNew user message: leaked",
+                            timestamp: 12,
+                        },
+                    ],
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+            [
+                {
+                    id: "tab-restored",
+                    sessionId: "codex-session-existing",
+                    historySessionId: "history-1",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            "tab-restored",
+        );
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(session.persistedTitle).toBeNull();
+        expect(session.persistedPreview).toBeNull();
+        expect(session.messages.map((message) => message.id)).toEqual(["m1"]);
+        expect(session.messages[0]?.content).toBe("Clean prompt");
+    });
+
     it("loads every restored workspace chat tab after history metadata is reconciled", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
 
@@ -4026,6 +4130,117 @@ describe("chatStore", () => {
             id: "local-user-1",
             role: "user",
             content: "Echo me exactly",
+        });
+    });
+
+    it("does not duplicate a clean runtime echo for a local selection prompt", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "(10:13) Al doblar la manecil... elimina esto",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "elimina ",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "esto",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            role: "user",
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "local-user-1",
+            role: "user",
+            content: "(10:13) Al doblar la manecil... elimina esto",
+        });
+    });
+
+    it("suppresses runtime user echoes of transcript recovery prompts", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "(7) Es un reloj de feri... elimina esto",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        const resumePrompt =
+            "User: Use the saved transcript below as prior conversation context for this session.\n\n" +
+            "Saved transcript:\nUser: stale context\n\n" +
+            "New user message: /Users/jfg/Desktop/testing/cuento.md:7-7 elimina esto";
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-resume",
+            delta: resumePrompt.slice(0, 80),
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-resume",
+            delta: resumePrompt.slice(80),
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "runtime-user-resume",
+            role: "user",
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "local-user-1",
+            role: "user",
+            content: "(7) Es un reloj de feri... elimina esto",
         });
     });
 
@@ -11668,6 +11883,86 @@ describe("chatStore", () => {
                 ([command]) => command === "ai_create_session",
             ),
         ).toBe(false);
+    });
+
+    it("omits internal runtime user echoes from saved transcript recovery prompts", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    messages: [
+                        {
+                            id: "local-user",
+                            role: "user",
+                            kind: "text",
+                            content: "(7) Es un reloj de feri... elimina esto",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "runtime-user-selection",
+                            role: "user",
+                            kind: "text",
+                            content:
+                                '<attached_selection name="(7) Es un reloj de feri...">\nEs un reloj de feria.\n</attached_selection>\n\n/Users/jfg/Desktop/testing/cuento.md:7-7 elimina esto',
+                            timestamp: 11,
+                        },
+                        {
+                            id: "runtime-user-resume",
+                            role: "user",
+                            kind: "text",
+                            title: "User",
+                            content:
+                                "Use the saved transcript below as prior conversation context for this session.\n\nSaved transcript:\nUser: leaked\n\nNew user message: leaked",
+                            timestamp: 12,
+                        },
+                        {
+                            id: "assistant",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Done.",
+                            timestamp: 13,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Sigue"), activeSessionId);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain(
+            "User: (7) Es un reloj de feri... elimina esto",
+        );
+        expect(sentContent).toContain("Assistant: Done.");
+        expect(sentContent).not.toContain("<attached_selection");
+        expect(sentContent).not.toContain("New user message: leaked");
+        expect(sentContent).toContain("New user message: Sigue");
     });
 
     it("loads the full saved transcript before sending live Codex recovery prompts", async () => {

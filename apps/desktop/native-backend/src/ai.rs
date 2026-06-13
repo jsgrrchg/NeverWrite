@@ -15,15 +15,15 @@ use agent_client_protocol::schema::{
     ContentChunk, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
     ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
-    ElicitationUrlCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LogoutRequest, Meta, MultiSelectItems,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
-    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
+    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
+    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
+    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
     SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
     SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolKind,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, TextResourceContents, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
@@ -361,6 +361,10 @@ struct AiAttachmentInput {
     #[serde(rename = "mimeType")]
     mime_type: Option<String>,
     transcription: Option<String>,
+    #[serde(rename = "startLine")]
+    start_line: Option<u32>,
+    #[serde(rename = "endLine")]
+    end_line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -866,6 +870,12 @@ struct AcpAuthHandshakeRequest {
 #[derive(Debug, Clone)]
 struct AcpSessionHandle {
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AcpPromptCapabilities {
+    embedded_context: bool,
 }
 
 struct ElicitationWaiter {
@@ -968,7 +978,7 @@ impl AuthTerminalHandle {
 enum AcpCommand {
     Prompt {
         session_id: String,
-        content: String,
+        prompt: Vec<ContentBlock>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
     SetMode {
@@ -1636,22 +1646,23 @@ impl NativeAi {
                         .to_string(),
                 );
             }
-            let prompt = build_prompt_with_attachments(
-                &content,
-                &attachments,
-                managed.vault_root.as_deref(),
-                &managed.additional_roots,
-            )?;
-            managed.session.status = AiSessionStatus::Streaming;
             let handle = managed
                 .runtime_handle
                 .clone()
                 .ok_or_else(|| "AI runtime session is not connected.".to_string())?;
+            let prompt = build_prompt_blocks_with_attachments(
+                &content,
+                &attachments,
+                managed.vault_root.as_deref(),
+                &managed.additional_roots,
+                handle.prompt_capabilities(),
+            )?;
+            managed.session.status = AiSessionStatus::Streaming;
             touch_session(&mut state, &session_id);
             (prompt, handle)
         };
 
-        handle.prompt(&session_id, &prompt)?;
+        handle.prompt(&session_id, prompt)?;
         self.load_session(&json!({ "sessionId": session_id }))
     }
 
@@ -2301,10 +2312,17 @@ impl AcpSessionHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
-    fn prompt(&self, session_id: &str, content: &str) -> Result<(), String> {
+    fn prompt_capabilities(&self) -> AcpPromptCapabilities {
+        self.prompt_capabilities
+            .lock()
+            .map(|capabilities| *capabilities)
+            .unwrap_or_default()
+    }
+
+    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), String> {
         self.request(|response_tx| AcpCommand::Prompt {
             session_id: session_id.to_string(),
-            content: content.to_string(),
+            prompt,
             response_tx,
         })
     }
@@ -3626,6 +3644,26 @@ fn current_error_to_acp12(error: agent_client_protocol::Error) -> acp12::Error {
     acp12_internal_error(error.to_string())
 }
 
+fn prompt_capabilities_from_initialize_response(
+    initialize_response: &InitializeResponse,
+) -> AcpPromptCapabilities {
+    AcpPromptCapabilities {
+        embedded_context: initialize_response
+            .agent_capabilities
+            .prompt_capabilities
+            .embedded_context,
+    }
+}
+
+fn remember_prompt_capabilities(
+    target: &Arc<Mutex<AcpPromptCapabilities>>,
+    capabilities: AcpPromptCapabilities,
+) {
+    if let Ok(mut target) = target.lock() {
+        *target = capabilities;
+    }
+}
+
 fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
     // ACP 0.12 does not expose the newer elicitation capability flags through the
     // umbrella `unstable` feature. Gemini and Grok stay on the legacy surface.
@@ -3646,8 +3684,10 @@ fn start_acp_session(
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
     let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let prompt_capabilities = Arc::new(Mutex::new(AcpPromptCapabilities::default()));
     let handle = AcpSessionHandle {
         command_tx: command_tx.clone(),
+        prompt_capabilities: Arc::clone(&prompt_capabilities),
     };
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -3670,6 +3710,7 @@ fn start_acp_session(
                         user_input_waiters,
                         url_elicitation_waiters,
                         completed_url_elicitations,
+                        prompt_capabilities,
                         command_rx,
                         created_tx,
                     )
@@ -3686,6 +3727,7 @@ fn start_acp_session(
                         user_input_waiters,
                         url_elicitation_waiters,
                         completed_url_elicitations,
+                        prompt_capabilities,
                         command_rx,
                         created_tx,
                     )
@@ -4039,6 +4081,7 @@ async fn run_acp_actor(
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
@@ -4052,6 +4095,7 @@ async fn run_acp_actor(
         user_input_waiters,
         url_elicitation_waiters,
         completed_url_elicitations,
+        prompt_capabilities,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -4071,6 +4115,7 @@ async fn run_acp12_actor(
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
@@ -4084,6 +4129,7 @@ async fn run_acp12_actor(
         user_input_waiters,
         url_elicitation_waiters,
         completed_url_elicitations,
+        prompt_capabilities,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -4103,6 +4149,7 @@ async fn run_acp12_actor_inner(
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -4203,6 +4250,14 @@ async fn run_acp12_actor_inner(
                         )
                         .block_task()
                         .await?;
+                    let current_initialize_response: InitializeResponse =
+                        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
+                    remember_prompt_capabilities(
+                        &prompt_capabilities,
+                        prompt_capabilities_from_initialize_response(
+                            &current_initialize_response,
+                        ),
+                    );
                     run_acp12_auth_handshake(&connection, &spec, &initialize_response).await?;
                     emit_event(
                         &event_tx_for_connection,
@@ -4297,6 +4352,7 @@ async fn run_acp_actor_inner(
     user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -4418,6 +4474,10 @@ async fn run_acp_actor_inner(
                         )
                         .block_task()
                         .await?;
+                    remember_prompt_capabilities(
+                        &prompt_capabilities,
+                        prompt_capabilities_from_initialize_response(&initialize_response),
+                    );
                     run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
                     emit_event(
                         &event_tx_for_connection,
@@ -4708,7 +4768,7 @@ async fn handle_acp_command(
     match command {
         AcpCommand::Prompt {
             session_id,
-            content,
+            prompt,
             response_tx,
         } => {
             let connection = connection.clone();
@@ -4718,7 +4778,7 @@ async fn handle_acp_command(
                 let result = connection
                     .send_request(PromptRequest::new(
                         SessionId::new(session_id.clone()),
-                        vec![ContentBlock::from(content)],
+                        prompt,
                     ))
                     .block_task()
                     .await
@@ -4828,22 +4888,27 @@ async fn handle_acp12_command(
     match command {
         AcpCommand::Prompt {
             session_id,
-            content,
+            prompt,
             response_tx,
         } => {
             let connection = connection.clone();
             let client = client.clone();
             tokio::spawn(async move {
                 let message_id = client.begin_message(&session_id);
-                let result = connection
-                    .send_request(acp12::schema::PromptRequest::new(
-                        acp12::schema::SessionId::new(session_id.clone()),
-                        vec![acp12::schema::ContentBlock::from(content)],
-                    ))
-                    .block_task()
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string());
+                let legacy_prompt: Result<Vec<acp12::schema::ContentBlock>, String> =
+                    current_to_acp12(prompt);
+                let result = match legacy_prompt {
+                    Ok(legacy_prompt) => connection
+                        .send_request(acp12::schema::PromptRequest::new(
+                            acp12::schema::SessionId::new(session_id.clone()),
+                            legacy_prompt,
+                        ))
+                        .block_task()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error),
+                };
                 client.end_thinking(&session_id);
                 client.end_user_message(&session_id);
                 client.complete_assistant_turn(&session_id, &message_id);
@@ -8300,6 +8365,243 @@ fn build_prompt_with_attachments(
         return Ok(content.to_string());
     }
     Ok(format!("{}\n\n{}", context_parts.join("\n\n"), content))
+}
+
+fn build_prompt_blocks_with_attachments(
+    content: &str,
+    attachments: &[AiAttachmentInput],
+    vault_root: Option<&Path>,
+    additional_roots: &[PathBuf],
+    capabilities: AcpPromptCapabilities,
+) -> Result<Vec<ContentBlock>, String> {
+    if !capabilities.embedded_context {
+        return build_prompt_with_attachments(content, attachments, vault_root, additional_roots)
+            .map(|content| vec![ContentBlock::from(content)]);
+    }
+
+    let mut blocks = Vec::new();
+    let mut text_context_parts = Vec::new();
+
+    for attachment in attachments {
+        if let Some(content) = attachment.content.as_deref() {
+            blocks.push(embedded_text_resource_block(
+                content,
+                attachment_resource_uri(attachment, "selection"),
+                text_attachment_mime(attachment),
+            ));
+            continue;
+        }
+
+        match attachment.attachment_type.as_deref() {
+            Some("folder") => {
+                if let Some(folder_rel) = attachment.note_id.as_deref() {
+                    text_context_parts.push(format!(
+                        "<attached_folder name=\"{}\" path=\"{}\" />",
+                        attachment.label.trim_start_matches("Folder "),
+                        folder_rel
+                    ));
+                }
+            }
+            Some("audio") => {
+                if let Some(transcription) = attachment.transcription.as_deref() {
+                    blocks.push(embedded_text_resource_block(
+                        transcription,
+                        attachment_resource_uri(attachment, "audio"),
+                        Some("text/plain".to_string()),
+                    ));
+                }
+            }
+            Some("file") => {
+                if let Some(file_path) = attachment
+                    .file_path
+                    .as_deref()
+                    .or(attachment.path.as_deref())
+                {
+                    append_file_attachment_blocks(
+                        &mut blocks,
+                        &mut text_context_parts,
+                        attachment,
+                        file_path,
+                        vault_root,
+                        additional_roots,
+                    )?;
+                }
+            }
+            _ => {
+                if let Some(path) = attachment.path.as_deref() {
+                    let path = allowed_attachment_path(path, vault_root, additional_roots)?;
+                    match std::fs::read_to_string(&path) {
+                        Ok(file_content) => blocks.push(embedded_text_resource_block(
+                            &file_content,
+                            path_resource_uri(&path, attachment),
+                            text_attachment_mime(attachment),
+                        )),
+                        Err(error) => text_context_parts.push(format!(
+                            "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                            attachment.label, error
+                        )),
+                    }
+                }
+            }
+        }
+    }
+
+    let prompt_text = prompt_without_embedded_attachment_references(content, attachments);
+    let prompt_text = if text_context_parts.is_empty() {
+        prompt_text
+    } else if prompt_text.is_empty() {
+        text_context_parts.join("\n\n")
+    } else {
+        format!("{}\n\n{}", text_context_parts.join("\n\n"), prompt_text)
+    };
+    if !prompt_text.trim().is_empty() {
+        blocks.push(ContentBlock::from(prompt_text));
+    }
+    if blocks.is_empty() {
+        blocks.push(ContentBlock::from(content.to_string()));
+    }
+    Ok(blocks)
+}
+
+fn embedded_text_resource_block(
+    text: &str,
+    uri: String,
+    mime_type: Option<String>,
+) -> ContentBlock {
+    ContentBlock::Resource(EmbeddedResource::new(
+        EmbeddedResourceResource::TextResourceContents(
+            TextResourceContents::new(text.to_string(), uri).mime_type(mime_type),
+        ),
+    ))
+}
+
+fn append_file_attachment_blocks(
+    blocks: &mut Vec<ContentBlock>,
+    text_context_parts: &mut Vec<String>,
+    attachment: &AiAttachmentInput,
+    file_path: &str,
+    vault_root: Option<&Path>,
+    additional_roots: &[PathBuf],
+) -> Result<(), String> {
+    let path = allowed_attachment_path(file_path, vault_root, additional_roots)?;
+    let mime = attachment
+        .mime_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    let rel_path = display_attachment_path(&path, vault_root);
+
+    if mime == "application/pdf" {
+        text_context_parts.push(format!(
+            "<attached_pdf name=\"{}\" path=\"{}\" />",
+            attachment.label, rel_path
+        ));
+    } else if mime.starts_with("text/") || mime == "application/json" {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => blocks.push(embedded_text_resource_block(
+                &text,
+                path_resource_uri(&path, attachment),
+                Some(mime.to_string()),
+            )),
+            Err(error) => text_context_parts.push(format!(
+                "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                attachment.label, mime, error
+            )),
+        }
+    } else if mime.starts_with("image/") {
+        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        text_context_parts.push(format!(
+            "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\" />",
+            attachment.label, mime, rel_path, size
+        ));
+    } else {
+        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        text_context_parts.push(format!(
+            "<attached_file name=\"{}\" type=\"{}\">\n[Binary file: {} bytes]\n</attached_file>",
+            attachment.label, mime, size
+        ));
+    }
+
+    Ok(())
+}
+
+fn prompt_without_embedded_attachment_references(
+    content: &str,
+    attachments: &[AiAttachmentInput],
+) -> String {
+    let mut prompt = content.to_string();
+    for attachment in attachments {
+        if attachment.attachment_type.as_deref() != Some("selection") {
+            continue;
+        }
+        let (Some(path), Some(start_line), Some(end_line)) = (
+            attachment.path.as_deref(),
+            attachment.start_line,
+            attachment.end_line,
+        ) else {
+            continue;
+        };
+        prompt = prompt.replace(&format!("{path}:{start_line}-{end_line}"), "");
+    }
+    prompt.trim().to_string()
+}
+
+fn text_attachment_mime(attachment: &AiAttachmentInput) -> Option<String> {
+    attachment.mime_type.clone().or_else(|| {
+        attachment
+            .path
+            .as_deref()
+            .or(attachment.file_path.as_deref())
+            .and_then(|path| {
+                if path.ends_with(".md") || path.ends_with(".markdown") {
+                    Some("text/markdown".to_string())
+                } else if path.ends_with(".json") {
+                    Some("application/json".to_string())
+                } else if path.ends_with(".txt") {
+                    Some("text/plain".to_string())
+                } else {
+                    None
+                }
+            })
+    })
+}
+
+fn attachment_resource_uri(attachment: &AiAttachmentInput, fallback_kind: &str) -> String {
+    let source = attachment
+        .file_path
+        .as_deref()
+        .or(attachment.path.as_deref())
+        .or(attachment.note_id.as_deref())
+        .unwrap_or(&attachment.label);
+    let mut uri = if source.contains("://") {
+        source.to_string()
+    } else if Path::new(source).is_absolute() {
+        format!("file://{source}")
+    } else {
+        format!(
+            "neverwrite://{fallback_kind}/{}",
+            source.replace(' ', "%20")
+        )
+    };
+    if let (Some(start_line), Some(end_line)) = (attachment.start_line, attachment.end_line) {
+        if start_line == end_line {
+            uri.push_str(&format!("#L{start_line}"));
+        } else {
+            uri.push_str(&format!("#L{start_line}-L{end_line}"));
+        }
+    }
+    uri
+}
+
+fn path_resource_uri(path: &Path, attachment: &AiAttachmentInput) -> String {
+    let mut uri = format!("file://{}", path.display());
+    if let (Some(start_line), Some(end_line)) = (attachment.start_line, attachment.end_line) {
+        if start_line == end_line {
+            uri.push_str(&format!("#L{start_line}"));
+        } else {
+            uri.push_str(&format!("#L{start_line}-L{end_line}"));
+        }
+    }
+    uri
 }
 
 fn append_file_attachment(
@@ -12743,6 +13045,8 @@ mod tests {
                 file_path: Some(outside_file.display().to_string()),
                 mime_type: Some("text/plain".to_string()),
                 transcription: None,
+                start_line: None,
+                end_line: None,
             }],
             Some(vault.path()),
             &[],
@@ -12750,6 +13054,95 @@ mod tests {
         .expect_err("outside attachment should be blocked");
 
         assert!(error.contains("outside the vault"));
+    }
+
+    #[test]
+    fn prompt_blocks_embed_selection_context_without_textual_wrapper() {
+        let selection_path = "/Users/example/vault/cuento.md";
+        let attachments = vec![AiAttachmentInput {
+            label: "(30) Una mujer bajó prime...".to_string(),
+            path: Some(selection_path.to_string()),
+            content: Some("Una mujer bajó primero.".to_string()),
+            attachment_type: Some("selection".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: None,
+            transcription: None,
+            start_line: Some(30),
+            end_line: Some(30),
+        }];
+
+        let blocks = build_prompt_blocks_with_attachments(
+            &format!("{selection_path}:30-30 elimina esto"),
+            &attachments,
+            None,
+            &[],
+            AcpPromptCapabilities {
+                embedded_context: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Resource(EmbeddedResource {
+                resource:
+                    EmbeddedResourceResource::TextResourceContents(TextResourceContents {
+                        text,
+                        uri,
+                        ..
+                    }),
+                ..
+            }) => {
+                assert_eq!(text, "Una mujer bajó primero.");
+                assert_eq!(uri, "file:///Users/example/vault/cuento.md#L30");
+            }
+            other => panic!("expected embedded selection resource, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Text(text) => {
+                assert_eq!(text.text, "elimina esto");
+                assert!(!text.text.contains("attached_selection"));
+                assert!(!text.text.contains(selection_path));
+            }
+            other => panic!("expected text prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_keep_textual_attachment_fallback_without_embedded_context() {
+        let attachments = vec![AiAttachmentInput {
+            label: "(30) Una mujer bajó prime...".to_string(),
+            path: Some("/Users/example/vault/cuento.md".to_string()),
+            content: Some("Una mujer bajó primero.".to_string()),
+            attachment_type: Some("selection".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: None,
+            transcription: None,
+            start_line: Some(30),
+            end_line: Some(30),
+        }];
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "/Users/example/vault/cuento.md:30-30 elimina esto",
+            &attachments,
+            None,
+            &[],
+            AcpPromptCapabilities {
+                embedded_context: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => {
+                assert!(text.text.contains("<attached_selection"));
+                assert!(text.text.contains("Una mujer bajó primero."));
+            }
+            other => panic!("expected fallback text prompt, got {other:?}"),
+        }
     }
 
     #[test]
