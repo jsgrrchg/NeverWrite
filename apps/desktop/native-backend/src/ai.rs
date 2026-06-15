@@ -6803,13 +6803,16 @@ fn acp_process_spec(
     if runtime_id == GROK_RUNTIME_ID && grok_inherited_xai_api_key_marked_invalid(setup) {
         env.insert("XAI_API_KEY".to_string(), String::new());
     }
-    if let Some(method) = setup.auth_method.as_deref() {
+    let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
+    if let Some(method) = auth_method.as_deref() {
         if runtime_id == GEMINI_RUNTIME_ID {
             env.insert(
                 "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
                 gemini_cli_auth_type(method).to_string(),
             );
         }
+    }
+    if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
             env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
             env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
@@ -6825,7 +6828,6 @@ fn acp_process_spec(
         env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
             .or_default();
     }
-    let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
     Ok(AcpProcessSpec {
         program,
         args: resolved.args,
@@ -15629,6 +15631,40 @@ mod tests {
             spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
             Some("gemini-api-key")
         );
+    }
+
+    #[test]
+    fn acp_process_spec_maps_inherited_gemini_api_key_to_cli_auth_type() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous_gemini = std::env::var_os("GEMINI_API_KEY");
+        let previous_google = std::env::var_os("GOOGLE_API_KEY");
+        std::env::set_var("GEMINI_API_KEY", "gemini-env-secret");
+        std::env::remove_var("GOOGLE_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GEMINI_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Gemini ACP process spec should resolve");
+
+        match previous_gemini {
+            Some(value) => std::env::set_var("GEMINI_API_KEY", value),
+            None => std::env::remove_var("GEMINI_API_KEY"),
+        }
+        match previous_google {
+            Some(value) => std::env::set_var("GOOGLE_API_KEY", value),
+            None => std::env::remove_var("GOOGLE_API_KEY"),
+        }
+
+        assert_eq!(spec.auth_method.as_deref(), Some("use_gemini"));
+        assert_eq!(
+            spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
+            Some("gemini-api-key")
+        );
+        assert_eq!(spec.env.get("GEMINI_API_KEY"), None);
     }
 
     #[test]
