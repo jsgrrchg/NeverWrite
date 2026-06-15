@@ -2480,12 +2480,39 @@ describe("chatStore", () => {
                                 ],
                             },
                             {
+                                id: "user-input:input-stale-1",
+                                role: "assistant",
+                                kind: "user_input_request",
+                                content: "Choose scope",
+                                title: "Need a choice",
+                                timestamp: 13,
+                                meta: {
+                                    status: "pending",
+                                },
+                                user_input_request_id: "input-stale-1",
+                                user_input_questions: [
+                                    {
+                                        id: "scope",
+                                        header: "Scope",
+                                        question: "Which scope should I use?",
+                                        is_other: false,
+                                        is_secret: false,
+                                        options: [
+                                            {
+                                                label: "Safe",
+                                                description: "Use the narrow scope.",
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
                                 id: "url-elicitation:url-stale-1",
                                 role: "assistant",
                                 kind: "url_elicitation_request",
                                 content: "https://example.com/auth",
                                 title: "Authorize access",
-                                timestamp: 13,
+                                timestamp: 14,
                                 meta: {
                                     status: "pending",
                                 },
@@ -2499,7 +2526,7 @@ describe("chatStore", () => {
                                 kind: "url_elicitation_request",
                                 content: "https://example.com/done",
                                 title: "Completed access",
-                                timestamp: 14,
+                                timestamp: 15,
                                 meta: {
                                     status: "completed",
                                     action: "complete",
@@ -2533,6 +2560,7 @@ describe("chatStore", () => {
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:user-input:input-stale-1",
             "restored:url-elicitation:url-stale-1",
             "restored:url-elicitation:url-final-1",
         ]);
@@ -2540,6 +2568,7 @@ describe("chatStore", () => {
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:user-input:input-stale-1",
             "restored:url-elicitation:url-stale-1",
             "restored:url-elicitation:url-final-1",
         ]);
@@ -2549,6 +2578,18 @@ describe("chatStore", () => {
         expect(session.lastTurnStartedMessageId).toBe("status:init-turn");
         expect(session.lastAssistantMessageId).toBe("assistant:init");
         expect(session.activePlanMessageId).toBe("plan:init");
+        expect(
+            session.messagesById?.["restored:user-input:input-stale-1"],
+        ).toMatchObject({
+            kind: "user_input_request",
+            userInputRequestId: undefined,
+            meta: {
+                status: "resolved",
+                answered: false,
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        });
         expect(
             session.messagesById?.["restored:url-elicitation:url-stale-1"],
         ).toMatchObject({
@@ -2584,6 +2625,7 @@ describe("chatStore", () => {
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:user-input:input-stale-1",
             "restored:url-elicitation:url-stale-1",
             "restored:url-elicitation:url-final-1",
             "url-elicitation:url-stale-1",
@@ -2611,6 +2653,7 @@ describe("chatStore", () => {
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:user-input:input-stale-1",
             "restored:url-elicitation:url-stale-1",
             "restored:url-elicitation:url-final-1",
             "url-elicitation:url-stale-1",

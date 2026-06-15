@@ -255,6 +255,7 @@ export interface AIUserInputQuestion {
     question: string;
     is_other: boolean;
     is_secret: boolean;
+    allows_multiple?: boolean;
     options?: AIUserInputQuestionOption[];
 }
 

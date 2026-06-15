@@ -1700,29 +1700,38 @@ impl NativeAi {
 
     pub(crate) fn respond_user_input(&self, args: &Value) -> Result<Value, String> {
         let input: AiRespondUserInputInput = input_from_args(args)?;
-        let waiter = self
-            .user_input_waiters
-            .lock()
-            .map_err(|error| format!("Internal AI user input state error: {error}"))?
-            .remove(&input.request_id)
-            .ok_or_else(|| format!("AI user input request not found: {}", input.request_id))?;
-        if waiter.session_id != input.session_id {
-            return Err(format!(
-                "AI user input request {} belongs to a different session.",
-                input.request_id
-            ));
-        }
-
-        let response = create_elicitation_response_from_user_input(
-            input.action.as_deref(),
-            input.answers,
-            &waiter.fields,
-        )?;
+        let request_id = input.request_id;
+        let session_id = input.session_id;
+        let action = input.action;
+        let answers = input.answers;
+        let (waiter, response) = {
+            let mut waiters = self
+                .user_input_waiters
+                .lock()
+                .map_err(|error| format!("Internal AI user input state error: {error}"))?;
+            let waiter = waiters
+                .get(&request_id)
+                .ok_or_else(|| format!("AI user input request not found: {request_id}"))?;
+            if waiter.session_id != session_id {
+                return Err(format!(
+                    "AI user input request {request_id} belongs to a different session."
+                ));
+            }
+            let response = create_elicitation_response_from_user_input(
+                action.as_deref(),
+                answers,
+                &waiter.fields,
+            )?;
+            let waiter = waiters
+                .remove(&request_id)
+                .expect("validated user input waiter should still exist");
+            (waiter, response)
+        };
         waiter
             .response_tx
             .send(response)
             .map_err(|_| "AI user input request was closed.".to_string())?;
-        self.load_session(&json!({ "sessionId": input.session_id }))
+        self.load_session(&json!({ "sessionId": session_id }))
     }
 
     pub(crate) fn respond_url_elicitation(&self, args: &Value) -> Result<Value, String> {
@@ -5563,6 +5572,7 @@ fn map_elicitation_form_questions(
                     question,
                     is_other: false,
                     is_secret: false,
+                    allows_multiple: matches!(kind, ElicitationFieldKind::StringArray),
                     options,
                 },
                 (
@@ -12685,6 +12695,90 @@ mod tests {
             content.get("confirmed"),
             Some(&ElicitationContentValue::Boolean(true))
         );
+    }
+
+    #[test]
+    fn invalid_user_input_response_does_not_consume_waiter() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.user_input_waiters.lock().unwrap().insert(
+            "user-input-1".to_string(),
+            ElicitationWaiter {
+                session_id: "session-1".to_string(),
+                fields: HashMap::from([(
+                    "scope".to_string(),
+                    ElicitationFieldSpec {
+                        kind: ElicitationFieldKind::String,
+                        option_values_by_label: HashMap::from([(
+                            "Safe".to_string(),
+                            "safe".to_string(),
+                        )]),
+                    },
+                )]),
+                response_tx,
+            },
+        );
+
+        let action_error = ai
+            .respond_user_input(&json!({
+                "session_id": "session-1",
+                "request_id": "user-input-1",
+                "action": "bogus",
+                "answers": {}
+            }))
+            .unwrap_err();
+        assert_eq!(action_error, "Unsupported user input action: bogus");
+        assert!(ai
+            .user_input_waiters
+            .lock()
+            .unwrap()
+            .contains_key("user-input-1"));
+
+        let session_error = ai
+            .respond_user_input(&json!({
+                "session_id": "session-2",
+                "request_id": "user-input-1",
+                "action": "accept",
+                "answers": {
+                    "scope": ["Safe"]
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            session_error,
+            "AI user input request user-input-1 belongs to a different session."
+        );
+        assert!(ai
+            .user_input_waiters
+            .lock()
+            .unwrap()
+            .contains_key("user-input-1"));
+
+        ai.respond_user_input(&json!({
+            "session_id": "session-1",
+            "request_id": "user-input-1",
+            "action": "accept",
+            "answers": {
+                "scope": ["Safe"]
+            }
+        }))
+        .unwrap();
+        let response = run_client_future(response_rx).unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(ai.user_input_waiters.lock().unwrap().is_empty());
     }
 
     #[test]

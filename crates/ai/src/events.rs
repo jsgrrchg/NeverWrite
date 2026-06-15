@@ -168,6 +168,7 @@ pub struct AiUserInputQuestionPayload {
     pub question: String,
     pub is_other: bool,
     pub is_secret: bool,
+    pub allows_multiple: bool,
     pub options: Option<Vec<AiUserInputQuestionOptionPayload>>,
 }
 

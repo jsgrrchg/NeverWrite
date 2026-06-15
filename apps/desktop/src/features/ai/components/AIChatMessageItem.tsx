@@ -2951,6 +2951,20 @@ function PermissionMessage({
     );
 }
 
+function nextUserInputSelection(
+    currentSelected: string[],
+    optionLabel: string,
+    allowsMultiple: boolean,
+) {
+    if (!allowsMultiple) {
+        return [optionLabel];
+    }
+
+    return currentSelected.includes(optionLabel)
+        ? currentSelected.filter((value) => value !== optionLabel)
+        : [...currentSelected, optionLabel];
+}
+
 function UserInputRequestMessage({
     message,
     sessionId,
@@ -2976,6 +2990,9 @@ function UserInputRequestMessage({
     const textAnswers = rowState?.userInputTextAnswers ?? {};
     const otherAnswers = rowState?.userInputOtherAnswers ?? {};
 
+    const selectedValuesForQuestion = (questionId: string) =>
+        selectedOptions[questionId] ?? [];
+
     const submitAnswers = (cancelled = false) => {
         if (!message.userInputRequestId) return;
         if (cancelled) {
@@ -2986,11 +3003,13 @@ function UserInputRequestMessage({
         const answers = questions.reduce<Record<string, string[]>>(
             (accumulator, question) => {
                 const values: string[] = [];
-                const selected = selectedOptions[question.id]?.trim();
+                const selected = selectedValuesForQuestion(question.id)
+                    .map((value) => value.trim())
+                    .filter(Boolean);
                 const text = textAnswers[question.id]?.trim();
                 const other = otherAnswers[question.id]?.trim();
 
-                if (selected) values.push(selected);
+                values.push(...selected);
                 if (text) values.push(text);
                 if (other) values.push(`user_note: ${other}`);
 
@@ -3051,7 +3070,8 @@ function UserInputRequestMessage({
             <div className="flex flex-col gap-3 px-3 py-3">
                 {questions.map((question) => {
                     const options = question.options ?? [];
-                    const selected = selectedOptions[question.id] ?? "";
+                    const allowsMultiple = question.allows_multiple === true;
+                    const selected = selectedValuesForQuestion(question.id);
                     const textValue = textAnswers[question.id] ?? "";
                     const otherValue = otherAnswers[question.id] ?? "";
 
@@ -3083,23 +3103,39 @@ function UserInputRequestMessage({
                                 <div className="flex flex-wrap gap-2">
                                     {options.map((option) => {
                                         const isSelected =
-                                            selected === option.label;
+                                            selected.includes(option.label);
                                         return (
                                             <button
                                                 key={option.label}
                                                 type="button"
                                                 disabled={!isPending}
-                                                onClick={() =>
-                                                    updateRow((current) => ({
-                                                        userInputSelectedOptions:
-                                                            {
-                                                                ...(current.userInputSelectedOptions ??
-                                                                    {}),
-                                                                [question.id]:
-                                                                    option.label,
-                                                            },
-                                                    }))
-                                                }
+                                                aria-pressed={isSelected}
+                                                onClick={() => {
+                                                    updateRow((current) => {
+                                                        const currentOptions =
+                                                            current.userInputSelectedOptions ??
+                                                            {};
+                                                        const currentSelected =
+                                                            currentOptions[
+                                                                question.id
+                                                            ] ?? [];
+                                                        const nextSelected =
+                                                            nextUserInputSelection(
+                                                                currentSelected,
+                                                                option.label,
+                                                                allowsMultiple,
+                                                            );
+
+                                                        return {
+                                                            userInputSelectedOptions:
+                                                                {
+                                                                    ...currentOptions,
+                                                                    [question.id]:
+                                                                        nextSelected,
+                                                                },
+                                                        };
+                                                    });
+                                                }}
                                                 className="rounded-md px-2.5 py-1 text-left transition-colors"
                                                 style={{
                                                     fontSize: "0.78em",

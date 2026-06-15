@@ -2125,6 +2125,32 @@ function isFinalUrlElicitationStatus(status: unknown) {
 }
 
 function normalizeRestoredMessage(message: AIChatMessage): AIChatMessage {
+    if (message.kind === "user_input_request") {
+        const restoredMessage = {
+            ...message,
+            id: message.id.startsWith("restored:")
+                ? message.id
+                : `restored:${message.id}`,
+            inProgress: false,
+            userInputRequestId: undefined,
+        };
+
+        if (message.meta?.status === "resolved") {
+            return restoredMessage;
+        }
+
+        return {
+            ...restoredMessage,
+            meta: {
+                ...message.meta,
+                status: "resolved",
+                answered: false,
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        };
+    }
+
     if (message.kind === "url_elicitation_request") {
         const restoredMessage = {
             ...message,
