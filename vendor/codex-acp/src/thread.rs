@@ -5729,7 +5729,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prompt() -> anyhow::Result<()> {
-        let (session_id, client, _, message_tx, local_set) = setup(vec![]).await?;
+        let (session_id, client, thread, message_tx, local_set) = setup(vec![]).await?;
         let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
 
         message_tx.send(ThreadMessage::Prompt {
@@ -5764,6 +5764,23 @@ mod tests {
             })
             .count();
         assert_eq!(agent_messages, 1, "notifications={notifications:?}");
+
+        let ops = thread.ops.lock().unwrap();
+        assert_eq!(
+            ops.as_slice(),
+            &[Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "Hi".to_string(),
+                    text_elements: vec![]
+                }],
+                environments: None,
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            }],
+            "ops don't match {ops:?}"
+        );
 
         Ok(())
     }
@@ -5806,6 +5823,46 @@ mod tests {
         );
         let ops = thread.ops.lock().unwrap();
         assert_eq!(ops.as_slice(), &[Op::Compact]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_load_uses_config_options_without_legacy_models() -> anyhow::Result<()> {
+        let (_session_id, _client, _thread, message_tx, local_set) = setup(vec![]).await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Load { response_tx })?;
+
+        let load_response = tokio::try_join!(
+            async {
+                let load_response = response_rx.await??;
+                drop(message_tx);
+                anyhow::Ok(load_response)
+            },
+            async {
+                drop(local_set.await);
+                anyhow::Ok(())
+            }
+        )?
+        .0;
+        let load_json = serde_json::to_value(&load_response)?;
+
+        assert!(
+            load_json.get("models").is_none(),
+            "ACP 0.16 load response must not include legacy models state: {load_json:?}"
+        );
+        let config_options = load_json
+            .get("configOptions")
+            .or_else(|| load_json.get("config_options"))
+            .and_then(|value| value.as_array())
+            .expect("load response should include config options");
+        assert!(
+            config_options
+                .iter()
+                .any(|option| option.get("id").and_then(|id| id.as_str()) == Some("model")),
+            "model selection should be exposed through config options: {load_json:?}"
+        );
 
         Ok(())
     }
