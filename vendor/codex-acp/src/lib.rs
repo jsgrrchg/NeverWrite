@@ -10,8 +10,6 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing_subscriber::EnvFilter;
 
 mod codex_agent;
-mod prompt_args;
-mod subagents;
 mod thread;
 
 /// Run the Codex ACP agent.
