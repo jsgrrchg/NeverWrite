@@ -8,7 +8,7 @@ members = [
     "crates/ai",
     "apps/desktop/native-backend",
 ]
-exclude = ["vendor/codex-acp"]
+exclude = ["vendor/codex-acp", "vendor/acp12"]
 
 [profile.dev]
 opt-level = 1

@@ -114,6 +114,97 @@ describe("EditedFilesBufferPanel", () => {
         expect(screen.queryByText("Edits")).not.toBeInTheDocument();
     });
 
+    it("does not render false entries for permission, user input, or URL requests without diffs", () => {
+        const session = createSession("session-interactions-only", []);
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: {
+                    ...session,
+                    status: "waiting_user_input",
+                    activeWorkCycleId: "cycle-interactions",
+                    visibleWorkCycleId: "cycle-interactions",
+                    messages: [
+                        {
+                            id: "permission:no-diff",
+                            role: "assistant",
+                            kind: "permission",
+                            title: "Permission request",
+                            content: "Run command",
+                            timestamp: 1,
+                            workCycleId: "cycle-interactions",
+                            permissionRequestId: "permission-no-diff",
+                            permissionOptions: [
+                                {
+                                    option_id: "allow_once",
+                                    name: "Allow once",
+                                    kind: "allow_once",
+                                },
+                            ],
+                            meta: {
+                                status: "pending",
+                            },
+                        },
+                        {
+                            id: "user-input:no-diff",
+                            role: "assistant",
+                            kind: "user_input_request",
+                            title: "Need a choice",
+                            content: "Which scope should I use?",
+                            timestamp: 2,
+                            workCycleId: "cycle-interactions",
+                            userInputRequestId: "input-no-diff",
+                            userInputQuestions: [
+                                {
+                                    id: "scope",
+                                    header: "Scope",
+                                    question: "Which scope should I use?",
+                                    is_other: false,
+                                    is_secret: false,
+                                    options: [
+                                        {
+                                            label: "Safe",
+                                            description: "Use the narrow scope.",
+                                        },
+                                    ],
+                                },
+                            ],
+                            meta: {
+                                status: "pending",
+                            },
+                        },
+                        {
+                            id: "url-elicitation:no-diff",
+                            role: "assistant",
+                            kind: "url_elicitation_request",
+                            title: "Authorize access",
+                            content: "https://example.com/auth",
+                            timestamp: 3,
+                            workCycleId: "cycle-interactions",
+                            urlElicitationRequestId: "url-no-diff",
+                            urlElicitationId: "elicitation-no-diff",
+                            urlElicitationUrl: "https://example.com/auth",
+                            meta: {
+                                status: "pending",
+                            },
+                        },
+                    ],
+                },
+            },
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        expect(screen.queryByText("Edits")).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Review" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Reject All" }),
+        ).not.toBeInTheDocument();
+    });
+
     it("renders legacy tracked files without entering a sync loop", () => {
         const legacyFile: TrackedFile = {
             identityKey: "/vault/src/legacy.ts",

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
     type EditorFontFamily,
@@ -21,6 +22,7 @@ import {
     aiLoadSessionHistories,
     aiPruneSessionHistories,
     aiRespondPermission,
+    aiRespondUrlElicitation,
     aiRespondUserInput,
     aiRestoreTextFile,
     aiSaveSessionHistory,
@@ -127,6 +129,9 @@ import {
     type AITokenUsage,
     type AITokenUsagePayload,
     type AIToolActivityPayload,
+    type AIUrlElicitationAction,
+    type AIUrlElicitationRequestPayload,
+    type AIUserInputAction,
     type AIUserInputRequestPayload,
     type AIRuntimeConnectionPayload,
     type AIRuntimeConnectionState,
@@ -249,6 +254,12 @@ interface AIRuntimeCatalogSnapshot {
     modes: AIRuntimeDescriptor["modes"];
     configOptions: AIRuntimeDescriptor["configOptions"];
 }
+
+const ACP_RUNTIMES_WITHOUT_SYNTHETIC_DEFAULT_MODELS = new Set([
+    "gemini-acp",
+    "grok-acp",
+]);
+const GROK_RUNTIME_ID = "grok-acp";
 
 interface QueuedMessageEditState {
     item: QueuedChatMessage;
@@ -419,11 +430,17 @@ function saveRuntimeCatalogCache(
 ) {
     try {
         const current = loadRuntimeCatalogCache();
+        const sanitized = sanitizeRuntimeCatalogSnapshot(runtimeId, snapshot);
+        if (!hasRuntimeCatalog(sanitized)) {
+            const { [runtimeId]: _removed, ...rest } = current;
+            safeStorageSetItem(AI_RUNTIME_CACHE_KEY, JSON.stringify(rest));
+            return;
+        }
         safeStorageSetItem(
             AI_RUNTIME_CACHE_KEY,
             JSON.stringify({
                 ...current,
-                [runtimeId]: snapshot,
+                [runtimeId]: sanitized,
             }),
         );
     } catch {
@@ -544,6 +561,70 @@ function hasRuntimeCatalog(snapshot: AIRuntimeCatalogSnapshot) {
     );
 }
 
+function runtimeDropsSyntheticAutoModel(runtimeId: string) {
+    return ACP_RUNTIMES_WITHOUT_SYNTHETIC_DEFAULT_MODELS.has(runtimeId);
+}
+
+function isSyntheticAutoModel(model: AIRuntimeDescriptor["models"][number]) {
+    return model.id === "auto";
+}
+
+function isSyntheticAutoModelConfigOption(
+    option: AIRuntimeDescriptor["configOptions"][number],
+) {
+    return (
+        option.category === "model" &&
+        option.value === "auto" &&
+        option.options.length <= 1 &&
+        option.options.every((item) => item.value === "auto")
+    );
+}
+
+function sanitizeRuntimeCatalogSnapshot(
+    runtimeId: string,
+    snapshot: AIRuntimeCatalogSnapshot,
+): AIRuntimeCatalogSnapshot {
+    if (!runtimeDropsSyntheticAutoModel(runtimeId)) {
+        return snapshot;
+    }
+
+    const models = snapshot.models.filter(
+        (model) => !isSyntheticAutoModel(model),
+    );
+    const configOptions = snapshot.configOptions
+        .filter((option) => !isSyntheticAutoModelConfigOption(option))
+        .map((option) => {
+            if (option.category !== "model") {
+                return option;
+            }
+
+            const options = option.options.filter(
+                (item) => item.value !== "auto",
+            );
+            if (options.length === option.options.length) {
+                return option;
+            }
+
+            return {
+                ...option,
+                value:
+                    option.value === "auto"
+                        ? (options[0]?.value ?? "")
+                        : option.value,
+                options,
+            };
+        })
+        .filter(
+            (option) => option.category !== "model" || option.options.length > 0,
+        );
+
+    return {
+        models,
+        modes: snapshot.modes,
+        configOptions,
+    };
+}
+
 function getRuntimeCatalogSnapshot(
     session: Pick<AIChatSession, "models" | "modes" | "configOptions">,
 ): AIRuntimeCatalogSnapshot {
@@ -552,6 +633,23 @@ function getRuntimeCatalogSnapshot(
         modes: session.modes,
         configOptions: session.configOptions,
     };
+}
+
+function selectedSessionConfigValue(
+    session: Pick<AIChatSession, "modelId" | "modeId">,
+    option: AIRuntimeDescriptor["configOptions"][number],
+): string {
+    if (option.category === "model") {
+        return session.modelId.trim().length > 0
+            ? session.modelId
+            : option.value;
+    }
+
+    if (option.category === "mode") {
+        return session.modeId;
+    }
+
+    return option.value;
 }
 
 function secretPatchChanged(patch: AISecretPatch) {
@@ -570,6 +668,7 @@ function getPersistedHistoryCatalogSnapshot(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: (history.modes ?? []).map((mode) => ({
             id: mode.id,
@@ -590,6 +689,7 @@ function getPersistedHistoryCatalogSnapshot(
                 value: item.value,
                 label: item.label,
                 description: item.description ?? undefined,
+                agentType: item.agent_type ?? undefined,
             })),
         })),
     };
@@ -599,6 +699,22 @@ function hydrateSessionCatalogFromSnapshot(
     session: AIChatSession,
     snapshot: AIRuntimeCatalogSnapshot,
 ): AIChatSession {
+    const sessionCatalog = sanitizeRuntimeCatalogSnapshot(
+        session.runtimeId,
+        getRuntimeCatalogSnapshot(session),
+    );
+    session = {
+        ...session,
+        modelId:
+            runtimeDropsSyntheticAutoModel(session.runtimeId) &&
+            session.modelId === "auto"
+                ? ""
+                : session.modelId,
+        models: sessionCatalog.models,
+        modes: sessionCatalog.modes,
+        configOptions: sessionCatalog.configOptions,
+    };
+    snapshot = sanitizeRuntimeCatalogSnapshot(session.runtimeId, snapshot);
     if (!hasRuntimeCatalog(snapshot)) {
         return session;
     }
@@ -615,11 +731,7 @@ function hydrateSessionCatalogFromSnapshot(
                   ...option,
                   value:
                       optionValues.get(option.id) ??
-                      (option.category === "model"
-                          ? session.modelId
-                          : option.category === "mode"
-                            ? session.modeId
-                            : option.value),
+                      selectedSessionConfigValue(session, option),
               }));
 
     if (
@@ -647,12 +759,7 @@ function synchronizeSessionConfigSelections(
 
     let changed = false;
     const configOptions = session.configOptions.map((option) => {
-        const nextValue =
-            option.category === "model"
-                ? session.modelId
-                : option.category === "mode"
-                  ? session.modeId
-                  : option.value;
+        const nextValue = selectedSessionConfigValue(session, option);
 
         if (nextValue === option.value) {
             return option;
@@ -910,6 +1017,69 @@ function supportsModelSelection(
     return session.models.some((model) => model.id === modelId);
 }
 
+function getSelectedSessionModelId(
+    session: Pick<AIChatSession, "modelId" | "configOptions">,
+) {
+    return getModelConfigOption(session)?.value ?? session.modelId;
+}
+
+function getSessionModelAgentType(
+    session: Pick<AIChatSession, "models" | "configOptions">,
+    modelId: string,
+) {
+    const modelConfigOption = getModelConfigOption(session);
+    const configOptionAgentType = modelConfigOption?.options.find(
+        (option) => option.value === modelId,
+    )?.agentType;
+    if (configOptionAgentType) {
+        return configOptionAgentType;
+    }
+
+    return session.models.find((model) => model.id === modelId)?.agentType;
+}
+
+function getSessionModelLabel(
+    session: Pick<AIChatSession, "models" | "configOptions">,
+    modelId: string,
+) {
+    const modelConfigOption = getModelConfigOption(session);
+    return (
+        modelConfigOption?.options.find((option) => option.value === modelId)
+            ?.label ??
+        session.models.find((model) => model.id === modelId)?.name ??
+        modelId
+    );
+}
+
+function sessionHasAgentTurns(session: AIChatSession) {
+    return session.messages.length > 0 || (session.persistedMessageCount ?? 0) > 0;
+}
+
+function getBlockedGrokModelSwitchMessage(
+    session: AIChatSession,
+    targetModelId: string,
+) {
+    if (session.runtimeId !== GROK_RUNTIME_ID || !sessionHasAgentTurns(session)) {
+        return null;
+    }
+
+    const currentModelId = getSelectedSessionModelId(session);
+    if (!currentModelId || currentModelId === targetModelId) {
+        return null;
+    }
+
+    const currentAgentType = getSessionModelAgentType(session, currentModelId);
+    const targetAgentType = getSessionModelAgentType(session, targetModelId);
+    if (!currentAgentType || !targetAgentType || currentAgentType === targetAgentType) {
+        return null;
+    }
+
+    return `Start a new Grok chat to switch to ${getSessionModelLabel(
+        session,
+        targetModelId,
+    )}.`;
+}
+
 function applyLocalModelSelection(
     session: AIChatSession,
     modelId: string,
@@ -1133,6 +1303,9 @@ function mergeRuntimeCatalog(
     runtime: AIRuntimeDescriptor,
     snapshot: AIRuntimeCatalogSnapshot | undefined,
 ): AIRuntimeDescriptor {
+    snapshot = snapshot
+        ? sanitizeRuntimeCatalogSnapshot(runtime.runtime.id, snapshot)
+        : undefined;
     if (!snapshot || !hasRuntimeCatalog(snapshot)) {
         return runtime;
     }
@@ -1308,6 +1481,9 @@ interface ChatStore {
     applyAvailableCommandsUpdate: (payload: AIAvailableCommandsPayload) => void;
     applyPermissionRequest: (payload: AIPermissionRequestPayload) => void;
     applyUserInputRequest: (payload: AIUserInputRequestPayload) => void;
+    applyUrlElicitationRequest: (
+        payload: AIUrlElicitationRequestPayload,
+    ) => void;
     reconcileTrackedFilesFromVaultChange: (
         change: VaultNoteChange,
     ) => Promise<void>;
@@ -1355,6 +1531,13 @@ interface ChatStore {
     respondUserInput: (
         requestId: string,
         answers: Record<string, string[]>,
+        sessionId?: string,
+        action?: AIUserInputAction,
+    ) => Promise<void>;
+    openUrlElicitation: (requestId: string, sessionId?: string) => Promise<void>;
+    respondUrlElicitation: (
+        requestId: string,
+        action: AIUrlElicitationAction,
         sessionId?: string,
     ) => Promise<void>;
     rejectEditedFile: (sessionId: string, identityKey: string) => Promise<void>;
@@ -1897,6 +2080,21 @@ function markPendingInteractionMessagesIdle(session: AIChatSession) {
                     status: "pending",
                 },
             };
+        } else if (
+            message.kind === "url_elicitation_request" &&
+            (message.meta?.status === "opening" ||
+                message.meta?.status === "responding" ||
+                message.meta?.status === "pending" ||
+                message.meta?.status === "error")
+        ) {
+            nextMessage = {
+                ...message,
+                meta: {
+                    ...message.meta,
+                    status: "cancelled",
+                    action: "cancel",
+                },
+            };
         } else if (message.inProgress) {
             nextMessage = {
                 ...message,
@@ -1922,6 +2120,84 @@ function markPendingInteractionMessagesIdle(session: AIChatSession) {
     };
 }
 
+function isFinalUrlElicitationStatus(status: unknown) {
+    return status === "completed" || status === "cancelled";
+}
+
+function normalizeRestoredMessage(message: AIChatMessage): AIChatMessage {
+    if (message.kind === "user_input_request") {
+        const restoredMessage = {
+            ...message,
+            id: message.id.startsWith("restored:")
+                ? message.id
+                : `restored:${message.id}`,
+            inProgress: false,
+            userInputRequestId: undefined,
+        };
+
+        if (message.meta?.status === "resolved") {
+            return restoredMessage;
+        }
+
+        return {
+            ...restoredMessage,
+            meta: {
+                ...message.meta,
+                status: "resolved",
+                answered: false,
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        };
+    }
+
+    if (message.kind === "url_elicitation_request") {
+        const restoredMessage = {
+            ...message,
+            id: message.id.startsWith("restored:")
+                ? message.id
+                : `restored:${message.id}`,
+            inProgress: false,
+            urlElicitationRequestId: undefined,
+        };
+
+        if (isFinalUrlElicitationStatus(message.meta?.status)) {
+            return restoredMessage;
+        }
+
+        return {
+            ...restoredMessage,
+            meta: {
+                ...message.meta,
+                status: "cancelled",
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        };
+    }
+
+    return message;
+}
+
+function safeHttpUrl(rawUrl: string | undefined): string | null {
+    const trimmed = rawUrl?.trim();
+    if (!trimmed || /\s/.test(trimmed)) return null;
+
+    try {
+        const parsed = new URL(trimmed);
+        if (
+            (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+            parsed.hostname
+        ) {
+            return parsed.toString();
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+}
+
 function markAllMessagesComplete(session: AIChatSession) {
     const normalized = normalizeSessionTranscript(session);
     let changed = false;
@@ -1930,6 +2206,25 @@ function markAllMessagesComplete(session: AIChatSession) {
 
     for (let index = 0; index < nextMessages.length; index += 1) {
         const message = nextMessages[index];
+        if (
+            message.kind === "url_elicitation_request" &&
+            !isFinalUrlElicitationStatus(message.meta?.status)
+        ) {
+            const nextMessage = {
+                ...message,
+                inProgress: false,
+                meta: {
+                    ...message.meta,
+                    status: "cancelled",
+                    action: "cancel",
+                },
+            };
+            nextMessages[index] = nextMessage;
+            nextMessagesById[message.id] = nextMessage;
+            changed = true;
+            continue;
+        }
+
         if (!message.inProgress) continue;
 
         const nextMessage = {
@@ -2157,6 +2452,57 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
+const RESUME_CONTEXT_PROMPT_HEADER =
+    "Use the saved transcript below as prior conversation context for this session.";
+const SAVED_TRANSCRIPT_MARKER = "Saved transcript:";
+const NEW_USER_MESSAGE_MARKER = "New user message:";
+const ATTACHED_SELECTION_OPEN_TAG = "<attached_selection";
+
+function isResumeContextPromptText(text: string) {
+    return (
+        text.includes(RESUME_CONTEXT_PROMPT_HEADER) &&
+        text.includes(SAVED_TRANSCRIPT_MARKER) &&
+        text.includes(NEW_USER_MESSAGE_MARKER)
+    );
+}
+
+function isPotentialResumeContextPromptText(text: string) {
+    const trimmed = text.trimStart();
+    return (
+        trimmed.includes(RESUME_CONTEXT_PROMPT_HEADER) ||
+        isResumeContextPromptText(text)
+    );
+}
+
+function extractResumeContextNewUserMessage(text: string) {
+    const index = text.lastIndexOf(NEW_USER_MESSAGE_MARKER);
+    if (index < 0) return null;
+    return text.slice(index + NEW_USER_MESSAGE_MARKER.length).trim();
+}
+
+function hasAttachedSelectionMarkup(text: string) {
+    return text.includes(ATTACHED_SELECTION_OPEN_TAG);
+}
+
+function isInternalRuntimeUserEchoMessage(message: AIChatMessage) {
+    if (message.role !== "user" || message.kind !== "text") {
+        return false;
+    }
+
+    return (
+        isPotentialResumeContextPromptText(message.content) ||
+        hasAttachedSelectionMarkup(message.content)
+    );
+}
+
+function sanitizePersistedDisplayText(value?: string | null) {
+    if (!value) return null;
+    return isPotentialResumeContextPromptText(value) ||
+        hasAttachedSelectionMarkup(value)
+        ? null
+        : value;
+}
+
 function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     if (!session.resumeContextPending) {
         return prompt;
@@ -2169,8 +2515,10 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
                 message.kind !== "permission" &&
                 message.kind !== "plan" &&
                 message.kind !== "user_input_request" &&
+                message.kind !== "url_elicitation_request" &&
                 message.kind !== "status",
         )
+        .filter((message) => !isInternalRuntimeUserEchoMessage(message))
         .map((message) => {
             const role =
                 message.role === "assistant"
@@ -3231,6 +3579,21 @@ function updateUserInputMessageState(
     patch: Record<string, string | number | boolean | null>,
 ) {
     const messageId = `user-input:${requestId}`;
+    return replaceSessionMessage(session, messageId, (message) => ({
+        ...message,
+        meta: {
+            ...message.meta,
+            ...patch,
+        },
+    }));
+}
+
+function updateUrlElicitationMessageState(
+    session: AIChatSession,
+    requestId: string,
+    patch: Record<string, string | number | boolean | null>,
+) {
+    const messageId = `url-elicitation:${requestId}`;
     return replaceSessionMessage(session, messageId, (message) => ({
         ...message,
         meta: {
@@ -4937,11 +5300,11 @@ function applyPersistedHistoryMetadata(
             closedAt: history.closed_at ?? nextSession.closedAt ?? null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
-            persistedTitle: history.title ?? null,
-            customTitle: history.custom_title ?? null,
+            persistedTitle: sanitizePersistedDisplayText(history.title),
+            customTitle: sanitizePersistedDisplayText(history.custom_title),
             additionalRoots:
                 history.additional_roots ?? nextSession.additionalRoots ?? [],
-            persistedPreview: history.preview ?? null,
+            persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart,
         },
@@ -5076,9 +5439,9 @@ function createPersistedSession(
             runtimeState: "persisted_only",
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
-            persistedTitle: history.title ?? null,
-            customTitle: history.custom_title ?? null,
-            persistedPreview: history.preview ?? null,
+            persistedTitle: sanitizePersistedDisplayText(history.title),
+            customTitle: sanitizePersistedDisplayText(history.custom_title),
+            persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart:
                 persistedMessageCount === 0
@@ -5616,6 +5979,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
     const messages = getSessionTranscriptMessages(session)
         .filter((m) => !m.inProgress)
         .filter((m) => !isTransientRecoveryStatusMessage(m))
+        .filter((m) => !isInternalRuntimeUserEchoMessage(m))
         .filter((m) => m.kind !== "permission")
         .map((m) => ({
             id: m.id,
@@ -5631,6 +5995,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             review_diffs: m.reviewDiffs,
             user_input_request_id: m.userInputRequestId,
             user_input_questions: m.userInputQuestions,
+            url_elicitation_request_id: m.urlElicitationRequestId,
+            url_elicitation_id: m.urlElicitationId,
+            url_elicitation_url: m.urlElicitationUrl,
             plan_entries: m.planEntries,
             plan_detail: m.planDetail,
             tool_action: m.toolAction,
@@ -5662,6 +6029,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                   runtime_id: model.runtimeId,
                   name: model.name,
                   description: model.description,
+                  ...(model.agentType
+                      ? { agent_type: model.agentType }
+                      : {}),
               }))
             : undefined,
         modes: hasCatalog
@@ -5686,6 +6056,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                       value: item.value,
                       label: item.label,
                       description: item.description ?? null,
+                      ...(item.agentType
+                          ? { agent_type: item.agentType }
+                          : {}),
                   })),
               }))
             : undefined,
@@ -5828,6 +6201,7 @@ interface SuppressedRuntimeUserEcho {
     text: string;
     local_message_id: string;
     insert_after_message_id: string | null;
+    drop_on_completion?: boolean;
 }
 
 const _deltaBuffer: DeltaBuffer = {
@@ -5858,6 +6232,25 @@ function messageDeltaBufferKey(
     return `${sessionId}:${role}:${messageId}`;
 }
 
+function normalizeRuntimeEchoText(text: string) {
+    return text.replace(/\s+/g, " ").trim();
+}
+
+function isLocalUserEchoText(localText: string, runtimeText: string) {
+    const local = normalizeRuntimeEchoText(localText);
+    const runtime = normalizeRuntimeEchoText(runtimeText);
+    if (!local || !runtime) {
+        return false;
+    }
+
+    return (
+        local === runtime ||
+        local.startsWith(runtime) ||
+        local.endsWith(runtime) ||
+        local.includes(runtime)
+    );
+}
+
 // Callers pass an already-normalized session so the transcript is not
 // re-normalized on every runtime user delta.
 function latestLocalUserEchoCandidate(
@@ -5871,7 +6264,7 @@ function latestLocalUserEchoCandidate(
             if (message.title === runtimeTextMessageTitle("user")) {
                 return null;
             }
-            return message.content.startsWith(text) ? message : null;
+            return isLocalUserEchoText(message.content, text) ? message : null;
         }
     }
     return null;
@@ -5933,13 +6326,20 @@ function resolveSuppressedRuntimeUserEcho(
     }
 
     _suppressedRuntimeUserEchoByKey.delete(key);
+    if (
+        suppressed.drop_on_completion ||
+        isPotentialResumeContextPromptText(suppressed.text)
+    ) {
+        return normalizedSession;
+    }
+
     const localEcho = latestLocalUserEchoCandidate(
         normalizedSession,
         suppressed.text,
     );
     if (
         localEcho?.id === suppressed.local_message_id &&
-        localEcho.content === suppressed.text
+        isLocalUserEchoText(localEcho.content, suppressed.text)
     ) {
         return normalizedSession;
     }
@@ -5979,12 +6379,29 @@ function appendRuntimeTextDelta(
         existingMessage.kind === "text"
     ) {
         _suppressedRuntimeUserEchoByKey.delete(bufferKey);
+        const nextText = existingMessage.content + payload.text;
+        if (
+            payload.role === "user" &&
+            isPotentialResumeContextPromptText(nextText)
+        ) {
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: nextText,
+                local_message_id: "",
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+                drop_on_completion: true,
+            });
+            return removeSessionMessage(normalizedSession, payload.message_id);
+        }
+
         return replaceSessionMessage(
             normalizedSession,
             payload.message_id,
             (message) => ({
                 ...message,
-                content: message.content + payload.text,
+                content: nextText,
                 title: message.title ?? title,
                 inProgress: true,
             }),
@@ -5994,6 +6411,27 @@ function appendRuntimeTextDelta(
     if (payload.role === "user") {
         const suppressed = _suppressedRuntimeUserEchoByKey.get(bufferKey);
         const accumulatedText = `${suppressed?.text ?? ""}${payload.text}`;
+        if (isPotentialResumeContextPromptText(accumulatedText)) {
+            const newUserMessage =
+                extractResumeContextNewUserMessage(accumulatedText);
+            const localEcho = newUserMessage
+                ? latestLocalUserEchoCandidate(
+                      normalizedSession,
+                      newUserMessage,
+                  )
+                : null;
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: accumulatedText,
+                local_message_id: localEcho?.id ?? "",
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+                drop_on_completion: true,
+            });
+            return normalizedSession;
+        }
+
         const localEcho = latestLocalUserEchoCandidate(
             normalizedSession,
             accumulatedText,
@@ -6232,24 +6670,31 @@ async function waitForPersistedTranscriptIdle(sessionId: string) {
 function restoreMessagesFromHistory(
     history: PersistedSessionHistory,
 ): AIChatMessage[] {
-    return history.messages.map((m) => ({
-        id: m.id,
-        role: m.role as AIChatRole,
-        kind: m.kind as AIChatMessageKind,
-        content: m.content,
-        timestamp: m.timestamp,
-        title: m.title,
-        meta: m.meta,
-        permissionRequestId: m.permission_request_id,
-        permissionOptions: m.permission_options,
-        diffs: m.diffs,
-        reviewDiffs: m.review_diffs,
-        userInputRequestId: m.user_input_request_id,
-        userInputQuestions: m.user_input_questions,
-        planEntries: m.plan_entries,
-        planDetail: m.plan_detail,
-        toolAction: m.tool_action,
-    }));
+    return history.messages
+        .map((m) =>
+            normalizeRestoredMessage({
+                id: m.id,
+                role: m.role as AIChatRole,
+                kind: m.kind as AIChatMessageKind,
+                content: m.content,
+                timestamp: m.timestamp,
+                title: m.title,
+                meta: m.meta,
+                permissionRequestId: m.permission_request_id,
+                permissionOptions: m.permission_options,
+                diffs: m.diffs,
+                reviewDiffs: m.review_diffs,
+                userInputRequestId: m.user_input_request_id,
+                userInputQuestions: m.user_input_questions,
+                urlElicitationRequestId: m.url_elicitation_request_id,
+                urlElicitationId: m.url_elicitation_id,
+                urlElicitationUrl: m.url_elicitation_url,
+                planEntries: m.plan_entries,
+                planDetail: m.plan_detail,
+                toolAction: m.tool_action,
+            }),
+        )
+        .filter((message) => !isInternalRuntimeUserEchoMessage(message));
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {
@@ -8995,6 +9440,89 @@ export const useChatStore = create<ChatStore>((set, get) => {
             persistCurrentSession(payload.session_id);
         },
 
+        applyUrlElicitationRequest: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
+            flushDeltasBeforeTimelineInsert();
+
+            set((state) => {
+                const session = state.sessionsById[payload.session_id];
+                if (!session) return state;
+                const nextSession = ensureSessionWorkCycle(session);
+                const messageId = `url-elicitation:${payload.request_id}`;
+                const status = payload.status ?? "pending";
+
+                if (status === "completed") {
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [payload.session_id]:
+                                updateUrlElicitationMessageState(
+                                    {
+                                        ...nextSession,
+                                        status:
+                                            nextSession.status ===
+                                            "waiting_user_input"
+                                                ? "streaming"
+                                                : nextSession.status,
+                                    },
+                                    payload.request_id,
+                                    {
+                                        status: "completed",
+                                        completedByRuntime: true,
+                                    },
+                                ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            payload.session_id,
+                        ),
+                    };
+                }
+
+                const nextMessage: AIChatMessage = {
+                    id: messageId,
+                    role: "assistant",
+                    kind: "url_elicitation_request",
+                    title: payload.title || "Open URL",
+                    content: payload.url,
+                    timestamp: Date.now(),
+                    workCycleId: nextSession.activeWorkCycleId,
+                    urlElicitationRequestId: payload.request_id,
+                    urlElicitationId: payload.elicitation_id,
+                    urlElicitationUrl: payload.url,
+                    meta: {
+                        status,
+                        scope: payload.scope ?? "session",
+                        runtimeSessionId: payload.runtime_session_id ?? null,
+                        toolCallId: payload.tool_call_id ?? null,
+                    },
+                };
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [payload.session_id]: upsertSessionMessage(
+                            {
+                                ...nextSession,
+                                status: "waiting_user_input",
+                            },
+                            nextMessage,
+                            {
+                                preserveWorkCycleId: true,
+                            },
+                        ),
+                    },
+                    sessionOrder: touchSessionOrder(
+                        state.sessionOrder,
+                        payload.session_id,
+                    ),
+                };
+            });
+            persistCurrentSession(payload.session_id);
+        },
+
         reconcileTrackedFilesFromVaultChange: async (change) => {
             if (change.kind !== "upsert" || change.origin !== "agent") {
                 return;
@@ -9612,6 +10140,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 applyLocal: (session) =>
                     applyLocalModelSelection(session, modelId),
                 applyRemote: async (session) => {
+                    const blockedMessage = getBlockedGrokModelSwitchMessage(
+                        session,
+                        modelId,
+                    );
+                    if (blockedMessage) {
+                        throw new Error(blockedMessage);
+                    }
+
                     const modelConfig = getModelConfigOption(session);
                     return modelConfig &&
                         modelConfig.options.some(
@@ -9647,8 +10183,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 change: { kind: "config", optionId, value },
                 applyLocal: (session) =>
                     applyLocalConfigOptionSelection(session, optionId, value),
-                applyRemote: (session) =>
-                    aiSetConfigOption(session.sessionId, optionId, value),
+                applyRemote: (session) => {
+                    const blockedMessage =
+                        optionId === "model"
+                            ? getBlockedGrokModelSwitchMessage(session, value)
+                            : null;
+                    if (blockedMessage) {
+                        throw new Error(blockedMessage);
+                    }
+
+                    return aiSetConfigOption(session.sessionId, optionId, value);
+                },
                 persistPreference: () =>
                     persistConfigOptionSelectionPreference(optionId, value),
                 errorMessage: "Failed to update the session option.",
@@ -10276,7 +10821,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const stoppedAt = Date.now();
                 set((state) => {
                     const sess = state.sessionsById[resolvedSessionId];
-                    if (!sess || sess.status === "idle") return state;
+                    if (!sess) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
@@ -10292,6 +10837,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     };
                 });
                 finalizeSessionStopping(resolvedSessionId);
+                persistCurrentSession(resolvedSessionId);
                 await flushPendingInterruptedSend(resolvedSessionId, {
                     waitForStop: false,
                 });
@@ -10416,11 +10962,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        respondUserInput: async (requestId, answers, sessionId) => {
+        respondUserInput: async (
+            requestId,
+            answers,
+            sessionId,
+            action = "accept",
+        ) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             const session = get().sessionsById[resolvedSessionId];
             if (!session) return;
+            const answered = action === "accept";
 
             if (
                 !runtimeSupportsCapability(
@@ -10437,7 +10989,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionsById: {
                             ...state.sessionsById,
                             [resolvedSessionId]: appendSessionError(
-                                currentSession,
+                                updateUserInputMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        answered: false,
+                                        action,
+                                    },
+                                ),
                                 "This runtime does not support interactive user input requests in this build.",
                             ),
                         },
@@ -10461,7 +11021,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             requestId,
                             {
                                 status: "responding",
-                                answered: true,
+                                answered,
+                                action,
                             },
                         ),
                     },
@@ -10473,6 +11034,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     resolvedSessionId,
                     requestId,
                     answers,
+                    action,
                 );
                 get().upsertSession(session);
                 set((state) => {
@@ -10483,11 +11045,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionsById: {
                             ...state.sessionsById,
                             [resolvedSessionId]: updateUserInputMessageState(
-                                currentSession,
+                                {
+                                    ...currentSession,
+                                    status:
+                                        currentSession.status ===
+                                        "waiting_user_input"
+                                            ? "streaming"
+                                            : currentSession.status,
+                                },
                                 requestId,
                                 {
                                     status: "resolved",
-                                    answered: true,
+                                    answered,
+                                    action,
                                 },
                             ),
                         },
@@ -10512,8 +11082,362 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 },
                                 requestId,
                                 {
-                                    status: "pending",
+                                    status: "error",
                                     answered: false,
+                                    action,
+                                },
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                currentSession,
+                                message,
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+            }
+        },
+
+        openUrlElicitation: async (requestId, sessionId) => {
+            const resolvedSessionId = sessionId ?? get().activeSessionId;
+            if (!resolvedSessionId) return;
+            const session = get().sessionsById[resolvedSessionId];
+            const message = session?.messages.find(
+                (candidate) =>
+                    candidate.urlElicitationRequestId === requestId,
+            );
+            if (!session || !message) return;
+            const url = safeHttpUrl(message?.urlElicitationUrl);
+            if (isFinalUrlElicitationStatus(message.meta?.status)) return;
+            if (!url) {
+                const errorMessage =
+                    "Only http and https URLs can be opened from AI URL requests.";
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        opened: false,
+                                    },
+                                ),
+                                errorMessage,
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+                return;
+            }
+
+            set((state) => {
+                const currentSession = state.sessionsById[resolvedSessionId];
+                if (!currentSession) return state;
+                const currentMessage = currentSession.messages.find(
+                    (candidate) =>
+                        candidate.urlElicitationRequestId === requestId,
+                );
+                if (isFinalUrlElicitationStatus(currentMessage?.meta?.status)) {
+                    return state;
+                }
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [resolvedSessionId]: updateUrlElicitationMessageState(
+                            currentSession,
+                            requestId,
+                            {
+                                status: "opening",
+                                opened: true,
+                            },
+                        ),
+                    },
+                };
+            });
+
+            try {
+                await openUrl(url);
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    const currentMessage = currentSession.messages.find(
+                        (candidate) =>
+                            candidate.urlElicitationRequestId === requestId,
+                    );
+                    if (
+                        isFinalUrlElicitationStatus(
+                            currentMessage?.meta?.status,
+                        )
+                    ) {
+                        return state;
+                    }
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]:
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "pending",
+                                        opened: true,
+                                    },
+                                ),
+                        },
+                    };
+                });
+            } catch (error) {
+                const message = getAiErrorMessage(error, "Failed to open URL.");
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    const currentMessage = currentSession.messages.find(
+                        (candidate) =>
+                            candidate.urlElicitationRequestId === requestId,
+                    );
+                    if (
+                        isFinalUrlElicitationStatus(
+                            currentMessage?.meta?.status,
+                        )
+                    ) {
+                        return state;
+                    }
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        opened: false,
+                                    },
+                                ),
+                                message,
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+            }
+        },
+
+        respondUrlElicitation: async (requestId, action, sessionId) => {
+            const resolvedSessionId = sessionId ?? get().activeSessionId;
+            if (!resolvedSessionId) return;
+            const session = get().sessionsById[resolvedSessionId];
+            if (!session) return;
+            const existingMessage = session.messages.find(
+                (message) => message.urlElicitationRequestId === requestId,
+            );
+            if (isFinalUrlElicitationStatus(existingMessage?.meta?.status)) {
+                return;
+            }
+
+            if (
+                !runtimeSupportsCapability(
+                    get().runtimes,
+                    session.runtimeId,
+                    "user_input",
+                )
+            ) {
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        action,
+                                    },
+                                ),
+                                "This runtime does not support interactive URL requests in this build.",
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+                return;
+            }
+
+            set((state) => {
+                const currentSession = state.sessionsById[resolvedSessionId];
+                if (!currentSession) return state;
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [resolvedSessionId]: updateUrlElicitationMessageState(
+                            { ...currentSession, status: "streaming" },
+                            requestId,
+                            {
+                                status: "responding",
+                                action,
+                            },
+                        ),
+                    },
+                };
+            });
+
+            try {
+                const nextSession = await aiRespondUrlElicitation(
+                    resolvedSessionId,
+                    requestId,
+                    action,
+                );
+                get().upsertSession(nextSession);
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]:
+                                updateUrlElicitationMessageState(
+                                    {
+                                        ...currentSession,
+                                        status:
+                                            currentSession.status ===
+                                            "waiting_user_input"
+                                                ? "streaming"
+                                                : currentSession.status,
+                                    },
+                                    requestId,
+                                    {
+                                        status:
+                                            action === "cancel"
+                                                ? "cancelled"
+                                                : "completed",
+                                        action,
+                                    },
+                                ),
+                        },
+                    };
+                });
+                persistCurrentSession(resolvedSessionId);
+            } catch (error) {
+                const latestSession = get().sessionsById[resolvedSessionId];
+                const latestMessage = latestSession?.messages.find(
+                    (message) => message.urlElicitationRequestId === requestId,
+                );
+                if (isFinalUrlElicitationStatus(latestMessage?.meta?.status)) {
+                    persistCurrentSession(resolvedSessionId);
+                    return;
+                }
+                const errorMessage = getAiErrorMessage(
+                    error,
+                    "Failed to respond to the URL request.",
+                );
+                if (
+                    errorMessage
+                        .toLowerCase()
+                        .includes(
+                            "url elicitation request already completed by runtime",
+                        )
+                ) {
+                    set((state) => {
+                        const currentSession =
+                            state.sessionsById[resolvedSessionId];
+                        if (!currentSession) return state;
+                        const currentMessage = currentSession.messages.find(
+                            (message) =>
+                                message.urlElicitationRequestId === requestId,
+                        );
+                        if (
+                            isFinalUrlElicitationStatus(
+                                currentMessage?.meta?.status,
+                            )
+                        ) {
+                            return state;
+                        }
+                        return {
+                            sessionsById: {
+                                ...state.sessionsById,
+                                [resolvedSessionId]:
+                                    updateUrlElicitationMessageState(
+                                        {
+                                            ...currentSession,
+                                            status:
+                                                currentSession.status ===
+                                                "waiting_user_input"
+                                                    ? "streaming"
+                                                    : currentSession.status,
+                                        },
+                                        requestId,
+                                        {
+                                            status: "completed",
+                                            action,
+                                            completedByRuntime: true,
+                                        },
+                                    ),
+                            },
+                        };
+                    });
+                    persistCurrentSession(resolvedSessionId);
+                    return;
+                }
+                const message = getAiErrorMessage(
+                    error,
+                    "Failed to respond to the URL request.",
+                );
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: updateUrlElicitationMessageState(
+                                {
+                                    ...currentSession,
+                                    status: "waiting_user_input",
+                                },
+                                requestId,
+                                {
+                                    status: "error",
+                                    action,
                                 },
                             ),
                         },

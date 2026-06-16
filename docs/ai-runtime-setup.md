@@ -26,7 +26,20 @@ and terminal-auth routing helpers are in
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
 
-Runtime descriptors returned by the backend use default `auto` model selection.
+NeverWrite currently supports two ACP compatibility paths:
+
+- `Current14`: Claude, Codex, Kilo, and OpenCode use the current ACP session
+  config path.
+- `Legacy12`: Gemini and Grok use the legacy ACP model/mode path.
+
+For current ACP runtimes, model, mode, and reasoning selectors are derived from
+ACP `config_options` and updated through `session/set_config_option` when the
+runtime supports it. For Gemini and Grok, NeverWrite keeps using legacy
+`models` / `modes` descriptors plus `session/set_model` / `session/set_mode`
+instead. Gemini and Grok do not receive a synthetic `Auto` model when their
+runtime does not expose real model options; in that case the model selector is
+hidden.
+
 Providers only show modes and slash commands that are either declared by ACP or
 kept as provider-owned fallback behavior. Grok does not receive synthetic
 `default` / `review` modes or hardcoded slash commands when its ACP runtime does
@@ -155,6 +168,16 @@ auth. `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` are supported in the
 backend setup payload, but the current provider settings UI does not expose
 fields for them.
 
+NeverWrite launches Gemini as `gemini --acp`, but handles it internally through
+the legacy ACP compatibility path. Gemini model and mode changes use
+`session/set_model` and `session/set_mode`, not `session/set_config_option`.
+If Gemini does not advertise real model options, NeverWrite does not invent an
+`Auto` model and the chat composer has no model selector.
+
+Gemini can emit internal `update_topic` activity for provider-owned chat topic
+metadata. NeverWrite filters that activity from the visible timeline because it
+is not assistant reasoning, user-facing tool work, or a reviewable change.
+
 ### Grok
 
 Use one of:
@@ -182,6 +205,17 @@ environment value is preferred by default. A locally saved xAI key that is
 selected and ready is passed to the Grok ACP process explicitly, so it can
 recover from an inherited `XAI_API_KEY` that NeverWrite has marked invalid.
 NeverWrite does not delete or overwrite the inherited environment variable.
+
+Grok uses the legacy ACP compatibility path for model and mode changes:
+NeverWrite reads legacy `models` / `modes` descriptors and sends
+`session/set_model` / `session/set_mode` instead of
+`session/set_config_option`. If the Grok runtime does not expose real model
+options, NeverWrite does not synthesize an `Auto` model.
+
+Some Grok models map to different provider-side `agentType` values. Once a chat
+has started, switching to a model that requires a different `agentType` is
+blocked because the Grok ACP runtime requires a fresh session for that change.
+Start a new chat with the desired model instead.
 
 Disconnecting Grok in NeverWrite clears local NeverWrite setup state. For stored
 xAI API keys, it also deletes the local keyring secret. For Grok CLI login, it
@@ -290,6 +324,17 @@ Runtime staging is handled by
   `vendor/Claude-agent-acp-upstream`, or `NEVERWRITE_CLAUDE_EMBEDDED_DIR`.
 - Installs required Claude production dependencies and target-specific optional packages.
 - Copies resources to `apps/desktop/out/native-backend/`.
+
+The Electron builder config stages `apps/desktop/out/native-backend/` into the
+packaged `native-backend/` resources directory and runs
+[`verify-electron-bundle.mjs`](../apps/desktop/scripts/verify-electron-bundle.mjs)
+as an `afterPack` hook. That verification treats these Claude runtime files as
+release-critical resources:
+
+- `native-backend/embedded/claude-agent-acp/dist/index.js`
+- `native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
 
 The release workflow
 [`release-desktop.yml`](../.github/workflows/release-desktop.yml) builds the

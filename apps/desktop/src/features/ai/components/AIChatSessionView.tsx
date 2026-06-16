@@ -235,6 +235,10 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         isClosedSubagent ||
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
+    const lockIncompatibleModelSwitches =
+        session?.runtimeId === "grok-acp" &&
+        (session.messages.length > 0 ||
+            (session.persistedMessageCount ?? 0) > 0);
 
     // Handlers
     const handleRemoveAttachment = useCallback(
@@ -569,10 +573,24 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             optionId,
                         );
                     }}
-                    onUserInputResponse={(requestId, answers) => {
+                    onUserInputResponse={(requestId, answers, action) => {
                         void chatActions.respondUserInput(
                             requestId,
                             answers,
+                            sessionId,
+                            action,
+                        );
+                    }}
+                    onUrlElicitationOpen={(requestId) => {
+                        void chatActions.openUrlElicitation(
+                            requestId,
+                            sessionId,
+                        );
+                    }}
+                    onUrlElicitationResponse={(requestId, action) => {
+                        void chatActions.respondUrlElicitation(
+                            requestId,
+                            action,
                             sessionId,
                         );
                     }}
@@ -703,6 +721,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                                 <AIChatAgentControls
                                     disabled={agentControlsDisabled}
                                     runtimeId={session?.runtimeId}
+                                    lockIncompatibleModelSwitches={
+                                        lockIncompatibleModelSwitches
+                                    }
                                     modelId={session?.modelId ?? ""}
                                     modeId={session?.modeId ?? ""}
                                     effortsByModel={

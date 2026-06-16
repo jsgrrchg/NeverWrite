@@ -14,6 +14,7 @@ pub const AI_STATUS_EVENT: &str = "ai://status-event";
 pub const AI_IMAGE_GENERATION_EVENT: &str = "ai://image-generation";
 pub const AI_PERMISSION_REQUEST_EVENT: &str = "ai://permission-request";
 pub const AI_USER_INPUT_REQUEST_EVENT: &str = "ai://user-input-request";
+pub const AI_URL_ELICITATION_REQUEST_EVENT: &str = "ai://url-elicitation-request";
 pub const AI_PLAN_UPDATED_EVENT: &str = "ai://plan-updated";
 pub const AI_AVAILABLE_COMMANDS_UPDATED_EVENT: &str = "ai://available-commands-updated";
 pub const AI_RUNTIME_CONNECTION_EVENT: &str = "ai://runtime-connection";
@@ -167,6 +168,7 @@ pub struct AiUserInputQuestionPayload {
     pub question: String,
     pub is_other: bool,
     pub is_secret: bool,
+    pub allows_multiple: bool,
     pub options: Option<Vec<AiUserInputQuestionOptionPayload>>,
 }
 
@@ -176,6 +178,19 @@ pub struct AiUserInputRequestPayload {
     pub request_id: String,
     pub title: String,
     pub questions: Vec<AiUserInputQuestionPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiUrlElicitationRequestPayload {
+    pub session_id: String,
+    pub request_id: String,
+    pub elicitation_id: String,
+    pub title: String,
+    pub url: String,
+    pub status: String,
+    pub scope: String,
+    pub runtime_session_id: Option<String>,
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

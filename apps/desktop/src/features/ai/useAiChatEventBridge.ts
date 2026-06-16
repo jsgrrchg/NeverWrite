@@ -17,6 +17,7 @@ import {
     listenToAiThinkingStarted,
     listenToAiTokenUsage,
     listenToAiToolActivity,
+    listenToAiUrlElicitationRequest,
     listenToAiUserInputRequest,
 } from "./api";
 import { useChatStore } from "./store/chatStore";
@@ -90,6 +91,11 @@ export function useAiChatEventBridge(enabled = true) {
                 }),
                 listenToAiUserInputRequest((payload) => {
                     if (!disposed) chatActions.applyUserInputRequest(payload);
+                }),
+                listenToAiUrlElicitationRequest((payload) => {
+                    if (!disposed) {
+                        chatActions.applyUrlElicitationRequest(payload);
+                    }
                 }),
                 listenToAiRuntimeConnection((payload) => {
                     if (!disposed) chatActions.applyRuntimeConnection(payload);

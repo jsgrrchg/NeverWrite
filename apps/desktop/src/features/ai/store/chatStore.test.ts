@@ -1,4 +1,4 @@
-import { invoke } from "@neverwrite/runtime";
+import { invoke, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     isChatTab,
@@ -48,6 +48,7 @@ import { resetClaudeCodeInstalledCacheForTests } from "../../terminal/claudeCode
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "../utils/runtimeMetadata";
 
 const invokeMock = vi.mocked(invoke);
+const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 
@@ -447,6 +448,13 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         };
     }
 
+    if (command === "ai_respond_url_elicitation") {
+        return {
+            ...sessionPayload,
+            status: "streaming",
+        };
+    }
+
     if (command === "ai_load_session_histories") {
         return [];
     }
@@ -541,6 +549,7 @@ describe("chatStore", () => {
             currentSelection: null,
         });
         invokeMock.mockImplementation(defaultInvokeImplementation);
+        openUrlMock.mockResolvedValue(undefined);
     });
 
     afterEach(() => {
@@ -2470,6 +2479,62 @@ describe("chatStore", () => {
                                     },
                                 ],
                             },
+                            {
+                                id: "user-input:input-stale-1",
+                                role: "assistant",
+                                kind: "user_input_request",
+                                content: "Choose scope",
+                                title: "Need a choice",
+                                timestamp: 13,
+                                meta: {
+                                    status: "pending",
+                                },
+                                user_input_request_id: "input-stale-1",
+                                user_input_questions: [
+                                    {
+                                        id: "scope",
+                                        header: "Scope",
+                                        question: "Which scope should I use?",
+                                        is_other: false,
+                                        is_secret: false,
+                                        options: [
+                                            {
+                                                label: "Safe",
+                                                description: "Use the narrow scope.",
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                id: "url-elicitation:url-stale-1",
+                                role: "assistant",
+                                kind: "url_elicitation_request",
+                                content: "https://example.com/auth",
+                                title: "Authorize access",
+                                timestamp: 14,
+                                meta: {
+                                    status: "pending",
+                                },
+                                url_elicitation_request_id: "url-stale-1",
+                                url_elicitation_id: "elicitation-stale-1",
+                                url_elicitation_url: "https://example.com/auth",
+                            },
+                            {
+                                id: "url-elicitation:url-final-1",
+                                role: "assistant",
+                                kind: "url_elicitation_request",
+                                content: "https://example.com/done",
+                                title: "Completed access",
+                                timestamp: 15,
+                                meta: {
+                                    status: "completed",
+                                    action: "complete",
+                                },
+                                url_elicitation_request_id: "url-final-1",
+                                url_elicitation_id: "elicitation-final-1",
+                                url_elicitation_url: "https://example.com/done",
+                            },
                         ],
                     },
                 ];
@@ -2495,11 +2560,17 @@ describe("chatStore", () => {
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:user-input:input-stale-1",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
         ]);
         expect(session.messageOrder).toEqual([
             "status:init-turn",
             "assistant:init",
             "plan:init",
+            "restored:user-input:input-stale-1",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
         ]);
         expect(session.messagesById?.["assistant:init"]?.content).toBe(
             "Recovered text",
@@ -2507,6 +2578,96 @@ describe("chatStore", () => {
         expect(session.lastTurnStartedMessageId).toBe("status:init-turn");
         expect(session.lastAssistantMessageId).toBe("assistant:init");
         expect(session.activePlanMessageId).toBe("plan:init");
+        expect(
+            session.messagesById?.["restored:user-input:input-stale-1"],
+        ).toMatchObject({
+            kind: "user_input_request",
+            userInputRequestId: undefined,
+            meta: {
+                status: "resolved",
+                answered: false,
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        });
+        expect(
+            session.messagesById?.["restored:url-elicitation:url-stale-1"],
+        ).toMatchObject({
+            kind: "url_elicitation_request",
+            urlElicitationRequestId: undefined,
+            meta: {
+                status: "cancelled",
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        });
+        expect(
+            session.messagesById?.["restored:url-elicitation:url-final-1"],
+        ).toMatchObject({
+            kind: "url_elicitation_request",
+            urlElicitationRequestId: undefined,
+            meta: {
+                status: "completed",
+                action: "complete",
+            },
+        });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: "codex-session-existing",
+            request_id: "url-stale-1",
+            elicitation_id: "elicitation-live-1",
+            title: "Authorize access again",
+            url: "https://example.com/live-auth",
+            status: "pending",
+        });
+        const afterLiveRequest =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(afterLiveRequest.messages.map((message) => message.id)).toEqual([
+            "status:init-turn",
+            "assistant:init",
+            "plan:init",
+            "restored:user-input:input-stale-1",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
+            "url-elicitation:url-stale-1",
+        ]);
+        expect(afterLiveRequest.messagesById?.["url-elicitation:url-stale-1"])
+            .toMatchObject({
+                kind: "url_elicitation_request",
+                urlElicitationRequestId: "url-stale-1",
+                urlElicitationUrl: "https://example.com/live-auth",
+                meta: {
+                    status: "pending",
+                },
+            });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: "codex-session-existing",
+            request_id: "url-final-1",
+            elicitation_id: "elicitation-live-2",
+            title: "Authorize access one more time",
+            url: "https://example.com/live-auth-2",
+            status: "pending",
+        });
+        const afterFinalCollision =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(afterFinalCollision.messages.map((message) => message.id)).toEqual([
+            "status:init-turn",
+            "assistant:init",
+            "plan:init",
+            "restored:user-input:input-stale-1",
+            "restored:url-elicitation:url-stale-1",
+            "restored:url-elicitation:url-final-1",
+            "url-elicitation:url-stale-1",
+            "url-elicitation:url-final-1",
+        ]);
+        expect(afterFinalCollision.messagesById?.["url-elicitation:url-final-1"])
+            .toMatchObject({
+                kind: "url_elicitation_request",
+                urlElicitationRequestId: "url-final-1",
+                urlElicitationUrl: "https://example.com/live-auth-2",
+                meta: {
+                    status: "pending",
+                },
+            });
         expect(session.models).toEqual([
             {
                 id: "test-model",
@@ -2807,6 +2968,110 @@ describe("chatStore", () => {
             "m1",
             "m2",
         ]);
+    });
+
+    it("filters internal runtime user echoes when loading persisted transcript pages", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_list_runtimes") {
+                return runtimePayload;
+            }
+
+            if (command === "ai_get_setup_status") {
+                return readySetupStatus;
+            }
+
+            if (command === "ai_list_sessions") {
+                return [
+                    {
+                        ...sessionPayload,
+                        session_id: "codex-session-existing",
+                        models: [],
+                        modes: [],
+                        config_options: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "history-1",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 200,
+                        message_count: 3,
+                        title:
+                            "Use the saved transcript below as prior conversation context for this session.",
+                        preview:
+                            '<attached_selection name="leaked">secret</attached_selection>',
+                        messages: [],
+                    },
+                ];
+            }
+
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "history-1",
+                    total_messages: 3,
+                    start_index: 0,
+                    end_index: 3,
+                    messages: [
+                        {
+                            id: "m1",
+                            role: "user",
+                            kind: "text",
+                            content: "Clean prompt",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "leaked-selection",
+                            role: "user",
+                            kind: "text",
+                            content:
+                                '<attached_selection name="leaked">secret</attached_selection>',
+                            timestamp: 11,
+                        },
+                        {
+                            id: "leaked-resume",
+                            role: "user",
+                            kind: "text",
+                            title: "User",
+                            content:
+                                "User: Use the saved transcript below as prior conversation context for this session.\n\nSaved transcript:\nUser: leaked\n\nNew user message: leaked",
+                            timestamp: 12,
+                        },
+                    ],
+                };
+            }
+
+            return sessionPayload;
+        });
+
+        await useChatStore.getState().initialize();
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+            [
+                {
+                    id: "tab-restored",
+                    sessionId: "codex-session-existing",
+                    historySessionId: "history-1",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            "tab-restored",
+        );
+
+        const session =
+            useChatStore.getState().sessionsById["codex-session-existing"]!;
+        expect(session.persistedTitle).toBeNull();
+        expect(session.persistedPreview).toBeNull();
+        expect(session.messages.map((message) => message.id)).toEqual(["m1"]);
+        expect(session.messages[0]?.content).toBe("Clean prompt");
     });
 
     it("loads every restored workspace chat tab after history metadata is reconciled", async () => {
@@ -3908,6 +4173,117 @@ describe("chatStore", () => {
             id: "local-user-1",
             role: "user",
             content: "Echo me exactly",
+        });
+    });
+
+    it("does not duplicate a clean runtime echo for a local selection prompt", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "(10:13) Al doblar la manecil... elimina esto",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "elimina ",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            delta: "esto",
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "runtime-user-1",
+            role: "user",
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "local-user-1",
+            role: "user",
+            content: "(10:13) Al doblar la manecil... elimina esto",
+        });
+    });
+
+    it("suppresses runtime user echoes of transcript recovery prompts", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...session,
+                    messages: [
+                        {
+                            id: "local-user-1",
+                            role: "user",
+                            kind: "text",
+                            content: "(7) Es un reloj de feri... elimina esto",
+                            timestamp: 1,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        const resumePrompt =
+            "User: Use the saved transcript below as prior conversation context for this session.\n\n" +
+            "Saved transcript:\nUser: stale context\n\n" +
+            "New user message: /Users/jfg/Desktop/testing/cuento.md:7-7 elimina esto";
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-resume",
+            delta: resumePrompt.slice(0, 80),
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-resume",
+            delta: resumePrompt.slice(80),
+            role: "user",
+        });
+        flushDeltasSync();
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "runtime-user-resume",
+            role: "user",
+        });
+
+        const messages =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages ?? [];
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toMatchObject({
+            id: "local-user-1",
+            role: "user",
+            content: "(7) Es un reloj de feri... elimina esto",
         });
     });
 
@@ -10377,10 +10753,44 @@ describe("chatStore", () => {
         });
     });
 
-    it("keeps Claude user input requests deferred instead of calling the backend", async () => {
+    it("sends Claude user input responses to the backend when the runtime supports user input", async () => {
         await useChatStore.getState().initialize();
 
         const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_user_input") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (
+                              args as {
+                                  input?: {
+                                      session_id?: string;
+                                      request_id?: string;
+                                      answers?: Record<string, string[]>;
+                                      action?: string;
+                                  };
+                              }
+                          ).input
+                        : undefined;
+
+                expect(input).toMatchObject({
+                    session_id: activeSessionId,
+                    request_id: "input-claude-1",
+                    answers: { scope: ["Safe"] },
+                    action: "accept",
+                });
+                return {
+                    ...sessionPayload,
+                    runtime_id: "claude-acp",
+                    status: "streaming" as const,
+                    models: [],
+                    modes: [],
+                    config_options: [],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
 
         useChatStore.setState((state) => ({
             runtimes: [
@@ -10389,7 +10799,11 @@ describe("chatStore", () => {
                         id: "claude-acp",
                         name: "Claude ACP",
                         description: "Claude runtime",
-                        capabilities: ["attachments", "permissions"],
+                        capabilities: [
+                            "attachments",
+                            "permissions",
+                            "user_input",
+                        ],
                     },
                     models: [],
                     modes: [],
@@ -10431,17 +10845,767 @@ describe("chatStore", () => {
             .respondUserInput("input-claude-1", { scope: ["Safe"] });
 
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
-        expect(session.status).toBe("waiting_user_input");
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "resolved",
+            answered: true,
+            action: "accept",
+        });
         expect(session.messages.at(-1)).toMatchObject({
-            kind: "error",
-            content:
-                "This runtime does not support interactive user input requests in this build.",
+            kind: "user_input_request",
+            userInputRequestId: "input-claude-1",
         });
         expect(
             invokeMock.mock.calls.some(
                 ([command]) => command === "ai_respond_user_input",
             ),
+        ).toBe(true);
+    });
+
+    it("marks cancelled user input requests as resolved without answers", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_user_input") {
+                const input =
+                    typeof args === "object" && args !== null && "input" in args
+                        ? (
+                              args as {
+                                  input?: {
+                                      answers?: Record<string, string[]>;
+                                      action?: string;
+                                  };
+                              }
+                          ).input
+                        : undefined;
+
+                expect(input?.answers).toEqual({});
+                expect(input?.action).toBe("cancel");
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "input-cancel-1",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-cancel-1", {}, activeSessionId, "cancel");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "resolved",
+            answered: false,
+            action: "cancel",
+        });
+    });
+
+    it("marks user input requests as errored when the backend response fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_user_input") {
+                throw new Error("input waiter closed");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "input-fail-1",
+            title: "Need more detail",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which option should I use?",
+                    is_other: true,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Conservative option",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await useChatStore
+            .getState()
+            .respondUserInput("input-fail-1", { scope: ["Safe"] });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-2)?.meta).toMatchObject({
+            status: "error",
+            answered: false,
+            action: "accept",
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "input waiter closed",
+        });
+    });
+
+    it("tracks URL elicitation requests and opens URLs explicitly", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-1",
+            elicitation_id: "elicitation-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+            scope: "session",
+            runtime_session_id: "runtime-session-1",
+            tool_call_id: "tool-1",
+        });
+
+        let session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-1)).toMatchObject({
+            id: "url-elicitation:url-1",
+            kind: "url_elicitation_request",
+            urlElicitationRequestId: "url-1",
+            urlElicitationId: "elicitation-1",
+            urlElicitationUrl: "https://example.com/auth",
+            meta: {
+                status: "pending",
+                toolCallId: "tool-1",
+            },
+        });
+
+        await useChatStore.getState().openUrlElicitation("url-1");
+
+        expect(openUrlMock).toHaveBeenCalledWith("https://example.com/auth");
+        session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "pending",
+            opened: true,
+        });
+    });
+
+    it("does not downgrade URL elicitations completed while Open is in flight", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let resolveOpen!: () => void;
+        openUrlMock.mockImplementation(
+            () =>
+                new Promise<void>((resolve) => {
+                    resolveOpen = resolve;
+                }),
+        );
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-open-race-1",
+            elicitation_id: "elicitation-open-race-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        const openPromise = useChatStore
+            .getState()
+            .openUrlElicitation("url-open-race-1");
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-open-race-1",
+            elicitation_id: "elicitation-open-race-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "completed",
+        });
+        resolveOpen();
+        await openPromise;
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "completed",
+            completedByRuntime: true,
+        });
+    });
+
+    it("responds to URL elicitation completion and cancellation", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const commands: unknown[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                commands.push(args);
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-complete-1",
+            elicitation_id: "elicitation-complete-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-complete-1", "complete");
+
+        let session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "completed",
+            action: "complete",
+        });
+        expect(commands[0]).toMatchObject({
+            input: {
+                session_id: activeSessionId,
+                request_id: "url-complete-1",
+                action: "complete",
+            },
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-cancel-1",
+            elicitation_id: "elicitation-cancel-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-cancel-1", "cancel");
+
+        session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)?.meta).toMatchObject({
+            status: "cancelled",
+            action: "cancel",
+        });
+        expect(commands[1]).toMatchObject({
+            input: {
+                request_id: "url-cancel-1",
+                action: "cancel",
+            },
+        });
+    });
+
+    it("marks URL elicitation completed from backend notifications", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-1",
+            elicitation_id: "elicitation-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-1",
+            elicitation_id: "elicitation-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "completed",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            urlElicitationUrl: "https://example.com/auth",
+            meta: {
+                status: "completed",
+                completedByRuntime: true,
+            },
+        });
+    });
+
+    it("keeps URL elicitation completed when backend completion wins the response race", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                useChatStore.getState().applyUrlElicitationRequest({
+                    session_id: activeSessionId,
+                    request_id: "url-race-1",
+                    elicitation_id: "elicitation-race-1",
+                    title: "Authorize access",
+                    url: "https://example.com/auth",
+                    status: "completed",
+                });
+                throw new Error(
+                    "AI URL elicitation request already completed by runtime: url-race-1",
+                );
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-race-1",
+            elicitation_id: "elicitation-race-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-race-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("streaming");
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "completed",
+                completedByRuntime: true,
+            },
+        });
+        expect(
+            session.messages.some(
+                (message) =>
+                    message.kind === "error" &&
+                    message.content.includes("URL elicitation request not found"),
+            ),
         ).toBe(false);
+    });
+
+    it("treats runtime-completed URL elicitation waiters as idempotent responses", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                throw new Error(
+                    "AI URL elicitation request already completed by runtime: url-completed-1",
+                );
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-completed-1",
+            elicitation_id: "elicitation-completed-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-completed-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "completed",
+                action: "complete",
+                completedByRuntime: true,
+            },
+        });
+        expect(
+            session.messages.some(
+                (message) =>
+                    message.kind === "error" &&
+                    message.content.includes(
+                        "URL elicitation request already completed",
+                    ),
+            ),
+        ).toBe(false);
+    });
+
+    it("surfaces missing URL elicitation waiters as errors", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                throw new Error("AI URL elicitation request not found: url-missing-1");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-missing-1",
+            elicitation_id: "elicitation-missing-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-missing-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-2)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "error",
+                action: "complete",
+            },
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "AI URL elicitation request not found: url-missing-1",
+        });
+    });
+
+    it("rejects unsafe URL elicitation opens in the client", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-unsafe-1",
+            elicitation_id: "elicitation-unsafe-1",
+            title: "Authorize access",
+            url: "javascript:alert(1)",
+            status: "pending",
+        });
+
+        await useChatStore.getState().openUrlElicitation("url-unsafe-1");
+
+        expect(openUrlMock).not.toHaveBeenCalled();
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.at(-2)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "error",
+                opened: false,
+            },
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "Only http and https URLs can be opened from AI URL requests.",
+        });
+    });
+
+    it("cancels pending URL elicitations when the runtime disconnects", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-disconnect-1",
+            elicitation_id: "elicitation-disconnect-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        useChatStore.getState().applyRuntimeConnection({
+            runtime_id: "codex-acp",
+            status: "error",
+            message: "runtime disconnected",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        const urlMessage = session.messages.find(
+            (message) =>
+                message.urlElicitationRequestId === "url-disconnect-1",
+        );
+        expect(urlMessage?.meta).toMatchObject({
+            status: "cancelled",
+            action: "cancel",
+        });
+    });
+
+    it("marks pending URL elicitations cancelled when stopping a turn", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-stop-1",
+            elicitation_id: "elicitation-stop-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore.getState().stopStreaming(activeSessionId);
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("idle");
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "url_elicitation_request",
+            meta: {
+                status: "cancelled",
+                action: "cancel",
+            },
+        });
+    });
+
+    it("marks URL elicitation requests as errored when backend response fails", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_respond_url_elicitation") {
+                throw new Error("url waiter closed");
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-fail-1",
+            elicitation_id: "elicitation-fail-1",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        await useChatStore
+            .getState()
+            .respondUrlElicitation("url-fail-1", "complete");
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.status).toBe("waiting_user_input");
+        expect(session.messages.at(-2)?.meta).toMatchObject({
+            status: "error",
+            action: "complete",
+        });
+        expect(session.messages.at(-1)).toMatchObject({
+            kind: "error",
+            content: "url waiter closed",
+        });
+    });
+
+    it("keeps interaction-only activity out of the edited files buffer and still resolves review hunks", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-read-no-diff",
+            title: "Read file",
+            kind: "read",
+            status: "completed",
+            target: "/vault/notes/context.md",
+            summary: "Read context.md",
+        });
+        useChatStore.getState().applyPermissionRequest({
+            session_id: activeSessionId,
+            request_id: "permission-no-diff",
+            tool_call_id: "tool-permission-no-diff",
+            title: "Run command",
+            target: "npm test",
+            options: [
+                {
+                    option_id: "allow_once",
+                    name: "Allow once",
+                    kind: "allow_once",
+                },
+            ],
+            diffs: [],
+        });
+        useChatStore.getState().applyUserInputRequest({
+            session_id: activeSessionId,
+            request_id: "ask-no-diff",
+            title: "Need a choice",
+            questions: [
+                {
+                    id: "scope",
+                    header: "Scope",
+                    question: "Which scope should I use?",
+                    is_other: false,
+                    is_secret: false,
+                    options: [
+                        {
+                            label: "Safe",
+                            description: "Use the narrow scope.",
+                        },
+                    ],
+                },
+            ],
+        });
+        useChatStore.getState().applyUrlElicitationRequest({
+            session_id: activeSessionId,
+            request_id: "url-no-diff",
+            elicitation_id: "elicitation-no-diff",
+            title: "Authorize access",
+            url: "https://example.com/auth",
+            status: "pending",
+        });
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-accept-hunk",
+            title: "Edit accept.md",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/notes/accept.md",
+            summary: "Edited accept.md",
+            diffs: [
+                {
+                    path: "/vault/notes/accept.md",
+                    kind: "update",
+                    old_text: "alpha\nbeta\n",
+                    new_text: "alpha\nBETA\n",
+                },
+            ],
+        });
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-reject-hunk",
+            title: "Edit reject.md",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/notes/reject.md",
+            summary: "Edited reject.md",
+            diffs: [
+                {
+                    path: "/vault/notes/reject.md",
+                    kind: "update",
+                    old_text: "one\ntwo\n",
+                    new_text: "one\nTWO\n",
+                },
+            ],
+        });
+
+        let entries = getVisibleBuffer(activeSessionId);
+        expect(entries.map((entry) => entry.path).sort()).toEqual([
+            "/vault/notes/accept.md",
+            "/vault/notes/reject.md",
+        ]);
+
+        const hashByPath = new Map(
+            entries.map((entry) => [entry.path, hashTextContent(entry.currentText)]),
+        );
+        const restoredFiles: unknown[] = [];
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_get_text_file_hash") {
+                const path =
+                    typeof args === "object" && args !== null && "path" in args
+                        ? String((args as { path?: unknown }).path)
+                        : "";
+                const matchingEntry = entries.find(
+                    (entry) =>
+                        entry.path === path ||
+                        entry.path.endsWith(`/${path.replace(/^\/+/, "")}`),
+                );
+                return matchingEntry
+                    ? hashByPath.get(matchingEntry.path)
+                    : hashTextContent("");
+            }
+
+            if (command === "ai_restore_text_file") {
+                restoredFiles.push(args);
+                return undefined;
+            }
+
+            if (
+                command === "ai_save_session_history" ||
+                command === "ai_prune_session_histories"
+            ) {
+                return undefined;
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const acceptEntry = entries.find((entry) =>
+            entry.path.endsWith("accept.md"),
+        )!;
+        const acceptProjection = buildReviewProjection(acceptEntry);
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                acceptEntry.identityKey,
+                "accepted",
+                acceptEntry.version,
+                [acceptProjection.hunks[0]!.id],
+            );
+
+        entries = getVisibleBuffer(activeSessionId);
+        expect(entries.map((entry) => entry.path)).toEqual([
+            "/vault/notes/reject.md",
+        ]);
+
+        const rejectEntry = entries[0]!;
+        const rejectProjection = buildReviewProjection(rejectEntry);
+        await useChatStore
+            .getState()
+            .resolveReviewHunks(
+                activeSessionId,
+                rejectEntry.identityKey,
+                "rejected",
+                rejectEntry.version,
+                [rejectProjection.hunks[0]!.id],
+            );
+
+        expect(getVisibleBuffer(activeSessionId)).toHaveLength(0);
+        expect(restoredFiles).toContainEqual({
+            vaultPath: "/vault",
+            path: "notes/reject.md",
+            previousPath: null,
+            content: "one\ntwo\n",
+        });
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(
+            session.messages.filter((message) =>
+                ["permission", "user_input_request", "url_elicitation_request"].includes(
+                    message.kind,
+                ),
+            ),
+        ).toHaveLength(3);
     });
 
     it("resumes the active persisted history into a live ACP session", async () => {
@@ -10717,6 +11881,17 @@ describe("chatStore", () => {
                             content: "The saved context matters",
                             timestamp: 10,
                         },
+                        {
+                            id: "url-elicitation:url-resume",
+                            role: "assistant",
+                            kind: "url_elicitation_request",
+                            content: "https://example.com/auth",
+                            timestamp: 11,
+                            urlElicitationRequestId: "url-resume",
+                            urlElicitationId: "elicitation-resume",
+                            urlElicitationUrl: "https://example.com/auth",
+                            meta: { status: "completed" },
+                        },
                     ],
                 },
             },
@@ -10744,12 +11919,93 @@ describe("chatStore", () => {
 
         expect(sentContent).toContain("Saved transcript:");
         expect(sentContent).toContain("User: The saved context matters");
+        expect(sentContent).not.toContain("https://example.com/auth");
         expect(sentContent).toContain("New user message: Keep going");
         expect(
             invokeMock.mock.calls.some(
                 ([command]) => command === "ai_create_session",
             ),
         ).toBe(false);
+    });
+
+    it("omits internal runtime user echoes from saved transcript recovery prompts", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        let sentContent = "";
+
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    runtimeState: "live",
+                    status: "idle",
+                    resumeContextPending: true,
+                    messages: [
+                        {
+                            id: "local-user",
+                            role: "user",
+                            kind: "text",
+                            content: "(7) Es un reloj de feri... elimina esto",
+                            timestamp: 10,
+                        },
+                        {
+                            id: "runtime-user-selection",
+                            role: "user",
+                            kind: "text",
+                            content:
+                                '<attached_selection name="(7) Es un reloj de feri...">\nEs un reloj de feria.\n</attached_selection>\n\n/Users/jfg/Desktop/testing/cuento.md:7-7 elimina esto',
+                            timestamp: 11,
+                        },
+                        {
+                            id: "runtime-user-resume",
+                            role: "user",
+                            kind: "text",
+                            title: "User",
+                            content:
+                                "Use the saved transcript below as prior conversation context for this session.\n\nSaved transcript:\nUser: leaked\n\nNew user message: leaked",
+                            timestamp: 12,
+                        },
+                        {
+                            id: "assistant",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Done.",
+                            timestamp: 13,
+                        },
+                    ],
+                },
+            },
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                sentContent = (args as { content: string }).content;
+                return {
+                    ...sessionPayload,
+                    session_id: activeSessionId,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore
+            .getState()
+            .setComposerParts(createTextParts("Sigue"), activeSessionId);
+
+        await useChatStore.getState().sendMessage(activeSessionId);
+
+        expect(sentContent).toContain("Saved transcript:");
+        expect(sentContent).toContain(
+            "User: (7) Es un reloj de feri... elimina esto",
+        );
+        expect(sentContent).toContain("Assistant: Done.");
+        expect(sentContent).not.toContain("<attached_selection");
+        expect(sentContent).not.toContain("New user message: leaked");
+        expect(sentContent).toContain("New user message: Sigue");
     });
 
     it("loads the full saved transcript before sending live Codex recovery prompts", async () => {
@@ -13949,6 +15205,118 @@ describe("chatStore", () => {
                 )
                 ?.options.map((option) => option.value),
         ).toEqual(["low", "medium", "high", "xhigh"]);
+    });
+
+    it("preserves legacy ACP model config value when modelId is empty", () => {
+        const session = createSessionWithTrackedFiles("grok-session-1", [], "wc-grok");
+
+        useChatStore.getState().upsertSession(
+            {
+                ...session,
+                runtimeId: "grok-acp",
+                modelId: "",
+                configOptions: [
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "grok-build",
+                        options: [
+                            {
+                                value: "grok-composer-2.5-fast",
+                                label: "Composer 2.5",
+                            },
+                            {
+                                value: "grok-build",
+                                label: "Grok Build",
+                            },
+                        ],
+                    },
+                ],
+            },
+            true,
+        );
+
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["grok-session-1"]?.configOptions.find(
+                    (option) => option.id === "model",
+                )?.value,
+        ).toBe("grok-build");
+    });
+
+    it("blocks incompatible Grok model switches after a chat has started", async () => {
+        const session = createSessionWithTrackedFiles("grok-session-1", [], "wc-grok");
+
+        useChatStore.getState().upsertSession(
+            {
+                ...session,
+                runtimeId: "grok-acp",
+                runtimeState: "live",
+                modelId: "",
+                messages: [
+                    {
+                        id: "assistant-1",
+                        role: "assistant",
+                        kind: "text",
+                        content: "Already started",
+                        timestamp: 10,
+                    },
+                ],
+                configOptions: [
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "grok-build",
+                        options: [
+                            {
+                                value: "grok-composer-2.5-fast",
+                                label: "Composer 2.5",
+                                agentType: "cursor",
+                            },
+                            {
+                                value: "grok-build",
+                                label: "Grok Build",
+                                agentType: "grok-build-plan",
+                            },
+                        ],
+                    },
+                ],
+            },
+            true,
+        );
+
+        await useChatStore
+            .getState()
+            .setConfigOption(
+                "model",
+                "grok-composer-2.5-fast",
+                "grok-session-1",
+            );
+
+        const grokSession =
+            useChatStore.getState().sessionsById["grok-session-1"]!;
+        expect(grokSession.configOptions[0]?.value).toBe("grok-build");
+        expect(grokSession.status).toBe("error");
+        expect(
+            grokSession.messages.some(
+                (message) =>
+                    message.kind === "error" &&
+                    message.content ===
+                        "Start a new Grok chat to switch to Composer 2.5.",
+            ),
+        ).toBe(true);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_set_config_option",
+            ),
+        ).toBe(false);
     });
 
     it('keeps setModel observably aligned with setConfigOption("model") for live ACP sessions', async () => {

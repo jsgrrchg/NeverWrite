@@ -7,6 +7,7 @@ integration and release packaging, especially:
 
 - `codex-acp`
 - `Claude-agent-acp-upstream`
+- `acp12`
 
 Why this lives in git:
 
@@ -22,6 +23,12 @@ What is currently required by the app/build pipeline:
   - used by the desktop build to validate and stage the embedded Claude runtime
 - `Claude-agent-acp-upstream/dist/`
   - compiled runtime files that are copied into the desktop bundle
+- `Claude-agent-acp-upstream/node_modules/`
+  - production dependencies are installed by the Electron sidecar staging step
+    and copied into the packaged embedded Claude runtime
+- `acp12/`
+  - used as Rust compatibility crates by the native backend for Gemini and Grok
+    legacy ACP sessions
 
 What is vendored mainly for auditability and maintenance, not direct runtime use:
 
@@ -29,6 +36,7 @@ What is vendored mainly for auditability and maintenance, not direct runtime use
 - `Claude-agent-acp-upstream/src/tests/`
 - `Claude-agent-acp-upstream/dist/tests/`
 - `Claude-agent-acp-upstream/docs/`
+- `acp12/agent-client-protocol*/`
 - assorted upstream config files (`tsconfig`, `vitest`, `eslint`, lockfiles)
 
 That means the directory is intentionally reproducible, but not yet minimal.
@@ -52,10 +60,17 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.42.0`
-  - upstream commit: `d877ee713383332267492a95425523eda65a9735`
-  - dependencies match the upstream `0.42.0` release (`@agentclientprotocol/sdk` `0.24.0`, `@anthropic-ai/claude-agent-sdk` `0.3.165`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.44.0`
+  - upstream tag: `v0.44.0`
+  - upstream commit: `85a45b28952f9070376165eff1dd764a0612f73d`
+  - dependencies match the upstream `0.44.0` release (`@agentclientprotocol/sdk` `0.25.0`, `@anthropic-ai/claude-agent-sdk` `0.3.170`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
+- `acp12/`
+  - local package names: `agent-client-protocol-legacy` and
+    `agent-client-protocol-schema-legacy`
+  - used by the native backend for Gemini and Grok legacy ACP compatibility
+  - kept separate from the current ACP path so Claude, Codex, Kilo, and OpenCode
+    can continue to use the current protocol integration
 
 ## Current Codex Delta
 
@@ -73,19 +88,41 @@ The remaining NeverWrite-specific delta exists to preserve desktop product behav
 
 When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
-The desktop backend and `crates/ai` are now aligned with
-`agent-client-protocol = 0.12.1`, matching the vendored Codex ACP runtime.
-The native backend tests cover the reconstructed diff, permission, and status
-metadata paths that NeverWrite depends on.
+The desktop backend now supports a mixed ACP world: current ACP integration for
+Claude, Codex, Kilo, and OpenCode, plus the vendored
+`agent-client-protocol-legacy` crates for Gemini and Grok. The native backend
+tests cover the reconstructed diff, permission, status metadata, and legacy
+runtime compatibility paths that NeverWrite depends on.
 
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.42.0` with no expected NeverWrite-specific source delta.
+`0.44.0` with no expected NeverWrite-specific source delta.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does
 not track generated output in git.
+
+Electron release packaging treats the staged Claude runtime as incomplete unless
+the packaged resources include:
+
+- `native-backend/embedded/claude-agent-acp/dist/index.js`
+- `native-backend/embedded/claude-agent-acp/node_modules/@agentclientprotocol/sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk/package.json`
+- `native-backend/embedded/claude-agent-acp/node_modules/zod/package.json`
+
+The only expected local non-source delta is the vendor `.gitignore`: NeverWrite
+keeps `dist/` visible to Git so newly emitted runtime files are not missed.
+
+NeverWrite advertises ACP client capabilities through the native backend, not by
+patching the vendored Claude runtime. The active capability matrix for the
+Claude 0.44 compatibility work is:
+
+- `fs`: advertised
+- `elicitation.form`: advertised; the native backend bridges form requests into
+  NeverWrite's user-input UI
+- `elicitation.url`: advertised; the native backend bridges URL requests into a
+  compact timeline confirmation UI
 
 ## Updating Vendored Runtimes
 

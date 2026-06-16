@@ -9,7 +9,7 @@ import {
     setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
-import type { AIChatMessage } from "../types";
+import type { AIChatMessage, AIUserInputAction } from "../types";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { AIChatMessageItem } from "./AIChatMessageItem";
 
@@ -29,6 +29,11 @@ function renderMessage(
     options: {
         sessionId?: string | null;
         visibleWorkCycleId?: string | null;
+        onUserInputResponse?: (
+            requestId: string,
+            answers: Record<string, string[]>,
+            action?: AIUserInputAction,
+        ) => void;
         onDismissMessage?: (messageId: string) => void;
     } = {},
 ) {
@@ -38,6 +43,7 @@ function renderMessage(
             sessionId={options.sessionId}
             pillMetrics={pillMetrics}
             visibleWorkCycleId={options.visibleWorkCycleId}
+            onUserInputResponse={options.onUserInputResponse}
             onDismissMessage={options.onDismissMessage}
         />,
     );
@@ -87,6 +93,60 @@ describe("AIChatMessageItem errors", () => {
         fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
 
         expect(onDismissMessage).toHaveBeenCalledWith("error:1");
+    });
+});
+
+describe("AIChatMessageItem user input", () => {
+    it("submits all selected options for multi-select questions", () => {
+        const onUserInputResponse = vi.fn();
+
+        renderMessage(
+            {
+                id: "user-input:input-1",
+                role: "assistant",
+                kind: "user_input_request",
+                title: "Choose targets",
+                content: "Choose the files to include.",
+                timestamp: Date.now(),
+                userInputRequestId: "input-1",
+                userInputQuestions: [
+                    {
+                        id: "targets",
+                        header: "Targets",
+                        question: "Which files should I include?",
+                        is_other: false,
+                        is_secret: false,
+                        allows_multiple: true,
+                        options: [
+                            {
+                                label: "README.md",
+                                description: "Project overview",
+                            },
+                            {
+                                label: "CHANGELOG.md",
+                                description: "Release history",
+                            },
+                        ],
+                    },
+                ],
+                meta: {
+                    status: "pending",
+                },
+            },
+            { sessionId: "session-1", onUserInputResponse },
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "README.md" }));
+        fireEvent.click(screen.getByRole("button", { name: "CHANGELOG.md" }));
+        fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+        expect(onUserInputResponse).toHaveBeenCalledWith(
+            "input-1",
+            {
+                targets: ["README.md", "CHANGELOG.md"],
+            },
+            "accept",
+        );
     });
 });
 

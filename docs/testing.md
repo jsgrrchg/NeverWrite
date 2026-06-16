@@ -85,7 +85,7 @@ pnpm run check
 | Desktop Electron main/preload under `apps/desktop/src-electron/` | From `apps/desktop`: `npm run lint`, `npm test`, `npm run electron:build` | Add native sidecar build plus both Electron sidecar smokes |
 | AI runtime setup, ACP integration, session history, or change-control plumbing | From `apps/desktop`: `npm test` and `npm run electron:ai-runtime:smoke` | Add `cargo test` and `npm run electron:build` when native commands or Electron IPC are involved |
 | Vault opening, file tree, search, wikilinks, maps, filesystem watching, or editor save flows | `cargo test`, `cargo build -p neverwrite-native-backend`, then from `apps/desktop`: `npm run electron:vault-editor:smoke` | Add `npm test` for affected desktop UI/state tests |
-| Desktop packaging config, `apps/desktop/scripts/`, `apps/desktop/build/`, `apps/desktop/embedded/`, or vendored runtime packaging | From `apps/desktop`: `npm run electron:build`, `npm run electron:package:unsigned`, `npm run electron:app:smoke:packaged`, `npm run electron:sidecar:smoke:packaged` | Prefer the dedicated workflow in [`.github/workflows/electron-package-smoke.yml`](../.github/workflows/electron-package-smoke.yml) for macOS universal and Windows x64 parity |
+| Desktop packaging config, `apps/desktop/scripts/`, `apps/desktop/build/`, `apps/desktop/embedded/`, vendored runtime packaging, or vendor ACP compatibility crates | From `apps/desktop`: `npm run electron:build`, `npm run electron:package:unsigned`, `npm run electron:app:smoke:packaged`, `npm run electron:sidecar:smoke:packaged` | Prefer the dedicated workflow in [`.github/workflows/electron-package-smoke.yml`](../.github/workflows/electron-package-smoke.yml) for macOS universal, Linux x64, Linux ARM64, and Windows x64 parity |
 | Web clipper under `apps/web-clipper/` | From `apps/web-clipper`: `pnpm run check` | `pnpm test:run` for faster unit-test iteration; `pnpm build` when validating unpacked extension artifacts |
 | Web clipper to desktop API integration | From `apps/web-clipper`: `pnpm run check`; from `apps/desktop`: relevant web clipper API tests if touched | Manually test with desktop running and authorized unpacked extension origins when changing origin, pairing, or deep-link behavior |
 | Release metadata, version files, appcast, or release scripts | `node scripts/validate-release-metadata.mjs --tag vX.Y.Z` from repo root | Release-only builds are covered by [`.github/workflows/release-desktop.yml`](../.github/workflows/release-desktop.yml) and require signing/platform setup |
@@ -195,7 +195,7 @@ The main PR workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml
 - Desktop: `npm ci`, `npm run lint`, `npm test`, `npm run electron:build`, `cargo build -p neverwrite-native-backend`, and both debug sidecar smokes
 - Web Clipper: `pnpm install --frozen-lockfile` and `pnpm run check`
 
-Packaging-sensitive changes also trigger [`.github/workflows/electron-package-smoke.yml`](../.github/workflows/electron-package-smoke.yml). That workflow builds release sidecars, packages unsigned desktop apps, and runs packaged smokes on macOS universal and Windows x64.
+Packaging-sensitive changes also trigger [`.github/workflows/electron-package-smoke.yml`](../.github/workflows/electron-package-smoke.yml). That workflow builds release sidecars, packages unsigned desktop apps, and runs packaged smokes on macOS universal, Linux x64, Linux ARM64, and Windows x64. Runtime/vendor ACP changes should be checked against this workflow because they can affect release sidecar builds even when normal unit tests pass.
 
 Desktop release validation lives in [`.github/workflows/release-desktop.yml`](../.github/workflows/release-desktop.yml). It is release-only, tag-driven, and includes signing/notarization or platform-specific packaging assumptions that are not expected for normal local PR validation.
 
@@ -209,4 +209,4 @@ Desktop release validation lives in [`.github/workflows/release-desktop.yml`](..
 - If a packaged sidecar smoke fails after packaging changes, verify that the native backend was staged into the expected `resources/native-backend` location and has executable permissions on macOS/Linux.
 - If local web clipper requests are blocked, confirm the desktop app is running, the extension is calling `127.0.0.1:32145`, and `NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS` contains the exact unpacked extension origin.
 
-Last updated: May 11, 2026.
+Last updated: June 12, 2026.

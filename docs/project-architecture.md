@@ -58,6 +58,8 @@ vendor/
   codex-acp/            Vendored Codex ACP adapter used for release builds
   Claude-agent-acp-upstream/
                         Vendored Claude ACP runtime snapshot and dist output
+  acp12/                Vendored legacy ACP crates used by the native backend
+                        for Gemini and Grok compatibility
 
 scripts/                Root release, appcast, version, and validation utilities
 release/appcast/        Appcast and release topology documentation
@@ -206,6 +208,17 @@ The backend currently supports Codex, Claude, Gemini, Grok, Kilo, and OpenCode
 runtime IDs. Codex and Claude have vendored release inputs under `vendor/`;
 Gemini, Grok, Kilo, and OpenCode are integrated as external runtimes that must
 be found on `PATH` or configured by override.
+
+ACP runtime handling is split by provider compatibility:
+
+- Claude, Codex, Kilo, and OpenCode use the current ACP session-config path.
+- Gemini and Grok use the legacy ACP model/mode path, backed by the vendored
+  `vendor/acp12/` Rust crates in the native backend.
+
+`vendor/acp12/` is not a packaged provider runtime. It is a backend
+compatibility dependency that lets NeverWrite talk to external Gemini and Grok
+CLIs while the rest of the ACP stack can continue using the current protocol
+path.
 
 ACP session notifications are normalized into renderer events for assistant
 message deltas, thinking deltas, tool activity, file diffs, permission requests,

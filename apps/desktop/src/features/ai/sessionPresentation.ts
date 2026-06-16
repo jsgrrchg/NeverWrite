@@ -110,6 +110,10 @@ export function getSessionPreview(session: AIChatSession) {
         return truncateText(`Input: ${lastMessage.content}`, 72);
     }
 
+    if (lastMessage.kind === "url_elicitation_request") {
+        return truncateText(`URL request: ${lastMessage.content}`, 72);
+    }
+
     if (lastMessage.kind === "image") {
         const status = String(lastMessage.meta?.image_status ?? "");
         if (status === "pending" || status === "in_progress") {

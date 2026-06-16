@@ -6,6 +6,8 @@ import {
   AvailableCommand,
   Client,
   ClientSideConnection,
+  CreateElicitationRequest,
+  CreateElicitationResponse,
   ndJsonStream,
   NewSessionResponse,
   ReadTextFileRequest,
@@ -89,6 +91,10 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     agent: Agent;
     files: Map<string, string> = new Map();
     receivedText: string = "";
+    // Records for the AskUserQuestion elicitation test.
+    elicitations: CreateElicitationRequest[] = [];
+    permissionToolInputs: unknown[] = [];
+    chosenAnswers: Record<string, string | string[]> = {};
     resolveAvailableCommands: (commands: AvailableCommand[]) => void;
     availableCommandsPromise: Promise<AvailableCommand[]>;
 
@@ -107,9 +113,37 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     }
 
     async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+      // Record what asked for permission so a test can assert that
+      // AskUserQuestion did NOT fall back to a generic permission prompt.
+      this.permissionToolInputs.push(params.toolCall?.rawInput);
       const optionId = params.options.find((p) => p.kind === "allow_once")!.optionId;
 
       return { outcome: { outcome: "selected", optionId } };
+    }
+
+    async unstable_createElicitation(
+      params: CreateElicitationRequest,
+    ): Promise<CreateElicitationResponse> {
+      this.elicitations.push(params);
+      if (params.mode !== "form") {
+        return { action: "decline" };
+      }
+      // Accept the first option of every choice field (skip the free-text one).
+      const content: Record<string, string | string[]> = {};
+      for (const [key, prop] of Object.entries(params.requestedSchema.properties ?? {})) {
+        if (key === "customAnswer") continue;
+        const p = prop as {
+          oneOf?: Array<{ const: string }>;
+          items?: { anyOf?: Array<{ const: string }> };
+        };
+        if (p.oneOf?.length) {
+          content[key] = p.oneOf[0].const;
+        } else if (p.items?.anyOf?.length) {
+          content[key] = [p.items.anyOf[0].const];
+        }
+      }
+      this.chosenAnswers = content;
+      return { action: "accept", content };
     }
 
     async sessionUpdate(params: SessionNotification): Promise<void> {
@@ -164,6 +198,9 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
           readTextFile: true,
           writeTextFile: true,
         },
+        elicitation: {
+          form: {},
+        },
       },
     });
 
@@ -176,7 +213,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
   }
 
   it("should connect to the ACP subprocess", async () => {
-    const { client, connection, newSessionResponse } = await setupTestSession("./");
+    const { client, connection, newSessionResponse } = await setupTestSession(process.cwd());
 
     await connection.prompt({
       prompt: [
@@ -266,6 +303,60 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     });
 
     expect(client.takeReceivedText()).toContain("Compacting...\n\nCompacting completed.");
+  }, 60000);
+
+  // Regression guard for the SDK's AskUserQuestion routing. The built-in
+  // AskUserQuestion tool is delivered to us through `canUseTool` (not the
+  // interactive `onUserDialog` path), where we intercept it and render an ACP
+  // form elicitation, returning the answer via `updatedInput`. If a future SDK
+  // changes that routing — e.g. stops calling `canUseTool` for it, or no longer
+  // reads answers back from `updatedInput` — this test fails: either no
+  // elicitation arrives, the tool falls back to a permission prompt, or the
+  // answer never reaches the model's reply.
+  it("routes AskUserQuestion through ACP form elicitation and round-trips the answer", async () => {
+    const { client, connection, newSessionResponse } = await setupTestSession(process.cwd());
+
+    await connection.prompt({
+      prompt: [
+        {
+          type: "text",
+          text:
+            "Use the AskUserQuestion tool right now to ask me to choose a favorite color. " +
+            "Offer exactly two options: 'Red' and 'Blue'. Do not use any other tool and do " +
+            "not ask in plain text. After I answer, reply with one short sentence naming the " +
+            "color I picked.",
+        },
+      ],
+      sessionId: newSessionResponse.sessionId,
+    });
+
+    // The tool surfaced as an ACP form elicitation...
+    expect(client.elicitations.length).toBeGreaterThan(0);
+    const elicitation = client.elicitations[0];
+    expect(elicitation.mode).toBe("form");
+
+    // ...built by our converter (indexed field key + free-text "Other" field),
+    // which confirms our interception path produced it rather than some other
+    // mechanism.
+    const properties =
+      elicitation.mode === "form" ? Object.keys(elicitation.requestedSchema.properties ?? {}) : [];
+    expect(properties).toContain("question_0");
+    expect(properties).toContain("customAnswer");
+
+    // AskUserQuestion must NOT fall back to a generic permission prompt: no
+    // permission request should have carried AskUserQuestion's `questions`.
+    const fellBackToPermission = client.permissionToolInputs.some(
+      (input) =>
+        !!input &&
+        typeof input === "object" &&
+        Array.isArray((input as { questions?: unknown }).questions),
+    );
+    expect(fellBackToPermission).toBe(false);
+
+    // The chosen answer round-trips: the model's reply names the picked option.
+    const picked = String(Object.values(client.chosenAnswers)[0] ?? "");
+    expect(picked).not.toEqual("");
+    expect(client.takeReceivedText().toLowerCase()).toContain(picked.toLowerCase());
   }, 60000);
 });
 
@@ -2023,7 +2114,7 @@ describe("session/delete", () => {
     const agent = createMockAgent();
     const session = injectSession(agent, "session-1");
 
-    const result = await agent.unstable_deleteSession({ sessionId: "session-1" });
+    const result = await agent.deleteSession({ sessionId: "session-1" });
 
     expect(result).toEqual({});
     expect(agent.sessions["session-1"]).toBeUndefined();
@@ -2036,7 +2127,7 @@ describe("session/delete", () => {
   it("deletes a session from disk that is not currently active", async () => {
     const agent = createMockAgent();
 
-    const result = await agent.unstable_deleteSession({ sessionId: "not-active" });
+    const result = await agent.deleteSession({ sessionId: "not-active" });
 
     expect(result).toEqual({});
     expect(deleteSession).toHaveBeenCalledWith("not-active");
@@ -2046,7 +2137,7 @@ describe("session/delete", () => {
     const agent = createMockAgent();
     vi.mocked(deleteSession).mockRejectedValueOnce(new Error("Session not found on disk"));
 
-    await expect(agent.unstable_deleteSession({ sessionId: "missing" })).rejects.toThrow(
+    await expect(agent.deleteSession({ sessionId: "missing" })).rejects.toThrow(
       "Session not found on disk",
     );
   });
@@ -2056,7 +2147,7 @@ describe("session/delete", () => {
     injectSession(agent, "session-a");
     injectSession(agent, "session-b");
 
-    await agent.unstable_deleteSession({ sessionId: "session-a" });
+    await agent.deleteSession({ sessionId: "session-a" });
 
     expect(agent.sessions["session-a"]).toBeUndefined();
     expect(agent.sessions["session-b"]).toBeDefined();
@@ -3229,6 +3320,266 @@ describe("usage_update computation", () => {
     expect(usageUpdate.update.used).toBe(0);
     expect(usageUpdate.update.size).toBe(200000);
     expect(session.contextWindowSize).toBe(200000);
+  });
+});
+
+describe("assembled assistant text fallback", () => {
+  const ZERO_USAGE = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+  };
+
+  function createMockAgentWithCapture() {
+    const updates: any[] = [];
+    const mockClient = {
+      sessionUpdate: async (notification: any) => {
+        updates.push(notification);
+      },
+    } as unknown as AgentSideConnection;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    return { agent, updates };
+  }
+
+  function messageStart(apiId: string) {
+    return {
+      type: "stream_event" as const,
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      event: {
+        type: "message_start" as const,
+        message: { id: apiId, model: "claude-sonnet-4-20250514", usage: ZERO_USAGE },
+      },
+    };
+  }
+
+  function textDelta(text: string) {
+    return {
+      type: "stream_event" as const,
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      event: {
+        type: "content_block_delta" as const,
+        index: 0,
+        delta: { type: "text_delta" as const, text },
+      },
+    };
+  }
+
+  function assistantMessage(apiId: string, content: any[], parentToolUseId: string | null = null) {
+    return {
+      type: "assistant" as const,
+      parent_tool_use_id: parentToolUseId,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      message: {
+        id: apiId,
+        role: "assistant" as const,
+        model: "claude-sonnet-4-20250514",
+        content,
+        usage: ZERO_USAGE,
+      },
+    };
+  }
+
+  function result() {
+    return {
+      type: "result" as const,
+      subtype: "success" as const,
+      stop_reason: "end_turn",
+      is_error: false,
+      result: "",
+      errors: [],
+      duration_ms: 0,
+      duration_api_ms: 0,
+      num_turns: 1,
+      total_cost_usd: 0,
+      usage: ZERO_USAGE,
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: "test-session",
+    };
+  }
+
+  const idle = { type: "system", subtype: "session_state_changed", state: "idle" };
+
+  function injectSession(agent: ClaudeAcpAgent, messages: any[]) {
+    const input = new Pushable<any>();
+    async function* messageGenerator() {
+      const iter = input[Symbol.asyncIterator]();
+      const { value: userMessage, done } = await iter.next();
+      if (!done && userMessage) {
+        yield {
+          type: "user",
+          message: userMessage.message,
+          parent_tool_use_id: null,
+          uuid: userMessage.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+      }
+      yield* messages;
+    }
+    agent.sessions["test-session"] = {
+      query: messageGenerator() as any,
+      input,
+      cancelled: false,
+      cwd: "/test",
+      sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+      modes: { currentModeId: "default", availableModes: [] },
+      models: { currentModelId: "default", availableModels: [] },
+      modelInfos: [],
+      settingsManager: { dispose: vi.fn() } as any,
+      accumulatedUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+      },
+      configOptions: [],
+      promptRunning: false,
+      pendingMessages: new Map(),
+      nextPendingOrder: 0,
+      abortController: new AbortController(),
+      emitRawSDKMessages: false,
+      contextWindowSize: 200000,
+      taskState: new Map(),
+      toolUseCache: {},
+      messageIdToUuid: new Map(),
+    };
+  }
+
+  function messageChunkTexts(updates: any[]): string[] {
+    return updates
+      .filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
+      .map((u) => u.update.content.text);
+  }
+
+  function thoughtChunkTexts(updates: any[]): string[] {
+    return updates
+      .filter((u) => u.update?.sessionUpdate === "agent_thought_chunk")
+      .map((u) => u.update.content.text);
+  }
+
+  it("emits the assembled text when no content_block_delta was streamed", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Gateway delivers a fully assembled message with no preceding deltas.
+    injectSession(agent, [
+      assistantMessage("msg-no-stream", [{ type: "text", text: "the final answer" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    expect(messageChunkTexts(updates)).toEqual(["the final answer"]);
+  });
+
+  it("does not re-emit text already streamed via content_block_delta", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Normal streaming: deltas arrive, then the consolidated message repeats them.
+    injectSession(agent, [
+      messageStart("msg-streamed"),
+      textDelta("hello "),
+      textDelta("world"),
+      assistantMessage("msg-streamed", [{ type: "text", text: "hello world" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // Only the two streamed deltas — the assembled block is filtered out.
+    expect(messageChunkTexts(updates)).toEqual(["hello ", "world"]);
+  });
+
+  it("dedupes per block type: streamed text is dropped but an un-streamed thinking block in the same message is forwarded", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Gateway streams the text live but delivers the thinking block only in the
+    // assembled message (no thinking_delta). The dedupe must be per-type so the
+    // thinking survives. This also makes the test non-vacuous: if the fallback
+    // were removed (text/thinking always dropped) the thought chunk disappears.
+    injectSession(agent, [
+      messageStart("msg-mixed"),
+      textDelta("streamed text"),
+      assistantMessage("msg-mixed", [
+        { type: "text", text: "streamed text" },
+        { type: "thinking", thinking: "private reasoning" },
+      ]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // Streamed text appears once (delta only — assembled copy deduped).
+    expect(messageChunkTexts(updates)).toEqual(["streamed text"]);
+    // The un-streamed thinking block is forwarded despite text having streamed.
+    expect(thoughtChunkTexts(updates)).toEqual(["private reasoning"]);
+  });
+
+  it("does not leak subagent assistant text into the top-level feed", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Subagent assistant messages (parent_tool_use_id !== null) are never
+    // streamed live; their text/thinking is internal to the tool call and must
+    // stay filtered out, not surface as a fallback chunk.
+    injectSession(agent, [
+      assistantMessage(
+        "msg-subagent",
+        [{ type: "text", text: "subagent internal prose" }],
+        "tool_use_1",
+      ),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    expect(messageChunkTexts(updates)).toEqual([]);
+    expect(thoughtChunkTexts(updates)).toEqual([]);
+  });
+
+  it("forwards distinct blocks that a gateway splits across same-id messages", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Observed with OpenAI-compatible gateways: one response id split into an
+    // empty thinking block, then the real text — both with no deltas.
+    injectSession(agent, [
+      assistantMessage("msg-split", [{ type: "thinking", thinking: "" }]),
+      assistantMessage("msg-split", [{ type: "text", text: "the real answer" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // The text survives even though an earlier same-id message already triggered
+    // the fallback for a different (thinking) block.
+    expect(messageChunkTexts(updates)).toEqual(["the real answer"]);
+    // The empty thinking block carries nothing and must not produce a stray
+    // empty thought chunk.
+    expect(thoughtChunkTexts(updates)).toEqual([]);
+  });
+
+  it("re-forwards a block a gateway re-delivers (no content-keyed dedupe)", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // The fallback intentionally keys only on whether the id streamed live, not
+    // on block content — so a gateway re-delivering the same assembled block
+    // emits it twice. This is the accepted, cosmetic tradeoff for not caching
+    // every fallback block's full text; see `streamedTextMessageIds`.
+    injectSession(agent, [
+      assistantMessage("msg-dup", [{ type: "text", text: "answer" }]),
+      assistantMessage("msg-dup", [{ type: "text", text: "answer" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    expect(messageChunkTexts(updates)).toEqual(["answer", "answer"]);
   });
 });
 

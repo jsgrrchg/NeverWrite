@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -11,15 +11,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
     AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-    CancelNotification, ClientCapabilities, ContentBlock, ContentChunk, FileSystemCapabilities,
+    CancelNotification, ClientCapabilities, CompleteElicitationNotification, ContentBlock,
+    ContentChunk, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
+    ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
     Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
-    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
+    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
+    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, TextResourceContents, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
@@ -30,15 +34,18 @@ use neverwrite_ai::{
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
     AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
-    AiToolActivityPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason, ToolDiffState,
-    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT,
-    AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
-    AI_SESSION_CREATED_EVENT, AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
-    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
-    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID,
-    GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
+    AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
+    DiscardedAdditionalRootReason, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
+    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
+    AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
+    AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
+    AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
+    AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID,
+    OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -51,10 +58,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::RpcOutput;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str =
-    "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
-const ELECTRON_AI_USER_INPUT_UNAVAILABLE: &str =
-    "Interactive AI user input prompts are not available in Electron yet.";
+const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
 const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
     "Grok login looks invalid or expired. Run Grok login again to reconnect.";
 const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
@@ -73,6 +77,7 @@ const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const MAX_COMPLETED_URL_ELICITATION_IDS: usize = 256;
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
 const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
@@ -88,6 +93,20 @@ const CODEX_ACP_TURN_STARTED_EVENT_TYPE: &str = "turn_started";
 const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
 const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
 const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
+
+fn neverwrite_acp_client_capabilities(_runtime_id: &str) -> ClientCapabilities {
+    // Capability matrix for this integration stage:
+    // - fs: supported and advertised.
+    // - elicitation.form: supported by NeverWrite's user-input bridge.
+    // - elicitation.url: supported by NeverWrite's URL completion bridge.
+    ClientCapabilities::new()
+        .fs(FileSystemCapabilities::new())
+        .elicitation(
+            ElicitationCapabilities::new()
+                .form(ElicitationFormCapabilities::new())
+                .url(ElicitationUrlCapabilities::new()),
+        )
+}
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE: &str = "resume_end";
@@ -111,13 +130,21 @@ struct RuntimeDefinition {
     default_executable: &'static str,
     bin_env_var: &'static str,
     acp_args: &'static [&'static str],
+    acp_protocol: AcpProtocolFlavor,
     supports_native_resume: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpProtocolFlavor {
+    Current14,
+    Legacy12,
 }
 
 const NO_ACP_ARGS: &[&str] = &[];
 const GEMINI_ACP_ARGS: &[&str] = &["--acp"];
 const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
+const GEMINI_TOPIC_TOOL_NAME: &str = "update_topic";
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
     RuntimeDefinition {
@@ -127,6 +154,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "codex",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: true,
     },
     RuntimeDefinition {
@@ -136,6 +164,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -145,6 +174,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "gemini",
         bin_env_var: "NEVERWRITE_GEMINI_ACP_BIN",
         acp_args: GEMINI_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -154,6 +184,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "grok",
         bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
         acp_args: GROK_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -163,6 +194,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "kilo",
         bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -172,6 +204,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "opencode",
         bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
 ];
@@ -304,6 +337,14 @@ struct AiRespondUserInputInput {
     session_id: String,
     request_id: String,
     answers: HashMap<String, Vec<String>>,
+    action: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiRespondUrlElicitationInput {
+    session_id: String,
+    request_id: String,
+    action: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -320,6 +361,10 @@ struct AiAttachmentInput {
     #[serde(rename = "mimeType")]
     mime_type: Option<String>,
     transcription: Option<String>,
+    #[serde(rename = "startLine")]
+    start_line: Option<u32>,
+    #[serde(rename = "endLine")]
+    end_line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -825,6 +870,44 @@ struct AcpAuthHandshakeRequest {
 #[derive(Debug, Clone)]
 struct AcpSessionHandle {
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AcpPromptCapabilities {
+    embedded_context: bool,
+}
+
+struct ElicitationWaiter {
+    session_id: String,
+    fields: HashMap<String, ElicitationFieldSpec>,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+struct UrlElicitationWaiter {
+    session_id: String,
+    elicitation_id: String,
+    title: String,
+    url: String,
+    scope: String,
+    runtime_session_id: Option<String>,
+    tool_call_id: Option<String>,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+#[derive(Debug, Clone)]
+struct ElicitationFieldSpec {
+    kind: ElicitationFieldKind,
+    option_values_by_label: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElicitationFieldKind {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    StringArray,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -895,17 +978,17 @@ impl AuthTerminalHandle {
 enum AcpCommand {
     Prompt {
         session_id: String,
-        content: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
-    SetModel {
-        session_id: String,
-        model_id: String,
+        prompt: Vec<ContentBlock>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
     SetMode {
         session_id: String,
         mode_id: String,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    SetModel {
+        session_id: String,
+        model_id: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
     SetConfigOption {
@@ -928,8 +1011,8 @@ enum AcpCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpConfigOptionRemoteCommand {
     SetConfigOption,
-    SetModel,
     SetMode,
+    SetModel,
     LocalOnly,
 }
 
@@ -940,6 +1023,9 @@ pub(crate) struct NativeAi {
     setup_store: RuntimeSetupStore,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     auth_terminal_sessions: Arc<Mutex<HashMap<String, AuthTerminalHandle>>>,
     auth_terminal_counter: Arc<AtomicU64>,
 }
@@ -969,6 +1055,9 @@ impl NativeAi {
             setup_store,
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
+            user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
+            url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
+            completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
             auth_terminal_counter: Arc::new(AtomicU64::new(1)),
         }
@@ -1268,6 +1357,9 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
+            Arc::clone(&self.user_input_waiters),
+            Arc::clone(&self.url_elicitation_waiters),
+            Arc::clone(&self.completed_url_elicitations),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1378,6 +1470,9 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
+            Arc::clone(&self.user_input_waiters),
+            Arc::clone(&self.url_elicitation_waiters),
+            Arc::clone(&self.completed_url_elicitations),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1452,11 +1547,31 @@ impl NativeAi {
     pub(crate) fn set_model(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let model_id = required_string(args, &["modelId", "model_id"])?;
-        if let Some(handle) = self.session_handle(&session_id)? {
-            handle.set_model(&session_id, &model_id)?;
-        }
+        let model_config_option_id = self.session_model_config_option_id(&session_id)?;
+        let config_options = match (self.session_handle(&session_id)?, model_config_option_id) {
+            (Some(handle), Some(option_id)) => {
+                match self.session_config_option_remote_command(&session_id, &option_id)? {
+                    AcpConfigOptionRemoteCommand::SetConfigOption => {
+                        Some(handle.set_config_option(&session_id, &option_id, &model_id)?)
+                    }
+                    AcpConfigOptionRemoteCommand::SetModel => {
+                        handle.set_model(&session_id, &model_id)?;
+                        None
+                    }
+                    AcpConfigOptionRemoteCommand::SetMode
+                    | AcpConfigOptionRemoteCommand::LocalOnly => None,
+                }
+            }
+            _ => None,
+        };
         self.update_session(&session_id, |session| {
-            session.model_id = model_id;
+            if let Some(config_options) = config_options {
+                let mapped_options =
+                    map_session_config_options(&session.runtime_id, config_options);
+                apply_config_options_to_session(session, mapped_options);
+            } else {
+                apply_model_update_to_session(session, &model_id);
+            }
             Ok(())
         })
     }
@@ -1484,12 +1599,12 @@ impl NativeAi {
             (Some(handle), AcpConfigOptionRemoteCommand::SetConfigOption) => {
                 Some(handle.set_config_option(&input.session_id, &input.option_id, &input.value)?)
             }
-            (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
-                handle.set_model(&input.session_id, &input.value)?;
-                None
-            }
             (Some(handle), AcpConfigOptionRemoteCommand::SetMode) => {
                 handle.set_mode(&input.session_id, &input.value)?;
+                None
+            }
+            (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
+                handle.set_model(&input.session_id, &input.value)?;
                 None
             }
             (_, AcpConfigOptionRemoteCommand::LocalOnly) | (None, _) => None,
@@ -1531,27 +1646,30 @@ impl NativeAi {
                         .to_string(),
                 );
             }
-            let prompt = build_prompt_with_attachments(
-                &content,
-                &attachments,
-                managed.vault_root.as_deref(),
-                &managed.additional_roots,
-            )?;
-            managed.session.status = AiSessionStatus::Streaming;
             let handle = managed
                 .runtime_handle
                 .clone()
                 .ok_or_else(|| "AI runtime session is not connected.".to_string())?;
+            let prompt = build_prompt_blocks_with_attachments(
+                &content,
+                &attachments,
+                managed.vault_root.as_deref(),
+                &managed.additional_roots,
+                handle.prompt_capabilities(),
+            )?;
+            managed.session.status = AiSessionStatus::Streaming;
             touch_session(&mut state, &session_id);
             (prompt, handle)
         };
 
-        handle.prompt(&session_id, &prompt)?;
+        handle.prompt(&session_id, prompt)?;
         self.load_session(&json!({ "sessionId": session_id }))
     }
 
     pub(crate) fn cancel_turn(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
+        self.cancel_user_input_waiters_for_session(&session_id);
+        self.cancel_url_elicitation_waiters_for_session(&session_id);
         let session = {
             let mut state = self
                 .inner
@@ -1582,15 +1700,88 @@ impl NativeAi {
 
     pub(crate) fn respond_user_input(&self, args: &Value) -> Result<Value, String> {
         let input: AiRespondUserInputInput = input_from_args(args)?;
-        let _ = input.request_id;
-        let _ = input.answers;
-        let runtime_id = self.session_runtime_id(&input.session_id)?;
-        self.emit_runtime_feature_unavailable(&runtime_id, ELECTRON_AI_USER_INPUT_UNAVAILABLE);
-        Err(ELECTRON_AI_USER_INPUT_UNAVAILABLE.to_string())
+        let request_id = input.request_id;
+        let session_id = input.session_id;
+        let action = input.action;
+        let answers = input.answers;
+        let (waiter, response) = {
+            let mut waiters = self
+                .user_input_waiters
+                .lock()
+                .map_err(|error| format!("Internal AI user input state error: {error}"))?;
+            let waiter = waiters
+                .get(&request_id)
+                .ok_or_else(|| format!("AI user input request not found: {request_id}"))?;
+            if waiter.session_id != session_id {
+                return Err(format!(
+                    "AI user input request {request_id} belongs to a different session."
+                ));
+            }
+            let response = create_elicitation_response_from_user_input(
+                action.as_deref(),
+                answers,
+                &waiter.fields,
+            )?;
+            let waiter = waiters
+                .remove(&request_id)
+                .expect("validated user input waiter should still exist");
+            (waiter, response)
+        };
+        waiter
+            .response_tx
+            .send(response)
+            .map_err(|_| "AI user input request was closed.".to_string())?;
+        self.load_session(&json!({ "sessionId": session_id }))
+    }
+
+    pub(crate) fn respond_url_elicitation(&self, args: &Value) -> Result<Value, String> {
+        let input: AiRespondUrlElicitationInput = input_from_args(args)?;
+        let response = create_url_elicitation_response(&input.action)?;
+        let waiter = {
+            let mut waiters = self
+                .url_elicitation_waiters
+                .lock()
+                .map_err(|error| format!("Internal AI URL elicitation state error: {error}"))?;
+            if let Some(waiter) = waiters.get(&input.request_id) {
+                if waiter.session_id != input.session_id {
+                    return Err(format!(
+                        "AI URL elicitation request {} belongs to a different session.",
+                        input.request_id
+                    ));
+                }
+            }
+            waiters.remove(&input.request_id)
+        };
+        let Some(waiter) = waiter else {
+            let completed_by_runtime = self
+                .completed_url_elicitations
+                .lock()
+                .map_err(|error| {
+                    format!("Internal AI URL elicitation completion state error: {error}")
+                })?
+                .contains(&input.request_id);
+            if completed_by_runtime {
+                return Err(format!(
+                    "AI URL elicitation request already completed by runtime: {}",
+                    input.request_id
+                ));
+            }
+            return Err(format!(
+                "AI URL elicitation request not found: {}",
+                input.request_id
+            ));
+        };
+        waiter
+            .response_tx
+            .send(response)
+            .map_err(|_| "AI URL elicitation request was closed.".to_string())?;
+        self.load_session(&json!({ "sessionId": input.session_id }))
     }
 
     pub(crate) fn delete_runtime_session(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
+        self.cancel_user_input_waiters_for_session(&session_id);
+        self.cancel_url_elicitation_waiters_for_session(&session_id);
         let mut state = self
             .inner
             .lock()
@@ -1619,6 +1810,8 @@ impl NativeAi {
             .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
         for session_id in session_ids {
+            self.cancel_user_input_waiters_for_session(&session_id);
+            self.cancel_url_elicitation_waiters_for_session(&session_id);
             state.sessions.remove(&session_id);
             state.session_order.retain(|id| id != &session_id);
             self.tool_diffs.clear_session(&session_id);
@@ -2030,6 +2223,23 @@ impl NativeAi {
         ))
     }
 
+    fn session_model_config_option_id(&self, session_id: &str) -> Result<Option<String>, String> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let managed = state
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+        Ok(managed
+            .session
+            .config_options
+            .iter()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+            .map(|option| option.id.clone()))
+    }
+
     fn session_handle(&self, session_id: &str) -> Result<Option<AcpSessionHandle>, String> {
         let state = self
             .inner
@@ -2042,15 +2252,16 @@ impl NativeAi {
             .ok_or_else(|| format!("AI session not found: {session_id}"))
     }
 
-    fn emit_runtime_feature_unavailable(&self, runtime_id: &str, message: &str) {
-        self.emit_json(
-            "ai://runtime-connection",
-            json!({
-                "runtime_id": runtime_id,
-                "status": "error",
-                "message": message,
-            }),
-        );
+    fn cancel_user_input_waiters_for_session(&self, session_id: &str) {
+        cancel_user_input_waiters_matching(&self.user_input_waiters, |waiter| {
+            waiter.session_id == session_id
+        });
+    }
+
+    fn cancel_url_elicitation_waiters_for_session(&self, session_id: &str) {
+        cancel_url_elicitation_waiters_matching(&self.url_elicitation_waiters, |waiter| {
+            waiter.session_id == session_id
+        });
     }
 
     fn emit_session(&self, event_name: &str, session: &AiSession) {
@@ -2094,7 +2305,6 @@ impl AcpSessionStartMode {
 
 struct AcpSessionStartResponse {
     session_id: String,
-    models: Option<SessionModelState>,
     modes: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 }
@@ -2111,18 +2321,17 @@ impl AcpSessionHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
-    fn prompt(&self, session_id: &str, content: &str) -> Result<(), String> {
-        self.request(|response_tx| AcpCommand::Prompt {
-            session_id: session_id.to_string(),
-            content: content.to_string(),
-            response_tx,
-        })
+    fn prompt_capabilities(&self) -> AcpPromptCapabilities {
+        self.prompt_capabilities
+            .lock()
+            .map(|capabilities| *capabilities)
+            .unwrap_or_default()
     }
 
-    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
-        self.request(|response_tx| AcpCommand::SetModel {
+    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::Prompt {
             session_id: session_id.to_string(),
-            model_id: model_id.to_string(),
+            prompt,
             response_tx,
         })
     }
@@ -2131,6 +2340,14 @@ impl AcpSessionHandle {
         self.request(|response_tx| AcpCommand::SetMode {
             session_id: session_id.to_string(),
             mode_id: mode_id.to_string(),
+            response_tx,
+        })
+    }
+
+    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::SetModel {
+            session_id: session_id.to_string(),
+            model_id: model_id.to_string(),
             response_tx,
         })
     }
@@ -2172,7 +2389,11 @@ struct NativeAcpClient {
     message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
+    suppressed_gemini_topic_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
@@ -2226,6 +2447,11 @@ impl NativeAcpClient {
                 },
             ),
         }
+    }
+
+    fn cancel_all_user_input_waiters(&self) {
+        cancel_user_input_waiters_matching(&self.user_input_waiters, |_| true);
+        cancel_url_elicitation_waiters_matching(&self.url_elicitation_waiters, |_| true);
     }
 
     fn apply_config_options_update(
@@ -2525,8 +2751,65 @@ impl NativeAcpClient {
             .unwrap_or(false)
     }
 
+    fn remember_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_gemini_topic_tool_calls.lock() {
+            ids.insert(call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn forget_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_gemini_topic_tool_calls.lock() {
+            ids.remove(&call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn has_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) -> bool {
+        self.suppressed_gemini_topic_tool_calls
+            .lock()
+            .ok()
+            .map(|ids| ids.contains(&call_state_key(session_id, tool_call_id)))
+            .unwrap_or(false)
+    }
+
+    fn session_runtime_id(&self, session_id: &str) -> Option<String> {
+        self.session_state.lock().ok().and_then(|state| {
+            state
+                .sessions
+                .get(session_id)
+                .map(|metadata| metadata.session.runtime_id.clone())
+        })
+    }
+
+    fn should_suppress_gemini_topic_tool_call(
+        &self,
+        session_id: &str,
+        tool_call: &ToolCall,
+    ) -> bool {
+        if self.session_runtime_id(session_id).as_deref() != Some(GEMINI_RUNTIME_ID) {
+            return false;
+        }
+
+        should_suppress_gemini_topic_tool_call(tool_call)
+    }
+
     fn should_suppress_tool_call_update(&self, session_id: &str, update: &ToolCallUpdate) -> bool {
         let tool_call_id = &update.tool_call_id.0;
+        if self.has_suppressed_gemini_topic_tool_call(session_id, tool_call_id) {
+            if tool_call_update_is_terminal(update) {
+                self.forget_suppressed_gemini_topic_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        if self.session_runtime_id(session_id).as_deref() == Some(GEMINI_RUNTIME_ID)
+            && should_suppress_gemini_topic_tool_call_update(update)
+        {
+            if !tool_call_update_is_terminal(update) {
+                self.remember_suppressed_gemini_topic_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
         if self.has_suppressed_status_tool_call(session_id, tool_call_id) {
             if tool_call_update_is_terminal(update) {
                 self.forget_suppressed_status_tool_call(session_id, tool_call_id);
@@ -2989,6 +3272,182 @@ impl NativeAcpClient {
         Ok(RequestPermissionResponse::new(outcome))
     }
 
+    async fn create_elicitation(
+        &self,
+        request: CreateElicitationRequest,
+    ) -> agent_client_protocol::Result<CreateElicitationResponse> {
+        match request.mode {
+            ElicitationMode::Form(form) => {
+                let ElicitationScope::Session(scope) = form.scope else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let runtime_session_id = scope.session_id.0.to_string();
+                let session_id =
+                    self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+                let request_id = format!(
+                    "user-input-{}",
+                    SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let (questions, fields) = map_elicitation_form_questions(&form.requested_schema);
+                let (response_tx, response_rx) = oneshot::channel();
+                self.user_input_waiters
+                    .lock()
+                    .map_err(|error| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(format!("Internal AI user input state error: {error}"))
+                    })?
+                    .insert(
+                        request_id.clone(),
+                        ElicitationWaiter {
+                            session_id: session_id.clone(),
+                            fields,
+                            response_tx,
+                        },
+                    );
+                self.emit(
+                    AI_USER_INPUT_REQUEST_EVENT,
+                    AiUserInputRequestPayload {
+                        session_id: session_id.clone(),
+                        request_id,
+                        title: request.message,
+                        questions,
+                    },
+                );
+                Ok(response_rx
+                    .await
+                    .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+            }
+            ElicitationMode::Url(url_mode) => {
+                let Some(url) = safe_http_url(&url_mode.url) else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let ElicitationScope::Session(scope) = url_mode.scope else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let runtime_session_id = scope.session_id.0.to_string();
+                let session_id =
+                    self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+                let request_id = format!(
+                    "url-elicitation-{}",
+                    SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let elicitation_id = url_mode.elicitation_id.0.to_string();
+                let tool_call_id = scope.tool_call_id.map(|id| id.0.to_string());
+                let title = request.message;
+                let (response_tx, response_rx) = oneshot::channel();
+                self.url_elicitation_waiters
+                    .lock()
+                    .map_err(|error| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(format!("Internal AI URL elicitation state error: {error}"))
+                    })?
+                    .insert(
+                        request_id.clone(),
+                        UrlElicitationWaiter {
+                            session_id: session_id.clone(),
+                            elicitation_id: elicitation_id.clone(),
+                            title: title.clone(),
+                            url: url.clone(),
+                            scope: "session".to_string(),
+                            runtime_session_id: Some(runtime_session_id.clone()),
+                            tool_call_id: tool_call_id.clone(),
+                            response_tx,
+                        },
+                    );
+                self.emit(
+                    AI_URL_ELICITATION_REQUEST_EVENT,
+                    AiUrlElicitationRequestPayload {
+                        session_id: session_id.clone(),
+                        request_id,
+                        elicitation_id,
+                        title,
+                        url,
+                        status: "pending".to_string(),
+                        scope: "session".to_string(),
+                        runtime_session_id: Some(runtime_session_id),
+                        tool_call_id,
+                    },
+                );
+                Ok(response_rx
+                    .await
+                    .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+            }
+            _ => Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        }
+    }
+
+    async fn complete_elicitation(
+        &self,
+        notification: CompleteElicitationNotification,
+    ) -> agent_client_protocol::Result<()> {
+        let elicitation_id = notification.elicitation_id.0.to_string();
+        let completed = self
+            .url_elicitation_waiters
+            .lock()
+            .map(|mut waiters| {
+                let request_id = waiters.iter().find_map(|(request_id, waiter)| {
+                    (waiter.elicitation_id == elicitation_id).then(|| request_id.clone())
+                })?;
+                waiters
+                    .remove(&request_id)
+                    .map(|waiter| (request_id, waiter))
+            })
+            .map_err(|error| {
+                agent_client_protocol::Error::internal_error()
+                    .data(format!("Internal AI URL elicitation state error: {error}"))
+            })?;
+
+        if let Some((request_id, waiter)) = completed {
+            remember_completed_url_elicitation(
+                &self.completed_url_elicitations,
+                request_id.clone(),
+            );
+            let _ =
+                waiter
+                    .response_tx
+                    .send(CreateElicitationResponse::new(ElicitationAction::Accept(
+                        ElicitationAcceptAction::new(),
+                    )));
+            self.emit(
+                AI_URL_ELICITATION_REQUEST_EVENT,
+                AiUrlElicitationRequestPayload {
+                    session_id: waiter.session_id,
+                    request_id,
+                    elicitation_id,
+                    title: waiter.title,
+                    url: waiter.url,
+                    status: "completed".to_string(),
+                    scope: waiter.scope,
+                    runtime_session_id: waiter.runtime_session_id,
+                    tool_call_id: waiter.tool_call_id,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    async fn request_permission_acp12(
+        &self,
+        args: acp12::schema::RequestPermissionRequest,
+    ) -> acp12::Result<acp12::schema::RequestPermissionResponse> {
+        let args = acp12_to_current(args).map_err(acp12_internal_error)?;
+        let response = self
+            .request_permission(args)
+            .await
+            .map_err(current_error_to_acp12)?;
+        current_to_acp12(response).map_err(acp12_internal_error)
+    }
+
+    async fn session_notification_acp12(
+        &self,
+        notification: acp12::schema::SessionNotification,
+    ) -> acp12::Result<()> {
+        let notification = acp12_to_current(notification).map_err(acp12_internal_error)?;
+        self.session_notification(notification)
+            .await
+            .map_err(current_error_to_acp12)
+    }
+
     async fn session_notification(
         &self,
         args: SessionNotification,
@@ -3004,6 +3463,9 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 // User chunks come from the runtime, not the local composer, so they need
                 // their own stream state.
                 let message_id = self
@@ -3023,6 +3485,9 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 self.end_thinking(&session_id);
                 self.end_user_message(&session_id);
                 let message_id = self
@@ -3042,6 +3507,9 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 self.end_user_message(&session_id);
                 let thinking_id = self
                     .current_thinking_id(&session_id)
@@ -3054,6 +3522,17 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
+                if self.should_suppress_gemini_topic_tool_call(&session_id, &tool_call) {
+                    if tool_call.status != ToolCallStatus::Completed
+                        && tool_call.status != ToolCallStatus::Failed
+                    {
+                        self.remember_suppressed_gemini_topic_tool_call(
+                            &session_id,
+                            &tool_call.tool_call_id.0,
+                        );
+                    }
+                    return Ok(());
+                }
                 if should_suppress_status_tool_call(&tool_call) {
                     self.remember_suppressed_status_tool_call(
                         &session_id,
@@ -3127,6 +3606,77 @@ impl NativeAcpClient {
         }
         Ok(())
     }
+
+    fn should_suppress_internal_text_chunk_for_session(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> bool {
+        self.session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|metadata| metadata.session.runtime_id.clone())
+            })
+            .is_some_and(|runtime_id| should_suppress_internal_text_chunk(&runtime_id, text))
+    }
+}
+
+fn acp12_to_current<T, U>(value: T) -> Result<U, String>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("Failed to convert ACP 0.12 payload: {error}"))
+}
+
+fn current_to_acp12<T, U>(value: T) -> Result<U, String>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("Failed to convert ACP 0.14 payload: {error}"))
+}
+
+fn acp12_internal_error(message: String) -> acp12::Error {
+    acp12::Error::internal_error().data(message)
+}
+
+fn current_error_to_acp12(error: agent_client_protocol::Error) -> acp12::Error {
+    acp12_internal_error(error.to_string())
+}
+
+fn prompt_capabilities_from_initialize_response(
+    initialize_response: &InitializeResponse,
+) -> AcpPromptCapabilities {
+    AcpPromptCapabilities {
+        embedded_context: initialize_response
+            .agent_capabilities
+            .prompt_capabilities
+            .embedded_context,
+    }
+}
+
+fn remember_prompt_capabilities(
+    target: &Arc<Mutex<AcpPromptCapabilities>>,
+    capabilities: AcpPromptCapabilities,
+) {
+    if let Ok(mut target) = target.lock() {
+        *target = capabilities;
+    }
+}
+
+fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
+    // ACP 0.12 does not expose the newer elicitation capability flags through the
+    // umbrella `unstable` feature. Gemini and Grok stay on the legacy surface.
+    acp12::schema::ClientCapabilities::new().fs(acp12::schema::FileSystemCapabilities::new())
 }
 
 fn start_acp_session(
@@ -3136,11 +3686,17 @@ fn start_acp_session(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
+    let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let prompt_capabilities = Arc::new(Mutex::new(AcpPromptCapabilities::default()));
     let handle = AcpSessionHandle {
         command_tx: command_tx.clone(),
+        prompt_capabilities: Arc::clone(&prompt_capabilities),
     };
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -3151,17 +3707,42 @@ fn start_acp_session(
             }
         };
         runtime.block_on(async move {
-            run_acp_actor(
-                spec,
-                start_mode,
-                event_tx,
-                session_state,
-                tool_diffs,
-                agent_writes,
-                command_rx,
-                created_tx,
-            )
-            .await;
+            match flavor {
+                AcpProtocolFlavor::Current14 => {
+                    run_acp_actor(
+                        spec,
+                        start_mode,
+                        event_tx,
+                        session_state,
+                        tool_diffs,
+                        agent_writes,
+                        user_input_waiters,
+                        url_elicitation_waiters,
+                        completed_url_elicitations,
+                        prompt_capabilities,
+                        command_rx,
+                        created_tx,
+                    )
+                    .await;
+                }
+                AcpProtocolFlavor::Legacy12 => {
+                    run_acp12_actor(
+                        spec,
+                        start_mode,
+                        event_tx,
+                        session_state,
+                        tool_diffs,
+                        agent_writes,
+                        user_input_waiters,
+                        url_elicitation_waiters,
+                        completed_url_elicitations,
+                        prompt_capabilities,
+                        command_rx,
+                        created_tx,
+                    )
+                    .await;
+                }
+            }
         });
     });
     let session = created_rx
@@ -3194,6 +3775,7 @@ enum AcpAuthCommand {
 
 fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
+    let flavor = acp_protocol_flavor(&spec.runtime_id);
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -3202,7 +3784,14 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
                 return;
             }
         };
-        let result = runtime.block_on(run_acp_auth_inner(spec, auth_command));
+        let result = match flavor {
+            AcpProtocolFlavor::Current14 => {
+                runtime.block_on(run_acp_auth_inner(spec, auth_command))
+            }
+            AcpProtocolFlavor::Legacy12 => {
+                runtime.block_on(run_acp12_auth_inner(spec, auth_command))
+            }
+        };
         let _ = result_tx.send(result);
     });
 
@@ -3236,6 +3825,37 @@ async fn run_acp_auth_handshake(
     };
 
     send_acp_authenticate_request(connection, request.method_id, request.meta).await
+}
+
+async fn send_acp12_authenticate_request(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    method_id: impl Into<String>,
+    meta: Option<Meta>,
+) -> Result<(), acp12::Error> {
+    let mut request = acp12::schema::AuthenticateRequest::new(method_id.into());
+    if let Some(meta) = meta {
+        let legacy_meta: acp12::schema::Meta =
+            current_to_acp12(meta).map_err(acp12_internal_error)?;
+        request = request.meta(legacy_meta);
+    }
+    connection.send_request(request).block_task().await?;
+    Ok(())
+}
+
+async fn run_acp12_auth_handshake(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &acp12::schema::InitializeResponse,
+) -> Result<(), acp12::Error> {
+    let initialize_response =
+        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
+    let Some(request) = validate_acp_auth_handshake_request(spec, &initialize_response)
+        .map_err(acp12_internal_error)?
+    else {
+        return Ok(());
+    };
+
+    send_acp12_authenticate_request(connection, request.method_id, request.meta).await
 }
 
 fn validate_acp_auth_handshake_request(
@@ -3333,9 +3953,9 @@ async fn run_acp_auth_inner(
                     connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
-                                .client_capabilities(
-                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
-                                )
+                                .client_capabilities(neverwrite_acp_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
                                 .client_info(
                                     Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
                                         .title("NeverWrite"),
@@ -3375,6 +3995,91 @@ async fn run_acp_auth_inner(
     result.map_err(|error| error.to_string())
 }
 
+async fn run_acp12_auth_inner(
+    spec: AcpProcessSpec,
+    auth_command: AcpAuthCommand,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::null());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
+
+    let result = acp12::Client
+        .builder()
+        .name("neverwrite")
+        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
+            let auth_result = tokio::select! {
+                response = async {
+                    connection
+                        .send_request(
+                            acp12::schema::InitializeRequest::new(
+                                acp12::schema::ProtocolVersion::LATEST,
+                            )
+                                .client_capabilities(neverwrite_acp12_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
+                                .client_info(
+                                    acp12::schema::Implementation::new(
+                                        "neverwrite",
+                                        env!("CARGO_PKG_VERSION"),
+                                    )
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    match auth_command {
+                        AcpAuthCommand::Authenticate(method_id) => {
+                            send_acp12_authenticate_request(&connection, method_id, None).await?;
+                        }
+                        AcpAuthCommand::Logout => {
+                            connection
+                                .send_request(acp12::schema::LogoutRequest::new())
+                                .block_task()
+                                .await?;
+                        }
+                    }
+                    Ok::<(), acp12::Error>(())
+                } => response,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(acp12::Error::internal_error().data(message));
+                }
+            };
+
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            auth_result
+        })
+        .await;
+
+    result.map_err(|error| error.to_string())
+}
+
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -3382,6 +4087,10 @@ async fn run_acp_actor(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
@@ -3392,6 +4101,10 @@ async fn run_acp_actor(
         session_state,
         tool_diffs,
         agent_writes,
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        prompt_capabilities,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -3401,13 +4114,51 @@ async fn run_acp_actor(
     }
 }
 
-async fn run_acp_actor_inner(
+async fn run_acp12_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
+    created_tx: mpsc::Sender<Result<AiSession, String>>,
+) {
+    let result = run_acp12_actor_inner(
+        spec,
+        start_mode,
+        event_tx,
+        session_state,
+        tool_diffs,
+        agent_writes,
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        prompt_capabilities,
+        &mut command_rx,
+        created_tx.clone(),
+    )
+    .await;
+    if let Err(error) = result {
+        let _ = created_tx.send(Err(error));
+    }
+}
+
+async fn run_acp12_actor_inner(
+    spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -3439,7 +4190,214 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        tool_diffs,
+        agent_writes,
+        terminal_output: Arc::new(Mutex::new(HashMap::new())),
+        terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let permission_waiters = client.permission_waiters.clone();
+    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let session_created = Arc::new(AtomicBool::new(false));
+    let session_created_for_connection = Arc::clone(&session_created);
+    let disconnect_runtime_id = spec.runtime_id.clone();
+    let event_tx_for_connection = event_tx.clone();
+    let client_for_shutdown = client.clone();
+
+    let result = acp12::Client
+        .builder()
+        .name("neverwrite")
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: acp12::schema::RequestPermissionRequest,
+                            responder,
+                            cx: acp12::ConnectionTo<acp12::Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.request_permission_acp12(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            acp12::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: acp12::schema::SessionNotification,
+                            _cx: acp12::ConnectionTo<acp12::Agent>| {
+                    client.session_notification_acp12(notification).await
+                }
+            },
+            acp12::on_receive_notification!(),
+        )
+        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
+            let response = tokio::select! {
+                response = async {
+                    let initialize_response = connection
+                        .send_request(
+                            acp12::schema::InitializeRequest::new(
+                                acp12::schema::ProtocolVersion::LATEST,
+                            )
+                                .client_capabilities(neverwrite_acp12_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
+                                .client_info(
+                                    acp12::schema::Implementation::new(
+                                        "neverwrite",
+                                        env!("CARGO_PKG_VERSION"),
+                                    )
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    let current_initialize_response: InitializeResponse =
+                        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
+                    remember_prompt_capabilities(
+                        &prompt_capabilities,
+                        prompt_capabilities_from_initialize_response(
+                            &current_initialize_response,
+                        ),
+                    );
+                    run_acp12_auth_handshake(&connection, &spec, &initialize_response).await?;
+                    emit_event(
+                        &event_tx_for_connection,
+                        AI_RUNTIME_CONNECTION_EVENT,
+                        json!(AiRuntimeConnectionPayload {
+                            runtime_id: spec.runtime_id.clone(),
+                            status: "ready".to_string(),
+                            message: None,
+                        }),
+                    );
+                    let initialize_model_state = acp12_initialize_model_state(&initialize_response);
+                    start_acp12_runtime_session(
+                        &connection,
+                        &spec,
+                        &start_mode,
+                        initialize_model_state,
+                    )
+                    .await
+                } => response?,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(acp12::Error::internal_error().data(message));
+                }
+            };
+            let mut session = session_from_acp_response(
+                &spec.runtime_id,
+                response.session_id,
+                response.modes,
+                response.config_options,
+            );
+            session.additional_roots =
+                additional_roots_to_strings(start_mode.additional_directories());
+            client
+                .tool_diffs
+                .register_session_cwd(&session.session_id, spec.cwd.clone());
+            session_created_for_connection.store(true, Ordering::Relaxed);
+            let _ = created_tx.send(Ok(session));
+            loop {
+                tokio::select! {
+                    maybe_command = command_rx.recv() => {
+                        let Some(command) = maybe_command else {
+                            return Ok(());
+                        };
+                        handle_acp12_command(command, &connection, &client, &permission_waiters).await;
+                    }
+                    wait_result = child.wait() => {
+                        let message = wait_result
+                            .map(acp_child_exit_message)
+                            .unwrap_or_else(|error| {
+                                format!("Failed to wait for AI runtime process: {error}")
+                            });
+                        return Err(acp12::Error::internal_error().data(message));
+                    }
+                }
+            }
+        })
+        .await;
+
+    client_for_shutdown.cancel_all_user_input_waiters();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if session_created.load(Ordering::Relaxed) => {
+            emit_event(
+                &event_tx,
+                AI_RUNTIME_CONNECTION_EVENT,
+                json!(AiRuntimeConnectionPayload {
+                    runtime_id: disconnect_runtime_id,
+                    status: "error".to_string(),
+                    message: Some(format!(
+                        "The AI runtime process disconnected unexpectedly: {error}"
+                    )),
+                }),
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+async fn run_acp_actor_inner(
+    spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
+    created_tx: mpsc::Sender<Result<AiSession, String>>,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let client = NativeAcpClient {
+        event_tx: event_tx.clone(),
+        session_state,
+        message_ids: Arc::new(Mutex::new(HashMap::new())),
+        thinking_ids: Arc::new(Mutex::new(HashMap::new())),
+        permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -3451,6 +4409,7 @@ async fn run_acp_actor_inner(
     let session_created_for_connection = Arc::clone(&session_created);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
+    let client_for_shutdown = client.clone();
 
     let result = Client
         .builder()
@@ -3472,11 +4431,38 @@ async fn run_acp_actor_inner(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: CreateElicitationRequest,
+                            responder,
+                            cx: ConnectionTo<Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.create_elicitation(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let client = client.clone();
                 async move |notification: SessionNotification, _cx: ConnectionTo<Agent>| {
                     client.session_notification(notification).await
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: CompleteElicitationNotification,
+                            _cx: ConnectionTo<Agent>| {
+                    client.complete_elicitation(notification).await
                 }
             },
             agent_client_protocol::on_receive_notification!(),
@@ -3487,9 +4473,9 @@ async fn run_acp_actor_inner(
                     let initialize_response = connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
-                                .client_capabilities(
-                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
-                                )
+                                .client_capabilities(neverwrite_acp_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
                                 .client_info(
                                     Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
                                         .title("NeverWrite"),
@@ -3497,6 +4483,10 @@ async fn run_acp_actor_inner(
                         )
                         .block_task()
                         .await?;
+                    remember_prompt_capabilities(
+                        &prompt_capabilities,
+                        prompt_capabilities_from_initialize_response(&initialize_response),
+                    );
                     run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
                     emit_event(
                         &event_tx_for_connection,
@@ -3521,7 +4511,6 @@ async fn run_acp_actor_inner(
             let mut session = session_from_acp_response(
                 &spec.runtime_id,
                 response.session_id,
-                response.models,
                 response.modes,
                 response.config_options,
             );
@@ -3552,6 +4541,8 @@ async fn run_acp_actor_inner(
             }
         })
         .await;
+
+    client_for_shutdown.cancel_all_user_input_waiters();
 
     match result {
         Ok(()) => Ok(()),
@@ -3593,7 +4584,6 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: response.session_id.0.to_string(),
-                models: response.models,
                 modes: response.modes,
                 config_options: response.config_options,
             })
@@ -3614,12 +4604,152 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: session_id.clone(),
-                models: response.models,
                 modes: response.modes,
                 config_options: response.config_options,
             })
         }
     }
+}
+
+async fn start_acp12_runtime_session(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    spec: &AcpProcessSpec,
+    start_mode: &AcpSessionStartMode,
+    initialize_model_state: Option<acp12::schema::SessionModelState>,
+) -> Result<AcpSessionStartResponse, acp12::Error> {
+    let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
+    match start_mode {
+        AcpSessionStartMode::New {
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(
+                    acp12::schema::NewSessionRequest::new(cwd).additional_directories(
+                        additional_wire_paths(&spec.runtime_id, additional_directories),
+                    ),
+                )
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: response.session_id.0.to_string(),
+                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
+                config_options: acp12_session_config_options(
+                    response.config_options,
+                    response.models.or_else(|| initialize_model_state.clone()),
+                )
+                .map_err(acp12_internal_error)?,
+            })
+        }
+        AcpSessionStartMode::Load {
+            session_id,
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(
+                    acp12::schema::LoadSessionRequest::new(
+                        acp12::schema::SessionId::new(session_id.clone()),
+                        cwd,
+                    )
+                    .additional_directories(additional_wire_paths(
+                        &spec.runtime_id,
+                        additional_directories,
+                    )),
+                )
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: session_id.clone(),
+                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
+                config_options: acp12_session_config_options(
+                    response.config_options,
+                    response.models.or_else(|| initialize_model_state.clone()),
+                )
+                .map_err(acp12_internal_error)?,
+            })
+        }
+    }
+}
+
+fn acp12_initialize_model_state(
+    response: &acp12::schema::InitializeResponse,
+) -> Option<acp12::schema::SessionModelState> {
+    response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("modelState").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn acp12_session_config_options(
+    legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
+    legacy_models: Option<acp12::schema::SessionModelState>,
+) -> Result<Option<Vec<SessionConfigOption>>, String> {
+    let mut options: Option<Vec<SessionConfigOption>> = acp12_to_current(legacy_options)?;
+    let Some(model_option) = acp12_model_state_to_config_option(legacy_models) else {
+        return Ok(options);
+    };
+
+    let options = options.get_or_insert_with(Vec::new);
+    if !options.iter().any(|option| {
+        matches!(
+            map_config_option_category(&option.id.0, option.category.as_ref()),
+            AiConfigOptionCategory::Model
+        )
+    }) {
+        options.insert(0, model_option);
+    }
+
+    Ok(Some(options.clone()))
+}
+
+fn acp12_model_state_to_config_option(
+    state: Option<acp12::schema::SessionModelState>,
+) -> Option<SessionConfigOption> {
+    let state = state?;
+    if state.available_models.is_empty() {
+        return None;
+    }
+
+    let options: Vec<SessionConfigSelectOption> = state
+        .available_models
+        .into_iter()
+        .map(|model| {
+            let mut option =
+                SessionConfigSelectOption::new(model.model_id.0.to_string(), model.name);
+            if let Some(description) = model.description {
+                option = option.description(description);
+            }
+            if let Some(meta) = model.meta {
+                option = option.meta(meta);
+            }
+            option
+        })
+        .collect();
+
+    Some(
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            state.current_model_id.0.to_string(),
+            options,
+        )
+        .category(SessionConfigOptionCategory::Model),
+    )
+}
+
+fn config_select_option_agent_type(meta: Option<&Meta>) -> Option<String> {
+    meta.and_then(|meta| meta.get("agentType"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_grok_model_switch_error(error: &str) -> String {
+    if error.contains("MODEL_SWITCH_INCOMPATIBLE_AGENT") {
+        return "Start a new Grok chat to switch models.".to_string();
+    }
+
+    error.to_string()
 }
 
 fn new_session_request(
@@ -3647,7 +4777,7 @@ async fn handle_acp_command(
     match command {
         AcpCommand::Prompt {
             session_id,
-            content,
+            prompt,
             response_tx,
         } => {
             let connection = connection.clone();
@@ -3657,7 +4787,7 @@ async fn handle_acp_command(
                 let result = connection
                     .send_request(PromptRequest::new(
                         SessionId::new(session_id.clone()),
-                        vec![ContentBlock::from(content)],
+                        prompt,
                     ))
                     .block_task()
                     .await
@@ -3678,22 +4808,6 @@ async fn handle_acp_command(
             });
             let _ = response_tx.send(Ok(()));
         }
-        AcpCommand::SetModel {
-            session_id,
-            model_id,
-            response_tx,
-        } => {
-            let result = connection
-                .send_request(SetSessionModelRequest::new(
-                    SessionId::new(session_id),
-                    model_id,
-                ))
-                .block_task()
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            let _ = response_tx.send(result);
-        }
         AcpCommand::SetMode {
             session_id,
             mode_id,
@@ -3707,8 +4821,17 @@ async fn handle_acp_command(
                 .block_task()
                 .await
                 .map(|_| ())
-                .map_err(|error| error.to_string());
+                .map_err(|error| normalize_grok_model_switch_error(&error.to_string()));
             let _ = response_tx.send(result);
+        }
+        AcpCommand::SetModel {
+            session_id: _,
+            model_id: _,
+            response_tx,
+        } => {
+            let _ = response_tx.send(Err(
+                "ACP 0.14 model changes must use session config options.".to_string(),
+            ));
         }
         AcpCommand::SetConfigOption {
             session_id,
@@ -3765,45 +4888,176 @@ async fn handle_acp_command(
     }
 }
 
+async fn handle_acp12_command(
+    command: AcpCommand,
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    client: &NativeAcpClient,
+    permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+) {
+    match command {
+        AcpCommand::Prompt {
+            session_id,
+            prompt,
+            response_tx,
+        } => {
+            let connection = connection.clone();
+            let client = client.clone();
+            tokio::spawn(async move {
+                let message_id = client.begin_message(&session_id);
+                let legacy_prompt: Result<Vec<acp12::schema::ContentBlock>, String> =
+                    current_to_acp12(prompt);
+                let result = match legacy_prompt {
+                    Ok(legacy_prompt) => connection
+                        .send_request(acp12::schema::PromptRequest::new(
+                            acp12::schema::SessionId::new(session_id.clone()),
+                            legacy_prompt,
+                        ))
+                        .block_task()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error),
+                };
+                client.end_thinking(&session_id);
+                client.end_user_message(&session_id);
+                client.complete_assistant_turn(&session_id, &message_id);
+                if let Err(error) = &result {
+                    client.emit(
+                        AI_SESSION_ERROR_EVENT,
+                        AiSessionErrorPayload {
+                            session_id: Some(session_id),
+                            message: error.clone(),
+                        },
+                    );
+                }
+            });
+            let _ = response_tx.send(Ok(()));
+        }
+        AcpCommand::SetMode {
+            session_id,
+            mode_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionModeRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    mode_id,
+                ))
+                .block_task()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::SetModel {
+            session_id,
+            model_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionModelRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    model_id,
+                ))
+                .block_task()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::SetConfigOption {
+            session_id,
+            option_id,
+            value,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionConfigOptionRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    option_id,
+                    value.as_str(),
+                ))
+                .block_task()
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|response| acp12_to_current(response.config_options));
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::Cancel {
+            session_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_notification(acp12::schema::CancelNotification::new(
+                    acp12::schema::SessionId::new(session_id),
+                ))
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::RespondPermission {
+            request_id,
+            option_id,
+            response_tx,
+        } => {
+            let outcome = option_id
+                .map(|value| {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
+                })
+                .unwrap_or(RequestPermissionOutcome::Cancelled);
+            let result = permission_waiters
+                .lock()
+                .map_err(|error| error.to_string())
+                .and_then(|mut waiters| {
+                    waiters
+                        .remove(&request_id)
+                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
+                })
+                .and_then(|sender| {
+                    sender
+                        .send(outcome)
+                        .map_err(|_| "Permission request was closed.".to_string())
+                });
+            let _ = response_tx.send(result);
+        }
+    }
+}
+
 fn session_from_acp_response(
     runtime_id: &str,
     session_id: String,
-    models_state: Option<SessionModelState>,
     modes_state: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 ) -> AiSession {
-    let mapped_models = models_state
+    let mut config_options =
+        config_options.map(|options| map_session_config_options(runtime_id, options));
+    let modes = modes_state
         .as_ref()
-        .map(|state| map_session_models(runtime_id, state))
-        .unwrap_or_default();
+        .map(|state| map_session_modes(runtime_id, state))
+        .or_else(|| {
+            config_options
+                .as_ref()
+                .map(|options| map_session_modes_from_config_options(runtime_id, options))
+                .filter(|modes| !modes.is_empty())
+        })
+        .unwrap_or_else(|| default_modes_for_acp_session(runtime_id));
+    let mut config_options = match config_options.take() {
+        Some(options) => options,
+        None => {
+            let models = default_models(runtime_id);
+            let mut options = default_config_options(runtime_id, &models, &modes);
+            align_synthesized_config_options_to_acp_state(&mut options, modes_state.as_ref());
+            options
+        }
+    };
+    let mapped_models = map_session_models_from_config_options(runtime_id, &config_options);
     let models = if mapped_models.models.is_empty() {
         default_models(runtime_id)
     } else {
         mapped_models.models
     };
-    let modes = modes_state
-        .as_ref()
-        .map(|state| map_session_modes(runtime_id, state))
-        .unwrap_or_else(|| default_modes_for_acp_session(runtime_id));
-    let mut config_options = match config_options {
-        Some(options) => map_session_config_options(runtime_id, options),
-        None => {
-            let mut options = default_config_options(runtime_id, &models, &modes);
-            align_synthesized_config_options_to_acp_state(
-                &mut options,
-                models_state.as_ref(),
-                modes_state.as_ref(),
-            );
-            options
-        }
-    };
-    config_options = ensure_reasoning_config_option(
-        runtime_id,
-        config_options,
-        models_state.as_ref(),
-        &mapped_models.efforts_by_model,
-    );
-    let model_id = selected_model_id(models_state.as_ref(), &config_options)
+    config_options =
+        ensure_reasoning_config_option(runtime_id, config_options, &mapped_models.efforts_by_model);
+    let model_id = selected_model_id(&config_options)
         .or_else(|| models.first().map(|model| model.id.clone()))
         .unwrap_or_default();
     let mode_id = selected_mode_id(modes_state.as_ref(), &config_options)
@@ -3838,17 +5092,42 @@ fn acp_child_exit_message(status: std::process::ExitStatus) -> String {
     }
 }
 
+fn should_suppress_internal_text_chunk(runtime_id: &str, text: &str) -> bool {
+    if !matches!(runtime_id, GEMINI_RUNTIME_ID | GROK_RUNTIME_ID) {
+        return false;
+    }
+
+    let trimmed = text.trim();
+    let Some(mode_id) = trimmed.strip_prefix("[MODE_UPDATE]") else {
+        return false;
+    };
+    let mode_id = mode_id.trim();
+    !mode_id.is_empty()
+        && mode_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
 #[derive(Default)]
 struct MappedSessionModels {
     models: Vec<AiModelOption>,
     efforts_by_model: HashMap<String, Vec<String>>,
 }
 
-fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSessionModels {
+fn map_session_models_from_config_options(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+) -> MappedSessionModels {
     let mut mapped = MappedSessionModels::default();
+    let Some(model_option) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+    else {
+        return mapped;
+    };
 
-    for model in &state.available_models {
-        let model_id = model.model_id.0.as_ref();
+    for model in &model_option.options {
+        let model_id = model.value.as_str();
         let base_model_id = strip_effort_suffix(model_id).to_string();
         if let Some(effort) = extract_effort(model_id) {
             let efforts = mapped
@@ -3867,8 +5146,9 @@ fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSess
         mapped.models.push(AiModelOption {
             id: base_model_id,
             runtime_id: runtime_id.to_string(),
-            name: strip_effort_suffix(&model.name).to_string(),
+            name: strip_effort_suffix(&model.label).to_string(),
             description: model.description.clone().unwrap_or_default(),
+            agent_type: model.agent_type.clone(),
         });
     }
 
@@ -3884,6 +5164,30 @@ fn map_session_modes(runtime_id: &str, state: &SessionModeState) -> Vec<AiModeOp
             runtime_id: runtime_id.to_string(),
             name: mode.name.clone(),
             description: mode.description.clone().unwrap_or_default(),
+            disabled: false,
+        })
+        .collect()
+}
+
+fn map_session_modes_from_config_options(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+) -> Vec<AiModeOption> {
+    let Some(mode_option) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+    else {
+        return Vec::new();
+    };
+
+    mode_option
+        .options
+        .iter()
+        .map(|option| AiModeOption {
+            id: option.value.clone(),
+            runtime_id: runtime_id.to_string(),
+            name: option.label.clone(),
+            description: option.description.clone().unwrap_or_default(),
             disabled: false,
         })
         .collect()
@@ -3922,6 +5226,7 @@ fn map_session_config_options(
                         value: item.value.0.to_string(),
                         label: item.name,
                         description: item.description,
+                        agent_type: config_select_option_agent_type(item.meta.as_ref()),
                     })
                     .collect(),
             })
@@ -3931,21 +5236,8 @@ fn map_session_config_options(
 
 fn align_synthesized_config_options_to_acp_state(
     config_options: &mut [AiConfigOption],
-    models_state: Option<&SessionModelState>,
     modes_state: Option<&SessionModeState>,
 ) {
-    if let Some(model_id) = models_state
-        .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
-        .filter(|value| !value.trim().is_empty())
-    {
-        if let Some(option) = config_options
-            .iter_mut()
-            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
-        {
-            option.value = model_id;
-        }
-    }
-
     if let Some(mode_id) = modes_state
         .map(|state| state.current_mode_id.0.to_string())
         .filter(|value| !value.trim().is_empty())
@@ -3963,10 +5255,19 @@ fn map_config_option_category(
     option_id: &str,
     category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
-    let normalized_id = option_id.to_ascii_lowercase();
+    let normalized_id = normalize_config_option_key(option_id);
+    if normalized_id == "model" {
+        return AiConfigOptionCategory::Model;
+    }
+    if normalized_id == "mode"
+        || normalized_id == "permissionmode"
+        || normalized_id == "approvalmode"
+    {
+        return AiConfigOptionCategory::Mode;
+    }
     if matches!(
         normalized_id.as_str(),
-        "reasoning_effort" | "thought_level" | "effort"
+        "reasoningeffort" | "thoughtlevel" | "effort" | "reasoning"
     ) {
         return AiConfigOptionCategory::Reasoning;
     }
@@ -3987,10 +5288,17 @@ fn map_config_option_category(
     }
 }
 
+fn normalize_config_option_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != '_' && *character != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn ensure_reasoning_config_option(
     runtime_id: &str,
     mut config_options: Vec<AiConfigOption>,
-    models_state: Option<&SessionModelState>,
     efforts_by_model: &HashMap<String, Vec<String>>,
 ) -> Vec<AiConfigOption> {
     if config_options
@@ -4000,7 +5308,7 @@ fn ensure_reasoning_config_option(
         return config_options;
     }
 
-    let Some(model_id) = selected_model_id(models_state, &config_options) else {
+    let Some(model_id) = selected_model_id(&config_options) else {
         return config_options;
     };
     let Some(efforts) = efforts_by_model.get(&model_id) else {
@@ -4010,8 +5318,8 @@ fn ensure_reasoning_config_option(
         return config_options;
     }
 
-    let current_effort = models_state
-        .and_then(|state| extract_effort(state.current_model_id.0.as_ref()))
+    let current_effort = selected_model_value(&config_options)
+        .and_then(extract_effort)
         .filter(|effort| efforts.iter().any(|item| item == effort))
         .or_else(|| {
             efforts
@@ -4035,6 +5343,7 @@ fn ensure_reasoning_config_option(
                 value: effort.clone(),
                 label: reasoning_effort_label(effort),
                 description: None,
+                agent_type: None,
             })
             .collect(),
     };
@@ -4047,20 +5356,20 @@ fn ensure_reasoning_config_option(
     config_options
 }
 
-fn selected_model_id(
-    models_state: Option<&SessionModelState>,
-    config_options: &[AiConfigOption],
-) -> Option<String> {
+fn selected_model_id(config_options: &[AiConfigOption]) -> Option<String> {
     config_options
         .iter()
         .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
         .map(|option| strip_effort_suffix(&option.value).to_string())
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            models_state
-                .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
-                .filter(|value| !value.trim().is_empty())
-        })
+}
+
+fn selected_model_value(config_options: &[AiConfigOption]) -> Option<&str> {
+    config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|option| option.value.as_str())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn selected_mode_id(
@@ -4097,6 +5406,17 @@ fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<
         session.mode_id = mode_id;
     }
     session.config_options = config_options;
+}
+
+fn apply_model_update_to_session(session: &mut AiSession, model_id: &str) {
+    session.model_id = strip_effort_suffix(model_id).to_string();
+    if let Some(option) = session
+        .config_options
+        .iter_mut()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+    {
+        option.value = model_id.to_string();
+    }
 }
 
 fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
@@ -4144,7 +5464,7 @@ fn acp_config_option_remote_command(
             Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
             Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::LocalOnly,
             Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-            None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
+            None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
             None => AcpConfigOptionRemoteCommand::LocalOnly,
         };
     }
@@ -4161,12 +5481,11 @@ fn acp_config_option_remote_command(
         Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
         Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::SetMode,
         Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-        None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
+        None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
         None if option_id == "mode" => AcpConfigOptionRemoteCommand::SetMode,
         None => AcpConfigOptionRemoteCommand::LocalOnly,
     }
 }
-
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
     AiPermissionOptionPayload {
         option_id: option.option_id.0.to_string(),
@@ -4223,6 +5542,382 @@ fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanU
                 status: plan_entry_status_label(&entry.status).to_string(),
             })
             .collect(),
+    }
+}
+
+fn map_elicitation_form_questions(
+    schema: &agent_client_protocol::schema::ElicitationSchema,
+) -> (
+    Vec<AiUserInputQuestionPayload>,
+    HashMap<String, ElicitationFieldSpec>,
+) {
+    schema
+        .properties
+        .iter()
+        .map(|(id, property)| {
+            let (header, question, kind, options) = elicitation_question_parts(id, property);
+            let option_values_by_label = options
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|option| (option.label.clone(), option.description.clone()))
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+            (
+                AiUserInputQuestionPayload {
+                    id: id.clone(),
+                    header,
+                    question,
+                    is_other: false,
+                    is_secret: false,
+                    allows_multiple: matches!(kind, ElicitationFieldKind::StringArray),
+                    options,
+                },
+                (
+                    id.clone(),
+                    ElicitationFieldSpec {
+                        kind,
+                        option_values_by_label,
+                    },
+                ),
+            )
+        })
+        .fold(
+            (Vec::new(), HashMap::new()),
+            |(mut questions, mut fields), (question, (id, field))| {
+                questions.push(question);
+                fields.insert(id, field);
+                (questions, fields)
+            },
+        )
+}
+
+fn elicitation_question_parts(
+    id: &str,
+    property: &ElicitationPropertySchema,
+) -> (
+    String,
+    String,
+    ElicitationFieldKind,
+    Option<Vec<AiUserInputQuestionOptionPayload>>,
+) {
+    match property {
+        ElicitationPropertySchema::String(schema) => {
+            let options = schema
+                .one_of
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| AiUserInputQuestionOptionPayload {
+                            label: item.title.clone(),
+                            description: item.value.clone(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    schema.enum_values.as_ref().map(|values| {
+                        values
+                            .iter()
+                            .map(|value| AiUserInputQuestionOptionPayload {
+                                label: value.clone(),
+                                description: value.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                });
+            (
+                schema
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| humanize_field_id(id)),
+                schema.description.clone().unwrap_or_else(|| {
+                    schema
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id)))
+                }),
+                ElicitationFieldKind::String,
+                options,
+            )
+        }
+        ElicitationPropertySchema::Number(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id))),
+            ElicitationFieldKind::Number,
+            None,
+        ),
+        ElicitationPropertySchema::Integer(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id))),
+            ElicitationFieldKind::Integer,
+            None,
+        ),
+        ElicitationPropertySchema::Boolean(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Choose {}", humanize_field_id(id))),
+            ElicitationFieldKind::Boolean,
+            Some(vec![
+                AiUserInputQuestionOptionPayload {
+                    label: "Yes".to_string(),
+                    description: "true".to_string(),
+                },
+                AiUserInputQuestionOptionPayload {
+                    label: "No".to_string(),
+                    description: "false".to_string(),
+                },
+            ]),
+        ),
+        ElicitationPropertySchema::Array(schema) => {
+            let options = match &schema.items {
+                MultiSelectItems::Untitled(items) => items
+                    .values
+                    .iter()
+                    .map(|value| AiUserInputQuestionOptionPayload {
+                        label: value.clone(),
+                        description: value.clone(),
+                    })
+                    .collect(),
+                MultiSelectItems::Titled(items) => items
+                    .options
+                    .iter()
+                    .map(|item| AiUserInputQuestionOptionPayload {
+                        label: item.title.clone(),
+                        description: item.value.clone(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (
+                schema
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| humanize_field_id(id)),
+                schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("Choose {}", humanize_field_id(id))),
+                ElicitationFieldKind::StringArray,
+                Some(options),
+            )
+        }
+        _ => (
+            humanize_field_id(id),
+            format!("Provide {}", humanize_field_id(id)),
+            ElicitationFieldKind::String,
+            None,
+        ),
+    }
+}
+
+fn create_elicitation_response_from_user_input(
+    action: Option<&str>,
+    answers: HashMap<String, Vec<String>>,
+    fields: &HashMap<String, ElicitationFieldSpec>,
+) -> Result<CreateElicitationResponse, String> {
+    match action.unwrap_or(if answers.is_empty() {
+        "cancel"
+    } else {
+        "accept"
+    }) {
+        "cancel" => return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        "decline" | "skip" => {
+            return Ok(CreateElicitationResponse::new(ElicitationAction::Decline));
+        }
+        "accept" => {}
+        other => return Err(format!("Unsupported user input action: {other}")),
+    }
+
+    let mut content = BTreeMap::new();
+    for (id, values) in answers {
+        let Some(field) = fields.get(&id) else {
+            continue;
+        };
+        if let Some(value) = elicitation_content_value_from_answers(&values, field) {
+            content.insert(id, value);
+        }
+    }
+    Ok(CreateElicitationResponse::new(ElicitationAction::Accept(
+        ElicitationAcceptAction::new().content(content),
+    )))
+}
+
+fn cancel_user_input_waiters_matching(
+    waiters: &Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    matches_waiter: impl Fn(&ElicitationWaiter) -> bool,
+) {
+    let waiters_to_cancel = waiters
+        .lock()
+        .map(|mut waiters| {
+            let request_ids = waiters
+                .iter()
+                .filter_map(|(request_id, waiter)| {
+                    matches_waiter(waiter).then(|| request_id.clone())
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| waiters.remove(&request_id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for waiter in waiters_to_cancel {
+        let _ = waiter
+            .response_tx
+            .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+    }
+}
+
+fn cancel_url_elicitation_waiters_matching(
+    waiters: &Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    matches_waiter: impl Fn(&UrlElicitationWaiter) -> bool,
+) {
+    let waiters_to_cancel = waiters
+        .lock()
+        .map(|mut waiters| {
+            let request_ids = waiters
+                .iter()
+                .filter_map(|(request_id, waiter)| {
+                    matches_waiter(waiter).then(|| request_id.clone())
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| waiters.remove(&request_id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for waiter in waiters_to_cancel {
+        let _ = waiter
+            .response_tx
+            .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+    }
+}
+
+fn create_url_elicitation_response(action: &str) -> Result<CreateElicitationResponse, String> {
+    match action {
+        "complete" | "done" | "accept" => Ok(CreateElicitationResponse::new(
+            ElicitationAction::Accept(ElicitationAcceptAction::new()),
+        )),
+        "cancel" => Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        other => Err(format!("Unsupported URL elicitation action: {other}")),
+    }
+}
+
+fn remember_completed_url_elicitation(
+    completed_url_elicitations: &Arc<Mutex<VecDeque<String>>>,
+    request_id: String,
+) {
+    if let Ok(mut completed_requests) = completed_url_elicitations.lock() {
+        completed_requests.retain(|known_request_id| known_request_id != &request_id);
+        if completed_requests.len() >= MAX_COMPLETED_URL_ELICITATION_IDS {
+            completed_requests.pop_front();
+        }
+        completed_requests.push_back(request_id);
+    }
+}
+
+fn safe_http_url(raw_url: &str) -> Option<String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let Ok(parsed) = reqwest::Url::parse(trimmed) else {
+        return None;
+    };
+    (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+        .then(|| parsed.to_string())
+}
+
+fn elicitation_content_value_from_answers(
+    values: &[String],
+    field: &ElicitationFieldSpec,
+) -> Option<ElicitationContentValue> {
+    match field.kind {
+        ElicitationFieldKind::StringArray => {
+            let mapped = values
+                .iter()
+                .map(|value| elicitation_answer_value(value, field))
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>();
+            Some(ElicitationContentValue::StringArray(mapped))
+        }
+        ElicitationFieldKind::Boolean => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            match mapped.to_ascii_lowercase().as_str() {
+                "true" | "yes" | "1" => ElicitationContentValue::Boolean(true),
+                "false" | "no" | "0" => ElicitationContentValue::Boolean(false),
+                _ => ElicitationContentValue::String(mapped),
+            }
+        }),
+        ElicitationFieldKind::Integer => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            mapped
+                .parse::<i64>()
+                .map(ElicitationContentValue::Integer)
+                .unwrap_or(ElicitationContentValue::String(mapped))
+        }),
+        ElicitationFieldKind::Number => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            mapped
+                .parse::<f64>()
+                .map(ElicitationContentValue::Number)
+                .unwrap_or(ElicitationContentValue::String(mapped))
+        }),
+        ElicitationFieldKind::String => values
+            .first()
+            .map(|value| ElicitationContentValue::String(elicitation_answer_value(value, field))),
+    }
+}
+
+fn elicitation_answer_value(value: &str, field: &ElicitationFieldSpec) -> String {
+    field
+        .option_values_by_label
+        .get(value)
+        .cloned()
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn humanize_field_id(id: &str) -> String {
+    let mut result = String::new();
+    for (index, word) in id
+        .split(['_', '-', '.'])
+        .filter(|part| !part.is_empty())
+        .enumerate()
+    {
+        if index > 0 {
+            result.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            result.extend(first.to_uppercase());
+            result.push_str(chars.as_str());
+        }
+    }
+    if result.is_empty() {
+        id.to_string()
+    } else {
+        result
     }
 }
 
@@ -4506,6 +6201,47 @@ fn should_suppress_status_tool_call_update(update: &ToolCallUpdate) -> bool {
             .is_some_and(|event_type| event_type == "status")
 }
 
+fn is_gemini_topic_tool_title(title: &str) -> bool {
+    let title = title.trim();
+    title.starts_with("Update topic to:") || title.starts_with("Update tactical intent:")
+}
+
+fn is_gemini_topic_tool_name(name: &str) -> bool {
+    name.trim() == GEMINI_TOPIC_TOOL_NAME
+}
+
+fn gemini_topic_tool_name_from_meta(meta: Option<&Meta>) -> Option<String> {
+    let meta = meta?;
+    ["tool_name", "toolName", "name", "tool"]
+        .iter()
+        .find_map(|key| meta_string(meta, key))
+}
+
+fn gemini_topic_tool_name_from_raw(raw: Option<&Value>) -> Option<String> {
+    raw_string_field(raw, &["tool_name", "toolName", "name", "tool"])
+}
+
+fn should_suppress_gemini_topic_tool_call(tool_call: &ToolCall) -> bool {
+    gemini_topic_tool_name_from_meta(tool_call.meta.as_ref())
+        .as_deref()
+        .is_some_and(is_gemini_topic_tool_name)
+        || gemini_topic_tool_name_from_raw(tool_call.raw_input.as_ref())
+            .as_deref()
+            .is_some_and(is_gemini_topic_tool_name)
+        || is_gemini_topic_tool_title(&tool_call.title)
+}
+
+fn should_suppress_gemini_topic_tool_call_update(update: &ToolCallUpdate) -> bool {
+    gemini_topic_tool_name_from_meta(update.meta.as_ref())
+        .as_deref()
+        .is_some_and(is_gemini_topic_tool_name)
+        || update
+            .fields
+            .title
+            .as_deref()
+            .is_some_and(is_gemini_topic_tool_title)
+}
+
 fn tool_call_update_is_terminal(update: &ToolCallUpdate) -> bool {
     matches!(
         update.fields.status.as_ref(),
@@ -4703,6 +6439,12 @@ fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
         .find(|definition| definition.id == runtime_id)
 }
 
+fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
+    runtime_definition(runtime_id)
+        .map(|definition| definition.acp_protocol)
+        .unwrap_or(AcpProtocolFlavor::Current14)
+}
+
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
     RUNTIME_DEFINITIONS
         .iter()
@@ -4758,11 +6500,16 @@ impl RuntimeDescriptorAuthTags for AiRuntimeDescriptor {
 }
 
 fn default_models(runtime_id: &str) -> Vec<AiModelOption> {
+    if matches!(runtime_id, GEMINI_RUNTIME_ID | GROK_RUNTIME_ID) {
+        return Vec::new();
+    }
+
     vec![AiModelOption {
         id: "auto".to_string(),
         runtime_id: runtime_id.to_string(),
         name: "Auto".to_string(),
         description: "Use the runtime default model.".to_string(),
+        agent_type: None,
     }]
 }
 
@@ -4830,6 +6577,7 @@ fn default_config_options(
                     value: model.id.clone(),
                     label: model.name.clone(),
                     description: Some(model.description.clone()),
+                    agent_type: model.agent_type.clone(),
                 })
                 .collect(),
         });
@@ -4853,6 +6601,7 @@ fn default_config_options(
                     value: mode.id.clone(),
                     label: mode.name.clone(),
                     description: Some(mode.description.clone()),
+                    agent_type: None,
                 })
                 .collect(),
         });
@@ -5054,13 +6803,16 @@ fn acp_process_spec(
     if runtime_id == GROK_RUNTIME_ID && grok_inherited_xai_api_key_marked_invalid(setup) {
         env.insert("XAI_API_KEY".to_string(), String::new());
     }
-    if let Some(method) = setup.auth_method.as_deref() {
+    let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
+    if let Some(method) = auth_method.as_deref() {
         if runtime_id == GEMINI_RUNTIME_ID {
             env.insert(
                 "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
                 gemini_cli_auth_type(method).to_string(),
             );
         }
+    }
+    if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
             env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
             env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
@@ -5076,7 +6828,6 @@ fn acp_process_spec(
         env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
             .or_default();
     }
-    let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
     Ok(AcpProcessSpec {
         program,
         args: resolved.args,
@@ -5395,7 +7146,7 @@ fn auth_terminal_launch_config(
                 "Unsupported terminal auth method for {}: {}",
                 runtime_name(runtime_id),
                 method_id
-            ))
+            ));
         }
     };
 
@@ -6628,6 +8379,243 @@ fn build_prompt_with_attachments(
     Ok(format!("{}\n\n{}", context_parts.join("\n\n"), content))
 }
 
+fn build_prompt_blocks_with_attachments(
+    content: &str,
+    attachments: &[AiAttachmentInput],
+    vault_root: Option<&Path>,
+    additional_roots: &[PathBuf],
+    capabilities: AcpPromptCapabilities,
+) -> Result<Vec<ContentBlock>, String> {
+    if !capabilities.embedded_context {
+        return build_prompt_with_attachments(content, attachments, vault_root, additional_roots)
+            .map(|content| vec![ContentBlock::from(content)]);
+    }
+
+    let mut blocks = Vec::new();
+    let mut text_context_parts = Vec::new();
+
+    for attachment in attachments {
+        if let Some(content) = attachment.content.as_deref() {
+            blocks.push(embedded_text_resource_block(
+                content,
+                attachment_resource_uri(attachment, "selection"),
+                text_attachment_mime(attachment),
+            ));
+            continue;
+        }
+
+        match attachment.attachment_type.as_deref() {
+            Some("folder") => {
+                if let Some(folder_rel) = attachment.note_id.as_deref() {
+                    text_context_parts.push(format!(
+                        "<attached_folder name=\"{}\" path=\"{}\" />",
+                        attachment.label.trim_start_matches("Folder "),
+                        folder_rel
+                    ));
+                }
+            }
+            Some("audio") => {
+                if let Some(transcription) = attachment.transcription.as_deref() {
+                    blocks.push(embedded_text_resource_block(
+                        transcription,
+                        attachment_resource_uri(attachment, "audio"),
+                        Some("text/plain".to_string()),
+                    ));
+                }
+            }
+            Some("file") => {
+                if let Some(file_path) = attachment
+                    .file_path
+                    .as_deref()
+                    .or(attachment.path.as_deref())
+                {
+                    append_file_attachment_blocks(
+                        &mut blocks,
+                        &mut text_context_parts,
+                        attachment,
+                        file_path,
+                        vault_root,
+                        additional_roots,
+                    )?;
+                }
+            }
+            _ => {
+                if let Some(path) = attachment.path.as_deref() {
+                    let path = allowed_attachment_path(path, vault_root, additional_roots)?;
+                    match std::fs::read_to_string(&path) {
+                        Ok(file_content) => blocks.push(embedded_text_resource_block(
+                            &file_content,
+                            path_resource_uri(&path, attachment),
+                            text_attachment_mime(attachment),
+                        )),
+                        Err(error) => text_context_parts.push(format!(
+                            "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                            attachment.label, error
+                        )),
+                    }
+                }
+            }
+        }
+    }
+
+    let prompt_text = prompt_without_embedded_attachment_references(content, attachments);
+    let prompt_text = if text_context_parts.is_empty() {
+        prompt_text
+    } else if prompt_text.is_empty() {
+        text_context_parts.join("\n\n")
+    } else {
+        format!("{}\n\n{}", text_context_parts.join("\n\n"), prompt_text)
+    };
+    if !prompt_text.trim().is_empty() {
+        blocks.push(ContentBlock::from(prompt_text));
+    }
+    if blocks.is_empty() {
+        blocks.push(ContentBlock::from(content.to_string()));
+    }
+    Ok(blocks)
+}
+
+fn embedded_text_resource_block(
+    text: &str,
+    uri: String,
+    mime_type: Option<String>,
+) -> ContentBlock {
+    ContentBlock::Resource(EmbeddedResource::new(
+        EmbeddedResourceResource::TextResourceContents(
+            TextResourceContents::new(text.to_string(), uri).mime_type(mime_type),
+        ),
+    ))
+}
+
+fn append_file_attachment_blocks(
+    blocks: &mut Vec<ContentBlock>,
+    text_context_parts: &mut Vec<String>,
+    attachment: &AiAttachmentInput,
+    file_path: &str,
+    vault_root: Option<&Path>,
+    additional_roots: &[PathBuf],
+) -> Result<(), String> {
+    let path = allowed_attachment_path(file_path, vault_root, additional_roots)?;
+    let mime = attachment
+        .mime_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    let rel_path = display_attachment_path(&path, vault_root);
+
+    if mime == "application/pdf" {
+        text_context_parts.push(format!(
+            "<attached_pdf name=\"{}\" path=\"{}\" />",
+            attachment.label, rel_path
+        ));
+    } else if mime.starts_with("text/") || mime == "application/json" {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => blocks.push(embedded_text_resource_block(
+                &text,
+                path_resource_uri(&path, attachment),
+                Some(mime.to_string()),
+            )),
+            Err(error) => text_context_parts.push(format!(
+                "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                attachment.label, mime, error
+            )),
+        }
+    } else if mime.starts_with("image/") {
+        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        text_context_parts.push(format!(
+            "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\" />",
+            attachment.label, mime, rel_path, size
+        ));
+    } else {
+        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        text_context_parts.push(format!(
+            "<attached_file name=\"{}\" type=\"{}\">\n[Binary file: {} bytes]\n</attached_file>",
+            attachment.label, mime, size
+        ));
+    }
+
+    Ok(())
+}
+
+fn prompt_without_embedded_attachment_references(
+    content: &str,
+    attachments: &[AiAttachmentInput],
+) -> String {
+    let mut prompt = content.to_string();
+    for attachment in attachments {
+        if attachment.attachment_type.as_deref() != Some("selection") {
+            continue;
+        }
+        let (Some(path), Some(start_line), Some(end_line)) = (
+            attachment.path.as_deref(),
+            attachment.start_line,
+            attachment.end_line,
+        ) else {
+            continue;
+        };
+        prompt = prompt.replace(&format!("{path}:{start_line}-{end_line}"), "");
+    }
+    prompt.trim().to_string()
+}
+
+fn text_attachment_mime(attachment: &AiAttachmentInput) -> Option<String> {
+    attachment.mime_type.clone().or_else(|| {
+        attachment
+            .path
+            .as_deref()
+            .or(attachment.file_path.as_deref())
+            .and_then(|path| {
+                if path.ends_with(".md") || path.ends_with(".markdown") {
+                    Some("text/markdown".to_string())
+                } else if path.ends_with(".json") {
+                    Some("application/json".to_string())
+                } else if path.ends_with(".txt") {
+                    Some("text/plain".to_string())
+                } else {
+                    None
+                }
+            })
+    })
+}
+
+fn attachment_resource_uri(attachment: &AiAttachmentInput, fallback_kind: &str) -> String {
+    let source = attachment
+        .file_path
+        .as_deref()
+        .or(attachment.path.as_deref())
+        .or(attachment.note_id.as_deref())
+        .unwrap_or(&attachment.label);
+    let mut uri = if source.contains("://") {
+        source.to_string()
+    } else if Path::new(source).is_absolute() {
+        format!("file://{source}")
+    } else {
+        format!(
+            "neverwrite://{fallback_kind}/{}",
+            source.replace(' ', "%20")
+        )
+    };
+    if let (Some(start_line), Some(end_line)) = (attachment.start_line, attachment.end_line) {
+        if start_line == end_line {
+            uri.push_str(&format!("#L{start_line}"));
+        } else {
+            uri.push_str(&format!("#L{start_line}-L{end_line}"));
+        }
+    }
+    uri
+}
+
+fn path_resource_uri(path: &Path, attachment: &AiAttachmentInput) -> String {
+    let mut uri = format!("file://{}", path.display());
+    if let (Some(start_line), Some(end_line)) = (attachment.start_line, attachment.end_line) {
+        if start_line == end_line {
+            uri.push_str(&format!("#L{start_line}"));
+        } else {
+            uri.push_str(&format!("#L{start_line}-L{end_line}"));
+        }
+    }
+    uri
+}
+
 fn append_file_attachment(
     context_parts: &mut Vec<String>,
     attachment: &AiAttachmentInput,
@@ -7271,11 +9259,13 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        AvailableCommandInput, AvailableCommandsUpdate, ConfigOptionUpdate, Meta, ModelInfo,
+        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema,
+        CompleteElicitationNotification, ConfigOptionUpdate, ElicitationFormMode,
+        ElicitationSchema, ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta,
         PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOption, SessionInfoUpdate, SessionModelState, SessionNotification,
-        SessionUpdate, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-        UnstructuredCommandInput,
+        SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
+        StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
+        ToolKind, UnstructuredCommandInput,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -7298,7 +9288,11 @@ mod tests {
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
+            url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
+            completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+            suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -7431,6 +9425,23 @@ mod tests {
         let normalized = normalize_additional_roots(Some(vec![a.clone(), b.clone()]));
         assert!(normalized.kept.is_empty());
         assert_eq!(normalized.discarded.len(), 2);
+    }
+
+    #[test]
+    fn client_capabilities_advertise_form_and_url_elicitation() {
+        let capabilities = neverwrite_acp_client_capabilities(CLAUDE_RUNTIME_ID);
+        let elicitation = capabilities
+            .elicitation
+            .expect("elicitation capabilities should be advertised");
+
+        assert!(
+            elicitation.form.is_some(),
+            "form elicitation should be advertised"
+        );
+        assert!(
+            elicitation.url.is_some(),
+            "url elicitation should be advertised with the completion UX"
+        );
     }
 
     #[test]
@@ -9859,27 +11870,22 @@ mod tests {
 
     #[test]
     fn acp_session_synthesizes_reasoning_config_from_model_efforts() {
-        let models_state = SessionModelState::new(
-            "gpt-5.5/medium",
-            vec![
-                ModelInfo::new("gpt-5.5/low", "GPT-5.5 (low)"),
-                ModelInfo::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
-                ModelInfo::new("gpt-5.5/high", "GPT-5.5 (high)"),
-                ModelInfo::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
-            ],
-        );
         let config_options = vec![SessionConfigOption::select(
             "model",
             "Model",
-            "gpt-5.5",
-            vec![SessionConfigSelectOption::new("gpt-5.5", "GPT-5.5")],
+            "gpt-5.5/medium",
+            vec![
+                SessionConfigSelectOption::new("gpt-5.5/low", "GPT-5.5 (low)"),
+                SessionConfigSelectOption::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
+                SessionConfigSelectOption::new("gpt-5.5/high", "GPT-5.5 (high)"),
+                SessionConfigSelectOption::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+            ],
         )
         .category(SessionConfigOptionCategory::Model)];
 
         let session = session_from_acp_response(
             CODEX_RUNTIME_ID,
             "session-1".to_string(),
-            Some(models_state),
             None,
             Some(config_options),
         );
@@ -9917,23 +11923,25 @@ mod tests {
     }
 
     #[test]
-    fn grok_session_uses_acp_models_without_static_model_list() {
-        let models_state = SessionModelState::new(
+    fn grok_session_uses_acp_model_config_without_static_model_list() {
+        let config_options = vec![SessionConfigOption::select(
+            "model",
+            "Model",
             "grok-build",
             vec![
-                ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5")
+                SessionConfigSelectOption::new("grok-composer-2.5-fast", "Composer 2.5")
                     .description("Cursor's latest coding model"),
-                ModelInfo::new("grok-build", "Grok Build")
+                SessionConfigSelectOption::new("grok-build", "Grok Build")
                     .description("Best for advanced coding tasks"),
             ],
-        );
+        )
+        .category(SessionConfigOptionCategory::Model)];
 
         let session = session_from_acp_response(
             GROK_RUNTIME_ID,
             "session-1".to_string(),
-            Some(models_state),
             None,
-            None,
+            Some(config_options),
         );
 
         assert_eq!(session.model_id, "grok-build");
@@ -9967,6 +11975,826 @@ mod tests {
             ),
             AcpConfigOptionRemoteCommand::SetModel
         );
+    }
+
+    #[test]
+    fn gemini_and_grok_use_legacy_acp12_protocol() {
+        assert_eq!(
+            acp_protocol_flavor(GEMINI_RUNTIME_ID),
+            AcpProtocolFlavor::Legacy12
+        );
+        assert_eq!(
+            acp_protocol_flavor(GROK_RUNTIME_ID),
+            AcpProtocolFlavor::Legacy12
+        );
+    }
+
+    #[test]
+    fn current_runtimes_keep_acp14_protocol() {
+        for runtime_id in [
+            CLAUDE_RUNTIME_ID,
+            CODEX_RUNTIME_ID,
+            KILO_RUNTIME_ID,
+            OPENCODE_RUNTIME_ID,
+        ] {
+            assert_eq!(
+                acp_protocol_flavor(runtime_id),
+                AcpProtocolFlavor::Current14
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_session_without_model_config_does_not_synthesize_auto_model() {
+        let session = session_from_acp_response(
+            GEMINI_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(Vec::new()),
+        );
+
+        assert!(session.models.is_empty());
+        assert_eq!(session.model_id, "");
+        assert!(
+            session
+                .config_options
+                .iter()
+                .all(|option| !matches!(option.category, AiConfigOptionCategory::Model)),
+            "Gemini must not receive a synthetic Auto model when ACP exposes no model option"
+        );
+    }
+
+    #[test]
+    fn config_options_infer_core_categories_from_ids() {
+        let options = map_session_config_options(
+            GEMINI_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "gemini-2.5-pro",
+                    vec![SessionConfigSelectOption::new(
+                        "gemini-2.5-pro",
+                        "Gemini 2.5 Pro",
+                    )],
+                ),
+                SessionConfigOption::select(
+                    "permission-mode",
+                    "Mode",
+                    "yolo",
+                    vec![SessionConfigSelectOption::new("yolo", "YOLO")],
+                ),
+                SessionConfigOption::select(
+                    "reasoningEffort",
+                    "Reasoning",
+                    "high",
+                    vec![SessionConfigSelectOption::new("high", "High")],
+                ),
+            ],
+        );
+
+        assert!(matches!(options[0].category, AiConfigOptionCategory::Model));
+        assert!(matches!(options[1].category, AiConfigOptionCategory::Mode));
+        assert!(matches!(
+            options[2].category,
+            AiConfigOptionCategory::Reasoning
+        ));
+    }
+
+    #[test]
+    fn session_modes_derive_from_mode_config_option_when_mode_state_missing() {
+        let session = session_from_acp_response(
+            GEMINI_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(vec![SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "yolo",
+                vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("yolo", "YOLO"),
+                ],
+            )]),
+        );
+
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "yolo"]
+        );
+        assert_eq!(session.mode_id, "yolo");
+    }
+
+    #[test]
+    fn acp12_model_state_is_exposed_as_model_config_option() {
+        let config_options = acp12_session_config_options(
+            None,
+            Some(acp12::schema::SessionModelState::new(
+                "gemini-2.5-pro",
+                vec![
+                    acp12::schema::ModelInfo::new("gemini-2.5-flash", "Gemini 2.5 Flash").meta(
+                        acp12::schema::Meta::from_iter([(
+                            "agentType".to_string(),
+                            serde_json::json!("flash-agent"),
+                        )]),
+                    ),
+                    acp12::schema::ModelInfo::new("gemini-2.5-pro", "Gemini 2.5 Pro").meta(
+                        acp12::schema::Meta::from_iter([(
+                            "agentType".to_string(),
+                            serde_json::json!("pro-agent"),
+                        )]),
+                    ),
+                ],
+            )),
+        )
+        .expect("legacy model state should map")
+        .expect("model option should be synthesized");
+
+        let mapped = map_session_config_options(GEMINI_RUNTIME_ID, config_options);
+
+        assert_eq!(mapped.len(), 1);
+        assert!(matches!(mapped[0].category, AiConfigOptionCategory::Model));
+        assert_eq!(mapped[0].value, "gemini-2.5-pro");
+        assert_eq!(
+            mapped[0]
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Gemini 2.5 Flash", "Gemini 2.5 Pro"]
+        );
+        assert_eq!(
+            mapped[0]
+                .options
+                .iter()
+                .map(|option| option.agent_type.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("flash-agent"), Some("pro-agent")]
+        );
+    }
+
+    #[test]
+    fn acp12_initialize_meta_model_state_is_parsed() {
+        let model_state = acp12::schema::SessionModelState::new(
+            "grok-build",
+            vec![
+                acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5"),
+                acp12::schema::ModelInfo::new("grok-build", "Grok Build"),
+            ],
+        );
+        let response = acp12::schema::InitializeResponse::new(
+            acp12::schema::ProtocolVersion::LATEST,
+        )
+        .meta(acp12::schema::Meta::from_iter([(
+            "modelState".to_string(),
+            serde_json::to_value(model_state).expect("model state should serialize"),
+        )]));
+
+        let parsed = acp12_initialize_model_state(&response).expect("modelState should be present");
+
+        assert_eq!(parsed.current_model_id.0.as_ref(), "grok-build");
+        assert_eq!(
+            parsed
+                .available_models
+                .iter()
+                .map(|model| model.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Composer 2.5", "Grok Build"]
+        );
+    }
+
+    #[test]
+    fn acp12_initialize_meta_model_state_ignores_unknown_shapes() {
+        let response = acp12::schema::InitializeResponse::new(
+            acp12::schema::ProtocolVersion::LATEST,
+        )
+        .meta(acp12::schema::Meta::from_iter([(
+            "modelState".to_string(),
+            serde_json::json!({ "unexpected": true }),
+        )]));
+
+        assert!(acp12_initialize_model_state(&response).is_none());
+    }
+
+    #[test]
+    fn internal_mode_update_text_chunks_are_suppressed() {
+        assert!(should_suppress_internal_text_chunk(
+            GEMINI_RUNTIME_ID,
+            "[MODE_UPDATE] yolo"
+        ));
+        assert!(should_suppress_internal_text_chunk(
+            GROK_RUNTIME_ID,
+            "  [MODE_UPDATE] default\n"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            GEMINI_RUNTIME_ID,
+            "[MODE_UPDATE]"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            CODEX_RUNTIME_ID,
+            "[MODE_UPDATE] yolo"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            GEMINI_RUNTIME_ID,
+            "Please mention [MODE_UPDATE] yolo in the document"
+        ));
+    }
+
+    #[test]
+    fn acp_form_elicitation_emits_user_input_request() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let waiters = Arc::clone(&client.user_input_waiters);
+        let request = CreateElicitationRequest::new(
+            ElicitationFormMode::new(
+                ElicitationSessionScope::new("session-1"),
+                ElicitationSchema::new()
+                    .property(
+                        "scope",
+                        StringPropertySchema::new()
+                            .title("Scope")
+                            .description("Choose a scope")
+                            .one_of(vec![
+                                EnumOption::new("safe", "Safe"),
+                                EnumOption::new("wide", "Wide"),
+                            ]),
+                        true,
+                    )
+                    .property(
+                        "confirmed",
+                        BooleanPropertySchema::new()
+                            .title("Confirm")
+                            .description("Continue?"),
+                        false,
+                    ),
+            ),
+            "Input requested",
+        );
+
+        let handle = thread::spawn(move || run_client_future(client.create_elicitation(request)));
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("user input event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_USER_INPUT_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.pointer("/title").and_then(Value::as_str),
+            Some("Input requested")
+        );
+        let request_id = payload
+            .pointer("/request_id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_string();
+        assert_eq!(
+            payload
+                .pointer("/questions/1/options/0/label")
+                .and_then(Value::as_str),
+            Some("Safe")
+        );
+        assert_eq!(
+            payload
+                .pointer("/questions/0/options/0/label")
+                .and_then(Value::as_str),
+            Some("Yes")
+        );
+        cancel_user_input_waiters_matching(&waiters, |waiter| waiter.session_id == "session-1");
+        let response = handle.join().unwrap().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(
+            !waiters.lock().unwrap().contains_key(&request_id),
+            "waiter should be removed after cancellation"
+        );
+    }
+
+    #[test]
+    fn acp_url_elicitation_emits_url_request() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let waiters = Arc::clone(&client.url_elicitation_waiters);
+        let request = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new("session-1").tool_call_id("tool-1"),
+                "elicitation-1",
+                "https://example.com/auth",
+            ),
+            "Open this page",
+        );
+
+        let handle = thread::spawn(move || run_client_future(client.create_elicitation(request)));
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("url elicitation event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_URL_ELICITATION_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.pointer("/title").and_then(Value::as_str),
+            Some("Open this page")
+        );
+        assert_eq!(
+            payload.pointer("/url").and_then(Value::as_str),
+            Some("https://example.com/auth")
+        );
+        assert_eq!(
+            payload.pointer("/elicitation_id").and_then(Value::as_str),
+            Some("elicitation-1")
+        );
+        assert_eq!(
+            payload.pointer("/tool_call_id").and_then(Value::as_str),
+            Some("tool-1")
+        );
+        assert_eq!(
+            payload.pointer("/status").and_then(Value::as_str),
+            Some("pending")
+        );
+
+        let request_id = payload
+            .pointer("/request_id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_string();
+        assert!(
+            waiters.lock().unwrap().contains_key(&request_id),
+            "url waiter should be registered"
+        );
+        cancel_url_elicitation_waiters_matching(&waiters, |waiter| {
+            waiter.session_id == "session-1"
+        });
+        let response = handle.join().unwrap().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+    }
+
+    #[test]
+    fn acp_url_elicitation_rejects_unsafe_urls_without_event() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let request = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new("session-1"),
+                "elicitation-unsafe",
+                "file:///tmp/secret",
+            ),
+            "Open this page",
+        );
+
+        let response = run_client_future(client.create_elicitation(request)).unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(
+            event_rx.recv_timeout(StdDuration::from_millis(50)).is_err(),
+            "unsafe URL should not be emitted"
+        );
+    }
+
+    #[test]
+    fn safe_http_url_normalizes_and_requires_http_host() {
+        assert_eq!(
+            safe_http_url("  https://example.com/auth  ").as_deref(),
+            Some("https://example.com/auth")
+        );
+        assert_eq!(safe_http_url("http://"), None);
+        assert_eq!(safe_http_url("javascript:alert(1)"), None);
+        assert_eq!(safe_http_url("https://example.com/bad path"), None);
+    }
+
+    #[test]
+    fn respond_url_elicitation_resolves_waiter_with_accept() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        ai.respond_url_elicitation(&json!({
+            "input": {
+                "session_id": "session-1",
+                "request_id": "url-1",
+                "action": "complete"
+            }
+        }))
+        .unwrap();
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(ai.url_elicitation_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_url_elicitation_response_does_not_consume_waiter() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, _response_rx) = oneshot::channel();
+        ai.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        let action_error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-1",
+                    "request_id": "url-1",
+                    "action": "bogus"
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(action_error, "Unsupported URL elicitation action: bogus");
+        assert!(ai
+            .url_elicitation_waiters
+            .lock()
+            .unwrap()
+            .contains_key("url-1"));
+
+        let session_error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-2",
+                    "request_id": "url-1",
+                    "action": "complete"
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            session_error,
+            "AI URL elicitation request url-1 belongs to a different session."
+        );
+        assert!(ai
+            .url_elicitation_waiters
+            .lock()
+            .unwrap()
+            .contains_key("url-1"));
+    }
+
+    #[test]
+    fn respond_url_elicitation_reports_runtime_completed_request() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        ai.completed_url_elicitations
+            .lock()
+            .unwrap()
+            .push_back("url-1".to_string());
+
+        let error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-1",
+                    "request_id": "url-1",
+                    "action": "complete"
+                }
+            }))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "AI URL elicitation request already completed by runtime: url-1"
+        );
+    }
+
+    #[test]
+    fn completed_url_elicitation_ids_are_pruned_fifo() {
+        let completed = Arc::new(Mutex::new(VecDeque::new()));
+        for index in 0..=MAX_COMPLETED_URL_ELICITATION_IDS {
+            remember_completed_url_elicitation(&completed, format!("url-{index}"));
+        }
+
+        let completed = completed.lock().unwrap();
+        assert_eq!(completed.len(), MAX_COMPLETED_URL_ELICITATION_IDS);
+        assert!(!completed.contains(&"url-0".to_string()));
+        assert_eq!(completed.front().map(String::as_str), Some("url-1"));
+        let newest_request_id = format!("url-{MAX_COMPLETED_URL_ELICITATION_IDS}");
+        assert_eq!(
+            completed.back().map(String::as_str),
+            Some(newest_request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn complete_elicitation_notification_marks_url_waiter_complete() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let (response_tx, response_rx) = oneshot::channel();
+        client.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        run_client_future(
+            client.complete_elicitation(CompleteElicitationNotification::new("elicitation-1")),
+        )
+        .unwrap();
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(client
+            .completed_url_elicitations
+            .lock()
+            .unwrap()
+            .contains(&"url-1".to_string()));
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("completion event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_URL_ELICITATION_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/request_id").and_then(Value::as_str),
+            Some("url-1")
+        );
+        assert_eq!(
+            payload.pointer("/status").and_then(Value::as_str),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn cancel_url_elicitation_waiters_for_session_sends_cancel() {
+        let waiters = Arc::new(Mutex::new(HashMap::new()));
+        let (response_tx, response_rx) = oneshot::channel();
+        waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        cancel_url_elicitation_waiters_matching(&waiters, |waiter| {
+            waiter.session_id == "session-1"
+        });
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn respond_user_input_resolves_elicitation_waiter_with_accept() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.user_input_waiters.lock().unwrap().insert(
+            "user-input-1".to_string(),
+            ElicitationWaiter {
+                session_id: "session-1".to_string(),
+                fields: HashMap::from([
+                    (
+                        "scope".to_string(),
+                        ElicitationFieldSpec {
+                            kind: ElicitationFieldKind::String,
+                            option_values_by_label: HashMap::from([(
+                                "Safe".to_string(),
+                                "safe".to_string(),
+                            )]),
+                        },
+                    ),
+                    (
+                        "confirmed".to_string(),
+                        ElicitationFieldSpec {
+                            kind: ElicitationFieldKind::Boolean,
+                            option_values_by_label: HashMap::from([(
+                                "Yes".to_string(),
+                                "true".to_string(),
+                            )]),
+                        },
+                    ),
+                ]),
+                response_tx,
+            },
+        );
+
+        ai.respond_user_input(&json!({
+            "session_id": "session-1",
+            "request_id": "user-input-1",
+            "action": "accept",
+            "answers": {
+                "scope": ["Safe"],
+                "confirmed": ["Yes"]
+            }
+        }))
+        .unwrap();
+        let response = run_client_future(response_rx).unwrap();
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("scope"),
+            Some(&ElicitationContentValue::String("safe".to_string()))
+        );
+        assert_eq!(
+            content.get("confirmed"),
+            Some(&ElicitationContentValue::Boolean(true))
+        );
+    }
+
+    #[test]
+    fn invalid_user_input_response_does_not_consume_waiter() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.user_input_waiters.lock().unwrap().insert(
+            "user-input-1".to_string(),
+            ElicitationWaiter {
+                session_id: "session-1".to_string(),
+                fields: HashMap::from([(
+                    "scope".to_string(),
+                    ElicitationFieldSpec {
+                        kind: ElicitationFieldKind::String,
+                        option_values_by_label: HashMap::from([(
+                            "Safe".to_string(),
+                            "safe".to_string(),
+                        )]),
+                    },
+                )]),
+                response_tx,
+            },
+        );
+
+        let action_error = ai
+            .respond_user_input(&json!({
+                "session_id": "session-1",
+                "request_id": "user-input-1",
+                "action": "bogus",
+                "answers": {}
+            }))
+            .unwrap_err();
+        assert_eq!(action_error, "Unsupported user input action: bogus");
+        assert!(ai
+            .user_input_waiters
+            .lock()
+            .unwrap()
+            .contains_key("user-input-1"));
+
+        let session_error = ai
+            .respond_user_input(&json!({
+                "session_id": "session-2",
+                "request_id": "user-input-1",
+                "action": "accept",
+                "answers": {
+                    "scope": ["Safe"]
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            session_error,
+            "AI user input request user-input-1 belongs to a different session."
+        );
+        assert!(ai
+            .user_input_waiters
+            .lock()
+            .unwrap()
+            .contains_key("user-input-1"));
+
+        ai.respond_user_input(&json!({
+            "session_id": "session-1",
+            "request_id": "user-input-1",
+            "action": "accept",
+            "answers": {
+                "scope": ["Safe"]
+            }
+        }))
+        .unwrap();
+        let response = run_client_future(response_rx).unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(ai.user_input_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn user_input_actions_map_to_elicitation_decline_and_cancel() {
+        let fields = HashMap::new();
+        let decline =
+            create_elicitation_response_from_user_input(Some("decline"), HashMap::new(), &fields)
+                .unwrap();
+        assert!(matches!(decline.action, ElicitationAction::Decline));
+
+        let cancel =
+            create_elicitation_response_from_user_input(Some("cancel"), HashMap::new(), &fields)
+                .unwrap();
+        assert!(matches!(cancel.action, ElicitationAction::Cancel));
     }
 
     #[test]
@@ -10073,7 +12901,7 @@ mod tests {
         );
         assert_eq!(
             acp_config_option_remote_command(GROK_RUNTIME_ID, &[], "model"),
-            AcpConfigOptionRemoteCommand::SetModel
+            AcpConfigOptionRemoteCommand::LocalOnly
         );
     }
 
@@ -10313,6 +13141,8 @@ mod tests {
                 file_path: Some(outside_file.display().to_string()),
                 mime_type: Some("text/plain".to_string()),
                 transcription: None,
+                start_line: None,
+                end_line: None,
             }],
             Some(vault.path()),
             &[],
@@ -10320,6 +13150,95 @@ mod tests {
         .expect_err("outside attachment should be blocked");
 
         assert!(error.contains("outside the vault"));
+    }
+
+    #[test]
+    fn prompt_blocks_embed_selection_context_without_textual_wrapper() {
+        let selection_path = "/Users/example/vault/cuento.md";
+        let attachments = vec![AiAttachmentInput {
+            label: "(30) Una mujer bajó prime...".to_string(),
+            path: Some(selection_path.to_string()),
+            content: Some("Una mujer bajó primero.".to_string()),
+            attachment_type: Some("selection".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: None,
+            transcription: None,
+            start_line: Some(30),
+            end_line: Some(30),
+        }];
+
+        let blocks = build_prompt_blocks_with_attachments(
+            &format!("{selection_path}:30-30 elimina esto"),
+            &attachments,
+            None,
+            &[],
+            AcpPromptCapabilities {
+                embedded_context: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Resource(EmbeddedResource {
+                resource:
+                    EmbeddedResourceResource::TextResourceContents(TextResourceContents {
+                        text,
+                        uri,
+                        ..
+                    }),
+                ..
+            }) => {
+                assert_eq!(text, "Una mujer bajó primero.");
+                assert_eq!(uri, "file:///Users/example/vault/cuento.md#L30");
+            }
+            other => panic!("expected embedded selection resource, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Text(text) => {
+                assert_eq!(text.text, "elimina esto");
+                assert!(!text.text.contains("attached_selection"));
+                assert!(!text.text.contains(selection_path));
+            }
+            other => panic!("expected text prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_keep_textual_attachment_fallback_without_embedded_context() {
+        let attachments = vec![AiAttachmentInput {
+            label: "(30) Una mujer bajó prime...".to_string(),
+            path: Some("/Users/example/vault/cuento.md".to_string()),
+            content: Some("Una mujer bajó primero.".to_string()),
+            attachment_type: Some("selection".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: None,
+            transcription: None,
+            start_line: Some(30),
+            end_line: Some(30),
+        }];
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "/Users/example/vault/cuento.md:30-30 elimina esto",
+            &attachments,
+            None,
+            &[],
+            AcpPromptCapabilities {
+                embedded_context: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => {
+                assert!(text.text.contains("<attached_selection"));
+                assert!(text.text.contains("Una mujer bajó primero."));
+            }
+            other => panic!("expected fallback text prompt, got {other:?}"),
+        }
     }
 
     #[test]
@@ -10646,6 +13565,112 @@ mod tests {
         assert_eq!(
             payload.get("tool_call_id").and_then(Value::as_str),
             Some("normal-tool-1")
+        );
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_gemini_update_topic_tool() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, GEMINI_RUNTIME_ID, "session-1");
+        let client = test_client_with_state(event_tx, session_state);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("gemini-topic-1"),
+            "Update topic to: \"Editing cuento.md\"",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed)
+        .raw_input(json!({
+            "tool_name": GEMINI_TOPIC_TOOL_NAME,
+            "title": "Editing cuento.md",
+            "summary": "Editing the selected paragraph.",
+        }))
+        .content(vec![ToolCallContent::from(
+            "## Topic: **Editing cuento.md**\n\n**Summary:**\nEditing the selected paragraph.",
+        )]);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_gemini_topic_update_after_suppressed_start() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, GEMINI_RUNTIME_ID, "session-1");
+        let client = test_client_with_state(event_tx, session_state);
+
+        let started = ToolCall::new(
+            ToolCallId::from("gemini-topic-1"),
+            "Update topic to: \"Editing cuento.md\"",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress);
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(started),
+        )))
+        .unwrap();
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+
+        let completed = ToolCallUpdate::new(
+            "gemini-topic-1",
+            ToolCallUpdateFields::new()
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from(
+                    "## Topic: **Editing cuento.md**",
+                )]),
+        );
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(completed),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_keeps_update_topic_title_for_non_gemini_runtime() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "session-1");
+        let client = test_client_with_state(event_tx, session_state);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("topic-looking-tool"),
+            "Update topic to: \"Editing cuento.md\"",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::Completed);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.get("tool_call_id").and_then(Value::as_str),
+            Some("topic-looking-tool")
         );
     }
 
@@ -12606,6 +15631,40 @@ mod tests {
             spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
             Some("gemini-api-key")
         );
+    }
+
+    #[test]
+    fn acp_process_spec_maps_inherited_gemini_api_key_to_cli_auth_type() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous_gemini = std::env::var_os("GEMINI_API_KEY");
+        let previous_google = std::env::var_os("GOOGLE_API_KEY");
+        std::env::set_var("GEMINI_API_KEY", "gemini-env-secret");
+        std::env::remove_var("GOOGLE_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GEMINI_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Gemini ACP process spec should resolve");
+
+        match previous_gemini {
+            Some(value) => std::env::set_var("GEMINI_API_KEY", value),
+            None => std::env::remove_var("GEMINI_API_KEY"),
+        }
+        match previous_google {
+            Some(value) => std::env::set_var("GOOGLE_API_KEY", value),
+            None => std::env::remove_var("GOOGLE_API_KEY"),
+        }
+
+        assert_eq!(spec.auth_method.as_deref(), Some("use_gemini"));
+        assert_eq!(
+            spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
+            Some("gemini-api-key")
+        );
+        assert_eq!(spec.env.get("GEMINI_API_KEY"), None);
     }
 
     #[test]
