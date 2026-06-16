@@ -593,11 +593,6 @@ async fn register_subagent_thread(
         .cloned()
         .unwrap_or_else(|| config.cwd.to_path_buf());
 
-    cx.send_notification(subagents::session_created_notification(
-        &registration,
-        &snapshot,
-    ))?;
-
     let thread = Arc::new(Thread::new(
         registration.child_session_id.clone(),
         child_thread,
@@ -620,6 +615,11 @@ async fn register_subagent_thread(
         .lock()
         .unwrap()
         .insert(registration.child_session_id.clone(), session_root);
+
+    cx.send_notification(subagents::session_created_notification(
+        &registration,
+        &snapshot,
+    ))?;
 
     Ok(())
 }
