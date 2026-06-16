@@ -1,7 +1,7 @@
 {
     "name": "desktop",
     "private": true,
-    "version": "0.3.3",
+    "version": "0.3.4",
     "homepage": "https://github.com/jsgrrchg/NeverWrite",
     "type": "module",
     "main": "out/electron/main/index.js",

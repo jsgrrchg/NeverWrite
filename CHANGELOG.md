@@ -34,6 +34,30 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.3.4] - 2026-06-16
+
+### Added
+
+- Added support for ACP form and URL elicitations so agents can request structured input, multi-select answers, skip/cancel decisions, and browser follow-up actions from the chat flow.
+- Added mixed ACP runtime compatibility so Claude can use the newer ACP stack while Gemini and Grok continue to run through legacy ACP sessions.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.44.0` and the vendored ACP bridge baseline to `0.16.0`.
+- Improved Grok model controls by preventing incompatible in-session model switches and explaining when a new Grok chat is required.
+- Reduced Gemini transcript noise by hiding topic-update activity from chat history.
+- Documented mixed ACP runtime compatibility, Claude ACP packaging checks, and related troubleshooting guidance.
+
+### Fixed
+
+- Fixed Gemini legacy sessions inheriting the wrong API-key authentication type.
+- Hardened ACP user-input and review-interaction handling so accept, decline, skip, cancel, retry, and multi-answer flows stay consistent.
+
+### Security
+
+- Updated desktop and Web Clipper dependency resolutions, including `vite`, `dompurify`, `form-data`, `js-yaml`, `tar`, and `tmp`.
+- Patched desktop Babel tooling and Web Clipper build tooling dependencies.
+
 ## [0.3.3] - 2026-06-07
 
 ### Added
