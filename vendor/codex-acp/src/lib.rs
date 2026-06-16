@@ -10,8 +10,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing_subscriber::EnvFilter;
 
 mod codex_agent;
-// Event projection helpers are reconnected when the local thread delta is ported.
-#[allow(dead_code)]
+mod prompt_args;
 mod subagents;
 mod thread;
 
