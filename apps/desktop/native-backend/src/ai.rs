@@ -16,14 +16,14 @@ use agent_client_protocol::schema::{
     ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
     ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
-    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest, LogoutRequest, Meta,
-    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
-    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
-    SessionConfigSelectOptions, SessionId, SessionModeState, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, TextResourceContents, ToolCall,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    Implementation, InitializeRequest, InitializeResponse, LogoutRequest, Meta, MultiSelectItems,
+    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
+    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
+    TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use neverwrite_ai::{
@@ -4594,7 +4594,7 @@ async fn start_acp_runtime_session(
         } => {
             let response = connection
                 .send_request(
-                    LoadSessionRequest::new(SessionId::new(session_id.clone()), cwd)
+                    ResumeSessionRequest::new(SessionId::new(session_id.clone()), cwd)
                         .additional_directories(additional_wire_paths(
                             &spec.runtime_id,
                             additional_directories,
@@ -4604,7 +4604,7 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: session_id.clone(),
-                modes: response.modes,
+                modes: None,
                 config_options: response.config_options,
             })
         }
@@ -9466,21 +9466,19 @@ mod tests {
     }
 
     #[test]
-    fn load_session_request_serializes_additional_directories() {
-        let request = LoadSessionRequest::new("claude-session-1", "/vault").additional_directories(
-            additional_wire_paths(
+    fn resume_session_request_serializes_additional_directories() {
+        let request = ResumeSessionRequest::new("claude-session-1", "/vault")
+            .additional_directories(additional_wire_paths(
                 CLAUDE_RUNTIME_ID,
                 &[
                     PathBuf::from("/external/project"),
                     PathBuf::from("/external/notes"),
                 ],
-            ),
-        );
+            ));
 
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             json!({
-                "mcpServers": [],
                 "cwd": "/vault",
                 "additionalDirectories": ["/external/project", "/external/notes"],
                 "sessionId": "claude-session-1",
