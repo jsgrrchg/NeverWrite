@@ -201,6 +201,71 @@ describe("AIChatSessionView", () => {
         });
     });
 
+    it("keeps sent timeline image attachments when composer screenshots expire", async () => {
+        setupWorkspaceSession();
+        const sentAttachments = [
+            {
+                id: "sent-image",
+                type: "file" as const,
+                noteId: null,
+                label: "old.png",
+                path: null,
+                filePath: "/vault/assets/chat/old.png",
+                mimeType: "image/png",
+            },
+        ];
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "session-a": {
+                    ...createSession("session-a", "Workspace chat"),
+                    messages: [
+                        {
+                            id: "sent-message",
+                            role: "user",
+                            kind: "text",
+                            content: "See attached image",
+                            timestamp: 10,
+                            attachments: sentAttachments,
+                        },
+                    ],
+                },
+            },
+            activeSessionId: "session-a",
+            screenshotRetentionSeconds: 60,
+            composerPartsBySessionId: {
+                "session-a": [
+                    {
+                        id: "draft-shot",
+                        type: "screenshot",
+                        filePath: "/vault/assets/chat/draft-old.png",
+                        mimeType: "image/png",
+                        label: "Screenshot 10:42 hrs",
+                        createdAt: Date.now() - 61_000,
+                    },
+                ],
+            },
+        }));
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        await waitFor(() => {
+            expect(
+                useChatStore.getState().composerPartsBySessionId["session-a"],
+            ).toHaveLength(1);
+            expect(
+                useChatStore.getState().composerPartsBySessionId["session-a"]?.some(
+                    (part) => part.type === "screenshot",
+                ),
+            ).toBe(false);
+        });
+        expect(
+            useChatStore.getState().sessionsById["session-a"]?.messages[0]
+                ?.attachments,
+        ).toEqual(sentAttachments);
+    });
+
     it("aligns lower chat panels to the shared content column", () => {
         setupWorkspaceSession();
 

@@ -70,6 +70,8 @@ export function pruneExpiredScreenshotParts(
     retentionSeconds: number,
     now = Date.now(),
 ): AIComposerPart[] {
+    // Draft-only cleanup: sent timeline message attachments are AIChatMessage data,
+    // not composer parts, and must never be routed through this helper.
     if (retentionSeconds <= 0) return parts;
 
     const retentionMs = retentionSeconds * 1000;

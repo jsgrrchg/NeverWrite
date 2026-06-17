@@ -86,7 +86,7 @@ the same Settings stores.
 | AI / Chat | `historyRetentionDays` | Global preference, applied to current vault histories | `0` | `neverwrite.ai.preferences` | `0` means forever; pruning operates on the currently open vault's `.neverwrite/sessions/`. |
 | AI / Composer | `requireCmdEnterToSend` | Global | `false` | `neverwrite.ai.preferences` | Changes Enter behavior in the AI composer. |
 | AI / Composer | `contextUsageBarEnabled` | Global | `true` | `neverwrite.ai.preferences` | Shows or hides composer context usage. |
-| AI / Composer | `screenshotRetentionSeconds` | Global | `0` | `neverwrite.ai.preferences` | `0` means forever. |
+| AI / Composer | `screenshotRetentionSeconds` | Global | `1800` | `neverwrite.ai.preferences` | `1800` means 30 minutes. `0` means forever. This draft-only cleanup removes expired pasted screenshots from the composer, not image attachments already copied onto sent timeline messages. |
 | AI / Composer | `composerFontFamily` | Global | `system` | `neverwrite.ai.preferences` | Validated with editor font-family normalization. |
 | AI / Composer | `composerFontSize` | Global | `14` | `neverwrite.ai.preferences` | Composer input font size. |
 | AI Providers | `defaultRuntimeId` | Global | Runtime-dependent | `neverwrite.ai.preferences` | Preferred runtime for new chats. |
