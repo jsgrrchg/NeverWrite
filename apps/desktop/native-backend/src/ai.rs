@@ -69,6 +69,7 @@ const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
 const AGENT_WRITE_ORIGIN_WINDOW: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 const MAX_NATIVE_IMAGE_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE: usize = 12;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
@@ -8313,6 +8314,8 @@ fn build_prompt_with_attachments(
     vault_root: Option<&Path>,
     additional_roots: &[PathBuf],
 ) -> Result<String, String> {
+    validate_image_attachment_policy(attachments)?;
+
     let mut context_parts = Vec::new();
     for attachment in attachments {
         if let Some(content) = attachment.content.as_deref() {
@@ -8397,6 +8400,8 @@ fn build_prompt_blocks_with_attachments(
         return build_prompt_with_attachments(content, attachments, vault_root, additional_roots)
             .map(|content| vec![ContentBlock::from(content)]);
     }
+
+    validate_image_attachment_policy(attachments)?;
 
     let mut blocks = Vec::new();
     let mut text_context_parts = Vec::new();
@@ -8530,6 +8535,44 @@ fn embedded_text_resource_block(
             TextResourceContents::new(text.to_string(), uri).mime_type(mime_type),
         ),
     ))
+}
+
+fn is_supported_native_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+fn validate_image_attachment_policy(attachments: &[AiAttachmentInput]) -> Result<(), String> {
+    let mut image_count = 0;
+
+    for attachment in attachments {
+        if attachment.attachment_type.as_deref() != Some("file") {
+            continue;
+        }
+
+        let Some(mime) = attachment.mime_type.as_deref() else {
+            continue;
+        };
+        if !mime.starts_with("image/") {
+            continue;
+        }
+
+        image_count += 1;
+        if !is_supported_native_image_mime(mime) {
+            return Err(format!("Unsupported image attachment type: {}.", mime));
+        }
+    }
+
+    if image_count > MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE {
+        return Err(format!(
+            "Too many image attachments: {} exceeds the {} image limit.",
+            image_count, MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE
+        ));
+    }
+
+    Ok(())
 }
 
 fn append_file_attachment_blocks(
@@ -13473,6 +13516,77 @@ mod tests {
         .expect_err("oversized native image attachment should be blocked");
 
         assert!(error.contains("Image attachment is too large"));
+    }
+
+    #[test]
+    fn prompt_blocks_reject_unsupported_image_attachment_type() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("vector.svg");
+        fs::write(&image_path, "<svg />").unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Vector".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/svg+xml".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+        )
+        .expect_err("unsupported native image type should be blocked");
+
+        assert!(error.contains("Unsupported image attachment type"));
+        assert!(error.contains("image/svg+xml"));
+    }
+
+    #[test]
+    fn prompt_blocks_reject_too_many_image_attachments() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let mut attachments = Vec::new();
+        for index in 0..=MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE {
+            let image_path = vault.path().join(format!("shot-{index}.png"));
+            fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+            attachments.push(AiAttachmentInput {
+                label: format!("Screenshot {index}"),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            });
+        }
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe these images",
+            &attachments,
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+        )
+        .expect_err("too many native image attachments should be blocked");
+
+        assert!(error.contains("Too many image attachments"));
     }
 
     #[test]

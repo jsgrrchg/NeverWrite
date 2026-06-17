@@ -794,6 +794,11 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }}
                     onAttachFile={handleAttachFile}
                     onPasteImage={handlePasteImage}
+                    onImageAttachmentValidationFailure={(reason) => {
+                        setImageAttachmentNotice(
+                            imageAttachmentValidationMessage(reason),
+                        );
+                    }}
                     onFocus={() => {
                         if (!sessionId) return;
                         chatActions.markSessionFocused(sessionId);

@@ -7,6 +7,7 @@ import {
     getImageAttachmentExtension,
     imageAttachmentValidationMessage,
     validateNewImageAttachment,
+    validateNewImageAttachmentReference,
 } from "./imageAttachments";
 
 function imagePart(id: string): AIComposerPart {
@@ -82,6 +83,22 @@ describe("imageAttachments", () => {
         expect(imageAttachmentValidationMessage("too_many")).toBe(
             "Too many images attached",
         );
+    });
+
+    it("validates existing image file references without a byte size", () => {
+        expect(
+            validateNewImageAttachmentReference(
+                { mimeType: "image/svg+xml" },
+                [],
+            ),
+        ).toEqual({ ok: false, reason: "unsupported_type" });
+
+        expect(
+            validateNewImageAttachmentReference(
+                { mimeType: "image/png" },
+                [imagePart("shot")],
+            ),
+        ).toEqual({ ok: true });
     });
 
     it("maps supported image MIME types to persisted file extensions", () => {

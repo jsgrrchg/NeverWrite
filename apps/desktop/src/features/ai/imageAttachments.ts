@@ -60,6 +60,21 @@ export function validateNewImageAttachment(
     return { ok: true };
 }
 
+export function validateNewImageAttachmentReference(
+    attachment: { mimeType: string | null | undefined },
+    currentParts: AIComposerPart[],
+): { ok: true } | { ok: false; reason: ImageAttachmentValidationFailure } {
+    if (!isAllowedImageAttachmentMimeType(attachment.mimeType)) {
+        return { ok: false, reason: "unsupported_type" };
+    }
+
+    if (countComposerImageAttachments(currentParts) >= MAX_IMAGE_ATTACHMENTS_PER_MESSAGE) {
+        return { ok: false, reason: "too_many" };
+    }
+
+    return { ok: true };
+}
+
 export function imageAttachmentValidationMessage(
     reason: ImageAttachmentValidationFailure,
 ) {

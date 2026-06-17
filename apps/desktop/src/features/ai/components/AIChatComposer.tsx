@@ -54,6 +54,10 @@ import {
     isTextLikeVaultEntry,
 } from "../../../app/utils/vaultEntries";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import {
+    type ImageAttachmentValidationFailure,
+    validateNewImageAttachmentReference,
+} from "../imageAttachments";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
@@ -88,6 +92,9 @@ interface AIChatComposerProps {
     onToggleExpanded?: () => void;
     onAttachFile?: () => void;
     onPasteImage?: (file: File) => void;
+    onImageAttachmentValidationFailure?: (
+        reason: ImageAttachmentValidationFailure,
+    ) => void;
     onFocus?: () => void;
     onSubmit: () => void;
     onStop: () => void;
@@ -613,6 +620,27 @@ function selectAllComposerContent(root: HTMLDivElement) {
     selection.addRange(range);
 }
 
+function appendValidatedFileAttachmentPart(
+    parts: AIComposerPart[],
+    file: { filePath: string; mimeType: string; label: string },
+    onImageAttachmentValidationFailure?: (
+        reason: ImageAttachmentValidationFailure,
+    ) => void,
+) {
+    if (file.mimeType.startsWith("image/")) {
+        const validation = validateNewImageAttachmentReference(
+            { mimeType: file.mimeType },
+            parts,
+        );
+        if (!validation.ok) {
+            onImageAttachmentValidationFailure?.(validation.reason);
+            return parts;
+        }
+    }
+
+    return appendFileAttachmentPart(parts, file);
+}
+
 function syncComposerDom(
     root: HTMLDivElement,
     parts: AIComposerPart[],
@@ -1045,6 +1073,7 @@ export function AIChatComposer({
     onFolderAttach,
     onToggleExpanded,
     onPasteImage,
+    onImageAttachmentValidationFailure,
     onFocus,
     onSubmit,
     onStop,
@@ -1197,6 +1226,9 @@ export function AIChatComposer({
     const onMentionAttachRef = useRef(onMentionAttach);
     const onFileMentionAttachRef = useRef(onFileMentionAttach);
     const onFolderAttachRef = useRef(onFolderAttach);
+    const onImageAttachmentValidationFailureRef = useRef(
+        onImageAttachmentValidationFailure,
+    );
 
     useEffect(() => {
         partsRef.current = parts;
@@ -1204,7 +1236,16 @@ export function AIChatComposer({
         onMentionAttachRef.current = onMentionAttach;
         onFileMentionAttachRef.current = onFileMentionAttach;
         onFolderAttachRef.current = onFolderAttach;
-    }, [onChange, onFileMentionAttach, onFolderAttach, onMentionAttach, parts]);
+        onImageAttachmentValidationFailureRef.current =
+            onImageAttachmentValidationFailure;
+    }, [
+        onChange,
+        onFileMentionAttach,
+        onFolderAttach,
+        onImageAttachmentValidationFailure,
+        onMentionAttach,
+        parts,
+    ]);
 
     const syncFromDom = () => {
         const composer = composerRef.current;
@@ -1489,13 +1530,20 @@ export function AIChatComposer({
                 // File drop (PDFs, etc.) — inline pills
                 if (detail.files && detail.files.length > 0) {
                     for (const file of detail.files) {
-                        current = appendFileAttachmentPart(current, {
-                            filePath: file.filePath,
-                            mimeType: file.mimeType,
-                            label: file.fileName,
-                        });
+                        const next = appendValidatedFileAttachmentPart(
+                            current,
+                            {
+                                filePath: file.filePath,
+                                mimeType: file.mimeType,
+                                label: file.fileName,
+                            },
+                            onImageAttachmentValidationFailureRef.current,
+                        );
+                        if (next !== current) {
+                            didAttach = true;
+                            current = next;
+                        }
                     }
-                    didAttach = true;
                 }
 
                 // Notes drop
@@ -1586,6 +1634,7 @@ export function AIChatComposer({
                         md: "text/markdown",
                     };
                     let currentParts = partsRef.current;
+                    let didAttach = false;
                     for (const filePath of paths) {
                         const fileName = filePath.split("/").pop() ?? "file";
                         const dotIdx = fileName.lastIndexOf(".");
@@ -1600,11 +1649,12 @@ export function AIChatComposer({
                                 filePath,
                                 fileName,
                             );
+                            didAttach = true;
                         } else {
                             const ext = fileName
                                 .slice(dotIdx + 1)
                                 .toLowerCase();
-                            currentParts = appendFileAttachmentPart(
+                            const nextParts = appendValidatedFileAttachmentPart(
                                 currentParts,
                                 {
                                     filePath,
@@ -1613,9 +1663,15 @@ export function AIChatComposer({
                                         "application/octet-stream",
                                     label: fileName,
                                 },
+                                onImageAttachmentValidationFailureRef.current,
                             );
+                            if (nextParts !== currentParts) {
+                                didAttach = true;
+                                currentParts = nextParts;
+                            }
                         }
                     }
+                    if (!didAttach) return;
                     onChangeRef.current(currentParts);
                     focusComposerAtEnd();
                     return;
