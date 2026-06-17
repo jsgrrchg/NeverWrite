@@ -1098,6 +1098,7 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         editorAutosaveDelayMs,
         editorContentWidth,
         lineWrapping,
+        editorActiveLineHighlight,
         justifyText,
         tabSize,
         vimModeEnabled,
@@ -1130,6 +1131,12 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         "Formatting",
         [
             ["Line wrapping", "Wrap long lines to fit the editor width."],
+            [
+                "Highlight active line",
+                "Highlight the line containing the cursor.",
+                "current line",
+                "cursor line",
+            ],
             [
                 "Justify text",
                 "Distribute wrapped lines evenly across the editor width.",
@@ -1239,6 +1246,21 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                     <Toggle
                         value={lineWrapping}
                         onChange={(v) => setSetting("lineWrapping", v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Formatting"
+                label="Highlight active line"
+                description="Highlight the line containing the cursor."
+                keywords={["current line", "cursor line"]}
+                control={
+                    <Toggle
+                        value={editorActiveLineHighlight}
+                        onChange={(v) =>
+                            setSetting("editorActiveLineHighlight", v)
+                        }
                     />
                 }
             />

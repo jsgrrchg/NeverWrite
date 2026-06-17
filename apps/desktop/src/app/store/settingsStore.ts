@@ -18,6 +18,7 @@ export interface Settings {
     editorAutosaveDelayMs: number; // 50–5000
     editorContentWidth: number; // 600–1200
     lineWrapping: boolean;
+    editorActiveLineHighlight: boolean;
     justifyText: boolean;
     livePreviewEnabled: boolean;
     inlineReviewEnabled: boolean;
@@ -175,6 +176,7 @@ const defaults: Settings = {
     editorAutosaveDelayMs: 300,
     editorContentWidth: 940,
     lineWrapping: true,
+    editorActiveLineHighlight: true,
     justifyText: false,
     livePreviewEnabled: true,
     inlineReviewEnabled: true,
@@ -420,6 +422,9 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 1200,
             ),
             lineWrapping: parsed.state.lineWrapping ?? defaults.lineWrapping,
+            editorActiveLineHighlight:
+                parsed.state.editorActiveLineHighlight ??
+                defaults.editorActiveLineHighlight,
             justifyText: parsed.state.justifyText ?? defaults.justifyText,
             livePreviewEnabled:
                 parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
@@ -543,6 +548,7 @@ function pickSettings(state: SettingsStore): Settings {
         editorAutosaveDelayMs: state.editorAutosaveDelayMs,
         editorContentWidth: state.editorContentWidth,
         lineWrapping: state.lineWrapping,
+        editorActiveLineHighlight: state.editorActiveLineHighlight,
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,

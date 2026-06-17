@@ -30,6 +30,7 @@ import { useSettingsStore } from "../../app/store/settingsStore";
 import { useVaultStore } from "../../app/store/vaultStore";
 import {
     baseTheme,
+    getActiveLineExtension,
     getEditorFontFamily,
     getEditorHorizontalInset,
     getSyntaxExtension,
@@ -98,6 +99,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
     const viewRef = useRef<EditorView | null>(null);
     const syntaxCompartmentRef = useRef(new Compartment());
     const wrappingCompartmentRef = useRef(new Compartment());
+    const activeLineCompartmentRef = useRef(new Compartment());
     const languageCompartmentRef = useRef(new Compartment());
     const loadRequestRef = useRef(0);
     const contextMenuCleanupRef = useRef<(() => void) | null>(null);
@@ -115,6 +117,9 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
     );
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const editorActiveLineHighlight = useSettingsStore(
+        (s) => s.editorActiveLineHighlight,
+    );
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const sessionsById = useChatStore((state) => state.sessionsById);
@@ -332,6 +337,9 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
                     wrappingCompartmentRef.current.of(
                         getWrappingExtension(lineWrapping),
                     ),
+                    activeLineCompartmentRef.current.of(
+                        getActiveLineExtension(editorActiveLineHighlight),
+                    ),
                     drawSelection(),
                     EditorView.editorAttributes.of({
                         "data-live-preview": "false",
@@ -432,6 +440,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
     }, [
         handleLocalContentChange,
         handleEditorContextMenu,
+        editorActiveLineHighlight,
         lineWrapping,
         syncCurrentSelection,
         tab,
@@ -451,11 +460,16 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         }
 
         view.dispatch({
-            effects: wrappingCompartmentRef.current.reconfigure(
-                getWrappingExtension(lineWrapping),
-            ),
+            effects: [
+                wrappingCompartmentRef.current.reconfigure(
+                    getWrappingExtension(lineWrapping),
+                ),
+                activeLineCompartmentRef.current.reconfigure(
+                    getActiveLineExtension(editorActiveLineHighlight),
+                ),
+            ],
         });
-    }, [lineWrapping]);
+    }, [editorActiveLineHighlight, lineWrapping]);
 
     useEffect(() => {
         const view = viewRef.current;

@@ -5,9 +5,11 @@ import {
     ViewPlugin,
     gutter,
     GutterMarker,
+    highlightActiveLine,
+    highlightActiveLineGutter,
     lineNumbers,
 } from "@codemirror/view";
-import { Compartment, RangeSetBuilder } from "@codemirror/state";
+import { Compartment, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { syntaxTree, syntaxHighlighting } from "@codemirror/language";
 import { buildSyntaxHighlightStyle } from "./extensions/syntaxTheme";
 import type {
@@ -157,6 +159,8 @@ export const livePreviewCompartment = new Compartment();
 export const alignmentCompartment = new Compartment();
 // Compartment for line wrapping
 export const wrappingCompartment = new Compartment();
+// Compartment for the cursor line highlight
+export const activeLineCompartment = new Compartment();
 // Compartment for tab size
 export const tabSizeCompartment = new Compartment();
 // Compartment for spellcheck attributes
@@ -169,6 +173,10 @@ export const grammarDecorationsCompartment = new Compartment();
 export const vimCompartment = new Compartment();
 // Compartment for the line-number gutter (absolute vs. vim relative numbering)
 export const lineNumberCompartment = new Compartment();
+
+export function getActiveLineExtension(enabled: boolean): Extension {
+    return enabled ? [highlightActiveLine(), highlightActiveLineGutter()] : [];
+}
 
 const sourceHeadingDecoration = Decoration.mark({
     class: "cm-source-heading",

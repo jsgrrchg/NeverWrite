@@ -108,6 +108,7 @@ import {
     livePreviewCompartment,
     alignmentCompartment,
     wrappingCompartment,
+    activeLineCompartment,
     tabSizeCompartment,
     spellcheckCompartment,
     spellcheckDecorationsCompartment,
@@ -118,6 +119,7 @@ import {
     getLivePreviewExtension,
     getAlignmentExtension,
     getWrappingExtension,
+    getActiveLineExtension,
     getSpellcheckExtension,
     getVimExtension,
     getLineNumberExtension,
@@ -476,6 +478,9 @@ export function Editor({
     );
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const editorActiveLineHighlight = useSettingsStore(
+        (s) => s.editorActiveLineHighlight,
+    );
     const justifyText = useSettingsStore((s) => s.justifyText);
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
@@ -2328,6 +2333,12 @@ export function Editor({
                             useSettingsStore.getState().lineWrapping,
                         ),
                     ),
+                    activeLineCompartment.of(
+                        getActiveLineExtension(
+                            useSettingsStore.getState()
+                                .editorActiveLineHighlight,
+                        ),
+                    ),
                     drawSelection(),
                     alignmentCompartment.of(
                         getAlignmentExtension(
@@ -3057,6 +3068,11 @@ export function Editor({
                             settings.vimRelativeLineNumbers,
                         ),
                     ),
+                    activeLineCompartment.reconfigure(
+                        getActiveLineExtension(
+                            settings.editorActiveLineHighlight,
+                        ),
+                    ),
                 ],
             });
         }
@@ -3612,6 +3628,9 @@ export function Editor({
                 wrappingCompartment.reconfigure(
                     getWrappingExtension(lineWrapping),
                 ),
+                activeLineCompartment.reconfigure(
+                    getActiveLineExtension(editorActiveLineHighlight),
+                ),
                 tabSizeCompartment.reconfigure([
                     EditorState.tabSize.of(tabSize),
                     indentUnit.of(" ".repeat(tabSize)),
@@ -3628,6 +3647,7 @@ export function Editor({
     }, [
         justifyText,
         lineWrapping,
+        editorActiveLineHighlight,
         tabSize,
         vimModeEnabled,
         vimRelativeLineNumbers,
