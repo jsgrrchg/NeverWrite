@@ -1,7 +1,14 @@
 import { EditorView } from "@codemirror/view";
 import { openUrl } from "@neverwrite/runtime";
 
-import { resolveLinkHref, linkReferenceField } from "./livePreviewHelpers";
+import {
+    resolveLinkHref,
+    linkReferenceField,
+    footnoteNumberField,
+    findFootnoteDefinition,
+    flashFootnoteDefEffect,
+    footnoteDefFlashField,
+} from "./livePreviewHelpers";
 import { dispatchOpenYouTubeModal } from "../youtube";
 import { openVaultEmbedTarget } from "../embedNavigation";
 import {
@@ -252,9 +259,56 @@ function activateTaskLine(taskLine: HTMLElement, view: EditorView) {
     );
 }
 
+// How long the destination definition stays highlighted after a jump.
+const FOOTNOTE_FLASH_MS = 1200;
+
+/**
+ * Resolves the footnote reference whose rendered number is under the pointer,
+ * by geometric containment. Only currently-rendered (collapsed) references have
+ * a `.cm-lp-footnote-ref` element, so a reference revealed for editing is
+ * naturally skipped and the click falls through to normal caret placement.
+ */
+function footnoteRefIdAtPoint(
+    view: EditorView,
+    x: number,
+    y: number,
+): string | null {
+    const refs = view.dom.querySelectorAll<HTMLElement>(".cm-lp-footnote-ref");
+    for (const el of refs) {
+        const r = el.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+            return el.dataset.footnoteId ?? null;
+        }
+    }
+    return null;
+}
+
+/**
+ * Jumps to a footnote definition by resolving its position from the document
+ * text (the live preview virtualizes the DOM, so the definition is usually not
+ * rendered) and scrolling there via CodeMirror, with a brief highlight so the
+ * landing spot is obvious even when it was already on screen.
+ */
+function jumpToFootnoteDefinition(view: EditorView, id: string): boolean {
+    const definition = findFootnoteDefinition(view.state, id);
+    if (!definition) return false;
+
+    view.dispatch({
+        effects: [
+            EditorView.scrollIntoView(definition.from, { y: "center" }),
+            flashFootnoteDefEffect.of(definition),
+        ],
+    });
+    // Clear the highlight once it has played; guard against a torn-down view.
+    window.setTimeout(() => {
+        if (!view.dom.isConnected) return;
+        view.dispatch({ effects: flashFootnoteDefEffect.of(null) });
+    }, FOOTNOTE_FLASH_MS);
+    return true;
+}
+
 function activateInteractivePreview(
     target: HTMLElement,
-    view: EditorView,
     interactions: TableInteractionHandlers,
 ) {
     const embedWidget = target.closest(
@@ -324,20 +378,6 @@ function activateInteractivePreview(
                 isEmail: false,
             }) ?? liveLink.dataset.href,
         );
-        return true;
-    }
-
-    const footnoteRef = target.closest(
-        ".cm-lp-footnote-ref",
-    ) as HTMLElement | null;
-    if (footnoteRef?.dataset.footnoteId) {
-        const definition = view.dom.querySelector<HTMLElement>(
-            `.cm-lp-footnote-def[data-footnote-id="${CSS.escape(
-                footnoteRef.dataset.footnoteId,
-            )}"]`,
-        );
-        if (!definition) return false;
-        definition.scrollIntoView({ block: "nearest" });
         return true;
     }
 
@@ -432,6 +472,24 @@ export function livePreviewExtension(
     const clickHandler = EditorView.domEventHandlers({
         mousedown(event: MouseEvent, view: EditorView) {
             const target = event.target as HTMLElement;
+
+            // A footnote reference renders as a tiny raised superscript number;
+            // a plain mousedown would drop the caret inside the token (revealing
+            // the raw `[^id]`). Jump to its definition instead — but only when
+            // the pointer is geometrically on the number. `posAtCoords` is wrong
+            // here: at the superscript's raised height the only content is the
+            // number, so clicking the empty space to its right (to keep writing)
+            // still maps back onto the token.
+            const footnoteId = footnoteRefIdAtPoint(
+                view,
+                event.clientX,
+                event.clientY,
+            );
+            if (footnoteId && jumpToFootnoteDefinition(view, footnoteId)) {
+                event.preventDefault();
+                return true;
+            }
+
             const taskLine = getTaskLinePointerTarget(
                 target,
                 event.clientX,
@@ -480,7 +538,7 @@ export function livePreviewExtension(
                 return true;
             }
 
-            if (!activateInteractivePreview(target, view, interactions)) {
+            if (!activateInteractivePreview(target, interactions)) {
                 return false;
             }
 
@@ -514,11 +572,24 @@ export function livePreviewExtension(
                 return true;
             }
 
+            // Keyboard activation has a reliable focused target, so resolve the
+            // footnote from the DOM here (the pointer path resolves by position).
+            const footnoteRef = target.closest(
+                ".cm-lp-footnote-ref",
+            ) as HTMLElement | null;
+            if (footnoteRef?.dataset.footnoteId) {
+                event.preventDefault();
+                return jumpToFootnoteDefinition(
+                    view,
+                    footnoteRef.dataset.footnoteId,
+                );
+            }
+
             if (!target.closest(KEYBOARD_INTERACTIVE_PREVIEW_SELECTOR)) {
                 return false;
             }
 
-            if (!activateInteractivePreview(target, view, interactions)) {
+            if (!activateInteractivePreview(target, interactions)) {
                 return false;
             }
 
@@ -545,6 +616,8 @@ export function livePreviewExtension(
 
     return [
         linkReferenceField,
+        footnoteNumberField,
+        footnoteDefFlashField,
         createInlineLivePreviewPlugin(),
         createLeadingContentCollapseField(),
         createCodeBlockLivePreviewExtension(),
