@@ -1336,6 +1336,91 @@ describe("chatStore", () => {
         });
     });
 
+    it("normalizes pasted screenshot parts into file attachments", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                filePath: "/vault/assets/chat/screenshot.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage?.attachments).toEqual([
+            expect.objectContaining({
+                type: "file",
+                noteId: null,
+                label: "Screenshot 10:32",
+                path: null,
+                filePath: "/vault/assets/chat/screenshot.png",
+                mimeType: "image/png",
+            }),
+        ]);
+    });
+
+    it("normalizes image file attachment parts into the same file attachment shape", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "file-1",
+                type: "file_attachment",
+                filePath: "/vault/assets/chat/frame.jpg",
+                mimeType: "image/jpeg",
+                label: "frame.jpg",
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage?.attachments).toEqual([
+            expect.objectContaining({
+                type: "file",
+                noteId: null,
+                label: "frame.jpg",
+                path: null,
+                filePath: "/vault/assets/chat/frame.jpg",
+                mimeType: "image/jpeg",
+            }),
+        ]);
+    });
+
     it("does not synthesize legacy auto-context attachments when sending a plain composer message", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",

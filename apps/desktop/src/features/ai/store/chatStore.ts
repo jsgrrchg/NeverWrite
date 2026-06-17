@@ -2567,6 +2567,25 @@ function cloneComposerParts(parts: AIComposerPart[]): AIComposerPart[] {
     return parts.map(cloneComposerPart);
 }
 
+type ComposerFileBackedPart = Extract<
+    AIComposerPart,
+    { type: "screenshot" } | { type: "file_attachment" }
+>;
+
+function composerFilePartToAttachment(
+    part: ComposerFileBackedPart,
+): AIChatAttachment {
+    return {
+        id: crypto.randomUUID(),
+        type: "file",
+        noteId: null,
+        label: part.label,
+        path: null,
+        filePath: part.filePath,
+        mimeType: part.mimeType,
+    };
+}
+
 function normalizeComparablePath(path: string) {
     return normalizeVaultPath(path).replace(/\/+$/, "");
 }
@@ -2873,30 +2892,14 @@ function buildQueuedMessage(
             (p): p is Extract<AIComposerPart, { type: "screenshot" }> =>
                 p.type === "screenshot",
         )
-        .map((p) => ({
-            id: crypto.randomUUID(),
-            type: "file" as const,
-            noteId: null,
-            label: p.label,
-            path: null,
-            filePath: p.filePath,
-            mimeType: p.mimeType,
-        }));
+        .map(composerFilePartToAttachment);
 
     const fileAttachments: AIChatAttachment[] = composerPartsSnapshot
         .filter(
             (p): p is Extract<AIComposerPart, { type: "file_attachment" }> =>
                 p.type === "file_attachment",
         )
-        .map((p) => ({
-            id: crypto.randomUUID(),
-            type: "file" as const,
-            noteId: null,
-            label: p.label,
-            path: null,
-            filePath: p.filePath,
-            mimeType: p.mimeType,
-        }));
+        .map(composerFilePartToAttachment);
 
     const attachments = [
         ...session.attachments,
