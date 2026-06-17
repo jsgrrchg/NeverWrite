@@ -928,6 +928,46 @@ describe("createInlineLivePreviewPlugin", () => {
         parent.remove();
     });
 
+    it("separates abutting footnote references with a comma", () => {
+        const doc = "[^a][^b]\n\n[^a]: A\n[^b]: B";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const instance = view.plugin(plugin);
+        expect(instance).not.toBeNull();
+
+        const widgetTextAt = (from: number, to: number) => {
+            let text: string | null = null;
+            instance!.decorations.between(from, to, (dFrom, dTo, deco) => {
+                const widget = (deco.spec as { widget?: { toDOM(): HTMLElement } })
+                    .widget;
+                if (dFrom === from && dTo === to && widget) {
+                    text = widget.toDOM().textContent;
+                    return false;
+                }
+            });
+            return text;
+        };
+
+        // `[^a]` is directly followed by `[^b]`, so its number carries a comma;
+        // the trailing `[^b]` does not.
+        expect(widgetTextAt(2, 3)).toBe("1,");
+        expect(widgetTextAt(6, 7)).toBe("2");
+
+        // The parser pairs the two carets of `[^a][^b]` into a spurious
+        // Superscript node; it must not be styled (that 0.8em wrapper used to
+        // shrink and misalign the first reference).
+        const decorations = collectDecorations(view, plugin);
+        expect(findDecorationByClass(decorations, "cm-lp-superscript")).toBe(
+            undefined,
+        );
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("switches the active inline token when moving within the same line", () => {
         const doc = "==bold== and ==mark==";
         const { plugin, parent, view } = createView(

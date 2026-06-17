@@ -169,26 +169,41 @@ class EmptyListCaretAnchorWidget extends WidgetType {
 class FootnoteRefWidget extends WidgetType {
     private id: string;
     private label: string;
+    // Directly-adjacent references ([^a][^b]) collapse to abutting numbers that
+    // read as one ("98" instead of "9, 8"); a trailing comma keeps them legible.
+    private trailingSeparator: boolean;
 
-    constructor(id: string, label: string) {
+    constructor(id: string, label: string, trailingSeparator: boolean) {
         super();
         this.id = id;
         this.label = label;
+        this.trailingSeparator = trailingSeparator;
     }
 
     eq(other: FootnoteRefWidget) {
-        return other.id === this.id && other.label === this.label;
+        return (
+            other.id === this.id &&
+            other.label === this.label &&
+            other.trailingSeparator === this.trailingSeparator
+        );
     }
 
     toDOM() {
         const ref = document.createElement("span");
         ref.className = "cm-lp-footnote-ref";
-        ref.textContent = this.label;
         ref.dataset.footnoteId = this.id;
         ref.tabIndex = 0;
         ref.setAttribute("role", "button");
         // Powerusers keep descriptive labels; surface the raw id on hover.
         ref.title = this.id;
+        ref.appendChild(document.createTextNode(this.label));
+        if (this.trailingSeparator) {
+            const sep = document.createElement("span");
+            sep.className = "cm-lp-footnote-sep";
+            sep.textContent = ",";
+            sep.setAttribute("aria-hidden", "true");
+            ref.appendChild(sep);
+        }
         return ref;
     }
 
@@ -710,13 +725,28 @@ function addLineClassForRange(
     }
 }
 
+// Pandoc super/subscript (`^x^`, `~x~`) cannot contain brackets. When the
+// markdown parser pairs the carets of two adjacent footnote references
+// (`[^a][^b]`) it emits a spurious Superscript node spanning `^a][^`; styling it
+// wraps the first footnote in a 0.8em span and throws off its alignment. Bracket
+// content means the node is not a real script and must not be decorated.
+function spansBracketSyntax(
+    node: LivePreviewNode,
+    context: BuildContext,
+): boolean {
+    const text = context.state.doc.sliceString(node.from, node.to);
+    return text.includes("[") || text.includes("]");
+}
+
 function createInlineFormattingRule(
     nodeName: string,
     mark: Decoration,
     markerName: string,
+    skipNode?: (node: LivePreviewNode, context: BuildContext) => boolean,
 ): NodeRule {
     return (node, context) => {
         if (node.name !== nodeName) return;
+        if (skipNode?.(node, context)) return;
         registerRevealSensitiveRange(
             context,
             "range-boundary",
@@ -1093,11 +1123,17 @@ const nodeRules: NodeRule[] = [
     createInlineFormattingRule("StrongEmphasis", boldMark, "EmphasisMark"),
     createInlineFormattingRule("Emphasis", italicMark, "EmphasisMark"),
     createInlineFormattingRule("InlineCode", inlineCodeMark, "CodeMark"),
-    createInlineFormattingRule("Subscript", subscriptMark, "SubscriptMark"),
+    createInlineFormattingRule(
+        "Subscript",
+        subscriptMark,
+        "SubscriptMark",
+        spansBracketSyntax,
+    ),
     createInlineFormattingRule(
         "Superscript",
         superscriptMark,
         "SuperscriptMark",
+        spansBracketSyntax,
     ),
     linkRule,
     horizontalRuleRule,
@@ -1604,6 +1640,13 @@ function applyRichRegexRules(context: BuildContext) {
 
         if (!selectionTouchesRange(context.state, absFrom, absTo)) {
             const number = context.footnoteNumbers.get(id);
+            // When the next character starts another reference ([^a][^b]) the
+            // numbers abut with no whitespace to separate them — add a comma so
+            // a run of citations stays legible.
+            const after = footnoteMatch.index + footnoteMatch[0].length;
+            const followedByRef =
+                context.vpText[after] === "[" &&
+                context.vpText[after + 1] === "^";
             hideRange(context, absFrom, contentFrom, hideInlineMark);
             hideRange(context, contentTo, absTo, hideInlineMark);
             pushDeco(
@@ -1614,6 +1657,7 @@ function applyRichRegexRules(context: BuildContext) {
                     widget: new FootnoteRefWidget(
                         id,
                         number !== undefined ? String(number) : id,
+                        followedByRef,
                     ),
                 }),
             );
