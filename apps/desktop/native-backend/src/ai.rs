@@ -16,9 +16,9 @@ use agent_client_protocol::schema::{
     ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
     ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
-    Implementation, InitializeRequest, InitializeResponse, LogoutRequest, Meta, MultiSelectItems,
-    NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
-    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    ImageContent, Implementation, InitializeRequest, InitializeResponse, LogoutRequest, Meta,
+    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
+    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
@@ -26,6 +26,7 @@ use agent_client_protocol::schema::{
     TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
     AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
@@ -8391,7 +8392,7 @@ fn build_prompt_blocks_with_attachments(
     additional_roots: &[PathBuf],
     capabilities: AcpPromptCapabilities,
 ) -> Result<Vec<ContentBlock>, String> {
-    if !capabilities.embedded_context {
+    if !capabilities.embedded_context && !capabilities.image {
         return build_prompt_with_attachments(content, attachments, vault_root, additional_roots)
             .map(|content| vec![ContentBlock::from(content)]);
     }
@@ -8401,11 +8402,23 @@ fn build_prompt_blocks_with_attachments(
 
     for attachment in attachments {
         if let Some(content) = attachment.content.as_deref() {
-            blocks.push(embedded_text_resource_block(
-                content,
-                attachment_resource_uri(attachment, "selection"),
-                text_attachment_mime(attachment),
-            ));
+            if capabilities.embedded_context {
+                blocks.push(embedded_text_resource_block(
+                    content,
+                    attachment_resource_uri(attachment, "selection"),
+                    text_attachment_mime(attachment),
+                ));
+            } else {
+                let tag = if attachment.attachment_type.as_deref() == Some("selection") {
+                    "attached_selection"
+                } else {
+                    "attached_note"
+                };
+                text_context_parts.push(format!(
+                    "<{tag} name=\"{}\">\n{}\n</{tag}>",
+                    attachment.label, content
+                ));
+            }
             continue;
         }
 
@@ -8421,11 +8434,19 @@ fn build_prompt_blocks_with_attachments(
             }
             Some("audio") => {
                 if let Some(transcription) = attachment.transcription.as_deref() {
-                    blocks.push(embedded_text_resource_block(
-                        transcription,
-                        attachment_resource_uri(attachment, "audio"),
-                        Some("text/plain".to_string()),
-                    ));
+                    if capabilities.embedded_context {
+                        blocks.push(embedded_text_resource_block(
+                            transcription,
+                            attachment_resource_uri(attachment, "audio"),
+                            Some("text/plain".to_string()),
+                        ));
+                    } else {
+                        let source = attachment.file_path.as_deref().unwrap_or("audio");
+                        text_context_parts.push(format!(
+                            "<attached_audio name=\"{}\" source=\"{}\">\n[Transcription]\n{}\n</attached_audio>",
+                            attachment.label, source, transcription
+                        ));
+                    }
                 }
             }
             Some("file") => {
@@ -8441,29 +8462,47 @@ fn build_prompt_blocks_with_attachments(
                         file_path,
                         vault_root,
                         additional_roots,
+                        capabilities,
                     )?;
                 }
             }
             _ => {
                 if let Some(path) = attachment.path.as_deref() {
                     let path = allowed_attachment_path(path, vault_root, additional_roots)?;
-                    match std::fs::read_to_string(&path) {
-                        Ok(file_content) => blocks.push(embedded_text_resource_block(
-                            &file_content,
-                            path_resource_uri(&path, attachment),
-                            text_attachment_mime(attachment),
-                        )),
-                        Err(error) => text_context_parts.push(format!(
-                            "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
-                            attachment.label, error
-                        )),
+                    if capabilities.embedded_context {
+                        match std::fs::read_to_string(&path) {
+                            Ok(file_content) => blocks.push(embedded_text_resource_block(
+                                &file_content,
+                                path_resource_uri(&path, attachment),
+                                text_attachment_mime(attachment),
+                            )),
+                            Err(error) => text_context_parts.push(format!(
+                                "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                                attachment.label, error
+                            )),
+                        }
+                    } else {
+                        match std::fs::read_to_string(&path) {
+                            Ok(file_content) => text_context_parts.push(format!(
+                                "<attached_note name=\"{}\">\n{}\n</attached_note>",
+                                attachment.label, file_content
+                            )),
+                            Err(error) => text_context_parts.push(format!(
+                                "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                                attachment.label, error
+                            )),
+                        }
                     }
                 }
             }
         }
     }
 
-    let prompt_text = prompt_without_embedded_attachment_references(content, attachments);
+    let prompt_text = if capabilities.embedded_context {
+        prompt_without_embedded_attachment_references(content, attachments)
+    } else {
+        content.to_string()
+    };
     let prompt_text = if text_context_parts.is_empty() {
         prompt_text
     } else if prompt_text.is_empty() {
@@ -8499,6 +8538,7 @@ fn append_file_attachment_blocks(
     file_path: &str,
     vault_root: Option<&Path>,
     additional_roots: &[PathBuf],
+    capabilities: AcpPromptCapabilities,
 ) -> Result<(), String> {
     let path = allowed_attachment_path(file_path, vault_root, additional_roots)?;
     let mime = attachment
@@ -8513,23 +8553,49 @@ fn append_file_attachment_blocks(
             attachment.label, rel_path
         ));
     } else if mime.starts_with("text/") || mime == "application/json" {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => blocks.push(embedded_text_resource_block(
-                &text,
-                path_resource_uri(&path, attachment),
-                Some(mime.to_string()),
-            )),
-            Err(error) => text_context_parts.push(format!(
-                "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
-                attachment.label, mime, error
-            )),
+        if capabilities.embedded_context {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => blocks.push(embedded_text_resource_block(
+                    &text,
+                    path_resource_uri(&path, attachment),
+                    Some(mime.to_string()),
+                )),
+                Err(error) => text_context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                    attachment.label, mime, error
+                )),
+            }
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => text_context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
+                    attachment.label, mime, text
+                )),
+                Err(error) => text_context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                    attachment.label, mime, error
+                )),
+            }
         }
     } else if mime.starts_with("image/") {
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-        text_context_parts.push(format!(
-            "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\" />",
-            attachment.label, mime, rel_path, size
-        ));
+        if capabilities.image {
+            match std::fs::read(&path) {
+                Ok(bytes) => blocks.push(ContentBlock::Image(
+                    ImageContent::new(BASE64_STANDARD.encode(bytes), mime.to_string())
+                        .uri(path_resource_uri(&path, attachment)),
+                )),
+                Err(error) => text_context_parts.push(format!(
+                    "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\">\n[Error reading image: {}]\n</attached_image>",
+                    attachment.label, mime, rel_path, size, error
+                )),
+            }
+        } else {
+            text_context_parts.push(format!(
+                "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\" />",
+                attachment.label, mime, rel_path, size
+            ));
+        }
     } else {
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         text_context_parts.push(format!(
@@ -13244,6 +13310,128 @@ mod tests {
             }
             other => panic!("expected fallback text prompt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prompt_blocks_send_image_attachment_as_native_block() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("screenshot.png");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        let expected_uri = format!("file://{}", image_path.canonicalize().unwrap().display());
+        match &blocks[0] {
+            ContentBlock::Image(image) => {
+                assert_eq!(image.data, "AAECAw==");
+                assert_eq!(image.mime_type, "image/png");
+                assert_eq!(image.uri.as_deref(), Some(expected_uri.as_str()));
+            }
+            other => panic!("expected native image block, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "describe this image"),
+            other => panic!("expected text prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_keep_image_attachment_fallback_without_image_capability() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("screenshot.png");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: false,
+                embedded_context: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => {
+                assert!(text.text.contains("<attached_image"));
+                assert!(text.text.contains("type=\"image/png\""));
+                assert!(text.text.contains("path=\"screenshot.png\""));
+                assert!(text.text.contains("describe this image"));
+            }
+            other => panic!("expected textual image fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_reject_native_image_attachment_outside_allowed_roots() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let image_path = outside.path().join("secret.png");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Secret Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+        )
+        .expect_err("outside native image attachment should be blocked");
+
+        assert!(error.contains("outside the vault"));
     }
 
     #[test]
