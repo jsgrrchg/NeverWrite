@@ -352,6 +352,7 @@ export interface AIChatMessage {
     content: string;
     timestamp: number;
     workCycleId?: string | null;
+    attachments?: AIChatAttachment[];
     title?: string;
     inProgress?: boolean;
     meta?: Record<string, string | number | boolean | null>;
@@ -707,6 +708,7 @@ export interface PersistedMessage {
     kind: string;
     content: string;
     timestamp: number;
+    attachments?: AIChatAttachment[];
     title?: string;
     meta?: Record<string, string | number | boolean | null>;
     permission_request_id?: string;

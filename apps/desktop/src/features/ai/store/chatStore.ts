@@ -2559,6 +2559,13 @@ function cloneAttachment(attachment: AIChatAttachment): AIChatAttachment {
     return { ...attachment };
 }
 
+function cloneMessageAttachments(
+    attachments?: AIChatAttachment[] | null,
+): AIChatAttachment[] | undefined {
+    if (!attachments?.length) return undefined;
+    return attachments.map(cloneAttachment);
+}
+
 function cloneComposerPart(part: AIComposerPart): AIComposerPart {
     return { ...part };
 }
@@ -5990,6 +5997,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             kind: m.kind,
             content: m.content,
             timestamp: m.timestamp,
+            attachments: cloneMessageAttachments(m.attachments),
             title: m.title,
             meta: m.meta,
             permission_request_id: m.permissionRequestId,
@@ -6681,6 +6689,7 @@ function restoreMessagesFromHistory(
                 kind: m.kind as AIChatMessageKind,
                 content: m.content,
                 timestamp: m.timestamp,
+                attachments: cloneMessageAttachments(m.attachments),
                 title: m.title,
                 meta: m.meta,
                 permissionRequestId: m.permission_request_id,
@@ -7349,6 +7358,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...createTextMessage("user", currentItem.content),
                     id: userMessageId,
                     workCycleId: nextSession.activeWorkCycleId,
+                    attachments: cloneMessageAttachments(currentItem.attachments),
                 };
 
                 return {

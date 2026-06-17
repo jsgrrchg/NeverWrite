@@ -1421,6 +1421,50 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("copies pasted screenshot attachments onto the optimistic user message", async () => {
+        await useChatStore.getState().initialize();
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                return {
+                    ...sessionPayload,
+                    status: "streaming",
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+        useChatStore.getState().setComposerParts([
+            { id: "text-1", type: "text", text: "Inspect " },
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                filePath: "/vault/assets/chat/screenshot.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const activeSessionId = getActiveSessionId();
+        const userMessage =
+            useChatStore.getState().sessionsById[activeSessionId]?.messages[0];
+        expect(userMessage).toMatchObject({
+            role: "user",
+            attachments: [
+                expect.objectContaining({
+                    type: "file",
+                    noteId: null,
+                    label: "Screenshot 10:32",
+                    path: null,
+                    filePath: "/vault/assets/chat/screenshot.png",
+                    mimeType: "image/png",
+                }),
+            ],
+        });
+    });
+
     it("does not synthesize legacy auto-context attachments when sending a plain composer message", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
@@ -3011,6 +3055,18 @@ describe("chatStore", () => {
                             kind: "text",
                             content: "Recovered from disk",
                             timestamp: 10,
+                            attachments: [
+                                {
+                                    id: "attachment-1",
+                                    type: "file",
+                                    noteId: null,
+                                    label: "Screenshot",
+                                    path: null,
+                                    filePath:
+                                        "/vault/assets/chat/screenshot.png",
+                                    mimeType: "image/png",
+                                },
+                            ],
                         },
                         {
                             id: "m2",
@@ -3052,6 +3108,13 @@ describe("chatStore", () => {
         expect(sessionAfter.messages.map((message) => message.id)).toEqual([
             "m1",
             "m2",
+        ]);
+        expect(sessionAfter.messages[0]?.attachments).toEqual([
+            expect.objectContaining({
+                type: "file",
+                filePath: "/vault/assets/chat/screenshot.png",
+                mimeType: "image/png",
+            }),
         ]);
     });
 
@@ -13853,6 +13916,81 @@ describe("chatStore", () => {
         expect(historyPayload?.history).not.toHaveProperty(
             "visibleWorkCycleId",
         );
+    });
+
+    it("persists user message attachments in session history", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    messages: [
+                        {
+                            id: "user-with-screenshot",
+                            role: "user",
+                            kind: "text",
+                            content: "Inspect this screenshot",
+                            timestamp: 10,
+                            attachments: [
+                                {
+                                    id: "attachment-1",
+                                    type: "file",
+                                    noteId: null,
+                                    label: "Screenshot",
+                                    path: null,
+                                    filePath:
+                                        "/vault/assets/chat/screenshot.png",
+                                    mimeType: "image/png",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }));
+
+        useChatStore.getState().applySessionError({
+            session_id: activeSessionId,
+            message: "Trigger persistence",
+        });
+        await Promise.resolve();
+
+        const historyCall = invokeMock.mock.calls.find(
+            ([command]) => command === "ai_save_session_history",
+        );
+        expect(historyCall).toBeTruthy();
+
+        const historyPayload =
+            typeof historyCall?.[1] === "object" && historyCall[1] !== null
+                ? (historyCall[1] as {
+                      history?: {
+                          messages?: Array<{
+                              id?: string;
+                              attachments?: AIChatAttachment[];
+                          }>;
+                      };
+                  })
+                : null;
+
+        expect(
+            historyPayload?.history?.messages?.find(
+                (message) => message.id === "user-with-screenshot",
+            )?.attachments,
+        ).toEqual([
+            expect.objectContaining({
+                type: "file",
+                filePath: "/vault/assets/chat/screenshot.png",
+                mimeType: "image/png",
+            }),
+        ]);
     });
 
     it("coalesces repeated history persistence requests in the same microtask", async () => {
