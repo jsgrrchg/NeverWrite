@@ -4,6 +4,7 @@ import {
     MAX_IMAGE_ATTACHMENT_BYTES,
     MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
     countComposerImageAttachments,
+    getImageAttachmentLimits,
     getImageAttachmentExtension,
     imageAttachmentValidationMessage,
     validateNewImageAttachment,
@@ -66,6 +67,42 @@ describe("imageAttachments", () => {
         expect(imageAttachmentValidationMessage("too_large")).toBe(
             "Image is too large",
         );
+    });
+
+    it("applies conservative base64-backed limits for Claude", () => {
+        const claudeLimits = getImageAttachmentLimits("claude-acp");
+
+        expect(claudeLimits.maxBytes).toBeLessThan(MAX_IMAGE_ATTACHMENT_BYTES);
+        expect(
+            validateNewImageAttachment(
+                { size: claudeLimits.maxBytes + 1, type: "image/png" },
+                [],
+                "claude-acp",
+            ),
+        ).toEqual({ ok: false, reason: "too_large" });
+        expect(imageAttachmentValidationMessage("too_large", "claude-acp")).toBe(
+            "Claude supports images up to 3.8 MB",
+        );
+    });
+
+    it("uses Grok-specific image size and MIME limits", () => {
+        const grokLimits = getImageAttachmentLimits("grok-acp");
+
+        expect(grokLimits.maxBytes).toBe(20 * 1024 * 1024);
+        expect(
+            validateNewImageAttachment(
+                { size: MAX_IMAGE_ATTACHMENT_BYTES + 1, type: "image/png" },
+                [],
+                "grok-acp",
+            ),
+        ).toEqual({ ok: true });
+        expect(
+            validateNewImageAttachment(
+                { size: 42, type: "image/webp" },
+                [],
+                "grok-acp",
+            ),
+        ).toEqual({ ok: false, reason: "unsupported_type" });
     });
 
     it("rejects messages that already have the maximum image count", () => {

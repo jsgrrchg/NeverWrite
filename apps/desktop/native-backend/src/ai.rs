@@ -69,6 +69,10 @@ const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
 const AGENT_WRITE_ORIGIN_WINDOW: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
 const MAX_NATIVE_IMAGE_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+const CONSERVATIVE_NATIVE_BASE64_IMAGE_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+const CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES: u64 =
+    (CONSERVATIVE_NATIVE_BASE64_IMAGE_ATTACHMENT_BYTES / 4) * 3;
+const GROK_NATIVE_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE: usize = 12;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
@@ -1660,6 +1664,7 @@ impl NativeAi {
                 managed.vault_root.as_deref(),
                 &managed.additional_roots,
                 handle.prompt_capabilities(),
+                Some(managed.session.runtime_id.as_str()),
             )?;
             managed.session.status = AiSessionStatus::Streaming;
             touch_session(&mut state, &session_id);
@@ -8313,8 +8318,10 @@ fn build_prompt_with_attachments(
     attachments: &[AiAttachmentInput],
     vault_root: Option<&Path>,
     additional_roots: &[PathBuf],
+    runtime_id: Option<&str>,
 ) -> Result<String, String> {
-    validate_image_attachment_policy(attachments)?;
+    let image_limits = native_image_attachment_limits_for_runtime(runtime_id);
+    validate_image_attachment_policy(attachments, &image_limits)?;
 
     let mut context_parts = Vec::new();
     for attachment in attachments {
@@ -8395,13 +8402,21 @@ fn build_prompt_blocks_with_attachments(
     vault_root: Option<&Path>,
     additional_roots: &[PathBuf],
     capabilities: AcpPromptCapabilities,
+    runtime_id: Option<&str>,
 ) -> Result<Vec<ContentBlock>, String> {
     if !capabilities.embedded_context && !capabilities.image {
-        return build_prompt_with_attachments(content, attachments, vault_root, additional_roots)
-            .map(|content| vec![ContentBlock::from(content)]);
+        return build_prompt_with_attachments(
+            content,
+            attachments,
+            vault_root,
+            additional_roots,
+            runtime_id,
+        )
+        .map(|content| vec![ContentBlock::from(content)]);
     }
 
-    validate_image_attachment_policy(attachments)?;
+    let image_limits = native_image_attachment_limits_for_runtime(runtime_id);
+    validate_image_attachment_policy(attachments, &image_limits)?;
 
     let mut blocks = Vec::new();
     let mut text_context_parts = Vec::new();
@@ -8469,6 +8484,7 @@ fn build_prompt_blocks_with_attachments(
                         vault_root,
                         additional_roots,
                         capabilities,
+                        &image_limits,
                     )?;
                 }
             }
@@ -8537,14 +8553,76 @@ fn embedded_text_resource_block(
     ))
 }
 
-fn is_supported_native_image_mime(mime: &str) -> bool {
-    matches!(
-        mime,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-    )
+#[derive(Debug, Clone, Copy)]
+struct NativeImageAttachmentLimits {
+    runtime_label: &'static str,
+    max_bytes: u64,
+    max_images_per_message: usize,
+    allowed_mime_types: &'static [&'static str],
 }
 
-fn validate_image_attachment_policy(attachments: &[AiAttachmentInput]) -> Result<(), String> {
+const DEFAULT_NATIVE_IMAGE_MIME_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/gif", "image/webp"];
+const CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp"];
+const GROK_NATIVE_IMAGE_MIME_TYPES: &[&str] = &["image/png", "image/jpeg"];
+
+fn native_image_attachment_limits_for_runtime(
+    runtime_id: Option<&str>,
+) -> NativeImageAttachmentLimits {
+    match runtime_id {
+        Some(CODEX_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Codex",
+            max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(CLAUDE_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Claude",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(GEMINI_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Gemini",
+            max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(GROK_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Grok",
+            max_bytes: GROK_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: GROK_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(KILO_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Kilo",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(OPENCODE_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "OpenCode",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
+        _ => NativeImageAttachmentLimits {
+            runtime_label: "this provider",
+            max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
+        },
+    }
+}
+
+fn is_supported_native_image_mime(mime: &str, limits: &NativeImageAttachmentLimits) -> bool {
+    limits.allowed_mime_types.contains(&mime)
+}
+
+fn validate_image_attachment_policy(
+    attachments: &[AiAttachmentInput],
+    limits: &NativeImageAttachmentLimits,
+) -> Result<(), String> {
     let mut image_count = 0;
 
     for attachment in attachments {
@@ -8560,15 +8638,18 @@ fn validate_image_attachment_policy(attachments: &[AiAttachmentInput]) -> Result
         }
 
         image_count += 1;
-        if !is_supported_native_image_mime(mime) {
-            return Err(format!("Unsupported image attachment type: {}.", mime));
+        if !is_supported_native_image_mime(mime, limits) {
+            return Err(format!(
+                "Unsupported image attachment type for {}: {}.",
+                limits.runtime_label, mime
+            ));
         }
     }
 
-    if image_count > MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE {
+    if image_count > limits.max_images_per_message {
         return Err(format!(
-            "Too many image attachments: {} exceeds the {} image limit.",
-            image_count, MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE
+            "Too many image attachments for {}: {} exceeds the {} image limit.",
+            limits.runtime_label, image_count, limits.max_images_per_message
         ));
     }
 
@@ -8583,6 +8664,7 @@ fn append_file_attachment_blocks(
     vault_root: Option<&Path>,
     additional_roots: &[PathBuf],
     capabilities: AcpPromptCapabilities,
+    image_limits: &NativeImageAttachmentLimits,
 ) -> Result<(), String> {
     let path = allowed_attachment_path(file_path, vault_root, additional_roots)?;
     let mime = attachment
@@ -8624,10 +8706,10 @@ fn append_file_attachment_blocks(
     } else if mime.starts_with("image/") {
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         if capabilities.image {
-            if size > MAX_NATIVE_IMAGE_ATTACHMENT_BYTES {
+            if size > image_limits.max_bytes {
                 return Err(format!(
-                    "Image attachment is too large: {} exceeds the {} byte limit.",
-                    rel_path, MAX_NATIVE_IMAGE_ATTACHMENT_BYTES
+                    "Image attachment is too large for {}: {} exceeds the {} byte limit.",
+                    image_limits.runtime_label, rel_path, image_limits.max_bytes
                 ));
             }
             match std::fs::read(&path) {
@@ -13265,6 +13347,7 @@ mod tests {
             }],
             Some(vault.path()),
             &[],
+            None,
         )
         .expect_err("outside attachment should be blocked");
 
@@ -13296,6 +13379,7 @@ mod tests {
                 image: false,
                 embedded_context: true,
             },
+            None,
         )
         .unwrap();
 
@@ -13349,6 +13433,7 @@ mod tests {
                 image: false,
                 embedded_context: false,
             },
+            None,
         )
         .unwrap();
 
@@ -13389,6 +13474,7 @@ mod tests {
                 image: true,
                 embedded_context: false,
             },
+            None,
         )
         .unwrap();
 
@@ -13435,6 +13521,7 @@ mod tests {
                 image: false,
                 embedded_context: true,
             },
+            None,
         )
         .unwrap();
 
@@ -13478,6 +13565,7 @@ mod tests {
                 image: true,
                 embedded_context: true,
             },
+            None,
         )
         .expect_err("outside native image attachment should be blocked");
 
@@ -13512,10 +13600,81 @@ mod tests {
                 image: true,
                 embedded_context: true,
             },
+            None,
         )
         .expect_err("oversized native image attachment should be blocked");
 
         assert!(error.contains("Image attachment is too large"));
+    }
+
+    #[test]
+    fn prompt_blocks_apply_claude_native_image_size_limit() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("claude-huge.png");
+        let file = fs::File::create(&image_path).unwrap();
+        file.set_len(CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES + 1)
+            .unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Huge Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            Some(CLAUDE_RUNTIME_ID),
+        )
+        .expect_err("Claude native image limit should be provider-aware");
+
+        assert!(error.contains("Image attachment is too large for Claude"));
+    }
+
+    #[test]
+    fn prompt_blocks_apply_grok_native_image_mime_policy() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("image.webp");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "WebP".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/webp".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            Some(GROK_RUNTIME_ID),
+        )
+        .expect_err("Grok native image MIME policy should be provider-aware");
+
+        assert!(error.contains("Unsupported image attachment type for Grok"));
     }
 
     #[test]
@@ -13545,6 +13704,7 @@ mod tests {
                 image: true,
                 embedded_context: true,
             },
+            None,
         )
         .expect_err("unsupported native image type should be blocked");
 
@@ -13583,6 +13743,7 @@ mod tests {
                 image: true,
                 embedded_context: true,
             },
+            None,
         )
         .expect_err("too many native image attachments should be blocked");
 

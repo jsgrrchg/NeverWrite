@@ -311,7 +311,7 @@ describe("AIChatSessionView", () => {
         });
 
         expect(screen.getByRole("status")).toHaveTextContent(
-            "Image is too large",
+            "Codex supports images up to 10 MB",
         );
         expect(invokeMock).not.toHaveBeenCalledWith(
             "save_vault_binary_file",
@@ -374,7 +374,7 @@ describe("AIChatSessionView", () => {
         });
 
         expect(screen.getByRole("status")).toHaveTextContent(
-            "Too many images attached",
+            "Codex supports up to 12 images per message",
         );
     });
 });

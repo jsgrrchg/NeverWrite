@@ -320,10 +320,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
             const currentParts =
                 useChatStore.getState().composerPartsBySessionId[sessionId] ??
                 createEmptyComposerParts();
-            const validation = validateNewImageAttachment(file, currentParts);
+            const runtimeId = session?.runtimeId ?? null;
+            const validation = validateNewImageAttachment(
+                file,
+                currentParts,
+                runtimeId,
+            );
             if (!validation.ok) {
                 setImageAttachmentNotice(
-                    imageAttachmentValidationMessage(validation.reason),
+                    imageAttachmentValidationMessage(validation.reason, runtimeId),
                 );
                 return;
             }
@@ -358,6 +363,20 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     useChatStore.getState().composerPartsBySessionId[
                         sessionId
                     ] ?? createEmptyComposerParts();
+                const latestValidation = validateNewImageAttachment(
+                    file,
+                    latestParts,
+                    runtimeId,
+                );
+                if (!latestValidation.ok) {
+                    setImageAttachmentNotice(
+                        imageAttachmentValidationMessage(
+                            latestValidation.reason,
+                            runtimeId,
+                        ),
+                    );
+                    return;
+                }
                 chatActions.setComposerParts(
                     appendScreenshotPart(latestParts, {
                         filePath: saved.path,
@@ -373,7 +392,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 setImageAttachmentNotice("Image could not be attached");
             }
         },
-        [chatActions, refreshEntries, sessionId],
+        [chatActions, refreshEntries, session?.runtimeId, sessionId],
     );
 
     useEffect(() => {
@@ -795,8 +814,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     onAttachFile={handleAttachFile}
                     onPasteImage={handlePasteImage}
                     onImageAttachmentValidationFailure={(reason) => {
+                        const runtimeId = session?.runtimeId ?? null;
                         setImageAttachmentNotice(
-                            imageAttachmentValidationMessage(reason),
+                            imageAttachmentValidationMessage(reason, runtimeId),
                         );
                     }}
                     onFocus={() => {

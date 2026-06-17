@@ -623,6 +623,7 @@ function selectAllComposerContent(root: HTMLDivElement) {
 function appendValidatedFileAttachmentPart(
     parts: AIComposerPart[],
     file: { filePath: string; mimeType: string; label: string },
+    runtimeId?: string | null,
     onImageAttachmentValidationFailure?: (
         reason: ImageAttachmentValidationFailure,
     ) => void,
@@ -631,6 +632,7 @@ function appendValidatedFileAttachmentPart(
         const validation = validateNewImageAttachmentReference(
             { mimeType: file.mimeType },
             parts,
+            runtimeId,
         );
         if (!validation.ok) {
             onImageAttachmentValidationFailure?.(validation.reason);
@@ -1226,12 +1228,14 @@ export function AIChatComposer({
     const onMentionAttachRef = useRef(onMentionAttach);
     const onFileMentionAttachRef = useRef(onFileMentionAttach);
     const onFolderAttachRef = useRef(onFolderAttach);
+    const runtimeIdRef = useRef(runtimeId);
     const onImageAttachmentValidationFailureRef = useRef(
         onImageAttachmentValidationFailure,
     );
 
     useEffect(() => {
         partsRef.current = parts;
+        runtimeIdRef.current = runtimeId;
         onChangeRef.current = onChange;
         onMentionAttachRef.current = onMentionAttach;
         onFileMentionAttachRef.current = onFileMentionAttach;
@@ -1245,6 +1249,7 @@ export function AIChatComposer({
         onImageAttachmentValidationFailure,
         onMentionAttach,
         parts,
+        runtimeId,
     ]);
 
     const syncFromDom = () => {
@@ -1537,6 +1542,7 @@ export function AIChatComposer({
                                 mimeType: file.mimeType,
                                 label: file.fileName,
                             },
+                            runtimeIdRef.current,
                             onImageAttachmentValidationFailureRef.current,
                         );
                         if (next !== current) {
@@ -1663,6 +1669,7 @@ export function AIChatComposer({
                                         "application/octet-stream",
                                     label: fileName,
                                 },
+                                runtimeIdRef.current,
                                 onImageAttachmentValidationFailureRef.current,
                             );
                             if (nextParts !== currentParts) {
