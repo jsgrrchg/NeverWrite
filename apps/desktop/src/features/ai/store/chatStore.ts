@@ -2597,6 +2597,53 @@ function normalizeComparablePath(path: string) {
     return normalizeVaultPath(path).replace(/\/+$/, "");
 }
 
+function isComposerOwnedQueuedAttachment(
+    attachment: AIChatAttachment,
+    composerParts: AIComposerPart[],
+) {
+    if (attachment.type === "selection") {
+        if (!attachment.path) return false;
+        const attachmentPath = normalizeComparablePath(attachment.path);
+        return composerParts.some(
+            (part) =>
+                part.type === "selection_mention" &&
+                normalizeComparablePath(part.path) === attachmentPath &&
+                part.startLine === attachment.startLine &&
+                part.endLine === attachment.endLine,
+        );
+    }
+
+    if (attachment.type !== "file" || attachment.path || !attachment.filePath) {
+        return false;
+    }
+
+    const attachmentPath = normalizeComparablePath(attachment.filePath);
+    return composerParts.some(
+        (part) =>
+            (part.type === "screenshot" ||
+                part.type === "file_attachment") &&
+            normalizeComparablePath(part.filePath) === attachmentPath &&
+            (!attachment.mimeType || part.mimeType === attachment.mimeType),
+    );
+}
+
+function getQueuedMessageContextAttachments(
+    queuedItem: QueuedChatMessage,
+): AIChatAttachment[] {
+    // Queue items store the final send payload. When reopening one for editing,
+    // keep only session-level context here; composer-owned attachments are
+    // reconstructed from composerParts on save.
+    return queuedItem.attachments
+        .filter(
+            (attachment) =>
+                !isComposerOwnedQueuedAttachment(
+                    attachment,
+                    queuedItem.composerParts,
+                ),
+        )
+        .map(cloneAttachment);
+}
+
 function isPathInsideRoot(path: string, root: string) {
     const normalizedPath = normalizeComparablePath(path);
     const normalizedRoot = normalizeVaultRoot(root);
@@ -10417,7 +10464,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         [sessionId]: {
                             ...session,
                             attachments:
-                                queuedItem.attachments.map(cloneAttachment),
+                                getQueuedMessageContextAttachments(queuedItem),
                         },
                     },
                     composerPartsBySessionId: {
