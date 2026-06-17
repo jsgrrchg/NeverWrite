@@ -1470,7 +1470,7 @@ function ImageActionButton({
     return (
         <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1 font-medium leading-none transition-colors"
             onClick={onClick}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
@@ -1488,7 +1488,7 @@ function ImageActionButton({
             }}
         >
             <ImageActionGlyph icon={icon} />
-            {children}
+            <span className="leading-none">{children}</span>
         </button>
     );
 }
