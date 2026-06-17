@@ -7131,6 +7131,83 @@ describe("chatStore", () => {
         ).toBe(true);
     });
 
+    it("does not duplicate image attachments when saving an edited queued screenshot message", async () => {
+        let sentAttachments: AIChatAttachment[] | null = null;
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_send_message") {
+                sentAttachments =
+                    typeof args === "object" &&
+                    args !== null &&
+                    "attachments" in args &&
+                    Array.isArray(args.attachments)
+                        ? (args.attachments as AIChatAttachment[])
+                        : null;
+                return {
+                    ...sessionPayload,
+                    status: "streaming" as const,
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const screenshotPart: AIComposerPart = {
+            id: "screenshot-1",
+            type: "screenshot",
+            filePath: "/vault/assets/chat/screenshot.png",
+            mimeType: "image/png",
+            label: "Screenshot 10:32",
+            createdAt: 123,
+        };
+        const queuedAttachment: AIChatAttachment = {
+            id: "queued-image",
+            type: "file",
+            noteId: null,
+            label: "Screenshot 10:32",
+            path: null,
+            filePath: "/vault/assets/chat/screenshot.png",
+            mimeType: "image/png",
+            status: "ready",
+        };
+
+        useChatStore
+            .getState()
+            .enqueueMessage(
+                activeSessionId,
+                createQueuedMessage("queued-image", "Inspect this", {
+                    content: "Inspect this [Screenshot 10:32]",
+                    prompt: "Inspect this",
+                    composerParts: [
+                        { id: "text-1", type: "text", text: "Inspect this " },
+                        screenshotPart,
+                    ],
+                    attachments: [queuedAttachment],
+                }),
+            );
+
+        useChatStore
+            .getState()
+            .editQueuedMessage(activeSessionId, "queued-image");
+        useChatStore.getState().setComposerParts([
+            { id: "text-2", type: "text", text: "Inspect this again " },
+            screenshotPart,
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        expect(
+            sentAttachments?.filter(
+                (attachment) =>
+                    attachment.filePath ===
+                        "/vault/assets/chat/screenshot.png" &&
+                    attachment.mimeType === "image/png",
+            ),
+        ).toHaveLength(1);
+    });
+
     it("drops stale queued copies of an edited message when sending it immediately", async () => {
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_send_message") {
