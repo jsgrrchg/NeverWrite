@@ -875,6 +875,7 @@ struct AcpSessionHandle {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct AcpPromptCapabilities {
+    image: bool,
     embedded_context: bool,
 }
 
@@ -3657,6 +3658,10 @@ fn prompt_capabilities_from_initialize_response(
     initialize_response: &InitializeResponse,
 ) -> AcpPromptCapabilities {
     AcpPromptCapabilities {
+        image: initialize_response
+            .agent_capabilities
+            .prompt_capabilities
+            .image,
         embedded_context: initialize_response
             .agent_capabilities
             .prompt_capabilities
@@ -13172,6 +13177,7 @@ mod tests {
             None,
             &[],
             AcpPromptCapabilities {
+                image: false,
                 embedded_context: true,
             },
         )
@@ -13224,6 +13230,7 @@ mod tests {
             None,
             &[],
             AcpPromptCapabilities {
+                image: false,
                 embedded_context: false,
             },
         )
@@ -16016,6 +16023,22 @@ mod tests {
             &response,
             "xai.api_key"
         ));
+    }
+
+    #[test]
+    fn acp_prompt_capabilities_copy_image_support_from_initialize_response() {
+        let response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
+            agent_client_protocol::schema::AgentCapabilities::new().prompt_capabilities(
+                agent_client_protocol::schema::PromptCapabilities::new()
+                    .image(true)
+                    .embedded_context(true),
+            ),
+        );
+
+        let capabilities = prompt_capabilities_from_initialize_response(&response);
+
+        assert!(capabilities.image);
+        assert!(capabilities.embedded_context);
     }
 
     #[test]
