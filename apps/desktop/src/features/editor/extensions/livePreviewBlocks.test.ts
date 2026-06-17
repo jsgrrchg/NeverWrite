@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { forceParsing } from "@codemirror/language";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
@@ -80,6 +81,38 @@ describe("code block live preview", () => {
                 line.classList.contains("cm-lp-block-gap-hidden"),
             ),
         ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("renders tables when the markdown parser finishes after editor creation", () => {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const filler = "plain text ".repeat(420);
+        const table = ["| A | B |", "| --- | --- |", "| 1 | 2 |"].join("\n");
+        const doc = `${filler}\n\n${table}`;
+        const tableEnd = doc.length;
+        const state = EditorState.create({
+            doc,
+            selection: EditorSelection.cursor(0),
+            extensions: [
+                markdown({ base: markdownLanguage }),
+                livePreviewExtension(null, {
+                    resolveWikilink: () => false,
+                    navigateWikilink: () => {},
+                    getNoteLinkTarget: () => null,
+                    openLinkContextMenu: () => {},
+                }),
+            ],
+        });
+
+        const view = new EditorView({ state, parent });
+
+        expect(view.dom.querySelector(".cm-lp-table-widget")).toBeNull();
+        expect(forceParsing(view, tableEnd, 100)).toBe(true);
+        expect(view.dom.querySelector(".cm-lp-table-widget")).not.toBeNull();
 
         view.destroy();
         parent.remove();

@@ -1228,13 +1228,23 @@ function needsBlockRebuild(tr: Transaction): boolean {
     );
 }
 
+function needsSyntaxBackedBlockRebuild(tr: Transaction): boolean {
+    // CodeMirror may finish markdown parsing in a background language-state
+    // transaction with no document or selection change. Syntax-backed widgets
+    // must rebuild when new nodes become available.
+    if (!tr.docChanged && syntaxTree(tr.startState) !== syntaxTree(tr.state)) {
+        return true;
+    }
+    return needsBlockRebuild(tr);
+}
+
 export function createCodeBlockLivePreviewExtension() {
     return StateField.define<DecorationSet>({
         create(state) {
             return buildCodeBlockDecorations(state);
         },
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
+            if (!needsSyntaxBackedBlockRebuild(transaction)) {
                 return transaction.docChanged
                     ? decorations.map(transaction.changes)
                     : decorations;
@@ -2294,7 +2304,7 @@ export function createImageLivePreviewExtension(vaultRoot: string | null) {
             return buildBlockDecorations(state, vaultRoot);
         },
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
+            if (!needsSyntaxBackedBlockRebuild(transaction)) {
                 return transaction.docChanged
                     ? decorations.map(transaction.changes)
                     : decorations;
@@ -2315,7 +2325,7 @@ export function createTableLivePreviewExtension(
             return buildTableDecorations(state, interactions);
         },
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
+            if (!needsSyntaxBackedBlockRebuild(transaction)) {
                 return transaction.docChanged
                     ? decorations.map(transaction.changes)
                     : decorations;
