@@ -3,8 +3,10 @@ import {
     useEffect,
     useRef,
     useState,
+    type CSSProperties,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
+    type TransitionEvent as ReactTransitionEvent,
 } from "react";
 import { getCurrentWindow } from "@neverwrite/runtime";
 import {
@@ -14,7 +16,10 @@ import {
     MIN_SIDEBAR_WIDTH,
     useLayoutStore,
 } from "../../app/store/layoutStore";
-import { getDesktopPlatform } from "../../app/utils/platform";
+import {
+    getDesktopPlatform,
+    getTrafficLightSpacerWidth,
+} from "../../app/utils/platform";
 import {
     FILE_TREE_NOTE_DRAG_EVENT,
     type FileTreeNoteDragDetail,
@@ -47,6 +52,22 @@ const SIDEBAR_DOCK_TRANSITION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 const EDGE_PEEK_HOTSPOT_WIDTH = 8;
 const EDGE_PEEK_DISMISS_DELAY_MS = 360;
 const EDGE_PEEK_SAFE_GAP = 28;
+
+// Height of the sidebar's top chrome band (the traffic-light / collapse-button
+// row). Mirrors SidebarShell's own height formula. The docked sidebar lives
+// inside a compositor-promoted wrapper (transform/opacity for the slide), and
+// Chromium drops `-webkit-app-region` rects to zero area under any transformed
+// ancestor — that's why dragging the band silently fails. Instead of fighting
+// that chain we paint a dedicated drag strip at the AppLayout root (no
+// transformed ancestor), so the OS always gets a correct draggable rect.
+const SIDEBAR_DRAG_BAND_HEIGHT = (() => {
+    if (getDesktopPlatform() !== "macos") return 38;
+    return Math.max(38, Math.max(28, getTrafficLightSpacerWidth() / 2 + 12));
+})();
+// Right-hand space the strip leaves free so it never sits over the collapse
+// button (32px button + 8px padding + a little slack). The button keeps its
+// own click; the OS would otherwise swallow the press as a window drag.
+const SIDEBAR_DRAG_BAND_RIGHT_RESERVE = 48;
 
 interface PointerPosition {
     x: number;
@@ -120,6 +141,13 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const [sidebarDockVisualState, setSidebarDockVisualState] = useState<
         "entered" | "hidden"
     >(() => (sidebarCollapsed ? "hidden" : "entered"));
+    // True only while the dock slide/opacity transition is in flight. We use
+    // it to keep the inner wrapper out of a compositor layer when idle: a
+    // permanent `transform` + `will-change` promotes it to its own layer, and
+    // Chromium then fails to re-notify the OS of the `-webkit-app-region: drag`
+    // geometry (the sidebar drag header), so window dragging from the sidebar
+    // silently goes stale until a collapse/expand forces a fresh layout.
+    const [dockAnimating, setDockAnimating] = useState(false);
 
     // Arc-style overlay: when the sidebar is collapsed we show a thin hotspot
     // on the left edge; hovering it reveals the sidebar content as a floating
@@ -130,6 +158,17 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
     const overlayDismissTimerRef = useRef<number | null>(null);
     const sidebarPointerRef = useRef<PointerPosition | null>(null);
     const sidebarDragActiveRef = useRef(false);
+
+    // Demote the inner wrapper once its own slide finishes. Guard on the
+    // event target so transitions bubbling up from sidebar descendants don't
+    // end the animation early.
+    const handleDockTransitionEnd = useCallback(
+        (event: ReactTransitionEvent<HTMLDivElement>) => {
+            if (event.target !== event.currentTarget) return;
+            setDockAnimating(false);
+        },
+        [],
+    );
 
     const clearSidebarDockTimers = useCallback(() => {
         if (sidebarDockFrameRef.current !== null) {
@@ -236,6 +275,10 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
         }
 
         clearSidebarDockTimers();
+        // Promote the inner wrapper for the duration of the slide; it gets
+        // demoted again on transitionend (or unmount) so the drag region
+        // stays live while idle.
+        setDockAnimating(true);
 
         if (sidebarCollapsed) {
             const currentWidth =
@@ -254,6 +297,7 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             sidebarDockUnmountTimerRef.current = window.setTimeout(() => {
                 sidebarDockUnmountTimerRef.current = null;
                 setRenderDockedSidebar(false);
+                setDockAnimating(false);
             }, SIDEBAR_DOCK_TRANSITION_MS);
             return;
         }
@@ -270,6 +314,12 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
             setDockedSidebarWidth(sidebarWidth);
             setSidebarDockVisualState("entered");
         });
+        // Fallback demotion in case transitionend never fires (e.g. the slide
+        // is a no-op because the panel was already at full width).
+        sidebarDockUnmountTimerRef.current = window.setTimeout(() => {
+            sidebarDockUnmountTimerRef.current = null;
+            setDockAnimating(false);
+        }, SIDEBAR_DOCK_TRANSITION_MS);
     }, [
         clearSidebarDockTimers,
         isResizingLeft,
@@ -892,19 +942,30 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                 >
                     <div
                         data-sidebar-dock-inner
+                        onTransitionEnd={handleDockTransitionEnd}
                         style={{
                             width: isResizingLeft
                                 ? dockedSidebarWidth
                                 : sidebarWidth,
                             height: "100%",
                             opacity: sidebarDockHidden ? 0 : 1,
+                            // Keep the wrapper in a compositor layer ONLY while
+                            // the slide is in flight. When idle we drop the
+                            // transform/will-change entirely so the layer is
+                            // demoted and Chromium keeps the sidebar's native
+                            // `-webkit-app-region: drag` rect in sync with the
+                            // OS (a permanent layer makes window dragging from
+                            // the sidebar go stale — see dockAnimating above).
                             transform: sidebarDockHidden
                                 ? "translateX(-10px)"
-                                : "translateX(0)",
+                                : dockAnimating && !isResizingLeft
+                                  ? "translateX(0)"
+                                  : "none",
                             transition: sidebarDockTransition,
-                            willChange: isResizingLeft
-                                ? "auto"
-                                : "opacity, transform",
+                            willChange:
+                                dockAnimating && !isResizingLeft
+                                    ? "opacity, transform"
+                                    : "auto",
                         }}
                     >
                         {left}
@@ -1052,6 +1113,34 @@ export function AppLayout({ left, center, right }: AppLayoutProps) {
                     style={{
                         cursor: "col-resize",
                     }}
+                />
+            )}
+
+            {/* Window-drag strip for the docked sidebar's top band. Rendered at
+                the AppLayout root — NOT inside the sidebar's transformed dock
+                wrapper — because Chromium zeroes out `-webkit-app-region` rects
+                under any transformed ancestor. Spans from the left edge up to
+                (but not over) the collapse button so that button keeps its
+                click. The traffic lights are native and drawn above everything,
+                so the strip never interferes with them. */}
+            {!sidebarCollapsed && effectiveLeft > 0 && (
+                <div
+                    data-testid="sidebar-drag-strip"
+                    aria-hidden
+                    style={
+                        {
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: Math.max(
+                                0,
+                                effectiveLeft - SIDEBAR_DRAG_BAND_RIGHT_RESERVE,
+                            ),
+                            height: SIDEBAR_DRAG_BAND_HEIGHT,
+                            zIndex: 6,
+                            WebkitAppRegion: "drag",
+                        } as CSSProperties
+                    }
                 />
             )}
 
