@@ -1,7 +1,8 @@
-import { Decoration } from "@codemirror/view";
+import { Decoration, type DecorationSet, EditorView } from "@codemirror/view";
 import {
     type EditorState,
     type Transaction,
+    StateEffect,
     StateField,
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
@@ -499,6 +500,99 @@ export const footnoteNumberField = StateField.define<FootnoteNumberMap>({
         if (!footnoteNumbersNeedRebuild(transaction)) return numbers;
         return buildFootnoteNumberIndex(transaction.state);
     },
+});
+
+// Footnote definition marker at the start of a line: `[^id]:`.
+const FOOTNOTE_DEF_LINE_RE = /^\[\^([^\]\s]+)\]:/gm;
+
+/**
+ * Resolves the definition line for a footnote id by scanning the document text.
+ * The live preview virtualizes the DOM, so the definition is usually not
+ * rendered when a reference is clicked — resolving the position from the text
+ * lets us jump to it regardless of what is currently on screen.
+ */
+export function findFootnoteDefinition(
+    state: EditorState,
+    id: string,
+): { from: number; to: number } | null {
+    const text = state.doc.toString();
+    FOOTNOTE_DEF_LINE_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = FOOTNOTE_DEF_LINE_RE.exec(text)) !== null) {
+        if (match[1] === id) {
+            const line = state.doc.lineAt(match.index);
+            return { from: line.from, to: line.to };
+        }
+    }
+    return null;
+}
+
+// Footnote reference token, scanned within a single line.
+const FOOTNOTE_REF_AT_RE = /\[\^([^\]\s]+)\]/g;
+
+/**
+ * Returns the footnote reference covering a document position, if any. Pointer
+ * hits resolve to a position rather than a DOM node — the reference renders as a
+ * tiny superscript widget flanked by CM widget buffers, so the click target is
+ * unreliable, but the position is not. Definition markers (`[^id]:` at the start
+ * of a line) are excluded.
+ */
+export function footnoteRefAt(
+    state: EditorState,
+    pos: number,
+): { id: string; from: number; to: number } | null {
+    const line = state.doc.lineAt(pos);
+    const offset = pos - line.from;
+    FOOTNOTE_REF_AT_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = FOOTNOTE_REF_AT_RE.exec(line.text)) !== null) {
+        const start = match.index;
+        const end = start + match[0].length;
+        const isDefinition =
+            line.text.slice(0, start).trim() === "" && line.text[end] === ":";
+        if (isDefinition) continue;
+        if (offset >= start && offset <= end) {
+            return { id: match[1], from: line.from + start, to: line.from + end };
+        }
+    }
+    return null;
+}
+
+/** Effect: flash a jumped-to footnote definition line (a range, or null to clear). */
+export const flashFootnoteDefEffect = StateEffect.define<{
+    from: number;
+    to: number;
+} | null>();
+
+const footnoteDefFlashMark = Decoration.line({
+    class: "cm-lp-footnote-def-flash",
+});
+
+/**
+ * Holds the transient highlight shown on the footnote definition a reference
+ * jumped to, so the destination is obvious even when it was already on screen.
+ */
+export const footnoteDefFlashField = StateField.define<DecorationSet>({
+    create() {
+        return Decoration.none;
+    },
+    update(deco, transaction) {
+        deco = deco.map(transaction.changes);
+        for (const effect of transaction.effects) {
+            if (!effect.is(flashFootnoteDefEffect)) continue;
+            deco =
+                effect.value === null
+                    ? Decoration.none
+                    : Decoration.set(
+                          footnoteDefFlashMark.range(
+                              transaction.state.doc.lineAt(effect.value.from)
+                                  .from,
+                          ),
+                      );
+        }
+        return deco;
+    },
+    provide: (field) => EditorView.decorations.from(field),
 });
 
 export function findAncestor(

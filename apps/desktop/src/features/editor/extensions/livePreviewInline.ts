@@ -207,8 +207,10 @@ class FootnoteRefWidget extends WidgetType {
         return ref;
     }
 
+    // Let pointer events reach the editor's domEventHandlers so a click can be
+    // resolved to the footnote and jumped to its definition.
     ignoreEvent() {
-        return true;
+        return false;
     }
 }
 

@@ -13,7 +13,14 @@ vi.mock("../../../app/utils/perfInstrumentation", () => ({
 }));
 
 import { perfMeasure } from "../../../app/utils/perfInstrumentation";
-import { linkReferenceField, footnoteNumberField } from "./livePreviewHelpers";
+import {
+    linkReferenceField,
+    footnoteNumberField,
+    findFootnoteDefinition,
+    footnoteRefAt,
+    flashFootnoteDefEffect,
+    footnoteDefFlashField,
+} from "./livePreviewHelpers";
 import {
     createInlineLivePreviewPlugin,
     createLeadingContentCollapseField,
@@ -966,6 +973,65 @@ describe("createInlineLivePreviewPlugin", () => {
 
         view.destroy();
         parent.remove();
+    });
+
+    it("resolves a footnote definition position from the document text", () => {
+        // The definition sits far below the reference and well outside any
+        // rendered viewport — resolution must come from the text, not the DOM.
+        const doc = `Body ref[^note] here.${"\nfiller".repeat(80)}\n\n[^note]: The definition.`;
+        const state = EditorState.create({ doc });
+
+        const def = findFootnoteDefinition(state, "note");
+        expect(def).not.toBeNull();
+        expect(state.doc.lineAt(def!.from).text).toBe("[^note]: The definition.");
+        expect(findFootnoteDefinition(state, "missing")).toBeNull();
+    });
+
+    it("locates a footnote reference at a position, excluding definitions", () => {
+        const doc = "ab[^note]cd\n[^note]: def";
+        const state = EditorState.create({ doc });
+
+        // Inside the reference token resolves to its id and range.
+        expect(footnoteRefAt(state, 5)).toEqual({ id: "note", from: 2, to: 9 });
+        // Before the token: no match.
+        expect(footnoteRefAt(state, 0)).toBeNull();
+        // The identical token on the definition line is ignored.
+        const defPos = state.doc.line(2).from + 3;
+        expect(footnoteRefAt(state, defPos)).toBeNull();
+    });
+
+    it("flashes the jumped-to definition line then clears it", () => {
+        const doc = "x\n[^note]: def";
+        const initial = EditorState.create({
+            doc,
+            extensions: [footnoteDefFlashField],
+        });
+        const defLine = initial.doc.line(2);
+
+        const flashed = initial.update({
+            effects: flashFootnoteDefEffect.of({
+                from: defLine.from,
+                to: defLine.to,
+            }),
+        }).state;
+        const ranges: number[] = [];
+        flashed
+            .field(footnoteDefFlashField)
+            .between(0, flashed.doc.length, (from) => {
+                ranges.push(from);
+            });
+        expect(ranges).toEqual([defLine.from]);
+
+        const cleared = flashed.update({
+            effects: flashFootnoteDefEffect.of(null),
+        }).state;
+        let count = 0;
+        cleared
+            .field(footnoteDefFlashField)
+            .between(0, cleared.doc.length, () => {
+                count++;
+            });
+        expect(count).toBe(0);
     });
 
     it("switches the active inline token when moving within the same line", () => {
