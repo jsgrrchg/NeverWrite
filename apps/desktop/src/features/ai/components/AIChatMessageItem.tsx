@@ -1467,23 +1467,31 @@ function ImageActionButton({
     icon: ImageActionIcon;
 }) {
     const [hovered, setHovered] = useState(false);
+    const [pressed, setPressed] = useState(false);
     return (
         <button
             type="button"
-            className="inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1 font-medium leading-none transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1 font-medium leading-none transition-[background-color,border-color,color,transform] duration-150 ease-out active:scale-95"
             onClick={onClick}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
+            onPointerDown={() => setPressed(true)}
+            onPointerUp={() => setPressed(false)}
+            onPointerLeave={() => setPressed(false)}
+            onPointerCancel={() => setPressed(false)}
+            onBlur={() => setPressed(false)}
             style={{
-                color: hovered
+                color: hovered || pressed
                     ? "var(--text-primary)"
                     : "var(--text-secondary)",
                 border: `1px solid color-mix(in srgb, var(--border) ${
-                    hovered ? "100%" : "70%"
+                    hovered || pressed ? "100%" : "70%"
                 }, transparent)`,
-                backgroundColor: hovered
-                    ? "color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary))"
-                    : "transparent",
+                backgroundColor: pressed
+                    ? "color-mix(in srgb, var(--text-primary) 10%, var(--bg-secondary))"
+                    : hovered
+                      ? "color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary))"
+                      : "transparent",
                 fontSize: "0.74em",
             }}
         >
