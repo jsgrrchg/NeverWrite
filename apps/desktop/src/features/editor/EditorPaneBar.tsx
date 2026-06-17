@@ -1,4 +1,11 @@
-import { Fragment, useCallback, useLayoutEffect, useRef, useState } from "react";
+import {
+    type CSSProperties,
+    Fragment,
+    useCallback,
+    useLayoutEffect,
+    useRef,
+    useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import { createPortal } from "react-dom";
 import { confirm } from "@neverwrite/runtime";
@@ -87,6 +94,16 @@ function getPaneHeaderActionButtonStyle(active = false) {
         boxShadow: "none",
     };
 }
+
+// 1px hairline that sits between the "new tab" and "pane actions" buttons in
+// the pane header, replacing the old pill container with a flat divider.
+const paneHeaderActionDividerStyle: CSSProperties = {
+    width: 1,
+    height: 12,
+    margin: "0 4px",
+    backgroundColor: "var(--border)",
+    flexShrink: 0,
+};
 
 function getDuplicateTerminalTitle(tab: TerminalTab) {
     const title = tab.title.trim();
@@ -839,43 +856,51 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     )}
                 </div>
 
-                <div
-                    className="flex shrink-0 items-center px-1.5"
-                    style={chromeControlsGroupStyle}
-                >
+                <div className="flex shrink-0 items-center px-1.5">
                     {vaultPath && (
-                        <button
-                            type="button"
-                            data-new-tab-button="true"
-                            onClick={() =>
-                                useCommandStore.getState().openQuickSwitcher()
-                            }
-                            onContextMenu={(event) => {
-                                event.preventDefault();
-                                setNewTabContextMenu({
-                                    x: event.clientX,
-                                    y: event.clientY,
-                                    payload: undefined,
-                                });
-                            }}
-                            className="ub-chrome-btn inline-flex shrink-0 items-center justify-center"
-                            aria-label="New tab"
-                            title="New tab"
-                            style={getPaneHeaderActionButtonStyle()}
-                        >
-                            <svg
-                                width="10"
-                                height="10"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
+                        <Fragment>
+                            <button
+                                type="button"
+                                data-new-tab-button="true"
+                                onClick={() =>
+                                    useCommandStore
+                                        .getState()
+                                        .openQuickSwitcher()
+                                }
+                                onContextMenu={(event) => {
+                                    event.preventDefault();
+                                    setNewTabContextMenu({
+                                        x: event.clientX,
+                                        y: event.clientY,
+                                        payload: undefined,
+                                    });
+                                }}
+                                className="ub-chrome-btn inline-flex shrink-0 items-center justify-center"
+                                aria-label="New tab"
+                                title="New tab"
+                                style={getPaneHeaderActionButtonStyle()}
                             >
-                                <path d="M8 3.5v9M3.5 8h9" />
-                            </svg>
-                        </button>
+                                <svg
+                                    width="10"
+                                    height="10"
+                                    viewBox="0 0 16 16"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <path d="M8 3.5v9M3.5 8h9" />
+                                </svg>
+                            </button>
+                            {/* Thin vertical divider between the pane action
+                                buttons; the group reads flat, with no
+                                surrounding pill. */}
+                            <span
+                                aria-hidden="true"
+                                style={paneHeaderActionDividerStyle}
+                            />
+                        </Fragment>
                     )}
 
                     <button
