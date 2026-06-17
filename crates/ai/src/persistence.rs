@@ -29,6 +29,8 @@ pub struct PersistedMessage {
     pub kind: String,
     pub content: String,
     pub timestamp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1704,6 +1706,17 @@ mod tests {
                     kind: "text".to_string(),
                     content: "Hello".to_string(),
                     timestamp: 10,
+                    attachments: Some(serde_json::json!([
+                        {
+                            "id": "attachment:image",
+                            "type": "file",
+                            "noteId": null,
+                            "label": "Screenshot 10:32",
+                            "path": null,
+                            "filePath": "/vault/assets/chat/screenshot.png",
+                            "mimeType": "image/png"
+                        }
+                    ])),
                     title: None,
                     meta: None,
                     permission_request_id: None,
@@ -1725,6 +1738,7 @@ mod tests {
                     kind: "text".to_string(),
                     content: "Assistant reply".to_string(),
                     timestamp: 20,
+                    attachments: None,
                     title: None,
                     meta: None,
                     permission_request_id: None,
@@ -2007,6 +2021,24 @@ mod tests {
     }
 
     #[test]
+    fn preserves_message_attachments_in_lazy_transcript() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        let expected_attachments = history.messages[0].attachments.clone();
+
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let page =
+            load_session_history_page(&dir, "session-1", 0, 1).expect("history page should load");
+        assert_eq!(page.messages[0].attachments, expected_attachments);
+
+        let histories = load_all_session_histories(&dir, true).expect("full history should load");
+        assert_eq!(histories[0].messages[0].attachments, expected_attachments);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn preserves_parent_session_id_in_lazy_metadata() {
         let dir = make_temp_dir();
         let mut history = sample_history_with_session_id("child-session");
@@ -2185,6 +2217,7 @@ mod tests {
                     kind: "text".to_string(),
                     content: "Assistant reply (edited)".to_string(),
                     timestamp: 20,
+                    attachments: None,
                     title: None,
                     meta: None,
                     permission_request_id: None,
@@ -2206,6 +2239,7 @@ mod tests {
                     kind: "plan".to_string(),
                     content: "Next step".to_string(),
                     timestamp: 30,
+                    attachments: None,
                     title: Some("Plan".to_string()),
                     meta: None,
                     permission_request_id: None,
@@ -2414,6 +2448,7 @@ mod tests {
             kind: "text".to_string(),
             content: "Assistant reply (edited)".to_string(),
             timestamp: 20,
+            attachments: None,
             title: Some("Reply".to_string()),
             meta: Some(serde_json::json!({
                 "status": "completed",
@@ -2437,6 +2472,7 @@ mod tests {
             kind: "permission".to_string(),
             content: "Edit watcher.rs".to_string(),
             timestamp: 30,
+            attachments: None,
             title: Some("Permission request".to_string()),
             meta: Some(serde_json::json!({
                 "status": "pending",
@@ -2486,6 +2522,7 @@ mod tests {
             kind: "user_input_request".to_string(),
             content: "Need confirmation".to_string(),
             timestamp: 40,
+            attachments: None,
             title: Some("Input requested".to_string()),
             meta: Some(serde_json::json!({
                 "status": "pending",
@@ -2517,6 +2554,7 @@ mod tests {
             kind: "plan".to_string(),
             content: "Confirm restore".to_string(),
             timestamp: 50,
+            attachments: None,
             title: Some("Plan".to_string()),
             meta: None,
             permission_request_id: None,
