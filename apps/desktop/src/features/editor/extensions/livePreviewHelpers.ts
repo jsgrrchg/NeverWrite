@@ -527,37 +527,6 @@ export function findFootnoteDefinition(
     return null;
 }
 
-// Footnote reference token, scanned within a single line.
-const FOOTNOTE_REF_AT_RE = /\[\^([^\]\s]+)\]/g;
-
-/**
- * Returns the footnote reference covering a document position, if any. Pointer
- * hits resolve to a position rather than a DOM node — the reference renders as a
- * tiny superscript widget flanked by CM widget buffers, so the click target is
- * unreliable, but the position is not. Definition markers (`[^id]:` at the start
- * of a line) are excluded.
- */
-export function footnoteRefAt(
-    state: EditorState,
-    pos: number,
-): { id: string; from: number; to: number } | null {
-    const line = state.doc.lineAt(pos);
-    const offset = pos - line.from;
-    FOOTNOTE_REF_AT_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = FOOTNOTE_REF_AT_RE.exec(line.text)) !== null) {
-        const start = match.index;
-        const end = start + match[0].length;
-        const isDefinition =
-            line.text.slice(0, start).trim() === "" && line.text[end] === ":";
-        if (isDefinition) continue;
-        if (offset >= start && offset <= end) {
-            return { id: match[1], from: line.from + start, to: line.from + end };
-        }
-    }
-    return null;
-}
-
 /** Effect: flash a jumped-to footnote definition line (a range, or null to clear). */
 export const flashFootnoteDefEffect = StateEffect.define<{
     from: number;

@@ -17,7 +17,6 @@ import {
     linkReferenceField,
     footnoteNumberField,
     findFootnoteDefinition,
-    footnoteRefAt,
     flashFootnoteDefEffect,
     footnoteDefFlashField,
 } from "./livePreviewHelpers";
@@ -985,19 +984,6 @@ describe("createInlineLivePreviewPlugin", () => {
         expect(def).not.toBeNull();
         expect(state.doc.lineAt(def!.from).text).toBe("[^note]: The definition.");
         expect(findFootnoteDefinition(state, "missing")).toBeNull();
-    });
-
-    it("locates a footnote reference at a position, excluding definitions", () => {
-        const doc = "ab[^note]cd\n[^note]: def";
-        const state = EditorState.create({ doc });
-
-        // Inside the reference token resolves to its id and range.
-        expect(footnoteRefAt(state, 5)).toEqual({ id: "note", from: 2, to: 9 });
-        // Before the token: no match.
-        expect(footnoteRefAt(state, 0)).toBeNull();
-        // The identical token on the definition line is ignored.
-        const defPos = state.doc.line(2).from + 3;
-        expect(footnoteRefAt(state, defPos)).toBeNull();
     });
 
     it("flashes the jumped-to definition line then clears it", () => {

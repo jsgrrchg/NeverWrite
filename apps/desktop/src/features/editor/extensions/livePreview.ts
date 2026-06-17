@@ -6,11 +6,9 @@ import {
     linkReferenceField,
     footnoteNumberField,
     findFootnoteDefinition,
-    footnoteRefAt,
     flashFootnoteDefEffect,
     footnoteDefFlashField,
 } from "./livePreviewHelpers";
-import { selectionTouchesRange } from "./selectionActivity";
 import { dispatchOpenYouTubeModal } from "../youtube";
 import { openVaultEmbedTarget } from "../embedNavigation";
 import {
@@ -265,6 +263,27 @@ function activateTaskLine(taskLine: HTMLElement, view: EditorView) {
 const FOOTNOTE_FLASH_MS = 1200;
 
 /**
+ * Resolves the footnote reference whose rendered number is under the pointer,
+ * by geometric containment. Only currently-rendered (collapsed) references have
+ * a `.cm-lp-footnote-ref` element, so a reference revealed for editing is
+ * naturally skipped and the click falls through to normal caret placement.
+ */
+function footnoteRefIdAtPoint(
+    view: EditorView,
+    x: number,
+    y: number,
+): string | null {
+    const refs = view.dom.querySelectorAll<HTMLElement>(".cm-lp-footnote-ref");
+    for (const el of refs) {
+        const r = el.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+            return el.dataset.footnoteId ?? null;
+        }
+    }
+    return null;
+}
+
+/**
  * Jumps to a footnote definition by resolving its position from the document
  * text (the live preview virtualizes the DOM, so the definition is usually not
  * rendered) and scrolling there via CodeMirror, with a brief highlight so the
@@ -454,26 +473,21 @@ export function livePreviewExtension(
         mousedown(event: MouseEvent, view: EditorView) {
             const target = event.target as HTMLElement;
 
-            // A footnote reference renders as a tiny superscript widget flanked
-            // by CM widget buffers, so the click target is unreliable and a
-            // plain mousedown would drop the caret inside it (revealing the raw
-            // `[^id]`). Resolve the reference by document position instead and
-            // jump straight to its definition, unless it is already revealed for
-            // editing.
-            const pos = view.posAtCoords({
-                x: event.clientX,
-                y: event.clientY,
-            });
-            if (pos !== null) {
-                const ref = footnoteRefAt(view.state, pos);
-                if (
-                    ref &&
-                    !selectionTouchesRange(view.state, ref.from, ref.to) &&
-                    jumpToFootnoteDefinition(view, ref.id)
-                ) {
-                    event.preventDefault();
-                    return true;
-                }
+            // A footnote reference renders as a tiny raised superscript number;
+            // a plain mousedown would drop the caret inside the token (revealing
+            // the raw `[^id]`). Jump to its definition instead — but only when
+            // the pointer is geometrically on the number. `posAtCoords` is wrong
+            // here: at the superscript's raised height the only content is the
+            // number, so clicking the empty space to its right (to keep writing)
+            // still maps back onto the token.
+            const footnoteId = footnoteRefIdAtPoint(
+                view,
+                event.clientX,
+                event.clientY,
+            );
+            if (footnoteId && jumpToFootnoteDefinition(view, footnoteId)) {
+                event.preventDefault();
+                return true;
             }
 
             const taskLine = getTaskLinePointerTarget(
