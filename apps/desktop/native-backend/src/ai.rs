@@ -68,6 +68,7 @@ const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
     "Inherited XAI_API_KEY looks invalid. Update the environment variable to reconnect Grok.";
 const AGENT_WRITE_ORIGIN_WINDOW: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
+const MAX_NATIVE_IMAGE_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
@@ -8580,6 +8581,12 @@ fn append_file_attachment_blocks(
     } else if mime.starts_with("image/") {
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         if capabilities.image {
+            if size > MAX_NATIVE_IMAGE_ATTACHMENT_BYTES {
+                return Err(format!(
+                    "Image attachment is too large: {} exceeds the {} byte limit.",
+                    rel_path, MAX_NATIVE_IMAGE_ATTACHMENT_BYTES
+                ));
+            }
             match std::fs::read(&path) {
                 Ok(bytes) => blocks.push(ContentBlock::Image(
                     ImageContent::new(BASE64_STANDARD.encode(bytes), mime.to_string())
@@ -13432,6 +13439,40 @@ mod tests {
         .expect_err("outside native image attachment should be blocked");
 
         assert!(error.contains("outside the vault"));
+    }
+
+    #[test]
+    fn prompt_blocks_reject_native_image_attachment_above_size_limit() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("huge.png");
+        let file = fs::File::create(&image_path).unwrap();
+        file.set_len(MAX_NATIVE_IMAGE_ATTACHMENT_BYTES + 1).unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Huge Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+        )
+        .expect_err("oversized native image attachment should be blocked");
+
+        assert!(error.contains("Image attachment is too large"));
     }
 
     #[test]

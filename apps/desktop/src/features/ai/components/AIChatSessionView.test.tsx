@@ -1,12 +1,24 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { invoke } from "@neverwrite/runtime";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import type { AIChatSession } from "../types";
+import {
+    MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
+    MAX_IMAGE_ATTACHMENT_BYTES,
+} from "../imageAttachments";
 import { AIChatSessionView } from "./AIChatSessionView";
 import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
+
+const composerMockState = vi.hoisted(() => ({
+    onPasteImage: undefined as ((file: File) => void) | undefined,
+}));
+
+const invokeMock = vi.mocked(invoke);
 
 vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: () => <div data-testid="chat-message-list" />,
@@ -15,17 +27,31 @@ vi.mock("./AIChatMessageList", () => ({
 vi.mock("./AIChatComposer", () => ({
     AIChatComposer: ({
         expanded,
+        footer,
         onToggleExpanded,
+        onPasteImage,
     }: {
         expanded?: boolean;
+        footer?: ReactNode;
         onToggleExpanded?: () => void;
+        onPasteImage?: (file: File) => void;
     }) => (
-        <button
-            type="button"
-            data-testid="chat-composer"
-            data-expanded={String(Boolean(expanded))}
-            onClick={onToggleExpanded}
-        />
+        <div>
+            <button
+                type="button"
+                data-testid="chat-composer"
+                data-expanded={String(Boolean(expanded))}
+                onClick={onToggleExpanded}
+            />
+            <div data-testid="chat-composer-footer">{footer}</div>
+            <button
+                type="button"
+                data-testid="paste-image"
+                onClick={() => {
+                    composerMockState.onPasteImage = onPasteImage;
+                }}
+            />
+        </div>
     ),
 }));
 
@@ -107,6 +133,7 @@ function expectColumnAncestor(testId: string) {
 describe("AIChatSessionView", () => {
     beforeEach(() => {
         resetChatStore();
+        composerMockState.onPasteImage = undefined;
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [],
@@ -198,6 +225,91 @@ describe("AIChatSessionView", () => {
         expect(screen.getByTestId("chat-composer")).toHaveAttribute(
             "data-expanded",
             "true",
+        );
+    });
+
+    it("shows visible feedback when a pasted image is too large", async () => {
+        setupWorkspaceSession();
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const oversizedFile = {
+            size: MAX_IMAGE_ATTACHMENT_BYTES + 1,
+            type: "image/png",
+            arrayBuffer: vi.fn(),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(oversizedFile) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Image is too large",
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "save_vault_binary_file",
+            expect.anything(),
+        );
+    });
+
+    it("shows visible feedback for unsupported pasted image types", async () => {
+        setupWorkspaceSession();
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const unsupportedFile = {
+            size: 128,
+            type: "image/tiff",
+            arrayBuffer: vi.fn(),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(
+                unsupportedFile,
+            ) as unknown as Promise<void> | void);
+        });
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Unsupported image type",
+        );
+    });
+
+    it("shows visible feedback when the composer already has too many images", async () => {
+        setupWorkspaceSession();
+        useChatStore.setState((state) => ({
+            ...state,
+            composerPartsBySessionId: {
+                "session-a": Array.from(
+                    { length: MAX_IMAGE_ATTACHMENTS_PER_MESSAGE },
+                    (_, index) => ({
+                        id: `shot-${index}`,
+                        type: "screenshot" as const,
+                        filePath: `/vault/assets/chat/shot-${index}.png`,
+                        mimeType: "image/png",
+                        label: `Screenshot ${index}`,
+                    }),
+                ),
+            },
+        }));
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn(),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Too many images attached",
         );
     });
 });

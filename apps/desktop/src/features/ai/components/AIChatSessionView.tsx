@@ -56,6 +56,11 @@ import {
     pruneExpiredScreenshotParts,
 } from "../screenshotRetention";
 import {
+    getImageAttachmentExtension,
+    imageAttachmentValidationMessage,
+    validateNewImageAttachment,
+} from "../imageAttachments";
+import {
     findSessionForHistorySelection,
     getSessionTitle,
     getSessionTitleText,
@@ -90,6 +95,9 @@ interface AIChatSessionViewProps {
 
 export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
+    const [imageAttachmentNotice, setImageAttachmentNotice] = useState<
+        string | null
+    >(null);
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -309,19 +317,20 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const handlePasteImage = useCallback(
         async (file: File) => {
             if (!sessionId) return;
-            const MAX_SIZE = 25 * 1024 * 1024;
-            if (file.size > MAX_SIZE) return;
+            const currentParts =
+                useChatStore.getState().composerPartsBySessionId[sessionId] ??
+                createEmptyComposerParts();
+            const validation = validateNewImageAttachment(file, currentParts);
+            if (!validation.ok) {
+                setImageAttachmentNotice(
+                    imageAttachmentValidationMessage(validation.reason),
+                );
+                return;
+            }
             try {
                 const buffer = await file.arrayBuffer();
                 const bytes = Array.from(new Uint8Array(buffer));
-                const ext =
-                    file.type === "image/jpeg"
-                        ? "jpg"
-                        : file.type === "image/gif"
-                          ? "gif"
-                          : file.type === "image/webp"
-                            ? "webp"
-                            : "png";
+                const ext = getImageAttachmentExtension(file.type);
                 const now = new Date();
                 const ts = [
                     now.getFullYear(),
@@ -345,12 +354,12 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 });
                 await refreshEntries();
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
-                const currentParts =
+                const latestParts =
                     useChatStore.getState().composerPartsBySessionId[
                         sessionId
                     ] ?? createEmptyComposerParts();
                 chatActions.setComposerParts(
-                    appendScreenshotPart(currentParts, {
+                    appendScreenshotPart(latestParts, {
                         filePath: saved.path,
                         mimeType: saved.mime_type ?? file.type,
                         label: timeLabel,
@@ -358,12 +367,22 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }),
                     sessionId,
                 );
+                setImageAttachmentNotice(null);
             } catch (error) {
                 console.error("[chat] Failed to save pasted image:", error);
+                setImageAttachmentNotice("Image could not be attached");
             }
         },
         [chatActions, refreshEntries, sessionId],
     );
+
+    useEffect(() => {
+        if (!imageAttachmentNotice) return;
+        const timer = window.setTimeout(() => {
+            setImageAttachmentNotice(null);
+        }, 3500);
+        return () => window.clearTimeout(timer);
+    }, [imageAttachmentNotice]);
 
     useEffect(() => {
         if (!sessionId || screenshotRetentionSeconds <= 0) return;
@@ -717,6 +736,21 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }
                     footer={
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            {imageAttachmentNotice ? (
+                                <div
+                                    role="status"
+                                    aria-live="polite"
+                                    className="rounded-md px-2 py-1 text-xs font-medium"
+                                    style={{
+                                        color: "#f87171",
+                                        backgroundColor:
+                                            "color-mix(in srgb, #ef4444 8%, transparent)",
+                                        border: "1px solid color-mix(in srgb, #ef4444 24%, var(--border))",
+                                    }}
+                                >
+                                    {imageAttachmentNotice}
+                                </div>
+                            ) : null}
                             {!isPendingSessionCreation && (
                                 <AIChatAgentControls
                                     disabled={agentControlsDisabled}
