@@ -1367,6 +1367,7 @@ describe("chatStore", () => {
             useChatStore.getState().queuedMessagesBySessionId[
                 activeSessionId
             ]?.[0];
+        expect(queuedMessage?.prompt).toBe("Inspect");
         expect(queuedMessage?.attachments).toEqual([
             expect.objectContaining({
                 type: "file",
@@ -1409,6 +1410,7 @@ describe("chatStore", () => {
             useChatStore.getState().queuedMessagesBySessionId[
                 activeSessionId
             ]?.[0];
+        expect(queuedMessage?.prompt).toBe("Inspect");
         expect(queuedMessage?.attachments).toEqual([
             expect.objectContaining({
                 type: "file",
@@ -1419,6 +1421,48 @@ describe("chatStore", () => {
                 mimeType: "image/jpeg",
             }),
         ]);
+    });
+
+    it("allows image-only composer messages without echoing the image path into the prompt", async () => {
+        await useChatStore.getState().initialize();
+        const activeSessionId = getActiveSessionId();
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [activeSessionId]: {
+                    ...state.sessionsById[activeSessionId]!,
+                    status: "waiting_permission",
+                    attachments: [],
+                },
+            },
+        }));
+        useChatStore.getState().setComposerParts([
+            {
+                id: "screenshot-1",
+                type: "screenshot",
+                filePath: "/vault/assets/chat/screenshot.png",
+                mimeType: "image/png",
+                label: "Screenshot 10:32",
+                createdAt: 123,
+            },
+        ]);
+
+        await useChatStore.getState().sendMessage();
+
+        const queuedMessage =
+            useChatStore.getState().queuedMessagesBySessionId[
+                activeSessionId
+            ]?.[0];
+        expect(queuedMessage).toMatchObject({
+            content: "[Screenshot 10:32]",
+            prompt: "",
+            attachments: [
+                expect.objectContaining({
+                    filePath: "/vault/assets/chat/screenshot.png",
+                    mimeType: "image/png",
+                }),
+            ],
+        });
     });
 
     it("copies pasted screenshot attachments onto the optimistic user message", async () => {
@@ -1515,6 +1559,7 @@ describe("chatStore", () => {
             useChatStore.getState().queuedMessagesBySessionId[
                 activeSessionId
             ]?.[0];
+        expect(queuedMessage?.prompt).toBe("Inspect");
         expect(queuedMessage?.attachments).toEqual([
             expect.objectContaining({
                 type: "file",
@@ -1538,6 +1583,8 @@ describe("chatStore", () => {
                     command === "ai_send_message" &&
                     typeof payload === "object" &&
                     payload !== null &&
+                    "content" in payload &&
+                    payload.content === "Inspect" &&
                     "attachments" in payload &&
                     Array.isArray(payload.attachments) &&
                     payload.attachments.some(

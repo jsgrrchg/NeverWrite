@@ -2874,9 +2874,6 @@ function buildQueuedMessage(
     const prompt = serializeComposerPartsForAI(composerPartsSnapshot, {
         vaultPath: useVaultStore.getState().vaultPath,
     }).trim();
-    if (!content || !prompt) {
-        return null;
-    }
 
     const selectionAttachments: AIChatAttachment[] = composerPartsSnapshot
         .filter(
@@ -2914,6 +2911,10 @@ function buildQueuedMessage(
         ...screenshotAttachments,
         ...fileAttachments,
     ].map(cloneAttachment);
+
+    if (!content || (!prompt && attachments.length === 0)) {
+        return null;
+    }
 
     return {
         id: crypto.randomUUID(),

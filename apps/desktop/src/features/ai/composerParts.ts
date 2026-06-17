@@ -164,10 +164,11 @@ export function serializeComposerPartsForAI(
                 return normalizePathForAI(part.path, options);
             if (part.type === "selection_mention")
                 return `${normalizePathForAI(part.path, options)}:${part.startLine}-${part.endLine}`;
-            if (part.type === "screenshot")
+            if (part.type === "screenshot") return "";
+            if (part.type === "file_attachment") {
+                if (part.mimeType.startsWith("image/")) return "";
                 return normalizePathForAI(part.filePath, options);
-            if (part.type === "file_attachment")
-                return normalizePathForAI(part.filePath, options);
+            }
             return "";
         })
         .join("");
