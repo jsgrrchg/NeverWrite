@@ -26,7 +26,10 @@ import {
     useEditorStore,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
-import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
+import {
+    isTextLikeVaultEntry,
+    moveVaultEntryToTrash,
+} from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     type AIComposerPart,
@@ -357,7 +360,6 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     fileName,
                     bytes,
                 });
-                await refreshEntries();
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
                 const latestParts =
                     useChatStore.getState().composerPartsBySessionId[
@@ -369,6 +371,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     runtimeId,
                 );
                 if (!latestValidation.ok) {
+                    await moveVaultEntryToTrash(saved.relative_path).catch(
+                        (cleanupError) => {
+                            console.error(
+                                "[chat] Failed to remove rejected pasted image:",
+                                cleanupError,
+                            );
+                        },
+                    );
+                    await refreshEntries();
                     setImageAttachmentNotice(
                         imageAttachmentValidationMessage(
                             latestValidation.reason,
@@ -377,6 +388,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     );
                     return;
                 }
+                await refreshEntries();
                 chatActions.setComposerParts(
                     appendScreenshotPart(latestParts, {
                         filePath: saved.path,

@@ -377,4 +377,67 @@ describe("AIChatSessionView", () => {
             "Codex supports up to 12 images per message",
         );
     });
+
+    it("removes a pasted image file when the final attachment validation loses a race", async () => {
+        setupWorkspaceSession();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "save_vault_binary_file") {
+                useChatStore.setState((state) => ({
+                    ...state,
+                    composerPartsBySessionId: {
+                        "session-a": Array.from(
+                            { length: MAX_IMAGE_ATTACHMENTS_PER_MESSAGE },
+                            (_, index) => ({
+                                id: `shot-${index}`,
+                                type: "screenshot" as const,
+                                filePath: `/vault/assets/chat/shot-${index}.png`,
+                                mimeType: "image/png",
+                                label: `Screenshot ${index}`,
+                            }),
+                        ),
+                    },
+                }));
+                return {
+                    path: "/vault/assets/chat/pasted-image.png",
+                    relative_path: "assets/chat/pasted-image.png",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "move_vault_entry_to_trash") {
+                return undefined;
+            }
+            if (command === "list_vault_entries") {
+                return [];
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "move_vault_entry_to_trash",
+            expect.objectContaining({
+                relativePath: "assets/chat/pasted-image.png",
+            }),
+        );
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Codex supports up to 12 images per message",
+        );
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).toHaveLength(MAX_IMAGE_ATTACHMENTS_PER_MESSAGE);
+    });
 });

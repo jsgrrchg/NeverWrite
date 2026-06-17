@@ -143,7 +143,10 @@ export function validateNewImageAttachment(
 }
 
 export function validateNewImageAttachmentReference(
-    attachment: { mimeType: string | null | undefined },
+    attachment: {
+        mimeType: string | null | undefined;
+        sizeBytes?: number | null;
+    },
     currentParts: AIComposerPart[],
     runtimeId?: string | null,
 ): { ok: true } | { ok: false; reason: ImageAttachmentValidationFailure } {
@@ -151,6 +154,13 @@ export function validateNewImageAttachmentReference(
 
     if (!isAllowedImageAttachmentMimeType(attachment.mimeType, runtimeId)) {
         return { ok: false, reason: "unsupported_type" };
+    }
+
+    if (
+        typeof attachment.sizeBytes === "number" &&
+        attachment.sizeBytes > limits.maxBytes
+    ) {
+        return { ok: false, reason: "too_large" };
     }
 
     if (countComposerImageAttachments(currentParts) >= limits.maxImagesPerMessage) {

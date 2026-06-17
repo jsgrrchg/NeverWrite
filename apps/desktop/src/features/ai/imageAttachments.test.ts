@@ -138,6 +138,18 @@ describe("imageAttachments", () => {
         ).toEqual({ ok: true });
     });
 
+    it("rejects existing image file references when known byte size exceeds the limit", () => {
+        expect(
+            validateNewImageAttachmentReference(
+                {
+                    mimeType: "image/png",
+                    sizeBytes: MAX_IMAGE_ATTACHMENT_BYTES + 1,
+                },
+                [],
+            ),
+        ).toEqual({ ok: false, reason: "too_large" });
+    });
+
     it("maps supported image MIME types to persisted file extensions", () => {
         expect(getImageAttachmentExtension("image/jpeg")).toBe("jpg");
         expect(getImageAttachmentExtension("image/gif")).toBe("gif");

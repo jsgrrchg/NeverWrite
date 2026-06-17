@@ -622,7 +622,12 @@ function selectAllComposerContent(root: HTMLDivElement) {
 
 function appendValidatedFileAttachmentPart(
     parts: AIComposerPart[],
-    file: { filePath: string; mimeType: string; label: string },
+    file: {
+        filePath: string;
+        mimeType: string;
+        label: string;
+        sizeBytes?: number | null;
+    },
     runtimeId?: string | null,
     onImageAttachmentValidationFailure?: (
         reason: ImageAttachmentValidationFailure,
@@ -630,7 +635,7 @@ function appendValidatedFileAttachmentPart(
 ) {
     if (file.mimeType.startsWith("image/")) {
         const validation = validateNewImageAttachmentReference(
-            { mimeType: file.mimeType },
+            { mimeType: file.mimeType, sizeBytes: file.sizeBytes },
             parts,
             runtimeId,
         );
@@ -641,6 +646,17 @@ function appendValidatedFileAttachmentPart(
     }
 
     return appendFileAttachmentPart(parts, file);
+}
+
+function normalizeAttachmentLookupPath(path: string) {
+    return path.replace(/\\/g, "/");
+}
+
+function getKnownFileSizeBytes(
+    filePath: string,
+    fileSizeByPath: Map<string, number>,
+) {
+    return fileSizeByPath.get(normalizeAttachmentLookupPath(filePath)) ?? null;
 }
 
 function syncComposerDom(
@@ -1090,6 +1106,7 @@ export function AIChatComposer({
     const fallbackEntries = useVaultStore((state) => state.entries);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
+    const fileSizeByPathRef = useRef<Map<string, number>>(new Map());
     const [composerElement, setComposerElement] =
         useState<HTMLDivElement | null>(null);
     const [mentionState, setMentionState] =
@@ -1159,6 +1176,14 @@ export function AIChatComposer({
         fileTreeContentMode,
         fileTreeExtensionFilter,
     ]);
+    useEffect(() => {
+        const next = new Map<string, number>();
+        for (const entry of fallbackEntries) {
+            if (typeof entry.size !== "number") continue;
+            next.set(normalizeAttachmentLookupPath(entry.path), entry.size);
+        }
+        fileSizeByPathRef.current = next;
+    }, [fallbackEntries]);
     const pillMetrics = useMemo(
         () => getChatPillMetrics(composerFontSize),
         [composerFontSize],
@@ -1541,6 +1566,12 @@ export function AIChatComposer({
                                 filePath: file.filePath,
                                 mimeType: file.mimeType,
                                 label: file.fileName,
+                                sizeBytes:
+                                    file.sizeBytes ??
+                                    getKnownFileSizeBytes(
+                                        file.filePath,
+                                        fileSizeByPathRef.current,
+                                    ),
                             },
                             runtimeIdRef.current,
                             onImageAttachmentValidationFailureRef.current,
@@ -1668,6 +1699,10 @@ export function AIChatComposer({
                                         mimeMap[ext] ??
                                         "application/octet-stream",
                                     label: fileName,
+                                    sizeBytes: getKnownFileSizeBytes(
+                                        filePath,
+                                        fileSizeByPathRef.current,
+                                    ),
                                 },
                                 runtimeIdRef.current,
                                 onImageAttachmentValidationFailureRef.current,

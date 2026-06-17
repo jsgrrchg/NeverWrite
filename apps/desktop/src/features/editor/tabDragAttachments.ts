@@ -36,11 +36,16 @@ function buildDraggedFiles(tab: Tab): FileTreeDraggedFile[] | null {
     }
 
     if (isFileTab(tab)) {
+        const mimeType = tab.mimeType ?? "application/octet-stream";
         return [
             {
                 filePath: tab.path,
                 fileName: getPathBaseName(tab.path) || tab.title,
-                mimeType: tab.mimeType ?? "application/octet-stream",
+                mimeType,
+                ...(mimeType.startsWith("image/") &&
+                typeof tab.sizeBytes === "number"
+                    ? { sizeBytes: tab.sizeBytes }
+                    : {}),
             },
         ];
     }

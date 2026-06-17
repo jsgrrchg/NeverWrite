@@ -544,13 +544,16 @@ function getAbsoluteVaultPath(vaultPath: string | null, path: string) {
 }
 
 function getDraggedVaultFile(entry: VaultEntryDto) {
+    const mimeType =
+        entry.kind === "pdf"
+            ? "application/pdf"
+            : (entry.mime_type ?? "application/octet-stream");
+
     return {
         filePath: entry.path,
         fileName: entry.file_name,
-        mimeType:
-            entry.kind === "pdf"
-                ? "application/pdf"
-                : (entry.mime_type ?? "application/octet-stream"),
+        mimeType,
+        ...(mimeType.startsWith("image/") ? { sizeBytes: entry.size } : {}),
     };
 }
 
