@@ -6,8 +6,8 @@ import {
     linkReferenceField,
     footnoteNumberField,
     findFootnoteDefinition,
-    flashFootnoteDefEffect,
-    footnoteDefFlashField,
+    flashLine,
+    lineFlashField,
 } from "./livePreviewHelpers";
 import { dispatchOpenYouTubeModal } from "../youtube";
 import { openVaultEmbedTarget } from "../embedNavigation";
@@ -259,9 +259,6 @@ function activateTaskLine(taskLine: HTMLElement, view: EditorView) {
     );
 }
 
-// How long the destination definition stays highlighted after a jump.
-const FOOTNOTE_FLASH_MS = 1200;
-
 /**
  * Resolves the footnote reference whose rendered number is under the pointer,
  * by geometric containment. Only currently-rendered (collapsed) references have
@@ -294,16 +291,9 @@ function jumpToFootnoteDefinition(view: EditorView, id: string): boolean {
     if (!definition) return false;
 
     view.dispatch({
-        effects: [
-            EditorView.scrollIntoView(definition.from, { y: "center" }),
-            flashFootnoteDefEffect.of(definition),
-        ],
+        effects: EditorView.scrollIntoView(definition.from, { y: "center" }),
     });
-    // Clear the highlight once it has played; guard against a torn-down view.
-    window.setTimeout(() => {
-        if (!view.dom.isConnected) return;
-        view.dispatch({ effects: flashFootnoteDefEffect.of(null) });
-    }, FOOTNOTE_FLASH_MS);
+    flashLine(view, definition.from);
     return true;
 }
 
@@ -617,7 +607,7 @@ export function livePreviewExtension(
     return [
         linkReferenceField,
         footnoteNumberField,
-        footnoteDefFlashField,
+        lineFlashField,
         createInlineLivePreviewPlugin(),
         createLeadingContentCollapseField(),
         createCodeBlockLivePreviewExtension(),

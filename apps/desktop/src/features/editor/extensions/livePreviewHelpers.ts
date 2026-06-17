@@ -527,33 +527,37 @@ export function findFootnoteDefinition(
     return null;
 }
 
-/** Effect: flash a jumped-to footnote definition line (a range, or null to clear). */
-export const flashFootnoteDefEffect = StateEffect.define<{
+/** How long a jump target stays highlighted after a flash. */
+export const LINE_FLASH_MS = 1200;
+
+/** Effect: flash a jumped-to line (a range, or null to clear). */
+export const flashLineEffect = StateEffect.define<{
     from: number;
     to: number;
 } | null>();
 
-const footnoteDefFlashMark = Decoration.line({
-    class: "cm-lp-footnote-def-flash",
+const lineFlashMark = Decoration.line({
+    class: "cm-lp-line-flash",
 });
 
 /**
- * Holds the transient highlight shown on the footnote definition a reference
- * jumped to, so the destination is obvious even when it was already on screen.
+ * Holds the transient highlight shown on a line a jump landed on, so the
+ * destination is obvious even when it was already on screen. Shared by the
+ * footnote-reference jump and the outline heading jump.
  */
-export const footnoteDefFlashField = StateField.define<DecorationSet>({
+export const lineFlashField = StateField.define<DecorationSet>({
     create() {
         return Decoration.none;
     },
     update(deco, transaction) {
         deco = deco.map(transaction.changes);
         for (const effect of transaction.effects) {
-            if (!effect.is(flashFootnoteDefEffect)) continue;
+            if (!effect.is(flashLineEffect)) continue;
             deco =
                 effect.value === null
                     ? Decoration.none
                     : Decoration.set(
-                          footnoteDefFlashMark.range(
+                          lineFlashMark.range(
                               transaction.state.doc.lineAt(effect.value.from)
                                   .from,
                           ),
@@ -563,6 +567,21 @@ export const footnoteDefFlashField = StateField.define<DecorationSet>({
     },
     provide: (field) => EditorView.decorations.from(field),
 });
+
+/**
+ * Flashes the line containing `pos`, then clears it after a short delay.
+ * Guards against a torn-down view. Used to mark where a jump landed.
+ */
+export function flashLine(view: EditorView, pos: number): void {
+    const line = view.state.doc.lineAt(pos);
+    view.dispatch({
+        effects: flashLineEffect.of({ from: line.from, to: line.to }),
+    });
+    window.setTimeout(() => {
+        if (!view.dom.isConnected) return;
+        view.dispatch({ effects: flashLineEffect.of(null) });
+    }, LINE_FLASH_MS);
+}
 
 export function findAncestor(
     node: SyntaxNode | null,

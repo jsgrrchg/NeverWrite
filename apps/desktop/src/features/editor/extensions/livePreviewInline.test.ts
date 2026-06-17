@@ -17,8 +17,8 @@ import {
     linkReferenceField,
     footnoteNumberField,
     findFootnoteDefinition,
-    flashFootnoteDefEffect,
-    footnoteDefFlashField,
+    flashLineEffect,
+    lineFlashField,
 } from "./livePreviewHelpers";
 import {
     createInlineLivePreviewPlugin,
@@ -986,34 +986,34 @@ describe("createInlineLivePreviewPlugin", () => {
         expect(findFootnoteDefinition(state, "missing")).toBeNull();
     });
 
-    it("flashes the jumped-to definition line then clears it", () => {
+    it("flashes the jumped-to line then clears it", () => {
         const doc = "x\n[^note]: def";
         const initial = EditorState.create({
             doc,
-            extensions: [footnoteDefFlashField],
+            extensions: [lineFlashField],
         });
         const defLine = initial.doc.line(2);
 
         const flashed = initial.update({
-            effects: flashFootnoteDefEffect.of({
+            effects: flashLineEffect.of({
                 from: defLine.from,
                 to: defLine.to,
             }),
         }).state;
         const ranges: number[] = [];
         flashed
-            .field(footnoteDefFlashField)
+            .field(lineFlashField)
             .between(0, flashed.doc.length, (from) => {
                 ranges.push(from);
             });
         expect(ranges).toEqual([defLine.from]);
 
         const cleared = flashed.update({
-            effects: flashFootnoteDefEffect.of(null),
+            effects: flashLineEffect.of(null),
         }).state;
         let count = 0;
         cleared
-            .field(footnoteDefFlashField)
+            .field(lineFlashField)
             .between(0, cleared.doc.length, () => {
                 count++;
             });

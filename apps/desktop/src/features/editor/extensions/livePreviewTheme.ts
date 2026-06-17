@@ -391,16 +391,16 @@ export const livePreviewTheme = EditorView.baseTheme({
         fontWeight: "600",
         marginRight: "6px",
     },
-    // Brief highlight on the definition a reference just jumped to.
-    "@keyframes cm-lp-footnote-flash": {
+    // Brief highlight on a line a jump just landed on (footnote def, outline heading).
+    "@keyframes cm-lp-line-flash": {
         from: {
             backgroundColor:
                 "color-mix(in srgb, var(--accent) 32%, transparent)",
         },
         to: { backgroundColor: "transparent" },
     },
-    ".cm-lp-footnote-def-flash": {
-        animation: "cm-lp-footnote-flash 1.1s ease-out",
+    ".cm-lp-line-flash": {
+        animation: "cm-lp-line-flash 1.1s ease-out",
         borderRadius: "4px",
     },
     ".cm-lp-callout": {

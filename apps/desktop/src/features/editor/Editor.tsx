@@ -124,6 +124,7 @@ import {
     getEditorFontFamily,
     getEditorHorizontalInset,
 } from "./editorExtensions";
+import { flashLine } from "./extensions/livePreviewHelpers";
 import { registerVimExCommands } from "./extensions/vimCommands";
 import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
@@ -3677,10 +3678,16 @@ export function Editor({
             0,
             Math.min(pendingSelectionReveal.head, docLen),
         );
+        // Center the heading in the viewport instead of nudging it to the
+        // nearest edge (the default `scrollIntoView: true`), so the selected
+        // outline entry lands in the middle of the screen. Near the end of the
+        // document CodeMirror scrolls as far as it can ("as centered as
+        // possible"). A brief line flash marks where the jump landed.
         view.dispatch({
             selection: { anchor: clampedAnchor, head: clampedHead },
-            scrollIntoView: true,
+            effects: EditorView.scrollIntoView(clampedAnchor, { y: "center" }),
         });
+        flashLine(view, clampedAnchor);
         view.focus();
         clearPendingSelectionReveal();
     }, [activeTab, pendingSelectionReveal, clearPendingSelectionReveal]);
