@@ -13,6 +13,7 @@ import {
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
 import type {
+    AIChatAttachment,
     AIChatMessage,
     AIChatSession,
     AIFileDiff,
@@ -49,7 +50,10 @@ import {
 import { openChatSessionInWorkspace } from "../chatPaneMovement";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
-import { buildCodexGeneratedImagePreviewUrl } from "../../../app/utils/filePreviewUrl";
+import {
+    buildCodexGeneratedImagePreviewUrl,
+    buildVaultPreviewUrlFromAbsolutePath,
+} from "../../../app/utils/filePreviewUrl";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 
 interface UserMentionContextMenuPayload {
@@ -60,6 +64,155 @@ interface UserMentionContextMenuPayload {
 
 interface ToolTargetContextMenuPayload {
     target: string;
+}
+
+function isImageFileAttachment(attachment: AIChatAttachment) {
+    return (
+        attachment.type === "file" &&
+        Boolean(attachment.filePath) &&
+        attachment.mimeType?.startsWith("image/") === true
+    );
+}
+
+function fileNameFromPath(path: string) {
+    return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function UserMessageAttachmentThumbnail({
+    attachment,
+    vaultPath,
+}: {
+    attachment: AIChatAttachment;
+    vaultPath: string | null;
+}) {
+    const [loadFailed, setLoadFailed] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const filePath = attachment.filePath;
+    if (!filePath) return null;
+
+    const previewUrl = buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath);
+    const unavailable = !previewUrl || loadFailed;
+    const label = attachment.label || fileNameFromPath(filePath);
+
+    const copyPath = () => {
+        void navigator.clipboard?.writeText(filePath).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+        });
+    };
+
+    return (
+        <div
+            className="flex min-w-0 items-stretch overflow-hidden rounded-md"
+            style={{
+                border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                backgroundColor:
+                    "color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-tertiary))",
+            }}
+        >
+            <div
+                className="flex h-20 w-28 shrink-0 items-center justify-center overflow-hidden"
+                style={{
+                    backgroundColor: "var(--bg-primary)",
+                    borderRight: "1px solid var(--border)",
+                }}
+            >
+                {unavailable ? (
+                    <div
+                        className="px-2 text-center font-medium"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.74em",
+                            lineHeight: 1.2,
+                        }}
+                    >
+                        Image unavailable
+                    </div>
+                ) : (
+                    <img
+                        src={previewUrl}
+                        alt={label}
+                        title={filePath}
+                        className="block h-full w-full"
+                        draggable={false}
+                        loading="lazy"
+                        decoding="async"
+                        onError={() => setLoadFailed(true)}
+                        style={{ objectFit: "cover" }}
+                    />
+                )}
+            </div>
+
+            <div className="flex min-w-0 flex-1 flex-col justify-between gap-2 px-2.5 py-2">
+                <div className="min-w-0">
+                    <div
+                        className="truncate font-medium"
+                        title={filePath}
+                        style={{
+                            color: "var(--text-primary)",
+                            fontSize: "0.82em",
+                        }}
+                    >
+                        {label}
+                    </div>
+                    <div
+                        className="truncate"
+                        title={attachment.mimeType ?? undefined}
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.72em",
+                            opacity: 0.82,
+                        }}
+                    >
+                        {attachment.mimeType ?? "image"}
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                    <ImageActionButton
+                        icon="open"
+                        onClick={() => void openPath(filePath)}
+                    >
+                        Open
+                    </ImageActionButton>
+                    <ImageActionButton
+                        icon="reveal"
+                        onClick={() => void revealItemInDir(filePath)}
+                    >
+                        Reveal in Finder
+                    </ImageActionButton>
+                    <ImageActionButton
+                        icon={copied ? "check" : "copy"}
+                        onClick={copyPath}
+                    >
+                        {copied ? "Copied" : "Copy Path"}
+                    </ImageActionButton>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function UserMessageAttachments({
+    attachments,
+}: {
+    attachments?: AIChatAttachment[];
+}) {
+    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const imageAttachments = (attachments ?? []).filter(isImageFileAttachment);
+    if (imageAttachments.length === 0) return null;
+
+    return (
+        <div className="mt-2 flex max-w-full flex-col gap-1.5">
+            {imageAttachments.map((attachment) => (
+                <UserMessageAttachmentThumbnail
+                    key={attachment.id}
+                    attachment={attachment}
+                    vaultPath={vaultPath}
+                />
+            ))}
+        </div>
+    );
 }
 
 /** Parse @mentions and @fetch in serialized user messages into styled pills. */
@@ -279,6 +432,7 @@ function UserTextMessage({
                     });
                 },
             )}
+            <UserMessageAttachments attachments={message.attachments} />
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}

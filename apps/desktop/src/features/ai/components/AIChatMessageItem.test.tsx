@@ -3,6 +3,7 @@ import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import {
     renderComponent,
     setEditorTabs,
@@ -202,6 +203,110 @@ describe("AIChatMessageItem generated images", () => {
 
         expect(openPath).toHaveBeenCalledWith(imagePath);
         expect(revealItemInDir).toHaveBeenCalledWith(imagePath);
+    });
+});
+
+describe("AIChatMessageItem user image attachments", () => {
+    it("renders image attachments below user text", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const filePath = "/vault/assets/chat/screenshot.png";
+
+        renderMessage({
+            id: "user:with-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:image",
+                    type: "file",
+                    noteId: null,
+                    label: "Screenshot 10:32",
+                    path: null,
+                    filePath,
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        const image = screen.getByRole("img", { name: "Screenshot 10:32" });
+        expect(image.getAttribute("src")).toContain(
+            "neverwrite-file://localhost/vault/",
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Open" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+
+        expect(openPath).toHaveBeenCalledWith(filePath);
+        expect(revealItemInDir).toHaveBeenCalledWith(filePath);
+    });
+
+    it("does not render attachment thumbnails when user text has no attachments", () => {
+        renderMessage({
+            id: "user:plain",
+            role: "user",
+            kind: "text",
+            content: "No files here",
+            timestamp: Date.now(),
+        });
+
+        expect(screen.queryByRole("img")).not.toBeInTheDocument();
+        expect(screen.queryByText("Image unavailable")).not.toBeInTheDocument();
+    });
+
+    it("does not render non-image attachments as thumbnails", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        renderMessage({
+            id: "user:with-file",
+            role: "user",
+            kind: "text",
+            content: "Read this file",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:file",
+                    type: "file",
+                    noteId: null,
+                    label: "guide.md",
+                    path: null,
+                    filePath: "/vault/docs/guide.md",
+                    mimeType: "text/markdown",
+                },
+            ],
+        });
+
+        expect(screen.queryByRole("img")).not.toBeInTheDocument();
+        expect(screen.queryByText("guide.md")).not.toBeInTheDocument();
+    });
+
+    it("shows a compact unavailable state for image paths outside the active vault", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        renderMessage({
+            id: "user:external-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:external-image",
+                    type: "file",
+                    noteId: null,
+                    label: "external.png",
+                    path: null,
+                    filePath: "/outside/external.png",
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        expect(screen.getByText("Image unavailable")).toBeInTheDocument();
+        expect(screen.queryByRole("img")).not.toBeInTheDocument();
     });
 });
 
