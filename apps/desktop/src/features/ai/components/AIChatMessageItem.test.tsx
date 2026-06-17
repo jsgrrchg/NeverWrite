@@ -74,6 +74,10 @@ beforeEach(() => {
     localStorage.clear();
     resetChatStore();
     useSettingsStore.setState({ lineWrapping: true });
+    useEditorStore.setState({
+        tabs: [],
+        activeTabId: null,
+    });
 });
 
 describe("AIChatMessageItem errors", () => {
@@ -240,7 +244,18 @@ describe("AIChatMessageItem user image attachments", () => {
             screen.getByRole("button", { name: "Reveal in Finder" }),
         );
 
-        expect(openPath).toHaveBeenCalledWith(filePath);
+        expect(openPath).not.toHaveBeenCalledWith(filePath);
+        expect(useEditorStore.getState().tabs).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                relativePath: "assets/chat/screenshot.png",
+                title: "screenshot.png",
+                path: filePath,
+                mimeType: "image/png",
+                viewer: "image",
+                content: "",
+            }),
+        ]);
         expect(revealItemInDir).toHaveBeenCalledWith(filePath);
     });
 

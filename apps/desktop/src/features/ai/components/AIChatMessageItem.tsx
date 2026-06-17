@@ -48,8 +48,10 @@ import {
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
 import { openChatSessionInWorkspace } from "../chatPaneMovement";
+import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
+import { toVaultRelativePath } from "../../../app/utils/vaultPaths";
 import {
     buildCodexGeneratedImagePreviewUrl,
     buildVaultPreviewUrlFromAbsolutePath,
@@ -93,12 +95,27 @@ function UserMessageAttachmentThumbnail({
     const previewUrl = buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath);
     const unavailable = !previewUrl || loadFailed;
     const label = attachment.label || fileNameFromPath(filePath);
+    const fileName = fileNameFromPath(filePath);
 
     const copyPath = () => {
         void navigator.clipboard?.writeText(filePath).then(() => {
             setCopied(true);
             window.setTimeout(() => setCopied(false), 1200);
         });
+    };
+
+    const openInApp = () => {
+        const relativePath = toVaultRelativePath(filePath, vaultPath);
+        if (!relativePath) return;
+        useEditorStore.getState().openFile(
+            relativePath,
+            fileName,
+            filePath,
+            "",
+            attachment.mimeType ?? "image/*",
+            "image",
+            { contentTruncated: false },
+        );
     };
 
     return (
@@ -171,7 +188,7 @@ function UserMessageAttachmentThumbnail({
                 <div className="flex flex-wrap items-center gap-1.5">
                     <ImageActionButton
                         icon="open"
-                        onClick={() => void openPath(filePath)}
+                        onClick={openInApp}
                     >
                         Open
                     </ImageActionButton>
