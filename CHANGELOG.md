@@ -34,6 +34,27 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.3.5] - 2026-06-17
+
+### Added
+
+- Added native image attachments to the AI composer, including paste/drop support, provider-aware limits, validation feedback, ACP image prompt blocks for capable providers, timeline rendering, chat history/export persistence, and opening sent images in app tabs.
+- Added a Settings toggle for editor active line highlighting.
+
+### Changed
+
+- Polished Markdown live preview footnotes so named references render as sequential superscript numbers with matching definition badges while keeping raw labels editable.
+- Centered outline and footnote jump destinations in the editor and added a brief landing flash so navigation targets are easier to locate.
+- Flattened pane header action buttons with a simpler divider treatment.
+
+### Fixed
+
+- Fixed live preview footnote navigation so clicking a footnote reference scrolls to off-screen definitions reliably without moving the caret unless the number itself is clicked.
+- Fixed adjacent live preview footnote references so they keep a stable superscript baseline and remain legible when citations are abutting.
+- Fixed live preview block refreshes after parser updates so embedded preview blocks stay in sync with Markdown edits.
+- Fixed window dragging from the docked sidebar header band after sidebar collapse and expand transitions.
+- Fixed queued AI image edits so pasted image attachments are not duplicated.
+
 ## [0.3.4] - 2026-06-16
 
 ### Added
