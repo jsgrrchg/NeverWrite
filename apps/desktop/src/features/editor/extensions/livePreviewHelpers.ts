@@ -410,6 +410,97 @@ export const linkReferenceField = StateField.define<LinkReferenceMap>({
     },
 });
 
+// ---------------------------------------------------------------------------
+// Footnote numbering
+// ---------------------------------------------------------------------------
+
+/** Maps a footnote id to the compact number shown in the live preview. */
+export type FootnoteNumberMap = Map<string, number>;
+
+// Footnote token: [^id]. The id cannot contain whitespace or ']'.
+const FOOTNOTE_TOKEN_RE = /\[\^([^\]\s]+)\]/g;
+
+/**
+ * Assigns every footnote a compact, stable display number so the live preview
+ * can render `[^descriptive-label]` as a tidy superscript index instead of the
+ * raw label (which reads as noise — see issue #196).
+ *
+ * Numbering matches the reader's mental model used by Pandoc/Obsidian/GitHub:
+ * footnotes are numbered by the order their *references* first appear in the
+ * document. `[^id]:` definition markers are skipped while scanning references;
+ * a footnote that is only ever defined (never referenced) is then appended so
+ * it still receives a stable number.
+ */
+export function buildFootnoteNumberIndex(state: EditorState): FootnoteNumberMap {
+    const numbers: FootnoteNumberMap = new Map();
+    const text = state.doc.toString();
+    const definedOnly: string[] = [];
+    let next = 1;
+
+    FOOTNOTE_TOKEN_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = FOOTNOTE_TOKEN_RE.exec(text)) !== null) {
+        const id = match[1];
+        const lineStart = text.lastIndexOf("\n", match.index - 1) + 1;
+        // A definition marker is `[^id]:` at the start of its line. Defer those
+        // so references drive the numbering order.
+        const isDefinition =
+            text[match.index + match[0].length] === ":" &&
+            text.slice(lineStart, match.index).trim() === "";
+        if (isDefinition) {
+            definedOnly.push(id);
+            continue;
+        }
+        if (!numbers.has(id)) numbers.set(id, next++);
+    }
+
+    for (const id of definedOnly) {
+        if (!numbers.has(id)) numbers.set(id, next++);
+    }
+
+    return numbers;
+}
+
+// Characters that can change footnote markers: [ ^ ] :
+const FOOTNOTE_SIGNIFICANT = /(?:[\]:^]|\[)/;
+
+function footnoteNumbersNeedRebuild(transaction: Transaction): boolean {
+    if (!transaction.docChanged) return false;
+    let dominated = true;
+    transaction.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        if (!dominated) return;
+        if (
+            toA > fromA &&
+            FOOTNOTE_SIGNIFICANT.test(
+                transaction.startState.doc.sliceString(fromA, toA),
+            )
+        ) {
+            dominated = false;
+            return;
+        }
+        if (
+            toB > fromB &&
+            FOOTNOTE_SIGNIFICANT.test(
+                transaction.state.doc.sliceString(fromB, toB),
+            )
+        ) {
+            dominated = false;
+        }
+    });
+    return !dominated;
+}
+
+/** StateField caching footnote display numbers, rebuilt only when markers change. */
+export const footnoteNumberField = StateField.define<FootnoteNumberMap>({
+    create(state) {
+        return buildFootnoteNumberIndex(state);
+    },
+    update(numbers, transaction) {
+        if (!footnoteNumbersNeedRebuild(transaction)) return numbers;
+        return buildFootnoteNumberIndex(transaction.state);
+    },
+});
+
 export function findAncestor(
     node: SyntaxNode | null,
     name: string,

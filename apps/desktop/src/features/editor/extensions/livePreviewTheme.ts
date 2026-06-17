@@ -353,10 +353,15 @@ export const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-footnote-ref": {
         fontSize: "0.72em",
         verticalAlign: "super",
+        lineHeight: "0",
         color: "var(--accent)",
         cursor: "pointer",
         fontWeight: "600",
-        marginLeft: "0.08em",
+        marginLeft: "0.1em",
+    },
+    ".cm-lp-footnote-ref:hover": {
+        textDecoration: "underline",
+        textUnderlineOffset: "0.2em",
     },
     ".cm-lp-footnote-def": {
         color: "var(--text-secondary)",
@@ -364,6 +369,13 @@ export const livePreviewTheme = EditorView.baseTheme({
         borderLeft:
             "2px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
         marginLeft: "4px",
+    },
+    // Numbered badge that ties a definition back to its `[^n]` references.
+    ".cm-lp-footnote-def[data-footnote-number]::before": {
+        content: "attr(data-footnote-number) '.'",
+        color: "var(--accent)",
+        fontWeight: "600",
+        marginRight: "6px",
     },
     ".cm-lp-callout": {
         borderLeft:

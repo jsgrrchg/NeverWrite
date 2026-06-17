@@ -13,7 +13,7 @@ vi.mock("../../../app/utils/perfInstrumentation", () => ({
 }));
 
 import { perfMeasure } from "../../../app/utils/perfInstrumentation";
-import { linkReferenceField } from "./livePreviewHelpers";
+import { linkReferenceField, footnoteNumberField } from "./livePreviewHelpers";
 import {
     createInlineLivePreviewPlugin,
     createLeadingContentCollapseField,
@@ -124,6 +124,7 @@ function createView(
         extensions: [
             markdown({ base: markdownLanguage }),
             linkReferenceField,
+            footnoteNumberField,
             plugin,
         ],
     });
@@ -879,6 +880,49 @@ describe("createInlineLivePreviewPlugin", () => {
         expect(hasHiddenRange(decorations, 5, 6, "cm-lp-hidden-inline")).toBe(
             true,
         );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("renders footnote references as sequential numbers", () => {
+        const doc = "x [^alpha] y [^beta]\n\n[^alpha]: A\n[^beta]: B";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const instance = view.plugin(plugin);
+        expect(instance).not.toBeNull();
+
+        const widgetTextAt = (from: number, to: number) => {
+            let text: string | null = null;
+            instance!.decorations.between(from, to, (dFrom, dTo, deco) => {
+                const widget = (deco.spec as { widget?: { toDOM(): HTMLElement } })
+                    .widget;
+                if (dFrom === from && dTo === to && widget) {
+                    text = widget.toDOM().textContent;
+                    return false;
+                }
+            });
+            return text;
+        };
+
+        // `[^alpha]` -> 1, `[^beta]` -> 2 (numbered by reference order).
+        // Content ranges exclude the `[^` ... `]` delimiters.
+        expect(widgetTextAt(4, 9)).toBe("1");
+        expect(widgetTextAt(15, 19)).toBe("2");
+
+        // The matching definition lines carry the same number for correlation.
+        const decorations = collectDecorations(view, plugin);
+        const alphaDef = decorations.find(
+            (deco) => deco.attributes["data-footnote-id"] === "alpha",
+        );
+        expect(alphaDef?.attributes["data-footnote-number"]).toBe("1");
+        const betaDef = decorations.find(
+            (deco) => deco.attributes["data-footnote-id"] === "beta",
+        );
+        expect(betaDef?.attributes["data-footnote-number"]).toBe("2");
 
         view.destroy();
         parent.remove();

@@ -2,7 +2,10 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { drawSelection, EditorView } from "@codemirror/view";
 
-import { linkReferenceField } from "../../src/features/editor/extensions/livePreviewHelpers";
+import {
+    linkReferenceField,
+    footnoteNumberField,
+} from "../../src/features/editor/extensions/livePreviewHelpers";
 import { createInlineLivePreviewPlugin } from "../../src/features/editor/extensions/livePreviewInline";
 import { livePreviewTheme } from "../../src/features/editor/extensions/livePreviewTheme";
 
@@ -41,6 +44,7 @@ window.mountEditor = ({ doc, selection }: MountOptions) => {
             extensions: [
                 markdown({ base: markdownLanguage }),
                 linkReferenceField,
+                footnoteNumberField,
                 createInlineLivePreviewPlugin(),
                 livePreviewTheme,
                 // The real editor (src/features/editor/Editor.tsx,

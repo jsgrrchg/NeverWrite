@@ -1,7 +1,11 @@
 import { EditorView } from "@codemirror/view";
 import { openUrl } from "@neverwrite/runtime";
 
-import { resolveLinkHref, linkReferenceField } from "./livePreviewHelpers";
+import {
+    resolveLinkHref,
+    linkReferenceField,
+    footnoteNumberField,
+} from "./livePreviewHelpers";
 import { dispatchOpenYouTubeModal } from "../youtube";
 import { openVaultEmbedTarget } from "../embedNavigation";
 import {
@@ -545,6 +549,7 @@ export function livePreviewExtension(
 
     return [
         linkReferenceField,
+        footnoteNumberField,
         createInlineLivePreviewPlugin(),
         createLeadingContentCollapseField(),
         createCodeBlockLivePreviewExtension(),

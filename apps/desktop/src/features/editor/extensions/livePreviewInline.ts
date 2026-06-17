@@ -24,6 +24,8 @@ import {
     hideInactiveChildMarks,
     parseLinkChildren,
     linkReferenceField,
+    footnoteNumberField,
+    type FootnoteNumberMap,
     resolveLinkHref,
     findAncestor,
     hasDescendant,
@@ -107,6 +109,7 @@ interface BuildContext {
     blockRanges: Array<{ from: number; to: number }>;
     orderedListMarkerWidths: Map<string, string>;
     linkReferences: Map<string, { url: string; title: string | null }>;
+    footnoteNumbers: FootnoteNumberMap;
     vpFrom: number;
     vpTo: number;
     vpText: string;
@@ -151,6 +154,42 @@ class EmptyListCaretAnchorWidget extends WidgetType {
         span.className = "cm-lp-caret-anchor";
         span.setAttribute("aria-hidden", "true");
         return span;
+    }
+
+    ignoreEvent() {
+        return true;
+    }
+}
+
+/**
+ * Renders a footnote reference as a compact, clickable superscript number.
+ * The descriptive label stays in the document (and is revealed when the caret
+ * enters the token); only the *display* collapses to a tidy index.
+ */
+class FootnoteRefWidget extends WidgetType {
+    private id: string;
+    private label: string;
+
+    constructor(id: string, label: string) {
+        super();
+        this.id = id;
+        this.label = label;
+    }
+
+    eq(other: FootnoteRefWidget) {
+        return other.id === this.id && other.label === this.label;
+    }
+
+    toDOM() {
+        const ref = document.createElement("span");
+        ref.className = "cm-lp-footnote-ref";
+        ref.textContent = this.label;
+        ref.dataset.footnoteId = this.id;
+        ref.tabIndex = 0;
+        ref.setAttribute("role", "button");
+        // Powerusers keep descriptive labels; surface the raw id on hover.
+        ref.title = this.id;
+        return ref;
     }
 
     ignoreEvent() {
@@ -1441,8 +1480,17 @@ function applyFootnoteDefinitionDecorations(context: BuildContext) {
         const marker = `[^${label}]:`;
         const markerTo = line.from + marker.length;
 
+        // Surface the same number the references use so a numbered `[^1]` in the
+        // body maps to its definition. Rendered as a CSS ::before badge.
+        const number = context.footnoteNumbers.get(label);
+        const numberAttr =
+            number !== undefined
+                ? { "data-footnote-number": String(number) }
+                : undefined;
+
         addLineDecoration(context.lineDecos, line.from, "cm-lp-footnote-def", {
             "data-footnote-id": label,
+            ...numberAttr,
         });
         hideRange(context, line.from, markerTo);
         if (
@@ -1555,19 +1603,18 @@ function applyRichRegexRules(context: BuildContext) {
         registerRevealSensitiveRange(context, "range", absFrom, absTo);
 
         if (!selectionTouchesRange(context.state, absFrom, absTo)) {
+            const number = context.footnoteNumbers.get(id);
             hideRange(context, absFrom, contentFrom, hideInlineMark);
             hideRange(context, contentTo, absTo, hideInlineMark);
             pushDeco(
                 context,
                 contentFrom,
                 contentTo,
-                Decoration.mark({
-                    class: "cm-lp-footnote-ref",
-                    attributes: {
-                        "data-footnote-id": id,
-                        tabindex: "0",
-                        role: "button",
-                    },
+                Decoration.replace({
+                    widget: new FootnoteRefWidget(
+                        id,
+                        number !== undefined ? String(number) : id,
+                    ),
                 }),
             );
         }
@@ -1693,6 +1740,7 @@ function buildInlineDecorations(
         blockRanges: [],
         orderedListMarkerWidths: new Map<string, string>(),
         linkReferences: state.field(linkReferenceField),
+        footnoteNumbers: state.field(footnoteNumberField),
         vpFrom,
         vpTo,
         vpText: state.doc.sliceString(vpFrom, vpTo),
