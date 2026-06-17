@@ -2,7 +2,12 @@ import { vaultInvoke } from "../../app/utils/vaultInvoke";
 import type { NoteDto } from "../../app/store/vaultStore";
 import { getSessionRuntimeName, getSessionTitle } from "./sessionPresentation";
 import { getSessionTranscriptMessages } from "./transcriptModel";
-import type { AIChatMessage, AIChatSession, AIRuntimeOption } from "./types";
+import type {
+    AIChatAttachment,
+    AIChatMessage,
+    AIChatSession,
+    AIRuntimeOption,
+} from "./types";
 
 interface SavedNoteDetail {
     title: string;
@@ -110,9 +115,7 @@ function formatMessageContent(message: AIChatMessage) {
     return content;
 }
 
-function formatAttachmentLine(
-    sessionAttachment: AIChatSession["attachments"][number],
-) {
+function formatAttachmentLine(sessionAttachment: AIChatAttachment) {
     const typeLabel =
         sessionAttachment.type === "folder"
             ? "Folder"
@@ -122,7 +125,11 @@ function formatAttachmentLine(
                 ? "Selection"
                 : "Note";
 
-    const detail = sessionAttachment.path ?? sessionAttachment.noteId ?? "";
+    const detail =
+        sessionAttachment.path ??
+        sessionAttachment.filePath ??
+        sessionAttachment.noteId ??
+        "";
     return detail
         ? `- ${typeLabel}: ${sessionAttachment.label} (${detail})`
         : `- ${typeLabel}: ${sessionAttachment.label}`;
@@ -188,6 +195,12 @@ export function buildChatExportMarkdown(
         lines.push(`_${formatIsoTimestamp(message.timestamp)}_`);
         lines.push("");
         lines.push(formatMessageContent(message));
+        if (message.attachments && message.attachments.length > 0) {
+            lines.push("", "Attachments:");
+            message.attachments.forEach((attachment) => {
+                lines.push(formatAttachmentLine(attachment));
+            });
+        }
     });
 
     return `${lines.join("\n")}\n`;

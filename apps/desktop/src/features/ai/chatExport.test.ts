@@ -90,4 +90,41 @@ describe("chatExport", () => {
         expect(markdown).toContain("### Assistant");
         expect(markdown).toContain("Respuesta");
     });
+
+    it("includes per-message attachments in the exported transcript", () => {
+        const session = createSession("session-a", "Visual review", {
+            messages: [
+                {
+                    id: "session-a-user",
+                    role: "user",
+                    kind: "text",
+                    content: "Inspect this screenshot",
+                    timestamp: Date.UTC(2026, 2, 10, 15, 0, 0),
+                    attachments: [
+                        {
+                            id: "attachment-image",
+                            type: "file",
+                            noteId: null,
+                            label: "Screenshot 10:32",
+                            path: null,
+                            filePath: "/vault/assets/chat/screenshot.png",
+                            mimeType: "image/png",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        const markdown = buildChatExportMarkdown(
+            session,
+            runtimes,
+            new Date(Date.UTC(2026, 2, 10, 15, 5, 0)),
+        );
+
+        expect(markdown).toContain("Inspect this screenshot");
+        expect(markdown).toContain("Attachments:");
+        expect(markdown).toContain(
+            "- File: Screenshot 10:32 (/vault/assets/chat/screenshot.png)",
+        );
+    });
 });
