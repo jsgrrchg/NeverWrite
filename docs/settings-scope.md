@@ -71,6 +71,7 @@ the same Settings stores.
 | Editor / Typography | `editorLineHeight` | Per-vault | `175` | `neverwrite:settings:<vault-path>` | Percentage, clamped to `120..220`. |
 | Editor / Typography | `editorAutosaveDelayMs` | Per-vault | `300` | `neverwrite:settings:<vault-path>` | Clamped to `50..5000`. |
 | Editor / Formatting | `lineWrapping` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Used by editor and review surfaces. |
+| Editor / Formatting | `editorActiveLineHighlight` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Controls the CodeMirror active-line highlight in note and text-file editors. |
 | Editor / Formatting | `justifyText` | Per-vault | `false` | `neverwrite:settings:<vault-path>` | Only meaningful when wrapping is enabled. |
 | Editor / Formatting | `livePreviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Controls source vs live-preview editor mode; also exposed through quick actions outside the Settings panel. |
 | Editor / Formatting | `tabSize` | Per-vault | `2` | `neverwrite:settings:<vault-path>` | Normalized to `2` or `4`. |
@@ -243,4 +244,4 @@ when they are persisted or visible in Settings:
 - Review anchors, resolved hunk positions, and transient review synchronization
   state.
 
-Last updated: June 1, 2026.
+Last updated: June 17, 2026.
