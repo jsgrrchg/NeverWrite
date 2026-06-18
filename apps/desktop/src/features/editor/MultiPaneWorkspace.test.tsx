@@ -9,7 +9,7 @@ import {
     setVaultEntries,
 } from "../../test/test-utils";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, type ChatTab } from "../../app/store/editorStore";
 import { CLEAR_FILE_TREE_SELECTION_EVENT } from "../../app/utils/navigation";
 import {
     createInitialLayout,
@@ -17,12 +17,18 @@ import {
 } from "../../app/store/workspaceLayoutTree";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
+import {
+    resetChatStore,
+    useChatStore,
+} from "../ai/store/chatStore";
+import type { AIChatSession, AIChatSessionStatus } from "../ai/types";
 import { MultiPaneWorkspace } from "./MultiPaneWorkspace";
 import { CROSS_PANE_TAB_DROP_PREVIEW_EVENT } from "./workspaceTabDropPreview";
 
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
 const onDragDropEventMock = vi.fn();
+const originalStopStreaming = useChatStore.getState().stopStreaming;
 
 vi.mock("../../app/detachedWindows", () => ({
     getCurrentWindowLabel: vi.fn(() => "main"),
@@ -76,7 +82,64 @@ describe("MultiPaneWorkspace", () => {
         );
     }
 
+    function createChatTab(sessionId: string): ChatTab {
+        return {
+            id: `tab-${sessionId}`,
+            kind: "ai-chat",
+            sessionId,
+            title: sessionId,
+        };
+    }
+
+    function createChatSession(
+        sessionId: string,
+        status: AIChatSessionStatus,
+    ): AIChatSession {
+        return {
+            sessionId,
+            status,
+        } as AIChatSession;
+    }
+
+    function setPaneChatSession(
+        paneId: string,
+        sessionId: string,
+        status: AIChatSessionStatus,
+    ) {
+        const tab = createChatTab(sessionId);
+        useEditorStore.setState((state) => ({
+            panes: state.panes.map((pane) =>
+                pane.id === paneId
+                    ? {
+                          ...pane,
+                          tabs: [tab],
+                          tabIds: [tab.id],
+                          activeTabId: tab.id,
+                      }
+                    : pane,
+            ),
+        }));
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: createChatSession(sessionId, status),
+            },
+            sessionOrder: [
+                ...state.sessionOrder.filter((id) => id !== sessionId),
+                sessionId,
+            ],
+        }));
+    }
+
+    function installStopStreamingMock() {
+        const stopStreaming = vi.fn(async (_sessionId?: string) => {});
+        useChatStore.setState({ stopStreaming });
+        return stopStreaming;
+    }
+
     beforeEach(() => {
+        resetChatStore();
+        useChatStore.setState({ stopStreaming: originalStopStreaming });
         const mockWindow = getMockCurrentWindow() as unknown as {
             innerPosition: typeof innerPositionMock;
             scaleFactor: typeof scaleFactorMock;
@@ -250,6 +313,78 @@ describe("MultiPaneWorkspace", () => {
             );
         }
     });
+
+    it.each<AIChatSessionStatus>([
+        "streaming",
+        "waiting_permission",
+        "waiting_user_input",
+    ])("stops the focused chat when Escape is pressed in %s", (status) => {
+        setPaneChatSession("primary", "session-primary", status);
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+
+        fireEvent.keyDown(window, { key: "Escape" });
+
+        expect(stopStreaming).toHaveBeenCalledTimes(1);
+        expect(stopStreaming).toHaveBeenCalledWith("session-primary");
+    });
+
+    it("does not stop a chat in another pane", () => {
+        setPaneChatSession("primary", "session-primary", "streaming");
+        setPaneChatSession("secondary", "session-secondary", "streaming");
+        useEditorStore.setState({ focusedPaneId: "primary" });
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+
+        fireEvent.keyDown(window, { key: "Escape" });
+
+        expect(stopStreaming).toHaveBeenCalledTimes(1);
+        expect(stopStreaming).toHaveBeenCalledWith("session-primary");
+        expect(stopStreaming).not.toHaveBeenCalledWith("session-secondary");
+    });
+
+    it("does not stop the focused chat when Escape was already prevented", () => {
+        setPaneChatSession("primary", "session-primary", "streaming");
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+        const event = new KeyboardEvent("keydown", {
+            key: "Escape",
+            cancelable: true,
+        });
+        event.preventDefault();
+
+        window.dispatchEvent(event);
+
+        expect(stopStreaming).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["metaKey", { metaKey: true }],
+        ["ctrlKey", { ctrlKey: true }],
+        ["altKey", { altKey: true }],
+        ["shiftKey", { shiftKey: true }],
+    ])("does not stop the focused chat with %s", (_name, modifier) => {
+        setPaneChatSession("primary", "session-primary", "streaming");
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+
+        fireEvent.keyDown(window, { key: "Escape", ...modifier });
+
+        expect(stopStreaming).not.toHaveBeenCalled();
+    });
+
+    it.each<AIChatSessionStatus>(["idle", "review_required", "error"])(
+        "does not stop a focused chat in %s",
+        (status) => {
+            setPaneChatSession("primary", "session-primary", status);
+            const stopStreaming = installStopStreamingMock();
+            renderComponent(<MultiPaneWorkspace />);
+
+            fireEvent.keyDown(window, { key: "Escape" });
+
+            expect(stopStreaming).not.toHaveBeenCalled();
+        },
+    );
 
     it("opens a dragged vault file in the pane under the pointer", async () => {
         setVaultEntries([
