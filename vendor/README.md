@@ -60,10 +60,10 @@ That means the directory is intentionally reproducible, but not yet minimal.
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.44.0`
-  - upstream tag: `v0.44.0`
-  - upstream commit: `85a45b28952f9070376165eff1dd764a0612f73d`
-  - dependencies match the upstream `0.44.0` release (`@agentclientprotocol/sdk` `0.25.0`, `@anthropic-ai/claude-agent-sdk` `0.3.170`)
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.47.0`
+  - upstream tag: `v0.47.0`
+  - upstream commit: `794aa846844a2fe8a8574c2539e2c4107e9182d1`
+  - dependencies match the upstream `0.47.0` release (`@agentclientprotocol/sdk` `0.26.0`, `@anthropic-ai/claude-agent-sdk` `0.3.179`)
   - `dist/` is generated from the upstream source snapshot because the desktop packaging flow depends on it even though upstream does not track it in git
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
@@ -97,7 +97,7 @@ runtime compatibility paths that NeverWrite depends on.
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.44.0` with no expected NeverWrite-specific source delta.
+`0.47.0` with no expected NeverWrite-specific source delta.
 
 The `dist/` directory is rebuilt from the vendored source snapshot because the
 desktop packaging flow stages the compiled runtime files, while upstream does
@@ -116,7 +116,7 @@ keeps `dist/` visible to Git so newly emitted runtime files are not missed.
 
 NeverWrite advertises ACP client capabilities through the native backend, not by
 patching the vendored Claude runtime. The active capability matrix for the
-Claude 0.44 compatibility work is:
+Claude runtime compatibility work is:
 
 - `fs`: advertised
 - `elicitation.form`: advertised; the native backend bridges form requests into

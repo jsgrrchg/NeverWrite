@@ -11,7 +11,11 @@ function mkQuestion(question, options, opts = {}) {
         question,
         header: opts.header ?? "",
         multiSelect: opts.multiSelect ?? false,
-        options: options.map((o) => ({ label: o.label, description: o.description ?? "" })),
+        options: options.map((o) => ({
+            label: o.label,
+            description: o.description ?? "",
+            ...(o.preview ? { preview: o.preview } : {}),
+        })),
     };
 }
 describe("mcpElicitationToCreateRequest", () => {
@@ -136,17 +140,68 @@ describe("askUserQuestionsToCreateRequest", () => {
             title: "Library",
             description: undefined,
             oneOf: [
-                { const: "date-fns", title: "date-fns — Lightweight" },
+                {
+                    const: "date-fns",
+                    title: "date-fns — Lightweight",
+                    // Structured description forwarded under `_meta` so clients can render
+                    // it as secondary text instead of parsing it out of the title.
+                    _meta: { "_claude/askUserQuestionOption": { description: "Lightweight" } },
+                },
+                // No description → no `_meta` emitted.
                 { const: "luxon", title: "luxon" },
             ],
         });
         // The full question text is not used as a property key.
         expect(schema.properties?.["Which library?"]).toBeUndefined();
     });
-    it("includes an optional free-text custom-answer field", () => {
-        const questions = [mkQuestion("Which?", [{ label: "A" }, { label: "B" }])];
+    it("forwards option description and preview under _meta for rich clients", () => {
+        const questions = [
+            mkQuestion("Which layout?", [
+                {
+                    label: "Grid",
+                    description: "Cards in a responsive grid",
+                    preview: "```\n[ ] [ ] [ ]\n[ ] [ ] [ ]\n```",
+                },
+                { label: "List", description: "Stacked rows" },
+                { label: "Plain" },
+            ]),
+        ];
         const schema = askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined).requestedSchema;
-        expect(schema.properties?.["customAnswer"]).toMatchObject({ type: "string", title: "Other" });
+        const oneOf = (schema.properties?.["question_0"]).oneOf;
+        // Both description and preview travel structurally; the title still flattens
+        // the description for clients that only read const/title.
+        expect(oneOf[0]).toEqual({
+            const: "Grid",
+            title: "Grid — Cards in a responsive grid",
+            _meta: {
+                "_claude/askUserQuestionOption": {
+                    description: "Cards in a responsive grid",
+                    preview: "```\n[ ] [ ] [ ]\n[ ] [ ] [ ]\n```",
+                },
+            },
+        });
+        // Description only → preview omitted from _meta.
+        expect(oneOf[1]._meta).toEqual({
+            "_claude/askUserQuestionOption": { description: "Stacked rows" },
+        });
+        // Neither → no _meta at all.
+        expect(oneOf[2]._meta).toBeUndefined();
+    });
+    it("includes a per-question optional free-text custom-answer field", () => {
+        const questions = [
+            mkQuestion("Which?", [{ label: "A" }, { label: "B" }]),
+            mkQuestion("What else?", [{ label: "C" }, { label: "D" }]),
+        ];
+        const schema = askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined).requestedSchema;
+        // Each question gets its own "Other" box, not one shared form-level field.
+        expect(schema.properties?.["question_0_custom"]).toMatchObject({
+            type: "string",
+            title: "Other",
+        });
+        expect(schema.properties?.["question_1_custom"]).toMatchObject({
+            type: "string",
+            title: "Other",
+        });
     });
     it("builds an array property for multi-select questions and includes per-field question text", () => {
         const questions = [
@@ -193,25 +248,38 @@ describe("applyAskElicitationResponse", () => {
             },
         });
     });
-    it("maps the free-text custom-answer field to the tool's response", () => {
+    it("folds a per-question custom answer into that question's answer", () => {
         const response = {
             action: "accept",
-            content: { question_0: "A", customAnswer: "something else entirely" },
+            content: { question_0: "A", question_1_custom: "something else entirely" },
         };
         expect(applyAskElicitationResponse(response, toolInput, questions)).toEqual({
             action: "answered",
             updatedInput: {
                 questions,
                 metadata: { source: "test" },
-                answers: { "Single?": "A" },
-                response: "something else entirely",
+                answers: { "Single?": "A", "Multi?": "something else entirely" },
+            },
+        });
+    });
+    it("prefers a question's custom answer over its selection", () => {
+        const response = {
+            action: "accept",
+            content: { question_0: "A", question_0_custom: "  my own take  " },
+        };
+        expect(applyAskElicitationResponse(response, toolInput, questions)).toEqual({
+            action: "answered",
+            updatedInput: {
+                questions,
+                metadata: { source: "test" },
+                answers: { "Single?": "my own take" },
             },
         });
     });
     it("ignores empty selections and blank custom answers", () => {
         const response = {
             action: "accept",
-            content: { question_1: [], customAnswer: "   " },
+            content: { question_1: [], question_0_custom: "   " },
         };
         expect(applyAskElicitationResponse(response, toolInput, questions)).toEqual({
             action: "answered",

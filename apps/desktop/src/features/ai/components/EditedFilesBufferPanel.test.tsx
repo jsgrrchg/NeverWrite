@@ -165,6 +165,7 @@ describe("EditedFilesBufferPanel", () => {
                                     options: [
                                         {
                                             label: "Safe",
+                                            value: "safe",
                                             description: "Use the narrow scope.",
                                         },
                                     ],
