@@ -53,10 +53,11 @@ export declare function extractAskUserQuestions(input: Record<string, unknown>):
  * an array with a titled `anyOf` item enum. The enum `const` is always the
  * option label, since that is what the tool records as the answer.
  *
- * A trailing optional free-text field mirrors the CLI's custom-answer box: the
- * user can type their own answer instead of (or as well as) picking an option.
- * Nothing is marked required, so the user can also just skip — matching the
- * built-in tool, which always offers Skip + a free-text box.
+ * Each question is followed by its own optional free-text "custom answer" field
+ * (`question_<n>_custom`), mirroring the CLI's per-question "Other" box: the
+ * user can type their own answer instead of picking an option, scoped to that
+ * specific question. Nothing is marked required, so the user can also just skip
+ * — matching the built-in tool, which always offers Skip + a free-text box.
  */
 export declare function askUserQuestionsToCreateRequest(questions: AskUserQuestion[], sessionId: string, toolCallId: string | undefined): CreateElicitationRequest;
 /** Outcome of an AskUserQuestion elicitation, decoupled from any transport. */
@@ -71,10 +72,11 @@ export type AskUserQuestionOutcome = {
  *
  * Selected labels are read back from the indexed form fields and written into
  * `answers` as a `{ [questionText]: label }` map (comma-joining multi-selects)
- * — the key shape the tool's own `call()` reads. Free text from the custom-
- * answer field becomes the tool's top-level `response`. Decline yields empty
- * answers (the model is told the user skipped rather than the turn aborting);
- * cancel aborts the tool call.
+ * — the key shape the tool's own `call()` reads. A non-empty per-question
+ * custom-answer field (`question_<n>_custom`) takes precedence over that
+ * question's selection, since the user typed their own answer instead of
+ * picking one. Decline yields empty answers (the model is told the user skipped
+ * rather than the turn aborting); cancel aborts the tool call.
  */
 export declare function applyAskElicitationResponse(response: CreateElicitationResponse, toolInput: Record<string, unknown>, questions: AskUserQuestion[]): AskUserQuestionOutcome;
 //# sourceMappingURL=elicitation.d.ts.map
