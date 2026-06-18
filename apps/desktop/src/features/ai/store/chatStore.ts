@@ -144,6 +144,7 @@ import {
     type QueuedChatMessage,
     type QueuedChatMessageStatus,
 } from "../types";
+import { isCancellableChatTurnStatus } from "../chatTurnStatus";
 import {
     getLastTranscriptMessage,
     getSessionTranscriptLength,
@@ -3214,11 +3215,7 @@ async function replaceEmptySessionForAdditionalRoots(
 }
 
 function isSessionBusy(session: AIChatSession) {
-    return (
-        session.status === "streaming" ||
-        session.status === "waiting_permission" ||
-        session.status === "waiting_user_input"
-    );
+    return isCancellableChatTurnStatus(session.status);
 }
 
 function cleanupQueuedMessagesBySessionId(
