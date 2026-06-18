@@ -3168,6 +3168,9 @@ function UserInputRequestMessage({
     const selectedOptions = rowState?.userInputSelectedOptions ?? {};
     const textAnswers = rowState?.userInputTextAnswers ?? {};
     const otherAnswers = rowState?.userInputOtherAnswers ?? {};
+    const [focusedOptionKey, setFocusedOptionKey] = useState<string | null>(
+        null,
+    );
 
     const selectedValuesForQuestion = (questionId: string) =>
         selectedOptions[questionId] ?? [];
@@ -3187,10 +3190,13 @@ function UserInputRequestMessage({
                     .filter(Boolean);
                 const text = textAnswers[question.id]?.trim();
                 const other = otherAnswers[question.id]?.trim();
+                const customAnswerId = question.custom_answer_id?.trim();
 
                 values.push(...selected);
                 if (text) values.push(text);
-                if (other) values.push(`user_note: ${other}`);
+                if (other && customAnswerId) {
+                    accumulator[customAnswerId] = [other];
+                } else if (other) values.push(`user_note: ${other}`);
 
                 if (values.length > 0) {
                     accumulator[question.id] = values;
@@ -3253,6 +3259,9 @@ function UserInputRequestMessage({
                     const selected = selectedValuesForQuestion(question.id);
                     const textValue = textAnswers[question.id] ?? "";
                     const otherValue = otherAnswers[question.id] ?? "";
+                    const showsOtherInput =
+                        question.is_other || Boolean(question.custom_answer_id);
+                    const otherInputId = `${message.id}-${question.id}-other`;
 
                     return (
                         <div key={question.id} className="min-w-0">
@@ -3281,14 +3290,43 @@ function UserInputRequestMessage({
                             {options.length > 0 ? (
                                 <div className="flex flex-wrap gap-2">
                                     {options.map((option) => {
+                                        const optionValue =
+                                            option.value ?? option.label;
+                                        const optionKey = `${question.id}:${option.label}:${optionValue}`;
+                                        const optionTitle = [
+                                            option.description,
+                                            option.preview,
+                                        ]
+                                            .filter(Boolean)
+                                            .join("\n\n");
                                         const isSelected =
-                                            selected.includes(option.label);
+                                            selected.includes(optionValue);
+                                        const showPreview = Boolean(
+                                            option.preview &&
+                                                (isSelected ||
+                                                    focusedOptionKey ===
+                                                        optionKey),
+                                        );
                                         return (
                                             <button
-                                                key={option.label}
+                                                key={optionKey}
                                                 type="button"
                                                 disabled={!isPending}
                                                 aria-pressed={isSelected}
+                                                onFocus={() =>
+                                                    setFocusedOptionKey(
+                                                        optionKey,
+                                                    )
+                                                }
+                                                onBlur={() => {
+                                                    setFocusedOptionKey(
+                                                        (current) =>
+                                                            current ===
+                                                            optionKey
+                                                                ? null
+                                                                : current,
+                                                    );
+                                                }}
                                                 onClick={() => {
                                                     updateRow((current) => {
                                                         const currentOptions =
@@ -3301,7 +3339,7 @@ function UserInputRequestMessage({
                                                         const nextSelected =
                                                             nextUserInputSelection(
                                                                 currentSelected,
-                                                                option.label,
+                                                                optionValue,
                                                                 allowsMultiple,
                                                             );
 
@@ -3315,7 +3353,7 @@ function UserInputRequestMessage({
                                                         };
                                                     });
                                                 }}
-                                                className="rounded-md px-2.5 py-1 text-left transition-colors"
+                                                className="rounded-md px-2.5 py-1.5 text-left transition-colors"
                                                 style={{
                                                     fontSize: "0.78em",
                                                     color: isSelected
@@ -3332,9 +3370,58 @@ function UserInputRequestMessage({
                                                         ? "pointer"
                                                         : "default",
                                                 }}
-                                                title={option.description}
+                                                title={optionTitle || undefined}
                                             >
-                                                {option.label}
+                                                <span
+                                                    className="block font-medium"
+                                                    style={{
+                                                        lineHeight: 1.25,
+                                                    }}
+                                                >
+                                                    {option.label}
+                                                </span>
+                                                {option.description ? (
+                                                    <span
+                                                        className="mt-0.5 block"
+                                                        style={{
+                                                            color: isSelected
+                                                                ? "rgba(255,255,255,0.82)"
+                                                                : "var(--text-secondary)",
+                                                            fontSize: "0.92em",
+                                                            lineHeight: 1.25,
+                                                            overflowWrap:
+                                                                "anywhere",
+                                                            wordBreak:
+                                                                "break-word",
+                                                        }}
+                                                    >
+                                                        {option.description}
+                                                    </span>
+                                                ) : null}
+                                                {showPreview ? (
+                                                    <span
+                                                        className="mt-1 block whitespace-pre-wrap rounded px-1.5 py-1"
+                                                        style={{
+                                                            backgroundColor:
+                                                                isSelected
+                                                                    ? "rgba(255,255,255,0.14)"
+                                                                    : "color-mix(in srgb, var(--bg-primary) 72%, transparent)",
+                                                            color: isSelected
+                                                                ? "rgba(255,255,255,0.88)"
+                                                                : "var(--text-secondary)",
+                                                            fontFamily:
+                                                                "var(--font-mono)",
+                                                            fontSize: "0.88em",
+                                                            lineHeight: 1.25,
+                                                            overflowWrap:
+                                                                "anywhere",
+                                                            wordBreak:
+                                                                "break-word",
+                                                        }}
+                                                    >
+                                                        {option.preview}
+                                                    </span>
+                                                ) : null}
                                             </button>
                                         );
                                     })}
@@ -3368,30 +3455,51 @@ function UserInputRequestMessage({
                                 />
                             )}
 
-                            {question.is_other && (
-                                <textarea
-                                    value={otherValue}
-                                    disabled={!isPending}
-                                    onChange={(event) =>
-                                        updateRow((current) => ({
-                                            userInputOtherAnswers: {
-                                                ...(current.userInputOtherAnswers ??
-                                                    {}),
-                                                [question.id]:
-                                                    event.target.value,
-                                            },
-                                        }))
-                                    }
-                                    placeholder="Additional note"
-                                    rows={2}
-                                    className="mt-2 w-full resize-y rounded-md px-2.5 py-2"
-                                    style={{
-                                        backgroundColor: "var(--bg-tertiary)",
-                                        border: "1px solid var(--border)",
-                                        color: "var(--text-primary)",
-                                        fontSize: "0.8em",
-                                    }}
-                                />
+                            {showsOtherInput && (
+                                <div className="mt-2">
+                                    {question.custom_answer_id ? (
+                                        <label
+                                            htmlFor={otherInputId}
+                                            className="mb-1 block"
+                                            style={{
+                                                color: "var(--text-primary)",
+                                                fontSize: "0.76em",
+                                                fontWeight: 600,
+                                            }}
+                                        >
+                                            Other
+                                        </label>
+                                    ) : null}
+                                    <textarea
+                                        id={otherInputId}
+                                        value={otherValue}
+                                        disabled={!isPending}
+                                        onChange={(event) =>
+                                            updateRow((current) => ({
+                                                userInputOtherAnswers: {
+                                                    ...(current.userInputOtherAnswers ??
+                                                        {}),
+                                                    [question.id]:
+                                                        event.target.value,
+                                                },
+                                            }))
+                                        }
+                                        placeholder={
+                                            question.custom_answer_id
+                                                ? "Other"
+                                                : "Additional note"
+                                        }
+                                        rows={2}
+                                        className="w-full resize-y rounded-md px-2.5 py-2"
+                                        style={{
+                                            backgroundColor:
+                                                "var(--bg-tertiary)",
+                                            border: "1px solid var(--border)",
+                                            color: "var(--text-primary)",
+                                            fontSize: "0.8em",
+                                        }}
+                                    />
+                                </div>
                             )}
                         </div>
                     );

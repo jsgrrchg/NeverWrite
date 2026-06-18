@@ -31,10 +31,54 @@ type SessionModelState = {
     }>;
     currentModelId: string;
 };
+/** One in-flight `prompt()` call. A persistent per-session consumer (see
+ *  `runConsumer`) drains the SDK query stream for the whole session and settles
+ *  each Turn's deferred when that turn's outcome is known, so `prompt()` itself
+ *  holds no loop. Turns are processed FIFO: the SDK echoes queued user messages
+ *  back in submission order, so `turnQueue[0]` is the turn currently running. */
+type Turn = {
+    /** uuid stamped on the pushed `SDKUserMessage`; the SDK echoes it back so the
+     *  consumer can match the replayed user message to this turn. */
+    promptUuid: string;
+    /** Local-only slash commands (e.g. `/clear`) return a result without an echo,
+     *  so the consumer can't promote them via the replay; it falls back to
+     *  promoting the queue head when the result arrives. */
+    isLocalOnlyCommand: boolean;
+    /** Set once the deferred has been resolved/rejected, so the consumer never
+     *  settles a turn twice (idle + handoff + stream-end can all race). */
+    settled: boolean;
+    resolve: (response: PromptResponse) => void;
+    reject: (error: unknown) => void;
+};
 type Session = {
     query: Query;
     input: Pushable<SDKUserMessage>;
     cancelled: boolean;
+    /** FIFO of in-flight prompts. The head is the turn the SDK is currently
+     *  processing; later entries are queued and will be echoed in order. */
+    turnQueue?: Turn[];
+    /** The turn whose messages the consumer is currently attributing output to
+     *  (the head of `turnQueue` once its user message has been echoed). */
+    activeTurn?: Turn | null;
+    /** Count of result messages the consumer should treat as orphans and skip
+     *  (not promote/attribute to the current head). When cancel() settles+removes
+     *  a queued turn, that turn's user message was already pushed to the SDK, so
+     *  the SDK still runs it and emits a result with no uuid we can match. Because
+     *  the SDK processes input FIFO, those orphan results arrive (in submission
+     *  order) before the next live turn's, so skipping exactly this many leaves
+     *  the genuine head untouched. Reset to 0 on every activation as a backstop
+     *  against an SDK that drops queued input on interrupt (no orphan emitted). */
+    pendingOrphanResults?: number;
+    /** The long-lived consumer task. Lazily started on the first `prompt()` and
+     *  kept alive for the session so between-turn/background messages are still
+     *  drained and forwarded. */
+    consumer?: Promise<void>;
+    /** Set once the SDK query stream has terminated (it ran to `done` or threw a
+     *  non-process error). The query iterator is not reusable afterward, so a
+     *  later `prompt()` rejects instead of enqueueing onto a dead stream and
+     *  hanging (or silently restarting a consumer that resolves `end_turn`
+     *  without ever reaching the model). */
+    queryClosed?: boolean;
     cwd: string;
     /** Serialized snapshot of session-defining params (cwd, mcpServers) used to
      *  detect when loadSession/resumeSession is called with changed values. */
@@ -45,22 +89,16 @@ type Session = {
     models: SessionModelState;
     modelInfos: ModelInfo[];
     configOptions: SessionConfigOption[];
-    promptRunning: boolean;
-    pendingMessages: Map<string, {
-        resolve: (cancelled: boolean) => void;
-        order: number;
-    }>;
-    nextPendingOrder: number;
     abortController: AbortController;
-    /** Per-turn signal the active prompt loop races `query.next()` against.
-     *  Aborted by cancel() (after a grace period) to force the loop to return
-     *  "cancelled" when the SDK is wedged and `query.next()` never yields again
-     *  (issue #680). Distinct from `abortController`: this only wakes the loop;
-     *  it does NOT touch the SDK query/subprocess. Undefined when no prompt is
-     *  actively consuming the query. */
+    /** Signal the consumer races `query.next()` against. Aborted by cancel()
+     *  (after a grace period) to force the active turn to settle "cancelled" when
+     *  the SDK is wedged and `query.next()` never yields again (issue #680).
+     *  Distinct from `abortController`: this only wakes the consumer; it does NOT
+     *  touch the SDK query/subprocess. The consumer re-arms it after each fire.
+     *  Undefined until the consumer is started by the first prompt. */
     cancelController?: AbortController;
-    /** Pending grace-period timer that aborts `cancelController`. Cleared when
-     *  the loop returns normally so the backstop never fires after a clean
+    /** Pending grace-period timer that aborts `cancelController`. Cleared when the
+     *  active turn settles normally so the backstop never fires after a clean
      *  cancel. */
     forceCancelTimer?: ReturnType<typeof setTimeout>;
     emitRawSDKMessages: boolean | SDKMessageFilter[];
@@ -220,9 +258,38 @@ export declare class ClaudeAcpAgent implements Agent {
     listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse>;
     authenticate(_params: AuthenticateRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
+    /** Lazily start the per-session consumer that drains the SDK query stream for
+     *  the session's whole life. Idempotent: only the first `prompt()` starts it. */
+    private ensureConsumer;
+    /** The single, long-lived consumer of the SDK query stream for a session. It
+     *  forwards every message as ACP `sessionUpdate`s (so background/between-turn
+     *  output streams live, not just while a prompt is awaiting) and settles each
+     *  Turn's deferred when that turn ends. Replaces the per-prompt message loop;
+     *  `params` only carries the (session-invariant) `sessionId`. */
+    private runConsumer;
     cancel(params: CancelNotification): Promise<void>;
-    /** Cleanly tear down a session: cancel in-flight work, dispose resources,
-     *  and remove it from the session map. */
+    /** Mark a session's SDK query stream as permanently ended and release the
+     *  resources tied to it: drop the consumer handle, dispose the settings
+     *  watchers, end the input stream, and close the query (which terminates the
+     *  subprocess). The query iterator is not revivable, so `prompt()`/`cancel()`
+     *  consult `queryClosed` and fail/short-circuit instead of acting on a dead
+     *  stream. Idempotent (guarded by `queryClosed`), so the consumer's done/error
+     *  paths and a later `teardownSession` can all call it without double-releasing.
+     *
+     *  Deliberately does NOT abort `session.abortController`: that controller may be
+     *  CLIENT-supplied (`_meta.claudeCode.options.abortController`) and reused, so
+     *  aborting it on a spontaneous stream end would cancel the client's own work
+     *  or make a sibling session born aborted. `query.close()` already terminates
+     *  the subprocess; aborting the signal belongs in `teardownSession` (explicit
+     *  destroy), not here. Also does NOT remove the session from the map — that is
+     *  `teardownSession`'s job — so prompt() can still answer with a clear "session
+     *  ended" error after an unexpected stream close. The leftover session object
+     *  is a lightweight husk (its heavy resources are released here) and is evicted
+     *  on the next closeSession/deleteSession or when the connection's `dispose()`
+     *  runs. */
+    private closeQueryStream;
+    /** Cleanly tear down a session: cancel in-flight work, release stream
+     *  resources, and remove it from the session map. */
     private teardownSession;
     /** Tear down all active sessions. Called when the ACP connection closes. */
     dispose(): Promise<void>;

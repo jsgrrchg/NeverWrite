@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.47.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.46.0...v0.47.0) (2026-06-17)
+
+
+### Features
+
+* Update to claude-agent-sdk 0.3.179 ([#783](https://github.com/agentclientprotocol/claude-agent-acp/issues/783)) ([59a098c](https://github.com/agentclientprotocol/claude-agent-acp/commit/59a098c2b530bbae034e9a2dfbd31f8b4ef2a4d0))
+
+
+### Bug Fixes
+
+* Duplicate assistant messages in feed ([#785](https://github.com/agentclientprotocol/claude-agent-acp/issues/785)) ([12d34e6](https://github.com/agentclientprotocol/claude-agent-acp/commit/12d34e64e53564602ac1c38a30127e234c5c25ff))
+
+## [0.46.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.45.1...v0.46.0) (2026-06-16)
+
+
+### Features
+
+* Update to claude-agent-sdk 0.3.178 ([#777](https://github.com/agentclientprotocol/claude-agent-acp/issues/777)) ([58549ff](https://github.com/agentclientprotocol/claude-agent-acp/commit/58549ffe6a8b02ce59894e567407bd4299c11428))
+
+
+### Bug Fixes
+
+* Better handle out of turn events ([#780](https://github.com/agentclientprotocol/claude-agent-acp/issues/780)) ([4f273a2](https://github.com/agentclientprotocol/claude-agent-acp/commit/4f273a20d870c9c69f71556b8e0519f1de30f285))
+* Forward option details in elicitation meta ([#779](https://github.com/agentclientprotocol/claude-agent-acp/issues/779)) ([b364059](https://github.com/agentclientprotocol/claude-agent-acp/commit/b3640599ae685beecacd93e012d5bbc9dac716f7)), closes [#764](https://github.com/agentclientprotocol/claude-agent-acp/issues/764)
+
+## [0.45.1](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.45.0...v0.45.1) (2026-06-16)
+
+
+### Bug Fixes
+
+* Fix terminal error printing as text instead of terminal output ([#776](https://github.com/agentclientprotocol/claude-agent-acp/issues/776)) ([db6eaaf](https://github.com/agentclientprotocol/claude-agent-acp/commit/db6eaaf71484a321e47093ad65bcf8994943cb31))
+* Scope custom answers per question ([#774](https://github.com/agentclientprotocol/claude-agent-acp/issues/774)) ([d58004a](https://github.com/agentclientprotocol/claude-agent-acp/commit/d58004a34880e0a76833697319eb2a9efa6a43c7))
+
+## [0.45.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.44.0...v0.45.0) (2026-06-15)
+
+
+### Features
+
+* **deps-dev:** bump the minor group with 3 updates ([#763](https://github.com/agentclientprotocol/claude-agent-acp/issues/763)) ([7de5e4b](https://github.com/agentclientprotocol/claude-agent-acp/commit/7de5e4bcca9bfea70593092060f82bc8abe33e0e))
+* **deps:** bump @anthropic-ai/claude-agent-sdk to 0.3.177 ([#771](https://github.com/agentclientprotocol/claude-agent-acp/issues/771)) ([1be5ca5](https://github.com/agentclientprotocol/claude-agent-acp/commit/1be5ca57ee772fe90e41126365dc4186a18ad257))
+
+
+### Bug Fixes
+
+* preserve ANTHROPIC_CUSTOM_MODEL_OPTION when availableModels is set ([#768](https://github.com/agentclientprotocol/claude-agent-acp/issues/768)) ([cc2885f](https://github.com/agentclientprotocol/claude-agent-acp/commit/cc2885f6a9993cf61e759c3c770015f94c218627))
+
 ## [0.44.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.43.0...v0.44.0) (2026-06-09)
 
 

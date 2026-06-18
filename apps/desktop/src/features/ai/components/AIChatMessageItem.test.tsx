@@ -125,10 +125,13 @@ describe("AIChatMessageItem user input", () => {
                         options: [
                             {
                                 label: "README.md",
+                                value: "readme",
                                 description: "Project overview",
+                                preview: "docs/README.md",
                             },
                             {
                                 label: "CHANGELOG.md",
+                                value: "changelog",
                                 description: "Release history",
                             },
                         ],
@@ -141,14 +144,78 @@ describe("AIChatMessageItem user input", () => {
             { sessionId: "session-1", onUserInputResponse },
         );
 
-        fireEvent.click(screen.getByRole("button", { name: "README.md" }));
-        fireEvent.click(screen.getByRole("button", { name: "CHANGELOG.md" }));
+        expect(screen.getByText("Project overview")).toBeInTheDocument();
+        expect(screen.queryByText("docs/README.md")).not.toBeInTheDocument();
+
+        const readmeOption = screen.getByRole("button", {
+            name: /README\.md/,
+        });
+        fireEvent.focus(readmeOption);
+        expect(screen.getByText("docs/README.md")).toBeInTheDocument();
+        fireEvent.blur(readmeOption);
+        expect(screen.queryByText("docs/README.md")).not.toBeInTheDocument();
+
+        fireEvent.click(readmeOption);
+        fireEvent.click(screen.getByRole("button", { name: /CHANGELOG\.md/ }));
         fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
+        expect(screen.getByText("docs/README.md")).toBeInTheDocument();
         expect(onUserInputResponse).toHaveBeenCalledWith(
             "input-1",
             {
-                targets: ["README.md", "CHANGELOG.md"],
+                targets: ["readme", "changelog"],
+            },
+            "accept",
+        );
+    });
+
+    it("submits per-question custom answers instead of the selected option", () => {
+        const onUserInputResponse = vi.fn();
+
+        renderMessage(
+            {
+                id: "user-input:input-custom",
+                role: "assistant",
+                kind: "user_input_request",
+                title: "Choose an approach",
+                content: "Pick or type another approach.",
+                timestamp: Date.now(),
+                userInputRequestId: "input-custom",
+                userInputQuestions: [
+                    {
+                        id: "question_0",
+                        custom_answer_id: "question_0_custom",
+                        header: "Approach",
+                        question: "Which approach should I use?",
+                        is_other: true,
+                        is_secret: false,
+                        options: [
+                            {
+                                label: "Safe",
+                                value: "safe",
+                                description: "Use the narrow scope.",
+                            },
+                        ],
+                    },
+                ],
+                meta: {
+                    status: "pending",
+                },
+            },
+            { sessionId: "session-1", onUserInputResponse },
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: /Safe/ }));
+        fireEvent.change(screen.getByLabelText("Other"), {
+            target: { value: "Use my custom approach" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+        expect(onUserInputResponse).toHaveBeenCalledWith(
+            "input-custom",
+            {
+                question_0: ["safe"],
+                question_0_custom: ["Use my custom approach"],
             },
             "accept",
         );

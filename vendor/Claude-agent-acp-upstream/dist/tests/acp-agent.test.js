@@ -14,6 +14,69 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
         deleteSession: vi.fn(),
     };
 });
+/** Build the replayed `user` message the SDK echoes back for a pushed prompt,
+ *  used by mock generators to promote a turn to active. */
+function userEcho(u) {
+    return {
+        type: "user",
+        message: u.message,
+        parent_tool_use_id: null,
+        uuid: u.uuid,
+        session_id: "test-session",
+        isReplay: true,
+    };
+}
+/** Wrap a mock async generator with the `Query` methods the agent calls outside
+ *  of iteration — `close()` (teardown/closeQueryStream), `interrupt()` (cancel),
+ *  and `setModel()` — so a bare generator doesn't trip "x is not a function". */
+function wrapQuery(generator) {
+    return Object.assign(generator, {
+        interrupt: vi.fn(async () => { }),
+        close: vi.fn(),
+        setModel: vi.fn(async () => { }),
+    });
+}
+/** The common `Session` mock fields, with per-test overrides spread on top.
+ *  Centralizes the boilerplate (usage accumulator, caches, controllers) so a new
+ *  Session field is added in one place rather than every inline literal. */
+function mockSessionState(overrides = {}) {
+    return {
+        cancelled: false,
+        cwd: "/test",
+        sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+        modes: { currentModeId: "default", availableModes: [] },
+        models: { currentModelId: "default", availableModels: [] },
+        modelInfos: [],
+        settingsManager: { dispose: vi.fn() },
+        accumulatedUsage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedReadTokens: 0,
+            cachedWriteTokens: 0,
+        },
+        configOptions: [],
+        abortController: new AbortController(),
+        emitRawSDKMessages: false,
+        contextWindowSize: 200000,
+        taskState: new Map(),
+        toolUseCache: {},
+        messageIdToUuid: new Map(),
+        ...overrides,
+    };
+}
+/** Install a mock session whose query is a caller-supplied async generator
+ *  driven by the session's streaming input. Returns the input Pushable so the
+ *  test can push additional turns. Centralizes the Session literal so tests that
+ *  need bespoke message ordering don't each re-declare it. */
+function injectGeneratorSession(agent, makeGenerator, overrides = {}) {
+    const input = new Pushable();
+    agent.sessions["test-session"] = mockSessionState({
+        query: wrapQuery(makeGenerator(input)),
+        input,
+        ...overrides,
+    });
+    return input;
+}
 describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration", () => {
     let child;
     beforeAll(async () => {
@@ -245,7 +308,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
         // mechanism.
         const properties = elicitation.mode === "form" ? Object.keys(elicitation.requestedSchema.properties ?? {}) : [];
         expect(properties).toContain("question_0");
-        expect(properties).toContain("customAnswer");
+        expect(properties).toContain("question_0_custom");
         // AskUserQuestion must NOT fall back to a generic permission prompt: no
         // permission request should have carried AskUserQuestion's `questions`.
         const fellBackToPermission = client.permissionToolInputs.some((input) => !!input &&
@@ -1244,6 +1307,73 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("SDK behavior", () => {
         // message.
         expect(messageIdForGrouping(replayedAssistant)).toBe(messageStartApiId);
     }, 30000);
+    // Pins the two SDK invariants the persistent consumer's lifecycle relies on
+    // (see runConsumer's `done` handling and Session.queryClosed):
+    //   1. A streaming-input query does NOT yield `done` between turns — it stays
+    //      open for the session's life, so a second pushed message starts a
+    //      second turn rather than ending the stream. If this regressed, the
+    //      consumer would tear the session down after the first turn's idle.
+    //   2. Ending the input stream drives the iterator to `done`, and once `done`
+    //      it stays `done` (the iterator is not revivable) — which is what lets us
+    //      treat a `done` as a permanent stream close and reject later prompts
+    //      instead of restarting a consumer over an exhausted query.
+    it("keeps the streaming query open across turns and stays done after input ends", async () => {
+        const sessionId = randomUUID();
+        const input = new Pushable();
+        const q = query({
+            prompt: input,
+            options: {
+                systemPrompt: { type: "preset", preset: "claude_code" },
+                sessionId,
+                includePartialMessages: false,
+                allowedTools: [],
+            },
+        });
+        const pushPrompt = (text) => {
+            const msg = promptToClaude({ sessionId, prompt: [{ type: "text", text }] });
+            msg.uuid = randomUUID();
+            input.push(msg);
+        };
+        // Drain one turn up to its terminal `result`, asserting the stream stays
+        // open (never `done`) meanwhile. We delimit by `result` — NOT by the
+        // trailing `session_state_changed: idle` — because some CLI binaries don't
+        // emit session-state events (issue #497); waiting on idle would hang there.
+        // This also matches how the consumer itself settles a turn (at the result).
+        const drainToResult = async () => {
+            while (true) {
+                const { value, done } = await q.next();
+                // Invariant 1: the streaming query must not end while a turn is live.
+                expect(done).toBe(false);
+                if (value.type === "result")
+                    return;
+            }
+        };
+        try {
+            pushPrompt("Reply with exactly this word and nothing else: one");
+            await drainToResult();
+            // The query stays open across turns: a second pushed message yields a
+            // second turn (its own `result`) rather than ending the stream.
+            pushPrompt("Reply with exactly this word and nothing else: two");
+            await drainToResult();
+            // Invariant 2: ending the input terminates the iterator. Drain any trailing
+            // messages (e.g. a final idle) until it reports `done`.
+            input.end();
+            let done = false;
+            for (let i = 0; i < 20 && !done; i++) {
+                done = (await q.next()).done ?? false;
+            }
+            expect(done).toBe(true);
+            // ...and it stays terminated — a later next() does not revive the stream.
+            const again = await q.next();
+            expect(again.done).toBe(true);
+        }
+        finally {
+            // Ensure the live CLI subprocess is torn down even if an assertion above
+            // throws before input.end() — otherwise it would outlive the test run.
+            input.end();
+            await q.close?.();
+        }
+    }, 60000);
 });
 describe("permission requests", () => {
     it("should include title field in tool permission request structure", () => {
@@ -1411,39 +1541,10 @@ describe("stop reason propagation", () => {
             }
             yield* messages;
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
-            cancelled: false,
-            cwd: "/test",
-            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-            modes: {
-                currentModeId: "default",
-                availableModes: [],
-            },
-            models: {
-                currentModelId: "default",
-                availableModels: [],
-            },
-            modelInfos: [],
-            settingsManager: { dispose: vi.fn() },
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            abortController: new AbortController(),
-            emitRawSDKMessages: false,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
     }
     it("should return max_tokens when success result has stop_reason max_tokens", async () => {
         const agent = createMockAgent();
@@ -1511,9 +1612,12 @@ describe("stop reason propagation", () => {
             stop_reason: null,
             is_error: false,
         });
-        // Background task used some tokens
+        // Background task used some tokens. Real autonomous followups carry a
+        // task-notification origin, which keeps them out of the user turn's result
+        // and usage.
         backgroundTaskResult.usage.input_tokens = 100;
         backgroundTaskResult.usage.output_tokens = 50;
+        backgroundTaskResult.origin = { kind: "task-notification" };
         const promptResult = createResultMessage({
             subtype: "success",
             stop_reason: null,
@@ -1538,47 +1642,199 @@ describe("stop reason propagation", () => {
             yield promptResult;
             yield { type: "system", subtype: "session_state_changed", state: "idle" };
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
             cwd: "/tmp/test",
             sessionFingerprint: JSON.stringify({ cwd: "/tmp/test", mcpServers: [] }),
-            cancelled: false,
-            modes: {
-                currentModeId: "default",
-                availableModes: [],
-            },
-            models: {
-                currentModelId: "default",
-                availableModels: [],
-            },
-            modelInfos: [],
-            settingsManager: { dispose: vi.fn() },
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            abortController: new AbortController(),
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            emitRawSDKMessages: false,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
         const response = await agent.prompt({
             sessionId: "test-session",
             prompt: [{ type: "text", text: "test" }],
         });
         expect(response.stopReason).toBe("end_turn");
-        // Usage should include both background task and prompt result tokens
-        expect(response.usage?.inputTokens).toBe(backgroundTaskResult.usage.input_tokens + promptResult.usage.input_tokens);
-        expect(response.usage?.outputTokens).toBe(backgroundTaskResult.usage.output_tokens + promptResult.usage.output_tokens);
+        // The prompt resolves with its OWN result's usage; the background
+        // task-notification result's tokens are reported separately (via
+        // usage_update), not folded into the user turn's response.
+        expect(response.usage?.inputTokens).toBe(promptResult.usage.input_tokens);
+        expect(response.usage?.outputTokens).toBe(promptResult.usage.output_tokens);
+    });
+    it("does not fold a task-notification result's tokens into an already-active turn's usage", async () => {
+        const agent = createMockAgent();
+        // A task-notification followup that interleaves AFTER the user turn is
+        // active (its echo seen) but BEFORE the turn's own result. Its tokens must
+        // not leak into the user turn's usage even though the accumulator is only
+        // reset on activation.
+        const backgroundTaskResult = createResultMessage({
+            subtype: "success",
+            stop_reason: null,
+            is_error: false,
+        });
+        backgroundTaskResult.usage.input_tokens = 100;
+        backgroundTaskResult.usage.output_tokens = 50;
+        backgroundTaskResult.origin = { kind: "task-notification" };
+        const promptResult = createResultMessage({
+            subtype: "success",
+            stop_reason: null,
+            is_error: false,
+        });
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const { value: userMessage } = await iter.next();
+                // User echo first → the turn is now active and its accumulator reset.
+                yield userEcho(userMessage);
+                // Task-notification result lands mid-turn...
+                yield backgroundTaskResult;
+                // ...then the user turn's own result settles it.
+                yield promptResult;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        expect(response.usage?.inputTokens).toBe(promptResult.usage.input_tokens);
+        expect(response.usage?.outputTokens).toBe(promptResult.usage.output_tokens);
+    });
+    it("settles a no-echo command result (e.g. /compact) by promoting the head turn", async () => {
+        // Regression: /compact never echoes a user message carrying the prompt's
+        // uuid (its only user messages are the generated summary and a
+        // <local-command-stdout> replay), so the turn is never activated by an echo.
+        // Its result must still settle the turn — otherwise prompt() hangs forever.
+        const agent = createMockAgent();
+        let releaseIdle;
+        const idleGate = new Promise((resolve) => (releaseIdle = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                await iter.next(); // consume the pushed message but do NOT echo its uuid
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                // Hold the stream open past the result so the turn must settle at the
+                // result itself, not via the stream-end (done) fallback or a real idle.
+                await idleGate;
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        releaseIdle();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("resolves at the terminal result without waiting for a lagging idle (issue #773)", async () => {
+        const agent = createMockAgent();
+        const input = new Pushable();
+        // The SDK's trailing `idle` can lag far behind the result while it flushes
+        // held-back results / drains background agents. prompt() must resolve from
+        // the result so the composer unlocks immediately, not block until idle.
+        let releaseIdle;
+        const idleGate = new Promise((resolve) => (releaseIdle = resolve));
+        let idleYielded = false;
+        async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            const { value: userMessage } = await iter.next();
+            yield {
+                type: "user",
+                message: userMessage.message,
+                parent_tool_use_id: null,
+                uuid: userMessage.uuid,
+                session_id: "test-session",
+                isReplay: true,
+            };
+            yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+            await idleGate;
+            idleYielded = true;
+            yield { type: "system", subtype: "session_state_changed", state: "idle" };
+        }
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
+            input,
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        // Resolved from the result while idle is still gated.
+        expect(response.stopReason).toBe("end_turn");
+        expect(idleYielded).toBe(false);
+        // Releasing the idle lets the consumer drain cleanly without double-settling.
+        releaseIdle();
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("forwards background output that arrives after the turn resolves (issue #679)", async () => {
+        const sessionUpdates = [];
+        const mockClient = {
+            sessionUpdate: async (u) => {
+                sessionUpdates.push(u);
+            },
+        };
+        const agent = new ClaudeAcpAgent(mockClient, { log: () => { }, error: () => { } });
+        const input = new Pushable();
+        async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            const { value: userMessage } = await iter.next();
+            yield {
+                type: "user",
+                message: userMessage.message,
+                parent_tool_use_id: null,
+                uuid: userMessage.uuid,
+                session_id: "test-session",
+                isReplay: true,
+            };
+            // The user turn completes here — prompt() resolves — and the turn goes
+            // idle. The old per-prompt loop returned at this idle, so anything after
+            // it was not consumed until the next prompt (issue #679).
+            yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+            yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            // Between-turn background output: a top-level assistant message arriving
+            // with no prompt awaiting. The persistent consumer must still forward it.
+            yield {
+                type: "assistant",
+                parent_tool_use_id: null,
+                uuid: randomUUID(),
+                session_id: "test-session",
+                message: {
+                    role: "assistant",
+                    model: "claude-sonnet-4-5",
+                    stop_reason: "end_turn",
+                    usage: {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                        cache_read_input_tokens: 0,
+                        cache_creation_input_tokens: 0,
+                    },
+                    content: [{ type: "text", text: "between-turn background note" }],
+                },
+            };
+        }
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
+            input,
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "test" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+        // Drain the consumer so the post-resolution message is processed.
+        await agent.sessions["test-session"]?.consumer;
+        const chunkTexts = sessionUpdates
+            .filter((u) => u.update?.sessionUpdate === "agent_message_chunk")
+            .map((u) => u.update.content?.text);
+        expect(chunkTexts).toContain("between-turn background note");
     });
     it("should throw internal error for success with is_error true and no max_tokens", async () => {
         const agent = createMockAgent();
@@ -1697,9 +1953,6 @@ describe("session/close", () => {
                 cachedWriteTokens: 0,
             },
             configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
@@ -1766,9 +2019,6 @@ describe("session/delete", () => {
                 cachedWriteTokens: 0,
             },
             configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
@@ -1849,9 +2099,6 @@ describe("getOrCreateSession param change detection", () => {
                 cachedWriteTokens: 0,
             },
             configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
@@ -2009,39 +2256,10 @@ describe("usage_update computation", () => {
             }
             yield* messages;
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
-            cancelled: false,
-            cwd: "/test",
-            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-            modes: {
-                currentModeId: "default",
-                availableModes: [],
-            },
-            models: {
-                currentModelId: "default",
-                availableModels: [],
-            },
-            modelInfos: [],
-            settingsManager: {},
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            abortController: new AbortController(),
-            emitRawSDKMessages: false,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
     }
     it("used sums all token types as post-turn context occupancy proxy", async () => {
         const { agent, updates } = createMockAgentWithCapture();
@@ -2932,33 +3150,40 @@ describe("assembled assistant text fallback", () => {
             }
             yield* messages;
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
-            cancelled: false,
-            cwd: "/test",
-            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-            modes: { currentModeId: "default", availableModes: [] },
-            models: { currentModelId: "default", availableModels: [] },
-            modelInfos: [],
-            settingsManager: { dispose: vi.fn() },
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            abortController: new AbortController(),
-            emitRawSDKMessages: false,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
+    }
+    // Like injectSession, but the user-message echo is yielded at the position of
+    // the "ECHO" sentinel in `messages` rather than always first — so a test can
+    // reproduce the production ordering where the assistant stream arrives before
+    // the SDK replays the user message.
+    function injectSessionEchoAt(agent, messages) {
+        const input = new Pushable();
+        async function* messageGenerator() {
+            const iter = input[Symbol.asyncIterator]();
+            const { value: userMessage } = await iter.next();
+            for (const m of messages) {
+                if (m === "ECHO") {
+                    yield {
+                        type: "user",
+                        message: userMessage.message,
+                        parent_tool_use_id: null,
+                        uuid: userMessage.uuid,
+                        session_id: "test-session",
+                        isReplay: true,
+                    };
+                }
+                else {
+                    yield m;
+                }
+            }
+        }
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
+            input,
+        });
     }
     function messageChunkTexts(updates) {
         return updates
@@ -2994,6 +3219,25 @@ describe("assembled assistant text fallback", () => {
         ]);
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
         // Only the two streamed deltas — the assembled block is filtered out.
+        expect(messageChunkTexts(updates)).toEqual(["hello ", "world"]);
+    });
+    it("dedupes streamed text even when the stream arrives before the user echo", async () => {
+        const { agent, updates } = createMockAgentWithCapture();
+        // Production ordering: the SDK emits the assistant's stream events before it
+        // replays the user message that activates the turn. The streamed-id tracking
+        // must survive activation, or the consolidated block is re-emitted as a
+        // duplicate (regression from the persistent-consumer rework).
+        injectSessionEchoAt(agent, [
+            messageStart("msg-streamed"),
+            textDelta("hello "),
+            textDelta("world"),
+            "ECHO",
+            assistantMessage("msg-streamed", [{ type: "text", text: "hello world" }]),
+            result(),
+            idle,
+        ]);
+        await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+        // Still just the two streamed deltas — no duplicated assembled block.
         expect(messageChunkTexts(updates)).toEqual(["hello ", "world"]);
     });
     it("dedupes per block type: streamed text is dropped but an un-streamed thinking block in the same message is forwarded", async () => {
@@ -3098,33 +3342,11 @@ describe("emitRawSDKMessages", () => {
             }
             yield* messages;
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
-            cancelled: false,
-            cwd: "/test",
-            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-            modes: { currentModeId: "default", availableModes: [] },
-            models: { currentModelId: "default", availableModels: [] },
-            modelInfos: [],
-            settingsManager: { dispose: vi.fn() },
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            abortController: new AbortController(),
             emitRawSDKMessages,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
     }
     function createResultMessage() {
         return {
@@ -3204,6 +3426,9 @@ describe("emitRawSDKMessages", () => {
             { type: "system", subtype: "session_state_changed", state: "idle" },
         ], [{ type: "system" }]);
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+        // prompt() resolves at the turn's result; the trailing idle is forwarded by
+        // the consumer afterward, so wait for it to drain before asserting.
+        await agent.sessions["test-session"]?.consumer;
         const sdkMessages = extNotifications.filter((n) => n.method === "_claude/sdkMessage");
         // All system messages should match (compact_boundary + status + session_state_changed)
         const systemMessages = sdkMessages.filter((n) => n.params.message.type === "system");
@@ -3232,6 +3457,9 @@ describe("emitRawSDKMessages", () => {
             { type: "system", subtype: "session_state_changed", state: "idle" },
         ], [{ type: "result", origin: "task-notification" }]);
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+        // The task-notification result arrives after the user-turn result that
+        // resolves prompt(); wait for the consumer to drain it before asserting.
+        await agent.sessions["test-session"]?.consumer;
         const sdkMessages = extNotifications.filter((n) => n.method === "_claude/sdkMessage");
         expect(sdkMessages).toHaveLength(1);
         expect(sdkMessages[0].params.message.origin.kind).toBe("task-notification");
@@ -3244,6 +3472,9 @@ describe("emitRawSDKMessages", () => {
             { type: "system", subtype: "session_state_changed", state: "idle" },
         ], [{ type: "result" }]);
         await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+        // The second (task-notification) result arrives after the one that resolves
+        // prompt(); wait for the consumer to drain it before asserting.
+        await agent.sessions["test-session"]?.consumer;
         const sdkMessages = extNotifications.filter((n) => n.method === "_claude/sdkMessage");
         expect(sdkMessages).toHaveLength(2);
     });
@@ -3276,33 +3507,10 @@ describe("result origin handling", () => {
             }
             yield* messages;
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
-            cancelled: false,
-            cwd: "/test",
-            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-            modes: { currentModeId: "default", availableModes: [] },
-            models: { currentModelId: "default", availableModels: [] },
-            modelInfos: [],
-            settingsManager: { dispose: vi.fn() },
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            abortController: new AbortController(),
-            emitRawSDKMessages: false,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
     }
     function createAssistantMessage() {
         return {
@@ -3437,33 +3645,10 @@ describe("memory_recall handling", () => {
             }
             yield* messages;
         }
-        agent.sessions["test-session"] = {
-            query: messageGenerator(),
+        agent.sessions["test-session"] = mockSessionState({
+            query: wrapQuery(messageGenerator()),
             input,
-            cancelled: false,
-            cwd: "/test",
-            sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
-            modes: { currentModeId: "default", availableModes: [] },
-            models: { currentModelId: "default", availableModels: [] },
-            modelInfos: [],
-            settingsManager: { dispose: vi.fn() },
-            accumulatedUsage: {
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cachedWriteTokens: 0,
-            },
-            configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
-            abortController: new AbortController(),
-            emitRawSDKMessages: false,
-            contextWindowSize: 200000,
-            taskState: new Map(),
-            toolUseCache: {},
-            messageIdToUuid: new Map(),
-        };
+        });
     }
     function createResult() {
         return {
@@ -3665,9 +3850,6 @@ describe("post-error recovery", () => {
                 cachedWriteTokens: 0,
             },
             configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,
@@ -3679,23 +3861,22 @@ describe("post-error recovery", () => {
     }
     it("drains a failed turn's trailing idle so the next prompt is not short-circuited", async () => {
         const agent = createMockAgent();
-        const { interrupt } = injectTwoTurnSession(agent, [
+        injectTwoTurnSession(agent, [
             createResultMessage({
                 subtype: "success",
                 stop_reason: "end_turn",
                 is_error: true,
                 result: "boom",
             }),
-            // Trailing idle from the failed turn. Without draining, the next
-            // prompt's first query.next() would consume this and short-circuit
-            // to end_turn with zero usage (issue #654).
+            // Trailing idle from the failed turn. The persistent consumer keeps
+            // reading and absorbs this idle (no active turn to settle), so the next
+            // prompt starts clean rather than consuming a stale idle (issue #654).
             { type: "system", subtype: "session_state_changed", state: "idle" },
         ]);
         await expect(agent.prompt({
             sessionId: "test-session",
             prompt: [{ type: "text", text: "first" }],
         })).rejects.toThrow();
-        expect(interrupt).toHaveBeenCalled();
         const second = await agent.prompt({
             sessionId: "test-session",
             prompt: [{ type: "text", text: "second" }],
@@ -3704,7 +3885,7 @@ describe("post-error recovery", () => {
         expect(second.usage?.inputTokens).toBe(10);
         expect(second.usage?.outputTokens).toBe(5);
     });
-    it("cancels all queued pending prompts when a turn errors", async () => {
+    it("rejects only the failed turn; a queued prompt still runs", async () => {
         const agent = createMockAgent();
         injectTwoTurnSession(agent, [
             createResultMessage({
@@ -3715,23 +3896,402 @@ describe("post-error recovery", () => {
             }),
             { type: "system", subtype: "session_state_changed", state: "idle" },
         ]);
-        // Simulate two prompts already queued behind the running turn. Both
-        // resolvers should fire with `true` (cancelled) when the running
-        // prompt errors, and the map should be cleared.
-        const session = agent.sessions["test-session"];
-        let resolveA;
-        let resolveB;
-        const pendingA = new Promise((r) => (resolveA = r));
-        const pendingB = new Promise((r) => (resolveB = r));
-        session.pendingMessages.set("uuid-a", { resolve: resolveA, order: 0 });
-        session.pendingMessages.set("uuid-b", { resolve: resolveB, order: 1 });
-        await expect(agent.prompt({
+        // With a persistent consumer a turn-level error no longer poisons the
+        // stream, so a prompt queued behind the failing one runs to completion
+        // instead of being cancelled.
+        const first = agent.prompt({
             sessionId: "test-session",
             prompt: [{ type: "text", text: "first" }],
-        })).rejects.toThrow();
-        await expect(pendingA).resolves.toBe(true);
-        await expect(pendingB).resolves.toBe(true);
-        expect(session.pendingMessages.size).toBe(0);
+        });
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await expect(first).rejects.toThrow();
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+    });
+    it("hands off to a queued prompt when the next turn starts without a trailing idle", async () => {
+        const agent = createMockAgent();
+        // turn 1 produces a result but NO trailing idle — the SDK goes straight to
+        // echoing turn 2. The consumer must settle turn 1 (end_turn) on that echo
+        // (the hand-off path) rather than letting it hang until turn 2's idle.
+        injectTwoTurnSession(agent, [
+            createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false }),
+        ]);
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await expect(first).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+    });
+    it("does not let a settled turn's lagging idle resolve the next turn early (issue #773 race)", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                // Turn 1's terminal result settles its prompt() immediately (#773).
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                // Turn 2 is echoed and activated BEFORE turn 1's trailing idle arrives.
+                const u2 = await iter.next();
+                yield userEcho(u2.value);
+                // This lagging idle belongs to turn 1, not turn 2. It must be absorbed,
+                // not used to settle the freshly-activated turn 2 (which would resolve
+                // turn 2 with end_turn and the reset, zero usage before its result).
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+                // Turn 2's own result is what should settle it, carrying real usage.
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        expect(first.stopReason).toBe("end_turn");
+        const second = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        expect(second.stopReason).toBe("end_turn");
+        // If turn 1's lagging idle had settled turn 2, it would have resolved with
+        // the reset (zero) usage before turn 2's result accumulated; turn 2's real
+        // result carries 10 input tokens.
+        expect(second.usage?.inputTokens).toBe(10);
+    });
+    it("rejects later prompts after the query stream errors instead of hanging on a dead consumer", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                // The next prompt drives the stream, which then errors with a
+                // transport failure that is NOT a process death.
+                await iter.next();
+                throw new Error("stream decode error");
+            }
+            return messageGenerator();
+        });
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        expect(first.stopReason).toBe("end_turn");
+        // The in-flight prompt rejects when the stream errors rather than hanging.
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "second" }] })).rejects.toThrow();
+        // A subsequent prompt rejects up front (the dead consumer is not restarted
+        // on the exhausted stream, which would otherwise hang or fake an end_turn).
+        await expect(agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "third" }] })).rejects.toThrow(/start a new session/);
+        // The broken stream's resources are released even though the session husk
+        // stays in the map for the clear error above: the subprocess/query is closed
+        // and the settings watchers disposed. The abortController is left alone — it
+        // may be client-owned, so we don't abort it on a spontaneous stream end (only
+        // teardownSession does, on explicit close).
+        const session = agent.sessions["test-session"];
+        expect(session.query.close).toHaveBeenCalled();
+        expect(session.settingsManager.dispose).toHaveBeenCalled();
+        expect(session.abortController.signal.aborted).toBe(false);
+    });
+    // Poll a condition across microtask/timer turns, so a test can wait for the
+    // persistent consumer to reach a particular state (e.g. a turn became active,
+    // or the stream closed) without coupling to its internal scheduling.
+    const waitFor = async (cond) => {
+        for (let i = 0; i < 200; i++) {
+            if (cond())
+                return;
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        throw new Error("waitFor timed out");
+    };
+    it("settles a cancelled turn as 'cancelled' even when the next prompt's echo arrives first", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value); // turn 1 active
+                // Turn 1's trailing idle never arrives (the cancel's interrupt is a
+                // no-op here); instead the SDK echoes turn 2 first, forcing the hand-off
+                // path to settle turn 1.
+                const u2 = await iter.next();
+                yield userEcho(u2.value); // turn 2's echo hands off turn 1
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        // Cancel turn 1 while it is the active turn, then send turn 2. Turn 2's echo
+        // hands off turn 1 — which must settle "cancelled", not "end_turn".
+        await agent.cancel({ sessionId: "test-session" });
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(second).resolves.toEqual(expect.objectContaining({ stopReason: "end_turn" }));
+    });
+    it("ignores cancel() after the query stream has closed (no interrupt on a dead query)", async () => {
+        const agent = createMockAgent();
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+                // generator returns → done → closeQueryStream marks queryClosed.
+            }
+            return messageGenerator();
+        });
+        const first = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        expect(first.stopReason).toBe("end_turn");
+        await waitFor(() => agent.sessions["test-session"]?.queryClosed === true);
+        // cancel() must be a no-op and must NOT interrupt the finished query.
+        await expect(agent.cancel({ sessionId: "test-session" })).resolves.toBeUndefined();
+        expect(agent.sessions["test-session"].query.interrupt).not.toHaveBeenCalled();
+        // A normal stream end closes the query but does NOT abort the (possibly
+        // client-owned) abort controller — only explicit teardown does.
+        expect(agent.sessions["test-session"].query.close).toHaveBeenCalled();
+        expect(agent.sessions["test-session"].abortController.signal.aborted).toBe(false);
+    });
+    it("settles a turn that ends via the stream-done path even if releasing resources throws", async () => {
+        const agent = createMockAgent();
+        // The turn is activated by its echo but the stream then ends with NO terminal
+        // result — so it settles in the consumer's `done` branch, not at a result.
+        // settingsManager.dispose() throws during closeQueryStream; because the done
+        // branch settles the turn BEFORE releasing resources, the prompt still
+        // resolves end_turn rather than being rejected when the cleanup failure lands
+        // in the consumer's catch (release-before-settle would reject it).
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value);
+                // generator returns → done (no result/idle) → done branch settles the
+                // active turn, then closeQueryStream → dispose() throws.
+            }
+            return messageGenerator();
+        }, {
+            settingsManager: {
+                dispose: vi.fn(() => {
+                    throw new Error("dispose boom");
+                }),
+            },
+        });
+        const response = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        expect(response.stopReason).toBe("end_turn");
+    });
+    it("rejects (not 'cancelled') a prompt enqueued after a cancel when the stream then ends", async () => {
+        const agent = createMockAgent();
+        let releaseEnd;
+        const endGate = new Promise((resolve) => (releaseEnd = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value); // turn 1 active
+                // Hold the stream open until the test has cancelled turn 1 and enqueued
+                // turn 2, then end it WITHOUT ever echoing turn 2.
+                await endGate;
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        await agent.cancel({ sessionId: "test-session" });
+        // Turn 2 is enqueued AFTER the cancel — it was not part of the cancellation.
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        releaseEnd(); // stream ends -> done branch settles turn 1 + rejects turn 2
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(second).rejects.toThrow(/start a new session/);
+    });
+    it("settles a no-echo command (/compact) submitted right after a cancel", async () => {
+        // Regression: after cancelling turn 1, session.cancelled lingers until the
+        // next activation. A /compact submitted next never echoes its uuid, so it
+        // can only be settled by head-promotion — which the old `!session.cancelled`
+        // gate blocked, hanging the prompt. The orphan-count gate promotes it (no
+        // orphans are expected since the cancel removed no queued turns).
+        const agent = createMockAgent();
+        let releaseAfterCancel;
+        const afterCancel = new Promise((resolve) => (releaseAfterCancel = resolve));
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value); // turn 1 active
+                await afterCancel; // wait until the test has cancelled turn 1
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // settles turn 1 cancelled
+                await iter.next(); // /compact's pushed message — never echoed
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        await agent.cancel({ sessionId: "test-session" });
+        releaseAfterCancel();
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        // session.cancelled is still true here (turn 1 settled, nothing re-activated).
+        // The /compact result must still settle via head-promotion.
+        const compact = await agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        expect(compact.stopReason).toBe("end_turn");
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("skips the orphan result of a cancelled queued turn instead of misattributing it", async () => {
+        // Turn 1 active, turn 2 queued. cancel() settles+removes turn 2 but its
+        // message was already pushed, so the SDK still emits turn 2's result (an
+        // orphan). That orphan must be SKIPPED — not promoted onto the next prompt —
+        // so a later turn 3 resolves with its OWN usage, not the orphan's.
+        const agent = createMockAgent();
+        let afterCancelAndQueue;
+        const gate = new Promise((resolve) => (afterCancelAndQueue = resolve));
+        const orphanResult = createResultMessage({
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+        });
+        orphanResult.usage.input_tokens = 999; // distinct so misattribution is visible
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value); // turn 1 active
+                await iter.next(); // turn 2's pushed message (will be cancelled+removed)
+                await gate; // wait until the test cancels (removing turn 2) and queues turn 3
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield orphanResult; // turn 2's orphan result — must be skipped, not promote turn 3
+                const u3 = await iter.next();
+                yield userEcho(u3.value); // turn 3 echo activates it
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false }); // usage 10
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" }); // removes turn 2 -> pendingOrphanResults = 1
+        const third = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "third" }],
+        });
+        afterCancelAndQueue();
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const thirdResult = await third;
+        expect(thirdResult.stopReason).toBe("end_turn");
+        // Turn 3's own result carries 10 input tokens; the orphan's 999 must not leak.
+        expect(thirdResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
+    });
+    it("drains the orphan count, then promotes a no-echo /compact while still cancelled", async () => {
+        // The case that ONLY the orphan-count gate handles (the old `!cancelled`
+        // gate would hang it): cancel removes a queued turn (count=1), its orphan
+        // result drains the count to 0, and THEN a no-echo /compact result arrives
+        // while session.cancelled is still true. The count is 0, so /compact is
+        // promoted (and activating it clears `cancelled`) rather than skipped.
+        const agent = createMockAgent();
+        let release;
+        const gate = new Promise((resolve) => (release = resolve));
+        const orphanResult = createResultMessage({
+            subtype: "success",
+            stop_reason: "end_turn",
+            is_error: false,
+        });
+        orphanResult.usage.input_tokens = 999;
+        injectGeneratorSession(agent, (input) => {
+            async function* messageGenerator() {
+                const iter = input[Symbol.asyncIterator]();
+                const u1 = await iter.next();
+                yield userEcho(u1.value); // turn 1 active
+                await iter.next(); // turn 2's pushed message (cancelled + removed)
+                await gate; // wait until the test cancels (count=1) and sends /compact
+                yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1 settles cancelled
+                yield orphanResult; // turn 2's orphan — drains the count to 0
+                await iter.next(); // /compact's pushed message — never echoes its uuid
+                yield {
+                    type: "system",
+                    subtype: "status",
+                    status: "compacting",
+                    session_id: "test-session",
+                };
+                // session.cancelled is STILL true here; the drained count (0) lets this
+                // promote rather than the `!cancelled` gate blocking it.
+                yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+                yield { type: "system", subtype: "session_state_changed", state: "idle" };
+            }
+            return messageGenerator();
+        });
+        const first = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "first" }],
+        });
+        await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+        const second = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "second" }],
+        });
+        await waitFor(() => (agent.sessions["test-session"]?.turnQueue?.length ?? 0) >= 2);
+        await agent.cancel({ sessionId: "test-session" }); // removes turn 2 -> pendingOrphanResults = 1
+        const compact = agent.prompt({
+            sessionId: "test-session",
+            prompt: [{ type: "text", text: "/compact" }],
+        });
+        release();
+        await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+        await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+        const compactResult = await compact;
+        expect(compactResult.stopReason).toBe("end_turn");
+        // /compact settled with its OWN result (10 tokens), proving the orphan was
+        // skipped — not promoted onto the /compact turn (which would leak its 999).
+        expect(compactResult.usage?.inputTokens).toBe(10);
+        await agent.sessions["test-session"]?.consumer;
     });
 });
 describe("session/cancel wedge recovery (issue #680)", () => {
@@ -3796,9 +4356,6 @@ describe("session/cancel wedge recovery (issue #680)", () => {
                 cachedWriteTokens: 0,
             },
             configOptions: [],
-            promptRunning: false,
-            pendingMessages: new Map(),
-            nextPendingOrder: 0,
             abortController: new AbortController(),
             emitRawSDKMessages: false,
             contextWindowSize: 200000,

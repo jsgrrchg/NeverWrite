@@ -2775,6 +2775,7 @@ describe("chatStore", () => {
                                         options: [
                                             {
                                                 label: "Safe",
+                                                value: "safe",
                                                 description: "Use the narrow scope.",
                                             },
                                         ],
@@ -11097,6 +11098,7 @@ describe("chatStore", () => {
                     options: [
                         {
                             label: "Safe",
+                            value: "safe",
                             description: "Conservative option",
                         },
                     ],
@@ -11204,6 +11206,7 @@ describe("chatStore", () => {
                     options: [
                         {
                             label: "Safe",
+                            value: "safe",
                             description: "Conservative option",
                         },
                     ],
@@ -11276,6 +11279,7 @@ describe("chatStore", () => {
                     options: [
                         {
                             label: "Safe",
+                            value: "safe",
                             description: "Conservative option",
                         },
                     ],
@@ -11322,6 +11326,7 @@ describe("chatStore", () => {
                     options: [
                         {
                             label: "Safe",
+                            value: "safe",
                             description: "Conservative option",
                         },
                     ],
@@ -11838,6 +11843,7 @@ describe("chatStore", () => {
                     options: [
                         {
                             label: "Safe",
+                            value: "safe",
                             description: "Use the narrow scope.",
                         },
                     ],
@@ -16831,6 +16837,7 @@ describe("chatStore", () => {
                     options: [
                         {
                             label: "Safe",
+                            value: "safe",
                             description: "Conservative option",
                         },
                     ],
