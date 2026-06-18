@@ -15,6 +15,8 @@ import {
 } from "../../app/detachedWindows";
 import { clearFileTreeSelection } from "../../app/utils/navigation";
 import {
+    isChatTab,
+    selectEditorPaneActiveTab,
     selectFocusedPaneId,
     selectLeafPaneIds,
     useEditorStore,
@@ -31,7 +33,10 @@ import {
     AGENT_SIDEBAR_DRAG_EVENT,
     type AgentSidebarDragDetail,
 } from "../ai/agentSidebarDragEvents";
+import { isCancellableChatTurnStatus } from "../ai/chatTurnStatus";
 import { openOrMoveChatSessionAtDropTarget } from "../ai/chatPaneMovement";
+import { useChatStore } from "../ai/store/chatStore";
+import type { AIChatSessionStatus } from "../ai/types";
 import { WorkspaceSplitContainer } from "./WorkspaceSplitContainer";
 import {
     getWorkspaceFileDropPaneId,
@@ -48,6 +53,11 @@ import {
 } from "./workspaceTabDropPreview";
 
 const AGENT_SIDEBAR_DROP_SOURCE_PANE_ID = "__agents-sidebar__";
+
+interface ActiveAgentStopTarget {
+    sessionId: string | null;
+    status: AIChatSessionStatus | null;
+}
 
 function resolveFileTreeFolderAtPoint(x: number, y: number): string | null {
     const els = document.elementsFromPoint(x, y);
@@ -240,6 +250,18 @@ export function MultiPaneWorkspace() {
     const leafPaneIds = useEditorStore(useShallow(selectLeafPaneIds));
     const layoutTree = useEditorStore((state) => state.layoutTree);
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const activeChatSessionId = useEditorStore((state) => {
+        const activeTab = selectEditorPaneActiveTab(
+            state,
+            selectFocusedPaneId(state),
+        );
+        return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
+    });
+    const activeChatSessionStatus = useChatStore((state) =>
+        activeChatSessionId
+            ? (state.sessionsById[activeChatSessionId]?.status ?? null)
+            : null,
+    );
     const refreshVaultStructure = useVaultStore(
         (state) => state.refreshStructure,
     );
@@ -249,7 +271,47 @@ export function MultiPaneWorkspace() {
     const [externalFileDropPaneId, setExternalFileDropPaneId] = useState<
         string | null
     >(null);
+    const activeAgentStopRef = useRef<ActiveAgentStopTarget>({
+        sessionId: null,
+        status: null,
+    });
     const visiblePaneCount = Math.max(1, leafPaneIds.length);
+
+    useEffect(() => {
+        activeAgentStopRef.current = {
+            sessionId: activeChatSessionId,
+            status: activeChatSessionStatus,
+        };
+    }, [activeChatSessionId, activeChatSessionStatus]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.key !== "Escape") {
+                return;
+            }
+
+            if (
+                event.metaKey ||
+                event.ctrlKey ||
+                event.altKey ||
+                event.shiftKey
+            ) {
+                return;
+            }
+
+            const { sessionId, status } = activeAgentStopRef.current;
+            if (!sessionId || !isCancellableChatTurnStatus(status)) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            void useChatStore.getState().stopStreaming(sessionId);
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, []);
 
     useLayoutEffect(() => {
         const label = getCurrentWindowLabel();
