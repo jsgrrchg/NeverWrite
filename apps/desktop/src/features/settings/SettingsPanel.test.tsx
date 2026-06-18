@@ -428,6 +428,8 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Ctrl+Shift+0")).toBeInTheDocument();
         expect(screen.getByText("Add Selection to Chat")).toBeInTheDocument();
         expect(screen.getByText("Ctrl+L")).toBeInTheDocument();
+        expect(screen.getByText("Stop active agent")).toBeInTheDocument();
+        expect(screen.getByText("Escape")).toBeInTheDocument();
     });
 
     it("hides the inline close button in standalone Windows settings", () => {

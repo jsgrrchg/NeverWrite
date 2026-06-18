@@ -15,6 +15,7 @@ export type ShortcutActionId =
     | "open_vault"
     | "new_note"
     | "new_agent"
+    | "stop_active_agent"
     | "new_terminal"
     | "new_tab"
     | "close_tab"
@@ -122,6 +123,15 @@ const shortcutDefinitions = [
         bindings: {
             macos: [{ key: "n", modifiers: ["meta", "shift"] }],
             windows: [{ key: "n", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "stop_active_agent",
+        label: "Stop active agent",
+        category: "AI",
+        bindings: {
+            macos: [{ key: "Escape" }],
+            windows: [{ key: "Escape" }],
         },
     },
     {
@@ -440,6 +450,7 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "open_vault",
     "new_note",
     "new_agent",
+    "stop_active_agent",
     "new_terminal",
     "new_tab",
     "reopen_closed_tab",
