@@ -13107,6 +13107,91 @@ mod tests {
     }
 
     #[test]
+    fn user_input_response_accepts_only_per_question_custom_answer() {
+        let fields = HashMap::from([(
+            "question_0_custom".to_string(),
+            ElicitationFieldSpec {
+                kind: ElicitationFieldKind::String,
+                option_values_by_label: HashMap::new(),
+            },
+        )]);
+
+        let response = create_elicitation_response_from_user_input(
+            Some("accept"),
+            HashMap::from([(
+                "question_0_custom".to_string(),
+                vec!["Use my own approach".to_string()],
+            )]),
+            &fields,
+        )
+        .unwrap();
+
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("question_0_custom"),
+            Some(&ElicitationContentValue::String(
+                "Use my own approach".to_string()
+            ))
+        );
+        assert_eq!(content.len(), 1);
+    }
+
+    #[test]
+    fn user_input_response_preserves_selection_and_custom_answer_fields() {
+        let fields = HashMap::from([
+            (
+                "question_0".to_string(),
+                ElicitationFieldSpec {
+                    kind: ElicitationFieldKind::String,
+                    option_values_by_label: HashMap::from([(
+                        "Safe".to_string(),
+                        "safe".to_string(),
+                    )]),
+                },
+            ),
+            (
+                "question_0_custom".to_string(),
+                ElicitationFieldSpec {
+                    kind: ElicitationFieldKind::String,
+                    option_values_by_label: HashMap::new(),
+                },
+            ),
+        ]);
+
+        let response = create_elicitation_response_from_user_input(
+            Some("accept"),
+            HashMap::from([
+                ("question_0".to_string(), vec!["Safe".to_string()]),
+                (
+                    "question_0_custom".to_string(),
+                    vec!["Use my own approach".to_string()],
+                ),
+            ]),
+            &fields,
+        )
+        .unwrap();
+
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("question_0"),
+            Some(&ElicitationContentValue::String("safe".to_string()))
+        );
+        assert_eq!(
+            content.get("question_0_custom"),
+            Some(&ElicitationContentValue::String(
+                "Use my own approach".to_string()
+            ))
+        );
+        assert_eq!(content.len(), 2);
+    }
+
+    #[test]
     fn user_input_actions_map_to_elicitation_decline_and_cancel() {
         let fields = HashMap::new();
         let decline =
