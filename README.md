@@ -5,6 +5,8 @@
 
 [Important note about Claude subscription usage in NeverWrite starting June 15, 2026](https://github.com/jsgrrchg/NeverWrite/discussions/83)
   - Update: Claude delayed their decision, you can continue to use claude native integration inside NeverWrite. More info in the linked discussion.
+NeverWrite will deprecate gemini acp starting from the next update. Google is redirecting users to antigravity cli, close source and with no support to acp, so there's no clear path for supporting google's models in third party applications. Please consider pressuring google about this, there's not much I can do.
+For more information, please read this discussion: [https://github.com/jsgrrchg/NeverWrite/discussions/241]
 ----
 
 NeverWrite is a local-first knowledge workspace for people who need to handle workflows with multiple parallel agents and subagents. Built like a code editor, but for markdown. It has inline review changes, like Cursor and others. Please help me test it!
