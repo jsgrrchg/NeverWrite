@@ -236,6 +236,9 @@ export function FloatingSelectionToolbar({
                     aria-label={button.title}
                     onMouseDown={(event) => {
                         event.preventDefault();
+                    }}
+                    onClick={(event) => {
+                        event.preventDefault();
                         onAction(button.action);
                     }}
                     style={{
@@ -283,6 +286,9 @@ export function FloatingSelectionToolbar({
                         title={`Add to Chat (${addToChatShortcut})`}
                         aria-label="Add to Chat"
                         onMouseDown={(event) => {
+                            event.preventDefault();
+                        }}
+                        onClick={(event) => {
                             event.preventDefault();
                             onAddToChat();
                         }}

@@ -385,6 +385,10 @@ export function Editor({
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
     const spellcheckRequestIdRef = useRef(0);
     const didLogCoordinateLookupErrorRef = useRef(false);
+    const selectionToolbarMouseSelectionActiveRef = useRef(false);
+    const selectionToolbarMouseSelectionCleanupRef = useRef<(() => void) | null>(
+        null,
+    );
     const [, setEditorView] = useState<EditorView | null>(null);
     const lastLiveNoteCacheKeyRef = useRef<string | null>(null);
 
@@ -1520,6 +1524,14 @@ export function Editor({
 
     const updateSelectionToolbar = useCallback(
         (view: EditorView | null) => {
+            if (selectionToolbarMouseSelectionActiveRef.current) {
+                if (useEditorStore.getState().currentSelection !== null) {
+                    useEditorStore.getState().clearCurrentSelection();
+                }
+                setSelectionToolbar((prev) => (prev === null ? prev : null));
+                return;
+            }
+
             const hasActiveSelection =
                 view &&
                 activeTabRef.current &&
@@ -2760,6 +2772,61 @@ export function Editor({
                 updateSelectionToolbar(nextView);
                 updateWikilinkSuggester(nextView);
             };
+            const handleEditorSelectionMouseDown = (event: MouseEvent) => {
+                if (event.defaultPrevented) return;
+                if (event.button !== 0) return;
+                if (isNativeScrollbarMouseDown(nextView, event)) return;
+
+                const target = getEventTargetElement(event.target);
+                if (!target || !nextView.contentDOM.contains(target)) return;
+                if (
+                    target.closest(EDITOR_INTERACTIVE_PREVIEW_SELECTOR) ||
+                    target.closest("[data-source-from][data-source-to]")
+                ) {
+                    return;
+                }
+
+                selectionToolbarMouseSelectionCleanupRef.current?.();
+                selectionToolbarMouseSelectionActiveRef.current = true;
+                if (useEditorStore.getState().currentSelection !== null) {
+                    useEditorStore.getState().clearCurrentSelection();
+                }
+                setSelectionToolbar((prev) => (prev === null ? prev : null));
+
+                const ownerDocument = nextView.dom.ownerDocument;
+                const finishMouseSelection = () => {
+                    selectionToolbarMouseSelectionActiveRef.current = false;
+                    selectionToolbarMouseSelectionCleanupRef.current?.();
+                    queueMicrotask(() => {
+                        if (viewRef.current !== nextView) return;
+                        updateSelectionToolbar(nextView);
+                        updateWikilinkSuggester(nextView);
+                    });
+                };
+
+                selectionToolbarMouseSelectionCleanupRef.current = () => {
+                    ownerDocument.removeEventListener(
+                        "mouseup",
+                        finishMouseSelection,
+                        true,
+                    );
+                    ownerDocument.defaultView?.removeEventListener(
+                        "blur",
+                        finishMouseSelection,
+                    );
+                    selectionToolbarMouseSelectionCleanupRef.current = null;
+                };
+
+                ownerDocument.addEventListener("mouseup", finishMouseSelection, {
+                    capture: true,
+                    once: true,
+                });
+                ownerDocument.defaultView?.addEventListener(
+                    "blur",
+                    finishMouseSelection,
+                    { once: true },
+                );
+            };
             const handleScrollbarMouseDown = (event: MouseEvent) => {
                 if (!isNativeScrollbarMouseDown(nextView, event)) return;
 
@@ -2850,11 +2917,18 @@ export function Editor({
                 handlePostScrollbarReanchorMouseDown,
                 true,
             );
+            nextView.dom.addEventListener(
+                "mousedown",
+                handleEditorSelectionMouseDown,
+                true,
+            );
             nextView.scrollDOM.addEventListener(
                 "mousedown",
                 handleScrollbarMouseDown,
             );
             selectionToolbarCleanupRef.current = () => {
+                selectionToolbarMouseSelectionActiveRef.current = false;
+                selectionToolbarMouseSelectionCleanupRef.current?.();
                 clearScrollbarDragSession(nextView);
                 pendingScrollbarReanchorRef.current = false;
                 suppressNextScrollbarReanchorClickRef.current = false;
@@ -2870,6 +2944,11 @@ export function Editor({
                 nextView.dom.removeEventListener(
                     "mousedown",
                     handlePostScrollbarReanchorMouseDown,
+                    true,
+                );
+                nextView.dom.removeEventListener(
+                    "mousedown",
+                    handleEditorSelectionMouseDown,
                     true,
                 );
                 nextView.scrollDOM.removeEventListener(
