@@ -136,8 +136,11 @@ export const baseTheme = EditorView.theme({
             backgroundColor: "transparent",
         },
     ".cm-activeLine": {
-        backgroundColor: "color-mix(in srgb, var(--accent) 3.5%, transparent)",
+        backgroundColor: "transparent",
         borderRadius: "8px",
+    },
+    "&.cm-focused .cm-activeLine": {
+        backgroundColor: "color-mix(in srgb, var(--accent) 3.5%, transparent)",
     },
     ".cm-activeLineGutter": {
         backgroundColor: "transparent",
