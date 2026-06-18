@@ -158,12 +158,18 @@ pub struct AiAvailableCommandsPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct AiUserInputQuestionOptionPayload {
     pub label: String,
-    pub description: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AiUserInputQuestionPayload {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_answer_id: Option<String>,
     pub header: String,
     pub question: String,
     pub is_other: bool,

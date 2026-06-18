@@ -246,11 +246,14 @@ export type AIChatMessageKind =
 
 export interface AIUserInputQuestionOption {
     label: string;
-    description: string;
+    value: string;
+    description?: string;
+    preview?: string;
 }
 
 export interface AIUserInputQuestion {
     id: string;
+    custom_answer_id?: string;
     header: string;
     question: string;
     is_other: boolean;

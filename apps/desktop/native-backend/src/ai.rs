@@ -5564,7 +5564,7 @@ fn map_elicitation_form_questions(
     Vec<AiUserInputQuestionPayload>,
     HashMap<String, ElicitationFieldSpec>,
 ) {
-    schema
+    let mapped_fields = schema
         .properties
         .iter()
         .map(|(id, property)| {
@@ -5574,13 +5574,20 @@ fn map_elicitation_form_questions(
                 .map(|items| {
                     items
                         .iter()
-                        .map(|option| (option.label.clone(), option.description.clone()))
+                        .flat_map(|option| {
+                            let mut values = vec![(option.label.clone(), option.value.clone())];
+                            if option.label != option.value {
+                                values.push((option.value.clone(), option.value.clone()));
+                            }
+                            values
+                        })
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
             (
                 AiUserInputQuestionPayload {
                     id: id.clone(),
+                    custom_answer_id: None,
                     header,
                     question,
                     is_other: false,
@@ -5597,14 +5604,47 @@ fn map_elicitation_form_questions(
                 ),
             )
         })
-        .fold(
-            (Vec::new(), HashMap::new()),
-            |(mut questions, mut fields), (question, (id, field))| {
-                questions.push(question);
-                fields.insert(id, field);
-                (questions, fields)
-            },
-        )
+        .collect::<Vec<_>>();
+    let field_ids = mapped_fields
+        .iter()
+        .map(|(question, _)| question.id.clone())
+        .collect::<HashSet<_>>();
+    let custom_answer_ids_by_parent = mapped_fields
+        .iter()
+        .filter_map(|(question, _)| {
+            let parent_id = elicitation_custom_answer_parent_id(&question.id)?;
+            field_ids
+                .contains(&parent_id)
+                .then(|| (parent_id, question.id.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    mapped_fields.into_iter().fold(
+        (Vec::new(), HashMap::new()),
+        |(mut questions, mut fields), (mut question, (id, field))| {
+            fields.insert(id.clone(), field);
+            if elicitation_custom_answer_parent_id(&id)
+                .is_some_and(|parent_id| field_ids.contains(&parent_id))
+            {
+                return (questions, fields);
+            }
+            if let Some(custom_answer_id) = custom_answer_ids_by_parent.get(&id) {
+                question.custom_answer_id = Some(custom_answer_id.clone());
+                question.is_other = true;
+            }
+            questions.push(question);
+            (questions, fields)
+        },
+    )
+}
+
+fn elicitation_custom_answer_parent_id(id: &str) -> Option<String> {
+    let index = id
+        .strip_prefix("question_")?
+        .strip_suffix("_custom")?
+        .parse::<usize>()
+        .ok()?;
+    Some(format!("question_{index}"))
 }
 
 fn elicitation_question_parts(
@@ -5624,20 +5664,14 @@ fn elicitation_question_parts(
                 .map(|items| {
                     items
                         .iter()
-                        .map(|item| AiUserInputQuestionOptionPayload {
-                            label: item.title.clone(),
-                            description: item.value.clone(),
-                        })
+                        .map(|item| elicitation_titled_option(&item.value, &item.title))
                         .collect::<Vec<_>>()
                 })
                 .or_else(|| {
                     schema.enum_values.as_ref().map(|values| {
                         values
                             .iter()
-                            .map(|value| AiUserInputQuestionOptionPayload {
-                                label: value.clone(),
-                                description: value.clone(),
-                            })
+                            .map(|value| elicitation_plain_option(value))
                             .collect::<Vec<_>>()
                     })
                 });
@@ -5693,11 +5727,15 @@ fn elicitation_question_parts(
             Some(vec![
                 AiUserInputQuestionOptionPayload {
                     label: "Yes".to_string(),
-                    description: "true".to_string(),
+                    value: "true".to_string(),
+                    description: None,
+                    preview: None,
                 },
                 AiUserInputQuestionOptionPayload {
                     label: "No".to_string(),
-                    description: "false".to_string(),
+                    value: "false".to_string(),
+                    description: None,
+                    preview: None,
                 },
             ]),
         ),
@@ -5706,18 +5744,12 @@ fn elicitation_question_parts(
                 MultiSelectItems::Untitled(items) => items
                     .values
                     .iter()
-                    .map(|value| AiUserInputQuestionOptionPayload {
-                        label: value.clone(),
-                        description: value.clone(),
-                    })
+                    .map(|value| elicitation_plain_option(value))
                     .collect(),
                 MultiSelectItems::Titled(items) => items
                     .options
                     .iter()
-                    .map(|item| AiUserInputQuestionOptionPayload {
-                        label: item.title.clone(),
-                        description: item.value.clone(),
-                    })
+                    .map(|item| elicitation_titled_option(&item.value, &item.title))
                     .collect(),
                 _ => Vec::new(),
             };
@@ -5741,6 +5773,40 @@ fn elicitation_question_parts(
             None,
         ),
     }
+}
+
+fn elicitation_plain_option(value: &str) -> AiUserInputQuestionOptionPayload {
+    AiUserInputQuestionOptionPayload {
+        label: value.to_string(),
+        value: value.to_string(),
+        description: None,
+        preview: None,
+    }
+}
+
+fn elicitation_titled_option(value: &str, title: &str) -> AiUserInputQuestionOptionPayload {
+    let (label, description) = elicitation_option_label_and_description(value, title)
+        .unwrap_or_else(|| (title.to_string(), None));
+
+    AiUserInputQuestionOptionPayload {
+        label,
+        value: value.to_string(),
+        description,
+        preview: None,
+    }
+}
+
+fn elicitation_option_label_and_description(
+    value: &str,
+    title: &str,
+) -> Option<(String, Option<String>)> {
+    for separator in [" \u{2014} ", " - "] {
+        let Some(description) = title.strip_prefix(value)?.strip_prefix(separator) else {
+            continue;
+        };
+        return Some((value.to_string(), Some(description.to_string())));
+    }
+    None
 }
 
 fn create_elicitation_response_from_user_input(
@@ -12469,9 +12535,22 @@ mod tests {
         );
         assert_eq!(
             payload
+                .pointer("/questions/1/options/0/value")
+                .and_then(Value::as_str),
+            Some("safe")
+        );
+        assert_eq!(payload.pointer("/questions/1/options/0/description"), None);
+        assert_eq!(
+            payload
                 .pointer("/questions/0/options/0/label")
                 .and_then(Value::as_str),
             Some("Yes")
+        );
+        assert_eq!(
+            payload
+                .pointer("/questions/0/options/0/value")
+                .and_then(Value::as_str),
+            Some("true")
         );
         cancel_user_input_waiters_matching(&waiters, |waiter| waiter.session_id == "session-1");
         let response = handle.join().unwrap().unwrap();
@@ -12480,6 +12559,49 @@ mod tests {
             !waiters.lock().unwrap().contains_key(&request_id),
             "waiter should be removed after cancellation"
         );
+    }
+
+    #[test]
+    fn elicitation_titled_options_split_claude_description_fallback() {
+        let option =
+            elicitation_titled_option("Grid layout", "Grid layout \u{2014} Cards in columns");
+
+        assert_eq!(option.label, "Grid layout");
+        assert_eq!(option.value, "Grid layout");
+        assert_eq!(option.description.as_deref(), Some("Cards in columns"));
+        assert_eq!(option.preview, None);
+    }
+
+    #[test]
+    fn acp_form_elicitation_groups_per_question_custom_answer() {
+        let schema = ElicitationSchema::new()
+            .property(
+                "question_0",
+                StringPropertySchema::new()
+                    .title("Scope")
+                    .description("Choose a scope")
+                    .one_of(vec![EnumOption::new("safe", "Safe")]),
+                false,
+            )
+            .property(
+                "question_0_custom",
+                StringPropertySchema::new()
+                    .title("Other")
+                    .description("Custom answer"),
+                false,
+            );
+
+        let (questions, fields) = map_elicitation_form_questions(&schema);
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].id, "question_0");
+        assert_eq!(
+            questions[0].custom_answer_id.as_deref(),
+            Some("question_0_custom")
+        );
+        assert!(questions[0].is_other);
+        assert!(fields.contains_key("question_0"));
+        assert!(fields.contains_key("question_0_custom"));
     }
 
     #[test]
