@@ -78,7 +78,7 @@ jobs:
                   EOF
 
             - name: Upload release body artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-body-${{ steps.meta.outputs.tag }}
                   path: release-body.md
@@ -370,21 +370,21 @@ jobs:
                     --install
 
             - name: Upload release asset artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-assets-${{ matrix.target }}
                   path: ${{ runner.temp }}/release-assets
                   if-no-files-found: error
 
             - name: Upload target metadata artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-target-metadata-${{ matrix.target }}
                   path: ${{ runner.temp }}/target-metadata/${{ matrix.target }}.json
                   if-no-files-found: error
 
             - name: Upload target feed artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-target-feeds-${{ matrix.target }}
                   path: ${{ runner.temp }}/release-assets/feeds
@@ -501,7 +501,7 @@ jobs:
                   cp "$firefox_zip" "$RUNNER_TEMP/web-clipper-assets/NeverWrite-Web-Clipper-${{ needs.prepare.outputs.tag }}-firefox-mv3.zip"
 
             - name: Upload browser extension release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-assets-web-clipper
                   path: ${{ runner.temp }}/web-clipper-assets
@@ -551,20 +551,20 @@ jobs:
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Download release body
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: release-body-${{ needs.prepare.outputs.tag }}
                   path: .artifacts/release-body
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
                   merge-multiple: true
 
             - name: Download target metadata
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-target-metadata-*
                   path: .artifacts/release-targets
@@ -623,21 +623,21 @@ jobs:
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Download target metadata
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-target-metadata-*
                   path: .artifacts/release-targets
                   merge-multiple: true
 
             - name: Download target feeds
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-target-feeds-*
                   path: .artifacts/feeds
                   merge-multiple: true
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
@@ -710,14 +710,14 @@ jobs:
                   EOF
 
             - name: Upload platform validation pack
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: platform-validation-pack-${{ needs.prepare.outputs.tag }}
                   path: dist/platform-validation/${{ needs.prepare.outputs.tag }}
                   if-no-files-found: error
 
             - name: Upload release asset size report
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: electron-release-asset-sizes-${{ needs.prepare.outputs.tag }}
                   path: dist/release-asset-sizes/${{ needs.prepare.outputs.tag }}
