@@ -9,7 +9,7 @@ Thanks for your interest in contributing to NeverWrite. This guide covers everyt
 | **Node.js** | 22+ | Required for desktop app and CI |
 | **npm** | 11+ | Package manager for `apps/desktop` |
 | **pnpm** | 10.33+ | Package manager for `apps/web-clipper` |
-| **Rust** | 1.94+ | Edition 2021 across all crates |
+| **Rust** | 1.96.0 | Pinned by `rust-toolchain.toml`; Edition 2021 across all crates |
 
 ### Platform-specific
 

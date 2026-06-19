@@ -7999,10 +7999,8 @@ fn update_auth_state(
         .anthropic_custom_headers
         .clone()
         .or_else(|| input.gateway_headers.clone());
-    let gateway_config_touched = runtime_id == CLAUDE_RUNTIME_ID
-        && (gateway_url_touched
-            || gateway_headers_patch.is_some()
-            || (input.anthropic_auth_token.is_some() && gateway_url_touched));
+    let gateway_config_touched =
+        runtime_id == CLAUDE_RUNTIME_ID && (gateway_url_touched || gateway_headers_patch.is_some());
     let gateway_base_url = input
         .gateway_base_url
         .as_ref()
