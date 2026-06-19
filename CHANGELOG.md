@@ -34,11 +34,31 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
-## Unreleased
+## [0.3.6] - 2026-06-19
+
+### Added
+
+- Added an Escape shortcut for stopping the focused agent, with shortcut settings coverage and safeguards so Escape still works correctly in dialogs, menus, and editable controls.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.47.0`.
+- Improved Claude ACP user-input prompts with option values, descriptions, previews, custom "Other" answers, and cleaner response handling.
+- Delayed the floating selection toolbar until mouse selection finishes so it no longer appears while dragging across editor text.
+- Hid the editor active-line highlight when the editor is not focused.
+
+### Fixed
+
+- Fixed drag-selection visibility in the editor.
+- Fixed context-menu submenus so moving across the hover gap keeps nested menus open, including left-opening submenus.
 
 ### Removed
 
 - Removed the Gemini ACP provider integration after upstream Gemini CLI subscription changes redirected users toward Antigravity, which does not expose ACP support for third-party apps.
+
+### Security
+
+- Updated DOMPurify dependency resolutions in the desktop app and Web Clipper.
 
 ## [0.3.5] - 2026-06-17
 
