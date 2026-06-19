@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 interface ChatFindBarProps {
     query: string;
@@ -16,6 +16,50 @@ function counterLabel(query: string, total: number, activeIndex: number): string
     if (!query) return "";
     if (total === 0) return "No results";
     return `${activeIndex + 1}/${total}`;
+}
+
+function FindIconButton({
+    ariaLabel,
+    title,
+    onClick,
+    disabled = false,
+    children,
+}: {
+    ariaLabel: string;
+    title: string;
+    onClick: () => void;
+    disabled?: boolean;
+    children: ReactNode;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            aria-label={ariaLabel}
+            title={title}
+            className="nw-control-trigger flex h-[26px] w-[26px] items-center justify-center rounded-md"
+            style={{
+                color: "var(--text-secondary)",
+                border: "none",
+                backgroundColor: "transparent",
+                opacity: disabled ? 0.4 : 1,
+            }}
+        >
+            <svg
+                width="12"
+                height="12"
+                viewBox="0 0 14 14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                {children}
+            </svg>
+        </button>
+    );
 }
 
 export function ChatFindBar({
@@ -111,87 +155,31 @@ export function ChatFindBar({
                 Aa
             </button>
 
-            <button
-                type="button"
+            <FindIconButton
                 onClick={onPrev}
                 disabled={disabled}
-                aria-label="Previous match"
+                ariaLabel="Previous match"
                 title="Previous match (Shift+Enter)"
-                className="nw-control-trigger flex h-[26px] w-[26px] items-center justify-center rounded-md"
-                style={{
-                    color: "var(--text-secondary)",
-                    border: "none",
-                    backgroundColor: "transparent",
-                    opacity: disabled ? 0.4 : 1,
-                }}
             >
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <path d="M3 9L7 5L11 9" />
-                </svg>
-            </button>
+                <path d="M3 9L7 5L11 9" />
+            </FindIconButton>
 
-            <button
-                type="button"
+            <FindIconButton
                 onClick={onNext}
                 disabled={disabled}
-                aria-label="Next match"
+                ariaLabel="Next match"
                 title="Next match (Enter)"
-                className="nw-control-trigger flex h-[26px] w-[26px] items-center justify-center rounded-md"
-                style={{
-                    color: "var(--text-secondary)",
-                    border: "none",
-                    backgroundColor: "transparent",
-                    opacity: disabled ? 0.4 : 1,
-                }}
             >
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <path d="M3 5L7 9L11 5" />
-                </svg>
-            </button>
+                <path d="M3 5L7 9L11 5" />
+            </FindIconButton>
 
-            <button
-                type="button"
+            <FindIconButton
                 onClick={onClose}
-                aria-label="Close find"
+                ariaLabel="Close find"
                 title="Close (Esc)"
-                className="nw-control-trigger flex h-[26px] w-[26px] items-center justify-center rounded-md"
-                style={{
-                    color: "var(--text-secondary)",
-                    border: "none",
-                    backgroundColor: "transparent",
-                }}
             >
-                <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 14 14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                >
-                    <path d="M3.5 3.5L10.5 10.5M10.5 3.5L3.5 10.5" />
-                </svg>
-            </button>
+                <path d="M3.5 3.5L10.5 10.5M10.5 3.5L3.5 10.5" />
+            </FindIconButton>
         </div>
     );
 }

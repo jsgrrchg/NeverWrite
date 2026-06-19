@@ -194,14 +194,12 @@ const caseInsensitiveCollator =
           })
         : null;
 
-function matchesQueryAt(
+function matchesCaseInsensitiveQueryAt(
     haystack: string,
     needle: string,
     index: number,
-    caseSensitive: boolean,
 ): boolean {
     const candidate = haystack.slice(index, index + needle.length);
-    if (caseSensitive) return candidate === needle;
 
     // Keep offsets in the original string. Lowercasing the full haystack can
     // change its UTF-16 length for some characters (for example, İ -> i + dot).
@@ -221,7 +219,7 @@ function findNextMatch(
 
     const lastStart = haystack.length - needle.length;
     for (let index = from; index <= lastStart; index++) {
-        if (matchesQueryAt(haystack, needle, index, false)) {
+        if (matchesCaseInsensitiveQueryAt(haystack, needle, index)) {
             return index;
         }
     }

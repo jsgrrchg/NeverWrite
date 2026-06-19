@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useChatStore } from "../store/chatStore";
 import {
@@ -9,8 +9,7 @@ import {
 } from "../sessionPresentation";
 import type { AIChatSession } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
-import { matchesShortcutAction } from "../../../app/shortcuts/registry";
-import { getDesktopPlatform } from "../../../app/utils/platform";
+import { useChatFindShortcut } from "./find/useChatFindShortcut";
 
 interface HistoryTranscriptViewerProps {
     historySessionId: string;
@@ -251,25 +250,10 @@ export function HistoryTranscriptViewer({
         setFindOpen(false);
     }, [historySessionId]);
 
-    // Cmd/Ctrl+F opens the finder while focus is inside this transcript.
-    useEffect(() => {
-        const root = rootRef.current;
-        if (!root) return;
-        const platform = getDesktopPlatform();
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (!matchesShortcutAction(event, "find_in_note", platform)) return;
-            event.preventDefault();
-            event.stopPropagation();
-            setFindOpen(true);
-            requestAnimationFrame(() => {
-                root.querySelector<HTMLInputElement>(
-                    '[role="search"] input',
-                )?.focus();
-            });
-        };
-        root.addEventListener("keydown", onKeyDown);
-        return () => root.removeEventListener("keydown", onKeyDown);
-    }, [historySessionId]);
+    const openFind = useCallback(() => {
+        setFindOpen(true);
+    }, []);
+    useChatFindShortcut({ rootRef, onOpen: openFind });
 
     if (!session) {
         return (

@@ -48,12 +48,12 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
-import { matchesShortcutAction } from "../../../app/shortcuts/registry";
 import { formatShortcutAction } from "../../../app/shortcuts/format";
 import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { useChatFindShortcut } from "./find/useChatFindShortcut";
 import {
     appendFileAttachmentPart,
     appendScreenshotPart,
@@ -511,28 +511,14 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         }
     }, [composerExpanded]);
 
-    // Cmd/Ctrl+F opens the chat finder. The listener lives on this view's root,
-    // so it only fires when focus is inside the chat (CodeMirror keeps its own
-    // "find in note" binding for the editor — no global collision).
-    useEffect(() => {
-        const root = rootRef.current;
-        if (!root) return;
-        const platform = getDesktopPlatform();
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (!matchesShortcutAction(event, "find_in_note", platform)) return;
-            if (composerExpanded) return;
-            event.preventDefault();
-            event.stopPropagation();
-            setFindOpen(true);
-            requestAnimationFrame(() => {
-                root.querySelector<HTMLInputElement>(
-                    '[role="search"] input',
-                )?.focus();
-            });
-        };
-        root.addEventListener("keydown", onKeyDown);
-        return () => root.removeEventListener("keydown", onKeyDown);
-    }, [composerExpanded, sessionId]);
+    const openFind = useCallback(() => {
+        setFindOpen(true);
+    }, []);
+    useChatFindShortcut({
+        rootRef,
+        disabled: composerExpanded,
+        onOpen: openFind,
+    });
 
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
