@@ -1528,6 +1528,7 @@ export function Editor({
                 if (useEditorStore.getState().currentSelection !== null) {
                     useEditorStore.getState().clearCurrentSelection();
                 }
+                syncSelectionLayerVisibility(view);
                 setSelectionToolbar((prev) => (prev === null ? prev : null));
                 return;
             }
