@@ -32,7 +32,7 @@ jobs:
             wget
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: ./.github/actions/setup-rust
 
       - name: Cache Rust build outputs
         uses: Swatinem/rust-cache@v2
@@ -57,7 +57,7 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: ./.github/actions/setup-rust
 
       - name: Cache Rust build outputs
         uses: Swatinem/rust-cache@v2

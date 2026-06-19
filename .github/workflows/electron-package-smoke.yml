@@ -44,7 +44,7 @@ jobs:
                   cache-dependency-path: apps/desktop/package-lock.json
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@1.96.0
+              uses: ./.github/actions/setup-rust
               with:
                   targets: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -154,7 +154,7 @@ jobs:
                   cache-dependency-path: apps/desktop/package-lock.json
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@1.96.0
+              uses: ./.github/actions/setup-rust
               with:
                   targets: x86_64-pc-windows-msvc
 
@@ -230,7 +230,7 @@ jobs:
                   cache-dependency-path: apps/desktop/package-lock.json
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@1.96.0
+              uses: ./.github/actions/setup-rust
               with:
                   targets: ${{ matrix.target }}
 
