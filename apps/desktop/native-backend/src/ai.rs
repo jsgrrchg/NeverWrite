@@ -1032,7 +1032,7 @@ impl NativeAi {
     pub(crate) fn new(event_tx: Sender<RpcOutput>) -> Self {
         #[cfg(test)]
         {
-            return Self::with_setup_store(event_tx, RuntimeSetupStore::in_memory_for_tests());
+            Self::with_setup_store(event_tx, RuntimeSetupStore::in_memory_for_tests())
         }
         #[cfg(not(test))]
         Self::with_setup_store(event_tx, RuntimeSetupStore::default())
@@ -2826,9 +2826,7 @@ impl NativeAcpClient {
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
             let managed = state.sessions.get_mut(session_id)?;
-            if managed.session.parent_session_id.is_none() {
-                return None;
-            }
+            managed.session.parent_session_id.as_ref()?;
             managed.active_turn_id = None;
             managed.session.status = AiSessionStatus::Idle;
             managed.session.closed_at = Some(epoch_millis_string());
@@ -5749,9 +5747,8 @@ fn cancel_user_input_waiters_matching(
         .map(|mut waiters| {
             let request_ids = waiters
                 .iter()
-                .filter_map(|(request_id, waiter)| {
-                    matches_waiter(waiter).then(|| request_id.clone())
-                })
+                .filter(|(_, waiter)| matches_waiter(waiter))
+                .map(|(request_id, _)| request_id.clone())
                 .collect::<Vec<_>>();
             request_ids
                 .into_iter()
@@ -5775,9 +5772,8 @@ fn cancel_url_elicitation_waiters_matching(
         .map(|mut waiters| {
             let request_ids = waiters
                 .iter()
-                .filter_map(|(request_id, waiter)| {
-                    matches_waiter(waiter).then(|| request_id.clone())
-                })
+                .filter(|(_, waiter)| matches_waiter(waiter))
+                .map(|(request_id, _)| request_id.clone())
                 .collect::<Vec<_>>();
             request_ids
                 .into_iter()
@@ -6652,16 +6648,13 @@ fn inherited_auth_method_applies_to_setup(
         return false;
     }
 
-    match setup.auth_method.as_deref() {
+    !matches!(
+        setup.auth_method.as_deref(),
         Some(selected_method)
             if is_local_auth_method(selected_method)
                 && selected_method != inherited_method
-                && !auth_method_has_local_config(setup, selected_method) =>
-        {
-            false
-        }
-        _ => true,
-    }
+                && !auth_method_has_local_config(setup, selected_method)
+    )
 }
 
 fn runtime_setup_load_error(error: String) -> String {
@@ -7353,33 +7346,33 @@ fn persisted_cli_auth_method_for_home_with_invalidated_at(
 }
 
 fn kilo_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    candidates.push(
-        home.join(".local")
-            .join("share")
-            .join("kilo")
-            .join("auth.json"),
-    );
+    let user_data_auth_file = home
+        .join(".local")
+        .join("share")
+        .join("kilo")
+        .join("auth.json");
 
     #[cfg(target_os = "windows")]
     {
-        candidates.push(
+        vec![
+            user_data_auth_file,
             std::env::var_os("APPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("AppData").join("Roaming"))
                 .join("kilo")
                 .join("auth.json"),
-        );
-        candidates.push(
             std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("AppData").join("Local"))
                 .join("kilo")
                 .join("auth.json"),
-        );
+        ]
     }
 
-    candidates
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![user_data_auth_file]
+    }
 }
 
 fn opencode_env_auth_keys() -> &'static [&'static str] {
@@ -7528,10 +7521,10 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .is_some_and(|value| !value.is_empty()),
         "gateway" => {
             setup.has_gateway_config
-                && !setup
+                && setup
                     .env
                     .get("ANTHROPIC_BEDROCK_BASE_URL")
-                    .is_some_and(|value| !value.is_empty())
+                    .is_none_or(|value| value.is_empty())
         }
         "gateway-bedrock" => setup
             .env
