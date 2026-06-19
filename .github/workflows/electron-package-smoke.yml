@@ -14,6 +14,7 @@ on:
             - apps/desktop/native-backend/**
             - vendor/codex-acp/**
             - vendor/Claude-agent-acp-upstream/**
+            - rust-toolchain.toml
             - .github/workflows/electron-package-smoke.yml
             - .github/workflows/release-desktop.yml
     workflow_dispatch:
@@ -43,7 +44,7 @@ jobs:
                   cache-dependency-path: apps/desktop/package-lock.json
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@stable
+              uses: dtolnay/rust-toolchain@1.96.0
               with:
                   targets: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -153,7 +154,7 @@ jobs:
                   cache-dependency-path: apps/desktop/package-lock.json
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@stable
+              uses: dtolnay/rust-toolchain@1.96.0
               with:
                   targets: x86_64-pc-windows-msvc
 
@@ -229,7 +230,7 @@ jobs:
                   cache-dependency-path: apps/desktop/package-lock.json
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@stable
+              uses: dtolnay/rust-toolchain@1.96.0
               with:
                   targets: ${{ matrix.target }}
 
