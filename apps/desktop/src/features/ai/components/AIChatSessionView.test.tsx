@@ -355,6 +355,30 @@ describe("AIChatSessionView", () => {
         expect(findButton).toHaveAttribute("aria-pressed", "false");
     });
 
+    it("closes chat find before Escape can stop the focused agent", async () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        const findButton = screen.getByRole("button", {
+            name: "Find in chat",
+        });
+        fireEvent.click(findButton);
+        expect(findButton).toHaveAttribute("aria-pressed", "true");
+
+        const escapeEvent = new KeyboardEvent("keydown", {
+            key: "Escape",
+            bubbles: true,
+            cancelable: true,
+        });
+        window.dispatchEvent(escapeEvent);
+
+        await waitFor(() => {
+            expect(findButton).toHaveAttribute("aria-pressed", "false");
+        });
+        expect(escapeEvent.defaultPrevented).toBe(true);
+    });
+
     it("shows visible feedback when a pasted image is too large", async () => {
         setupWorkspaceSession();
         renderComponent(<AIChatSessionView paneId="primary" />);

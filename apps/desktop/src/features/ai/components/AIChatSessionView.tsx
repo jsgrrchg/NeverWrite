@@ -23,6 +23,7 @@ import {
     isChatTab,
     selectEditorPaneActiveTab,
     selectEditorWorkspaceTabs,
+    selectFocusedPaneId,
     useEditorStore,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -519,6 +520,30 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         disabled: composerExpanded,
         onOpen: openFind,
     });
+    useEffect(() => {
+        if (!findOpen) return;
+        const handleEscape = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.key !== "Escape") return;
+            if (
+                event.metaKey ||
+                event.ctrlKey ||
+                event.altKey ||
+                event.shiftKey
+            ) {
+                return;
+            }
+            const focusedPaneId = selectFocusedPaneId(useEditorStore.getState());
+            if (paneId && focusedPaneId !== paneId) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            setFindOpen(false);
+            rootRef.current?.focus();
+        };
+
+        window.addEventListener("keydown", handleEscape, true);
+        return () => window.removeEventListener("keydown", handleEscape, true);
+    }, [findOpen, paneId]);
 
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
