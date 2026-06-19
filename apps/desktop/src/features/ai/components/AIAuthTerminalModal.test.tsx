@@ -1,9 +1,6 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import { type Mock, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-    getXtermMockInstances,
-    renderComponent,
-} from "../../../test/test-utils";
+import { renderComponent } from "../../../test/test-utils";
 import { AIAuthTerminalModal } from "./AIAuthTerminalModal";
 
 const apiMocks = vi.hoisted(() => ({
@@ -79,44 +76,6 @@ describe("AIAuthTerminalModal", () => {
             expect(
                 screen.getByText("Waiting for Claude sign-in"),
             ).toBeInTheDocument();
-        });
-    });
-
-    it("uses runtime-specific status copy for Gemini", async () => {
-        const snapshot = {
-            sessionId: "authterm-2",
-            runtimeId: "gemini-acp",
-            program: "gemini",
-            displayName: "Gemini sign-in",
-            cwd: "/vault",
-            cols: 100,
-            rows: 28,
-            buffer: "Gemini CLI v0.35.3",
-            status: "running",
-            exitCode: null,
-            errorMessage: null,
-        };
-        apiMocks.aiStartAuthTerminalSession.mockResolvedValue(snapshot);
-        apiMocks.aiResizeAuthTerminalSession.mockResolvedValue(
-            snapshot as never,
-        );
-
-        renderComponent(
-            <AIAuthTerminalModal
-                open
-                runtimeId="gemini-acp"
-                runtimeName="Gemini"
-                vaultPath="/vault"
-                onClose={vi.fn()}
-                onRefreshSetup={vi.fn(async () => undefined)}
-            />,
-        );
-
-        await waitFor(() => {
-            expect(
-                screen.getByText("Waiting for Gemini sign-in"),
-            ).toBeInTheDocument();
-            expect(getXtermMockInstances()[0]?.focusCalls).toBeGreaterThan(0);
         });
     });
 

@@ -45,18 +45,6 @@ const RUNTIME_METADATA: RuntimeMetadata[] = [
         ],
     },
     {
-        id: "gemini-acp",
-        name: "Gemini",
-        company: "Google",
-        description: "Gemini CLI running as a native ACP agent.",
-        capabilities: [
-            "attachments",
-            "permissions",
-            "plans",
-            "create_session",
-        ],
-    },
-    {
         id: "grok-acp",
         name: "Grok",
         company: "xAI",

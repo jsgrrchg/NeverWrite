@@ -301,6 +301,14 @@ describe("AIProvidersSettings", () => {
         deferredRuntimes.resolve(createDefaultProviders().descriptors);
     });
 
+    it("does not show Gemini when the backend runtime catalog omits it", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        expect(await screen.findByText("Codex")).toBeInTheDocument();
+        expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
+        expect(screen.queryByText("Gemini")).not.toBeInTheDocument();
+    });
+
     it("validates Claude gateway URLs before saving provider authentication", async () => {
         renderComponent(<AIProvidersSettings />);
 
@@ -461,62 +469,6 @@ describe("AIProvidersSettings", () => {
                 codexApiKey: { action: "clear" },
                 openaiApiKey: { action: "clear" },
             }),
-        );
-    });
-
-    it("submits Gemini API keys through provider settings", async () => {
-        const providers = createDefaultProviders();
-        providers.descriptors.push(
-            createRuntimeDescriptor("gemini-acp", "Gemini ACP"),
-        );
-        providers.statuses["gemini-acp"] = createSetupStatus({
-            runtimeId: "gemini-acp",
-            binarySource: "env",
-            authMethods: [
-                {
-                    id: "login_with_google",
-                    name: "Log in with Google",
-                    description:
-                        "Open a Gemini sign-in terminal for Google account authentication.",
-                },
-                {
-                    id: "use_gemini",
-                    name: "Gemini API key",
-                    description:
-                        "Use a Gemini Developer API key stored only for NeverWrite.",
-                },
-            ],
-        });
-        mockProviders(providers);
-
-        renderComponent(<AIProvidersSettings />);
-
-        await openProvider("Gemini");
-        fireEvent.click(getButtonFromText("Gemini API key"));
-        fireEvent.change(screen.getByPlaceholderText("Gemini API key"), {
-            target: { value: "gemini-secret" },
-        });
-        fireEvent.click(
-            screen.getByRole("button", { name: "Save and connect" }),
-        );
-
-        await waitFor(() => {
-            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    runtimeId: "gemini-acp",
-                    geminiApiKey: {
-                        action: "set",
-                        value: "gemini-secret",
-                    },
-                    anthropicBaseUrl: undefined,
-                    anthropicCustomHeaders: { action: "unchanged" },
-                    anthropicAuthToken: { action: "unchanged" },
-                }),
-            );
-        });
-        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
-            { methodId: "use_gemini", runtimeId: "gemini-acp" },
-            null,
         );
     });
 
@@ -806,7 +758,6 @@ describe("AIProvidersSettings", () => {
                     customBinaryPath: "/usr/local/bin/opencode",
                     codexApiKey: { action: "unchanged" },
                     openaiApiKey: { action: "unchanged" },
-                    geminiApiKey: { action: "unchanged" },
                     kiloApiKey: { action: "unchanged" },
                     anthropicApiKey: { action: "unchanged" },
                 }),

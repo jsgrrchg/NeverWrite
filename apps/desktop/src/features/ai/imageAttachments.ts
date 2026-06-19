@@ -60,12 +60,6 @@ const RUNTIME_IMAGE_ATTACHMENT_LIMITS: Record<string, ImageAttachmentLimits> = {
         maxImagesPerMessage: MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
         allowedMimeTypes: ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES,
     },
-    "gemini-acp": {
-        runtimeLabel: "Gemini",
-        maxBytes: MAX_IMAGE_ATTACHMENT_BYTES,
-        maxImagesPerMessage: MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
-        allowedMimeTypes: CONSERVATIVE_IMAGE_ATTACHMENT_MIME_TYPES,
-    },
     "grok-acp": {
         runtimeLabel: "Grok",
         maxBytes: GROK_IMAGE_ATTACHMENT_BYTES,

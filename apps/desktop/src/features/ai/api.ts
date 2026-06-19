@@ -308,12 +308,8 @@ export async function aiUpdateSetup(input: {
     customBinaryPath?: string;
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
-    geminiApiKey: AISecretPatch;
     xaiApiKey?: AISecretPatch;
     kiloApiKey?: AISecretPatch;
-    googleApiKey: AISecretPatch;
-    googleCloudProject?: string;
-    googleCloudLocation?: string;
     gatewayBaseUrl?: string;
     gatewayHeaders: AISecretPatch;
     anthropicBaseUrl?: string;
@@ -331,12 +327,8 @@ export async function aiUpdateSetup(input: {
                     : {}),
                 codex_api_key: input.codexApiKey,
                 openai_api_key: input.openaiApiKey,
-                gemini_api_key: input.geminiApiKey,
                 xai_api_key: input.xaiApiKey ?? { action: "unchanged" },
                 kilo_api_key: input.kiloApiKey ?? { action: "unchanged" },
-                google_api_key: input.googleApiKey,
-                google_cloud_project: input.googleCloudProject ?? null,
-                google_cloud_location: input.googleCloudLocation ?? null,
                 gateway_base_url: input.gatewayBaseUrl ?? null,
                 gateway_headers: input.gatewayHeaders,
                 anthropic_base_url: input.anthropicBaseUrl ?? null,

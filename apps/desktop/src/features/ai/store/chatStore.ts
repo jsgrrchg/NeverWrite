@@ -256,10 +256,6 @@ interface AIRuntimeCatalogSnapshot {
     configOptions: AIRuntimeDescriptor["configOptions"];
 }
 
-const ACP_RUNTIMES_WITHOUT_SYNTHETIC_DEFAULT_MODELS = new Set([
-    "gemini-acp",
-    "grok-acp",
-]);
 const GROK_RUNTIME_ID = "grok-acp";
 
 interface QueuedMessageEditState {
@@ -563,7 +559,7 @@ function hasRuntimeCatalog(snapshot: AIRuntimeCatalogSnapshot) {
 }
 
 function runtimeDropsSyntheticAutoModel(runtimeId: string) {
-    return ACP_RUNTIMES_WITHOUT_SYNTHETIC_DEFAULT_MODELS.has(runtimeId);
+    return runtimeId === GROK_RUNTIME_ID;
 }
 
 function isSyntheticAutoModel(model: AIRuntimeDescriptor["models"][number]) {
@@ -1401,12 +1397,8 @@ interface ChatStore {
         customBinaryPath?: string;
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
-        geminiApiKey: AISecretPatch;
         xaiApiKey?: AISecretPatch;
         kiloApiKey?: AISecretPatch;
-        googleApiKey: AISecretPatch;
-        googleCloudProject?: string;
-        googleCloudLocation?: string;
         gatewayBaseUrl?: string;
         gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
@@ -1421,12 +1413,8 @@ interface ChatStore {
         customBinaryPath?: string;
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
-        geminiApiKey: AISecretPatch;
         xaiApiKey?: AISecretPatch;
         kiloApiKey?: AISecretPatch;
-        googleApiKey: AISecretPatch;
-        googleCloudProject?: string;
-        googleCloudLocation?: string;
         gatewayBaseUrl?: string;
         gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
@@ -8214,16 +8202,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     input.customBinaryPath ||
                     secretPatchChanged(input.codexApiKey) ||
                     secretPatchChanged(input.openaiApiKey) ||
-                    secretPatchChanged(input.geminiApiKey) ||
                     secretPatchChanged(
                         input.xaiApiKey ?? { action: "unchanged" },
                     ) ||
                     secretPatchChanged(
                         input.kiloApiKey ?? { action: "unchanged" },
                     ) ||
-                    secretPatchChanged(input.googleApiKey) ||
-                    input.googleCloudProject ||
-                    input.googleCloudLocation ||
                     input.gatewayBaseUrl ||
                     secretPatchChanged(input.gatewayHeaders) ||
                     input.anthropicBaseUrl ||
@@ -8239,12 +8223,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         customBinaryPath: input.customBinaryPath,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
-                        geminiApiKey: input.geminiApiKey,
                         xaiApiKey: input.xaiApiKey,
                         kiloApiKey: input.kiloApiKey,
-                        googleApiKey: input.googleApiKey,
-                        googleCloudProject: input.googleCloudProject,
-                        googleCloudLocation: input.googleCloudLocation,
                         gatewayBaseUrl: input.gatewayBaseUrl,
                         gatewayHeaders: input.gatewayHeaders,
                         anthropicBaseUrl: input.anthropicBaseUrl,

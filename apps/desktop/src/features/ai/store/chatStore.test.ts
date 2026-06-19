@@ -2104,8 +2104,6 @@ describe("chatStore", () => {
             methodId: "openai-api-key",
             codexApiKey: { action: "unchanged" },
             openaiApiKey: { action: "unchanged" },
-            geminiApiKey: { action: "unchanged" },
-            googleApiKey: { action: "unchanged" },
             gatewayHeaders: { action: "unchanged" },
             anthropicCustomHeaders: { action: "unchanged" },
             anthropicAuthToken: { action: "unchanged" },
@@ -2188,9 +2186,7 @@ describe("chatStore", () => {
             customBinaryPath: "/usr/local/bin/grok",
             codexApiKey: { action: "unchanged" },
             openaiApiKey: { action: "unchanged" },
-            geminiApiKey: { action: "unchanged" },
             xaiApiKey: { action: "set", value: "xai-test-secret" },
-            googleApiKey: { action: "unchanged" },
             gatewayHeaders: { action: "unchanged" },
             anthropicCustomHeaders: { action: "unchanged" },
             anthropicAuthToken: { action: "unchanged" },
@@ -2201,9 +2197,7 @@ describe("chatStore", () => {
             methodId: "grok-login",
             codexApiKey: { action: "unchanged" },
             openaiApiKey: { action: "unchanged" },
-            geminiApiKey: { action: "unchanged" },
             xaiApiKey: { action: "unchanged" },
-            googleApiKey: { action: "unchanged" },
             gatewayHeaders: { action: "unchanged" },
             anthropicCustomHeaders: { action: "unchanged" },
             anthropicAuthToken: { action: "unchanged" },
@@ -7133,7 +7127,7 @@ describe("chatStore", () => {
     });
 
     it("does not duplicate image attachments when saving an edited queued screenshot message", async () => {
-        let sentAttachments: AIChatAttachment[] | null = null;
+        let sentAttachments: AIChatAttachment[] = [];
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_send_message") {
                 sentAttachments =
@@ -7142,7 +7136,7 @@ describe("chatStore", () => {
                     "attachments" in args &&
                     Array.isArray(args.attachments)
                         ? (args.attachments as AIChatAttachment[])
-                        : null;
+                        : [];
                 return {
                     ...sessionPayload,
                     status: "streaming" as const,
@@ -7200,7 +7194,7 @@ describe("chatStore", () => {
         await useChatStore.getState().sendMessage();
 
         expect(
-            sentAttachments?.filter(
+            sentAttachments.filter(
                 (attachment) =>
                     attachment.filePath ===
                         "/vault/assets/chat/screenshot.png" &&

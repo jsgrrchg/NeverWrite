@@ -176,7 +176,6 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("All")).toBeInTheDocument();
         expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
         expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
-        expect(screen.getByText("Gemini")).toBeInTheDocument();
         expect(screen.getByText("Kilo")).toBeInTheDocument();
     });
 

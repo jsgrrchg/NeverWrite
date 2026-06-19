@@ -20,10 +20,6 @@ export function isIntegratedTerminalAuthMethod(
         return isClaudeTerminalAuthMethodId(methodId);
     }
 
-    if (runtimeId === "gemini-acp") {
-        return methodId === "login_with_google";
-    }
-
     if (runtimeId === "grok-acp") {
         return methodId === "grok-login";
     }
@@ -42,7 +38,6 @@ export function isIntegratedTerminalAuthMethod(
 export function isIntegratedTerminalAuthMethodId(methodId?: string) {
     return (
         isClaudeTerminalAuthMethodId(methodId) ||
-        methodId === "login_with_google" ||
         methodId === "grok-login" ||
         methodId === "kilo-login" ||
         methodId === "opencode-login"
