@@ -27,8 +27,8 @@ What is currently required by the app/build pipeline:
   - production dependencies are installed by the Electron sidecar staging step
     and copied into the packaged embedded Claude runtime
 - `acp12/`
-  - used as Rust compatibility crates by the native backend for Gemini and Grok
-    legacy ACP sessions
+  - used as Rust compatibility crates by the native backend for Grok legacy ACP
+    sessions
 
 What is vendored mainly for auditability and maintenance, not direct runtime use:
 
@@ -68,7 +68,7 @@ That means the directory is intentionally reproducible, but not yet minimal.
 - `acp12/`
   - local package names: `agent-client-protocol-legacy` and
     `agent-client-protocol-schema-legacy`
-  - used by the native backend for Gemini and Grok legacy ACP compatibility
+  - used by the native backend for Grok legacy ACP compatibility
   - kept separate from the current ACP path so Claude, Codex, Kilo, and OpenCode
     can continue to use the current protocol integration
 
@@ -90,9 +90,9 @@ When updating Codex again, treat `863d433` plus the current OpenAI Codex crate t
 
 The desktop backend now supports a mixed ACP world: current ACP integration for
 Claude, Codex, Kilo, and OpenCode, plus the vendored
-`agent-client-protocol-legacy` crates for Gemini and Grok. The native backend
-tests cover the reconstructed diff, permission, status metadata, and legacy
-runtime compatibility paths that NeverWrite depends on.
+`agent-client-protocol-legacy` crates for Grok. The native backend tests cover
+the reconstructed diff, permission, status metadata, and legacy runtime
+compatibility paths that NeverWrite depends on.
 
 ## Current Claude Delta
 
