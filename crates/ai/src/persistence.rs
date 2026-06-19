@@ -453,7 +453,7 @@ fn history_from_metadata(
 }
 
 fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, String> {
-    let history = read_json_file::<PersistedSessionHistory>(&path)?;
+    let history = read_json_file::<PersistedSessionHistory>(path)?;
     Ok(PersistedSessionHistory {
         version: history.version,
         session_id: history.session_id,
@@ -1413,7 +1413,7 @@ pub fn load_all_session_histories(
         .into_values()
         .map(|(_, history)| history)
         .collect::<Vec<_>>();
-    histories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    histories.sort_by_key(|history| std::cmp::Reverse(history.updated_at));
     Ok(histories)
 }
 
@@ -1482,7 +1482,7 @@ pub fn search_session_content(
         }
     }
 
-    results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    results.sort_by_key(|result| std::cmp::Reverse(result.updated_at));
     Ok(results)
 }
 

@@ -632,7 +632,9 @@ fn build_claude_structured_patch_hunks_by_content_index(
 
         used_candidate_indexes.insert(candidate_index);
         let candidate = &candidates[candidate_index];
-        if let Some(hunks) = claude_structured_patch_to_ai_diff_hunks(&[candidate.hunk.clone()]) {
+        if let Some(hunks) =
+            claude_structured_patch_to_ai_diff_hunks(std::slice::from_ref(&candidate.hunk))
+        {
             anchored_hunks_by_content_index.insert(content_index, hunks);
         }
     }
