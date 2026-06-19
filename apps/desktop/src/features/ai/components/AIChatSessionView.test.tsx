@@ -330,6 +330,31 @@ describe("AIChatSessionView", () => {
         );
     });
 
+    it("closes and disables chat find while the composer is expanded", async () => {
+        setupWorkspaceSession();
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        const findButton = screen.getByRole("button", {
+            name: "Find in chat",
+        });
+        fireEvent.click(findButton);
+        expect(findButton).toHaveAttribute("aria-pressed", "true");
+
+        fireEvent.click(screen.getByTestId("chat-composer"));
+
+        await waitFor(() => {
+            expect(findButton).toBeDisabled();
+            expect(findButton).toHaveAttribute("aria-pressed", "false");
+        });
+        expect(
+            screen.queryByTestId("chat-message-list"),
+        ).not.toBeInTheDocument();
+
+        fireEvent.click(findButton);
+        expect(findButton).toHaveAttribute("aria-pressed", "false");
+    });
+
     it("shows visible feedback when a pasted image is too large", async () => {
         setupWorkspaceSession();
         renderComponent(<AIChatSessionView paneId="primary" />);

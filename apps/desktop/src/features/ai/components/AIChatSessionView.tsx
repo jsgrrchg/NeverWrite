@@ -503,6 +503,14 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         setFindOpen(false);
     }, [sessionId]);
 
+    // The message list owns the finder UI and is unmounted while the composer is
+    // expanded, so keep the finder state aligned with that visibility boundary.
+    useEffect(() => {
+        if (composerExpanded) {
+            setFindOpen(false);
+        }
+    }, [composerExpanded]);
+
     // Cmd/Ctrl+F opens the chat finder. The listener lives on this view's root,
     // so it only fires when focus is inside the chat (CodeMirror keeps its own
     // "find in note" binding for the editor — no global collision).
@@ -512,6 +520,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         const platform = getDesktopPlatform();
         const onKeyDown = (event: KeyboardEvent) => {
             if (!matchesShortcutAction(event, "find_in_note", platform)) return;
+            if (composerExpanded) return;
             event.preventDefault();
             event.stopPropagation();
             setFindOpen(true);
@@ -523,10 +532,11 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         };
         root.addEventListener("keydown", onKeyDown);
         return () => root.removeEventListener("keydown", onKeyDown);
-    }, [sessionId]);
+    }, [composerExpanded, sessionId]);
 
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
+    const findDisabled = composerExpanded;
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId || isSubagent) return;
@@ -624,13 +634,21 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 ) : null}
                 <button
                     type="button"
-                    onClick={() => setFindOpen((value) => !value)}
+                    onClick={() => {
+                        if (findDisabled) return;
+                        setFindOpen((value) => !value);
+                    }}
+                    disabled={findDisabled}
                     aria-label="Find in chat"
                     aria-pressed={findOpen}
-                    title={`Find in chat (${formatShortcutAction(
-                        "find_in_note",
-                        getDesktopPlatform(),
-                    )})`}
+                    title={
+                        findDisabled
+                            ? "Find is unavailable while the composer is expanded"
+                            : `Find in chat (${formatShortcutAction(
+                                  "find_in_note",
+                                  getDesktopPlatform(),
+                              )})`
+                    }
                     className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
                     style={{
                         color: findOpen
@@ -638,6 +656,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             : "var(--text-secondary)",
                         border: "none",
                         backgroundColor: "transparent",
+                        opacity: findDisabled ? 0.45 : 1,
                     }}
                 >
                     <svg
