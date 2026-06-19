@@ -643,6 +643,34 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             : "Subagent"}
                     </span>
                 ) : null}
+                {!isSubagent && editingKey !== sessionId ? (
+                    <button
+                        type="button"
+                        onClick={startTitleEdit}
+                        aria-label="Rename chat"
+                        title="Rename chat"
+                        className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
+                        style={{
+                            color: "var(--text-secondary)",
+                            border: "none",
+                            backgroundColor: "transparent",
+                        }}
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M8.5 3 11 5.5" />
+                            <path d="M3 11l.5-2.2 5.3-5.3a1 1 0 0 1 1.4 0l.8.8a1 1 0 0 1 0 1.4l-5.3 5.3L3 11z" />
+                        </svg>
+                    </button>
+                ) : null}
                 <button
                     type="button"
                     onClick={() => {
