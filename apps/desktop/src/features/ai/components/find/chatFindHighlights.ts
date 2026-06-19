@@ -186,6 +186,48 @@ function locateEnd(segments: TextSegment[], offset: number): TextSegment {
     return segments[segments.length - 1];
 }
 
+const caseInsensitiveCollator =
+    typeof Intl !== "undefined"
+        ? new Intl.Collator(undefined, {
+              usage: "search",
+              sensitivity: "accent",
+          })
+        : null;
+
+function matchesQueryAt(
+    haystack: string,
+    needle: string,
+    index: number,
+    caseSensitive: boolean,
+): boolean {
+    const candidate = haystack.slice(index, index + needle.length);
+    if (caseSensitive) return candidate === needle;
+
+    // Keep offsets in the original string. Lowercasing the full haystack can
+    // change its UTF-16 length for some characters (for example, İ -> i + dot).
+    if (caseInsensitiveCollator) {
+        return caseInsensitiveCollator.compare(candidate, needle) === 0;
+    }
+    return candidate.toLowerCase() === needle.toLowerCase();
+}
+
+function findNextMatch(
+    haystack: string,
+    needle: string,
+    from: number,
+    caseSensitive: boolean,
+): number {
+    if (caseSensitive) return haystack.indexOf(needle, from);
+
+    const lastStart = haystack.length - needle.length;
+    for (let index = from; index <= lastStart; index++) {
+        if (matchesQueryAt(haystack, needle, index, false)) {
+            return index;
+        }
+    }
+    return -1;
+}
+
 /**
  * Build one Range per occurrence of `query` inside `root`'s visible text.
  * Case-insensitive unless `caseSensitive` is true. Returns ranges in document
@@ -202,15 +244,15 @@ export function buildRangesForQuery(
     const { fullText, segments } = collectSegments(root);
     if (segments.length === 0) return [];
 
-    const haystack = caseSensitive ? fullText : fullText.toLowerCase();
-    const needle = caseSensitive ? query : query.toLowerCase();
+    const haystack = fullText;
+    const needle = query;
     const needleLen = needle.length;
     if (needleLen === 0) return [];
 
     const ranges: Range[] = [];
     let from = 0;
     while (ranges.length < MAX_CHAT_FIND_MATCHES) {
-        const idx = haystack.indexOf(needle, from);
+        const idx = findNextMatch(haystack, needle, from, caseSensitive);
         if (idx === -1) break;
         const endOffset = idx + needleLen;
 

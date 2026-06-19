@@ -117,6 +117,17 @@ describe("chatFindHighlights", () => {
         expect(ranges[0]?.toString()).toBe("lowo");
     });
 
+    it("keeps original DOM offsets when case folding changes string length", () => {
+        const root = document.createElement("div");
+        root.textContent = "İx";
+        document.body.append(root);
+
+        const ranges = buildRangesForQuery(root, "x", false);
+
+        expect(ranges).toHaveLength(1);
+        expect(ranges[0]?.toString()).toBe("x");
+    });
+
     it("does not match across separate chat rows", () => {
         const root = document.createElement("div");
         const rowA = document.createElement("div");
