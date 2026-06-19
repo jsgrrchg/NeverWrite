@@ -73,9 +73,11 @@ export function ChatFindBar({
                 placeholder="Find in visible chat…"
                 aria-label="Find in chat"
                 spellCheck={false}
-                className="h-[26px] min-w-0 rounded-md px-2 text-xs outline-none"
+                className="h-[22px] min-w-0 rounded px-2 outline-none"
                 style={{
-                    width: 180,
+                    width: 168,
+                    fontSize: 11,
+                    lineHeight: "20px",
                     backgroundColor:
                         "color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-primary))",
                     color: "var(--text-primary)",
