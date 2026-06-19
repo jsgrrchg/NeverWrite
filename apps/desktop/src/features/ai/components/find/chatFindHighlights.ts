@@ -3,6 +3,8 @@
 // We never mutate the rendered DOM/markdown. Instead we walk the visible text
 // nodes inside the scroll container, build a `Range` per occurrence, and register
 // them under named highlights styled by `::highlight(...)` in index.css.
+// CSS.highlights is document-global, so each finder instance owns a slice of the
+// aggregate highlights through a stable owner id.
 //
 // Matches may span several text nodes (markdown splits text across <em>, <code>,
 // <a>, ... elements), so we flatten all text into one string with a segment map
@@ -14,10 +16,49 @@ export const CHAT_FIND_ACTIVE_HIGHLIGHT = "chat-find-active";
 // Safety cap so a pathological 1-char query on a huge chat can't lock the UI.
 export const MAX_CHAT_FIND_MATCHES = 2000;
 
+type ChatFindHighlightOwnerId = string;
+
 interface TextSegment {
     node: Text;
     start: number; // inclusive global offset
     end: number; // exclusive global offset
+}
+
+interface ChatFindHighlightEntry {
+    ranges: Range[];
+    activeRange?: Range;
+}
+
+const highlightEntries = new Map<
+    ChatFindHighlightOwnerId,
+    ChatFindHighlightEntry
+>();
+
+function syncChatFindHighlights(): void {
+    const ranges: Range[] = [];
+    const activeRanges: Range[] = [];
+
+    for (const entry of highlightEntries.values()) {
+        ranges.push(...entry.ranges);
+        if (entry.activeRange) {
+            activeRanges.push(entry.activeRange);
+        }
+    }
+
+    if (ranges.length > 0) {
+        CSS.highlights.set(CHAT_FIND_HIGHLIGHT, new Highlight(...ranges));
+    } else {
+        CSS.highlights.delete(CHAT_FIND_HIGHLIGHT);
+    }
+
+    if (activeRanges.length > 0) {
+        CSS.highlights.set(
+            CHAT_FIND_ACTIVE_HIGHLIGHT,
+            new Highlight(...activeRanges),
+        );
+    } else {
+        CSS.highlights.delete(CHAT_FIND_ACTIVE_HIGHLIGHT);
+    }
 }
 
 function isVisibleTextNode(node: Text): boolean {
@@ -130,35 +171,41 @@ export function buildRangesForQuery(
     return ranges;
 }
 
-/** Register all ranges + the active one in the global highlight registry. */
+/** Register one finder's ranges + active match in the global highlight registry. */
 export function applyChatFindHighlights(
+    ownerId: ChatFindHighlightOwnerId,
     ranges: Range[],
     activeIndex: number,
 ): void {
     if (ranges.length === 0) {
-        clearChatFindHighlights();
+        clearChatFindHighlights(ownerId);
         return;
     }
-    CSS.highlights.set(CHAT_FIND_HIGHLIGHT, new Highlight(...ranges));
-    const active = ranges[activeIndex];
-    if (active) {
-        CSS.highlights.set(CHAT_FIND_ACTIVE_HIGHLIGHT, new Highlight(active));
-    } else {
-        CSS.highlights.delete(CHAT_FIND_ACTIVE_HIGHLIGHT);
-    }
+    highlightEntries.set(ownerId, {
+        ranges,
+        activeRange: ranges[activeIndex],
+    });
+    syncChatFindHighlights();
 }
 
 /** Re-register only the active highlight (cheap path used while navigating). */
-export function setActiveChatFindHighlight(range: Range | undefined): void {
-    if (range) {
-        CSS.highlights.set(CHAT_FIND_ACTIVE_HIGHLIGHT, new Highlight(range));
-    } else {
-        CSS.highlights.delete(CHAT_FIND_ACTIVE_HIGHLIGHT);
-    }
+export function setActiveChatFindHighlight(
+    ownerId: ChatFindHighlightOwnerId,
+    range: Range | undefined,
+): void {
+    const entry = highlightEntries.get(ownerId);
+    if (!entry) return;
+    highlightEntries.set(ownerId, {
+        ...entry,
+        activeRange: range,
+    });
+    syncChatFindHighlights();
 }
 
-/** Remove both highlights from the global (document-wide) registry. */
-export function clearChatFindHighlights(): void {
-    CSS.highlights.delete(CHAT_FIND_HIGHLIGHT);
-    CSS.highlights.delete(CHAT_FIND_ACTIVE_HIGHLIGHT);
+/** Remove one finder's ranges from the document-wide highlight registry. */
+export function clearChatFindHighlights(
+    ownerId: ChatFindHighlightOwnerId,
+): void {
+    highlightEntries.delete(ownerId);
+    syncChatFindHighlights();
 }

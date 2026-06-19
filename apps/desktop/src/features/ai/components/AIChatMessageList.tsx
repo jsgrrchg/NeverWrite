@@ -2,6 +2,7 @@ import {
     memo,
     useCallback,
     useEffect,
+    useId,
     useLayoutEffect,
     useMemo,
     useRef,
@@ -325,6 +326,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     onUrlElicitationResponse,
 }: AIChatMessageListProps) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const findHighlightOwnerId = useId();
     const [findQuery, setFindQuery] = useState("");
     const [findCaseSensitive, setFindCaseSensitive] = useState(false);
     const {
@@ -333,6 +335,7 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         goNext: findGoNext,
         goPrev: findGoPrev,
     } = useChatFind({
+        ownerId: findHighlightOwnerId,
         containerRef,
         query: findQuery,
         caseSensitive: findCaseSensitive,

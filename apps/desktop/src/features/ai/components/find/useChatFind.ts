@@ -8,6 +8,7 @@ import {
 } from "./chatFindHighlights";
 
 interface UseChatFindArgs {
+    ownerId: string;
     containerRef: RefObject<HTMLElement | null>;
     query: string;
     caseSensitive: boolean;
@@ -31,6 +32,7 @@ const REBUILD_DEBOUNCE_MS = 150;
  * chatFindHighlights; this hook owns lifecycle, debouncing and the active cursor.
  */
 export function useChatFind({
+    ownerId,
     containerRef,
     query,
     caseSensitive,
@@ -78,7 +80,7 @@ export function useChatFind({
             const container = containerRef.current;
             if (!enabled || !container || !query) {
                 rangesRef.current = [];
-                clearChatFindHighlights();
+                clearChatFindHighlights(ownerId);
                 setTotal(0);
                 setActive(-1);
                 return;
@@ -98,9 +100,9 @@ export function useChatFind({
                 next = 0;
             }
             setActive(next);
-            applyChatFindHighlights(ranges, next);
+            applyChatFindHighlights(ownerId, ranges, next);
         },
-        [containerRef, enabled, query, caseSensitive, setActive],
+        [containerRef, enabled, ownerId, query, caseSensitive, setActive],
     );
 
     // Fresh search: react to query / case / enabled changes. Clears immediately
@@ -143,8 +145,8 @@ export function useChatFind({
         };
     }, [enabled, query, caseSensitive, containerRef, rebuild]);
 
-    // Safety net: always drop the document-wide highlights on unmount.
-    useEffect(() => () => clearChatFindHighlights(), []);
+    // Safety net: always drop this finder instance's document-wide highlights.
+    useEffect(() => () => clearChatFindHighlights(ownerId), [ownerId]);
 
     const move = useCallback(
         (step: number) => {
@@ -153,10 +155,10 @@ export function useChatFind({
             const next =
                 (activeIndexRef.current + step + ranges.length) % ranges.length;
             setActive(next);
-            setActiveChatFindHighlight(ranges[next]);
+            setActiveChatFindHighlight(ownerId, ranges[next]);
             scrollToActive();
         },
-        [scrollToActive, setActive],
+        [ownerId, scrollToActive, setActive],
     );
 
     const goNext = useCallback(() => move(1), [move]);
