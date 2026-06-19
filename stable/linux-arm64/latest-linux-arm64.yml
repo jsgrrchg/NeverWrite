@@ -1,8 +1,8 @@
-version: "0.3.5"
-releaseDate: "2026-06-18T00:18:46.393Z"
-path: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.5/NeverWrite-0.3.5-arm64.AppImage"
-sha512: "vT769A0inuLkC4HfxqeVXumWsX7DZo+OMuiCKuY/JuJ3WE5KNpjZX88wlukEI2dFqlAwkFTbk3n2yOexE0AscQ=="
+version: "0.3.6"
+releaseDate: "2026-06-19T05:55:26.864Z"
+path: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.6/NeverWrite-0.3.6-arm64.AppImage"
+sha512: "V48H8N4/79cPRQjlzcA/Cr/X1XGjap6mSlPagrJVIGav+PnkvxYAZvrkQR1v9xNA5lXAi+Oe3axrFDMzr6pz5A=="
 files:
-  - url: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.5/NeverWrite-0.3.5-arm64.AppImage"
-    sha512: "vT769A0inuLkC4HfxqeVXumWsX7DZo+OMuiCKuY/JuJ3WE5KNpjZX88wlukEI2dFqlAwkFTbk3n2yOexE0AscQ=="
-    size: 614627223
+  - url: "https://github.com/jsgrrchg/NeverWrite/releases/download/v0.3.6/NeverWrite-0.3.6-arm64.AppImage"
+    sha512: "V48H8N4/79cPRQjlzcA/Cr/X1XGjap6mSlPagrJVIGav+PnkvxYAZvrkQR1v9xNA5lXAi+Oe3axrFDMzr6pz5A=="
+    size: 543717410
