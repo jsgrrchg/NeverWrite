@@ -195,7 +195,10 @@ export function FloatingSelectionToolbar({
         };
 
         const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") onClose();
+            if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+            }
         };
 
         document.addEventListener("mousedown", handleDown);

@@ -38,7 +38,10 @@ export function GraphContextMenu({
             }
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                onClose();
+            }
         };
         window.addEventListener("mousedown", handleClick);
         window.addEventListener("keydown", handleKey);

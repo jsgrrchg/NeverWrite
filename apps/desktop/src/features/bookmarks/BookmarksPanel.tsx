@@ -812,8 +812,10 @@ export function BookmarksPanel() {
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter")
                                             confirmCreateFolder();
-                                        if (e.key === "Escape")
+                                        if (e.key === "Escape") {
+                                            e.preventDefault();
                                             cancelCreateFolder();
+                                        }
                                     }}
                                     onBlur={confirmCreateFolder}
                                     placeholder="Folder name…"
@@ -905,8 +907,10 @@ export function BookmarksPanel() {
                                                         e.stopPropagation();
                                                         if (e.key === "Enter")
                                                             confirmRename();
-                                                        if (e.key === "Escape")
+                                                        if (e.key === "Escape") {
+                                                            e.preventDefault();
                                                             cancelRename();
+                                                        }
                                                     }}
                                                     onBlur={confirmRename}
                                                     className="flex-1 bg-transparent outline-none"

@@ -544,6 +544,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             if (event.key === "Enter") {
                                 commitTitleEdit();
                             } else if (event.key === "Escape") {
+                                event.preventDefault();
                                 cancelEditing();
                             }
                         }}

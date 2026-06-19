@@ -53,7 +53,10 @@ export function VaultSwitcher({
             }
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") closeSwitcher();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                closeSwitcher();
+            }
         };
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);

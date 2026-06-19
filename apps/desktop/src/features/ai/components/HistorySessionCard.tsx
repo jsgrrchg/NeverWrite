@@ -206,6 +206,7 @@ export function HistorySessionCard({
                                 if (e.key === "Enter") {
                                     commitEdit();
                                 } else if (e.key === "Escape") {
+                                    e.preventDefault();
                                     cancelEdit();
                                 }
                             }}

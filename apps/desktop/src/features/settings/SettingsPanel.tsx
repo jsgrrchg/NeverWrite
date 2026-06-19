@@ -243,7 +243,10 @@ function SelectField<T extends string | number | null>({
             setOpen(false);
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setOpen(false);
+            if (e.key === "Escape") {
+                e.preventDefault();
+                setOpen(false);
+            }
         };
         const handleResize = () => setOpen(false);
         document.addEventListener("mousedown", handleDown);
@@ -463,6 +466,7 @@ function NumberStepper({
                         inputRef.current?.blur();
                     }
                     if (e.key === "Escape") {
+                        e.preventDefault();
                         setLocal(String(value));
                         setIsEditing(false);
                         inputRef.current?.blur();
@@ -4685,7 +4689,10 @@ export function SettingsPanel({
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") handleClose();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                handleClose();
+            }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);

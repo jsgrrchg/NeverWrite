@@ -363,6 +363,7 @@ export function HistoryTranscriptViewer({
                             }
                             onKeyDown={(event) => {
                                 if (event.key === "Escape") {
+                                    event.preventDefault();
                                     setSearchQuery("");
                                     setSearchOpen(false);
                                 } else if (

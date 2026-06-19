@@ -116,8 +116,13 @@ describe("ContextMenu scroll-to-close behaviour", () => {
     it("closes on Escape key", () => {
         const onClose = vi.fn();
         renderMenu(onClose);
-        fireEvent.keyDown(document, { key: "Escape" });
+        const event = new KeyboardEvent("keydown", {
+            key: "Escape",
+            cancelable: true,
+        });
+        document.dispatchEvent(event);
         expect(onClose).toHaveBeenCalled();
+        expect(event.defaultPrevented).toBe(true);
     });
 
     it("closes on mousedown outside the menu", () => {

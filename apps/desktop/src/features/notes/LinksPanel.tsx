@@ -203,7 +203,10 @@ function BacklinksContextMenu({
             }
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                onClose();
+            }
         };
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);
@@ -304,7 +307,10 @@ function OutgoingLinksContextMenu({
             }
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") onClose();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                onClose();
+            }
         };
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);

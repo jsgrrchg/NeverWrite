@@ -115,7 +115,10 @@ export function ContextMenu<T>({
             }
         };
         const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") onClose();
+            if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+            }
         };
         const handleScroll = (event: Event) => {
             const target = event.target;

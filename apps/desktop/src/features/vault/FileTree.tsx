@@ -1083,6 +1083,7 @@ const FlatTreeRowView = memo(
                                     }
                                 }
                                 if (event.key === "Escape") {
+                                    event.preventDefault();
                                     onRenameCancel();
                                 }
                             }}
@@ -1213,7 +1214,10 @@ const FlatTreeRowView = memo(
                         }
                         onKeyDown={(event) => {
                             if (event.key === "Enter") onCreateConfirm();
-                            if (event.key === "Escape") onCreateCancel();
+                            if (event.key === "Escape") {
+                                event.preventDefault();
+                                onCreateCancel();
+                            }
                         }}
                         onBlur={onCreateConfirm}
                         placeholder={
@@ -1342,6 +1346,7 @@ const FlatTreeRowView = memo(
                                     }
                                 }
                                 if (event.key === "Escape") {
+                                    event.preventDefault();
                                     onRenameCancel();
                                 }
                             }}
@@ -1467,7 +1472,10 @@ const FlatTreeRowView = memo(
                                 if (value) onRenameNoteConfirm(note, value);
                                 else onRenameCancel();
                             }
-                            if (e.key === "Escape") onRenameCancel();
+                            if (e.key === "Escape") {
+                                e.preventDefault();
+                                onRenameCancel();
+                            }
                         }}
                         onBlur={() => {
                             const value =
@@ -1877,7 +1885,10 @@ function MoveDestinationPicker({
             }
         };
         const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") onClose();
+            if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+            }
         };
 
         document.addEventListener("mousedown", handleDown);
