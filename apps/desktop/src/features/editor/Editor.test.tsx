@@ -870,6 +870,9 @@ describe("Editor", () => {
         const rangeRectsSpy = vi
             .spyOn(Range.prototype, "getClientRects")
             .mockReturnValue([fakeRect] as unknown as DOMRectList);
+        const selectionLayer = view.dom.querySelector(".cm-selectionLayer");
+        expect(selectionLayer).toBeInstanceOf(HTMLElement);
+        (selectionLayer as HTMLElement).style.opacity = "0";
 
         await act(async () => {
             view.focus();
@@ -890,6 +893,7 @@ describe("Editor", () => {
         expect(
             screen.queryByRole("button", { name: "Heading 1" }),
         ).not.toBeInTheDocument();
+        expect((selectionLayer as HTMLElement).style.opacity).toBe("1");
 
         await act(async () => {
             fireEvent.mouseUp(document, { button: 0 });
