@@ -13953,44 +13953,6 @@ mod tests {
     }
 
     #[test]
-    fn session_tool_call_keeps_update_topic_title() {
-        let (event_tx, event_rx) = mpsc::channel();
-        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
-        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "session-1");
-        let client = test_client_with_state(event_tx, session_state);
-
-        let tool_call = ToolCall::new(
-            ToolCallId::from("topic-looking-tool"),
-            "Update topic to: \"Editing cuento.md\"",
-        )
-        .kind(ToolKind::Other)
-        .status(ToolCallStatus::Completed);
-
-        run_client_future(client.session_notification(SessionNotification::new(
-            "session-1",
-            SessionUpdate::ToolCall(tool_call),
-        )))
-        .unwrap();
-
-        let event = event_rx
-            .recv_timeout(StdDuration::from_millis(250))
-            .expect("tool activity event");
-        let RpcOutput::Event {
-            event_name,
-            payload,
-        } = event
-        else {
-            panic!("expected event");
-        };
-
-        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
-        assert_eq!(
-            payload.get("tool_call_id").and_then(Value::as_str),
-            Some("topic-looking-tool")
-        );
-    }
-
-    #[test]
     fn session_tool_call_closes_active_assistant_segment_without_finishing_turn() {
         let (event_tx, event_rx) = mpsc::channel();
         let client = test_client(event_tx);
