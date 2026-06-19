@@ -1239,6 +1239,18 @@ body.dragging-tab * {
     outline-offset: 1px;
 }
 
+/* "Find in chat" matches, painted via the CSS Custom Highlight API. The active
+   match is distinguished by a stronger background. ::highlight() only supports a
+   small subset of properties (background-color, color, text-decoration). */
+::highlight(chat-find) {
+    background-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    color: inherit;
+}
+::highlight(chat-find-active) {
+    background-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    color: var(--text-primary);
+}
+
 /* Composer send/stop pill buttons. The press should feel like a physical
    button depressing: shrink slightly, dim, and gain an inset shadow that
    replaces the lifted drop shadow. */

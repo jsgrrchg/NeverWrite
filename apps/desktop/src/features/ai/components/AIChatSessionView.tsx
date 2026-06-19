@@ -48,6 +48,9 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
+import { matchesShortcutAction } from "../../../app/shortcuts/registry";
+import { formatShortcutAction } from "../../../app/shortcuts/format";
+import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
@@ -104,6 +107,8 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const [imageAttachmentNotice, setImageAttachmentNotice] = useState<
         string | null
     >(null);
+    const [findOpen, setFindOpen] = useState(false);
+    const rootRef = useRef<HTMLDivElement>(null);
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -493,6 +498,33 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     }, [session, sessionId]);
 
     const sessionTitle = session ? getSessionTitleText(session) : "Chat";
+    // Close the finder when switching to another session.
+    useEffect(() => {
+        setFindOpen(false);
+    }, [sessionId]);
+
+    // Cmd/Ctrl+F opens the chat finder. The listener lives on this view's root,
+    // so it only fires when focus is inside the chat (CodeMirror keeps its own
+    // "find in note" binding for the editor — no global collision).
+    useEffect(() => {
+        const root = rootRef.current;
+        if (!root) return;
+        const platform = getDesktopPlatform();
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (!matchesShortcutAction(event, "find_in_note", platform)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setFindOpen(true);
+            requestAnimationFrame(() => {
+                root.querySelector<HTMLInputElement>(
+                    '[role="search"] input',
+                )?.focus();
+            });
+        };
+        root.addEventListener("keydown", onKeyDown);
+        return () => root.removeEventListener("keydown", onKeyDown);
+    }, [sessionId]);
+
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
 
@@ -518,7 +550,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
 
     return (
         <div
-            className="relative flex h-full min-h-0 flex-col"
+            ref={rootRef}
+            tabIndex={-1}
+            className="relative flex h-full min-h-0 flex-col outline-none"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
             {/* Compact local session header for the workspace chat tab */}
@@ -588,6 +622,38 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             : "Subagent"}
                     </span>
                 ) : null}
+                <button
+                    type="button"
+                    onClick={() => setFindOpen((value) => !value)}
+                    aria-label="Find in chat"
+                    aria-pressed={findOpen}
+                    title={`Find in chat (${formatShortcutAction(
+                        "find_in_note",
+                        getDesktopPlatform(),
+                    )})`}
+                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
+                    style={{
+                        color: findOpen
+                            ? "var(--accent)"
+                            : "var(--text-secondary)",
+                        border: "none",
+                        backgroundColor: "transparent",
+                    }}
+                >
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <circle cx="6" cy="6" r="4" />
+                        <path d="M9 9L12.5 12.5" />
+                    </svg>
+                </button>
             </div>
 
             <AIChatRuntimeBanner
@@ -617,6 +683,11 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         session?.isLoadingPersistedMessages ?? false
                     }
                     visibleWorkCycleId={session?.visibleWorkCycleId ?? null}
+                    findOpen={findOpen}
+                    onCloseFind={() => {
+                        setFindOpen(false);
+                        rootRef.current?.focus();
+                    }}
                     chatFontSize={chatFontSize}
                     chatFontFamily={chatFontFamily}
                     onLoadOlderMessages={() => {

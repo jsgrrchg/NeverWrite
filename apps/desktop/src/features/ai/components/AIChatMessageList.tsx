@@ -36,6 +36,8 @@ import {
 } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
 import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { ChatFindBar } from "./find/ChatFindBar";
+import { useChatFind } from "./find/useChatFind";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
@@ -47,6 +49,8 @@ interface AIChatMessageListProps {
     hasOlderMessages?: boolean;
     isLoadingOlderMessages?: boolean;
     visibleWorkCycleId?: string | null;
+    findOpen?: boolean;
+    onCloseFind?: () => void;
     chatFontSize?: number;
     chatFontFamily?: EditorFontFamily;
     onLoadOlderMessages?: () => void;
@@ -314,6 +318,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     hasOlderMessages = false,
     isLoadingOlderMessages = false,
     visibleWorkCycleId = null,
+    findOpen = false,
+    onCloseFind,
     chatFontSize = 14,
     chatFontFamily = "system",
     onLoadOlderMessages,
@@ -323,6 +329,19 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     onUrlElicitationResponse,
 }: AIChatMessageListProps) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const [findQuery, setFindQuery] = useState("");
+    const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+    const {
+        total: findTotal,
+        activeIndex: findActiveIndex,
+        goNext: findGoNext,
+        goPrev: findGoPrev,
+    } = useChatFind({
+        containerRef,
+        query: findQuery,
+        caseSensitive: findCaseSensitive,
+        enabled: findOpen,
+    });
     const wasNearBottomRef = useRef(true);
     const pendingPrependAdjustmentRef = useRef<{
         previousScrollHeight: number;
@@ -679,6 +698,21 @@ export const AIChatMessageList = memo(function AIChatMessageList({
 
     return (
         <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">
+            {findOpen && (
+                <ChatFindBar
+                    query={findQuery}
+                    caseSensitive={findCaseSensitive}
+                    total={findTotal}
+                    activeIndex={findActiveIndex}
+                    onQueryChange={setFindQuery}
+                    onToggleCaseSensitive={() =>
+                        setFindCaseSensitive((value) => !value)
+                    }
+                    onNext={findGoNext}
+                    onPrev={findGoPrev}
+                    onClose={() => onCloseFind?.()}
+                />
+            )}
             {visiblePinnedPlan && (
                 <div
                     className="shrink-0 px-3 pt-2 pb-1"
