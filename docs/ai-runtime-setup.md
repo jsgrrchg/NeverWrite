@@ -21,7 +21,6 @@ and terminal-auth routing helpers are in
 | --- | --- | --- | --- |
 | `codex-acp` | `codex-acp` | Yes. Staged as a sidecar binary. | ChatGPT account, OpenAI API key, Codex API key |
 | `claude-acp` | Claude ACP adapter | Yes. Staged as vendored JS plus embedded Node. | Claude subscription terminal login, Anthropic Console terminal login, Anthropic API key, custom Anthropic-compatible gateway |
-| `gemini-acp` | `gemini --acp` | No. Must be available from PATH or a configured binary override. | Google terminal login, Gemini API key |
 | `grok-acp` | `grok --no-auto-update agent stdio` | No. Must be available from PATH or a configured binary override. | Grok terminal login, xAI API key |
 | `kilo-acp` | `kilo acp` | No. Must be available from PATH or a configured binary override. | Kilo terminal login |
 | `opencode-acp` | `opencode acp` | No. Must be available from PATH or a configured binary override. | OpenCode terminal login |
@@ -30,15 +29,14 @@ NeverWrite currently supports two ACP compatibility paths:
 
 - `Current14`: Claude, Codex, Kilo, and OpenCode use the current ACP session
   config path.
-- `Legacy12`: Gemini and Grok use the legacy ACP model/mode path.
+- `Legacy12`: Grok uses the legacy ACP model/mode path.
 
 For current ACP runtimes, model, mode, and reasoning selectors are derived from
 ACP `config_options` and updated through `session/set_config_option` when the
-runtime supports it. For Gemini and Grok, NeverWrite keeps using legacy
-`models` / `modes` descriptors plus `session/set_model` / `session/set_mode`
-instead. Gemini and Grok do not receive a synthetic `Auto` model when their
-runtime does not expose real model options; in that case the model selector is
-hidden.
+runtime supports it. For Grok, NeverWrite keeps using legacy `models` /
+`modes` descriptors plus `session/set_model` / `session/set_mode` instead.
+Grok does not receive a synthetic `Auto` model when its runtime does not expose
+real model options; in that case the model selector is hidden.
 
 Providers only show modes and slash commands that are either declared by ACP or
 kept as provider-owned fallback behavior. Grok does not receive synthetic
@@ -63,15 +61,13 @@ The provider-specific runtime binary overrides are:
 | --- | --- |
 | `NEVERWRITE_CODEX_ACP_BIN` | Codex |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Claude |
-| `NEVERWRITE_GEMINI_ACP_BIN` | Gemini |
 | `NEVERWRITE_GROK_ACP_BIN` | Grok |
 | `NEVERWRITE_KILO_ACP_BIN` | Kilo |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | OpenCode |
 
 The values may be absolute paths or command names resolvable on `PATH`. For
-Gemini, Grok, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
-`gemini --acp`, `grok --no-auto-update agent stdio`, `kilo acp`, and
-`opencode acp`.
+Grok, Kilo, and OpenCode, NeverWrite appends the ACP arguments automatically:
+`grok --no-auto-update agent stdio`, `kilo acp`, and `opencode acp`.
 
 Packaged builds use `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR` internally to point
 the native backend at staged Electron resources. In normal app usage this is set
@@ -92,7 +88,6 @@ The backend also detects existing CLI auth files and environment secrets:
 | --- | --- |
 | Codex | `CODEX_API_KEY`, `OPENAI_API_KEY`, or non-empty `~/.codex/auth.json` |
 | Claude | `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_BEDROCK_BASE_URL`, or non-empty `~/.claude.json` |
-| Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or non-empty `~/.gemini/oauth_creds.json` |
 | Grok | `XAI_API_KEY` or active non-empty Grok CLI auth under `~/.grok/`, currently `~/.grok/auth.json` |
 | Kilo | Non-empty Kilo auth file, including `~/.local/share/kilo/auth.json` on Unix-like systems |
 | OpenCode | `OPENCODE_API_KEY`, provider keys inherited by OpenCode, or active `opencode/auth.json` in the platform data directory |
@@ -101,12 +96,11 @@ Codex ChatGPT auth is implemented through the ACP `authenticate` request and
 requires a resolved Codex runtime binary before NeverWrite marks it connected.
 Codex does not use the integrated auth terminal.
 
-Claude, Gemini, Grok, Kilo, and OpenCode expose integrated terminal auth methods.
+Claude, Grok, Kilo, and OpenCode expose integrated terminal auth methods.
 NeverWrite starts the provider CLI in a PTY and marks auth pending before
-launch. A zero exit code marks the provider verified; Gemini and OpenCode can
+launch. A zero exit code marks the provider verified; Grok and OpenCode can
 also be marked verified when terminal output contains success strings recognized
-by the backend. Grok is marked verified when `grok login` exits successfully or
-prints recognized success output.
+by the backend.
 
 Claude adapts its visible terminal login methods to the environment. In remote
 or no-browser environments (`NO_BROWSER`, `SSH_CONNECTION`, `SSH_CLIENT`,
@@ -153,30 +147,17 @@ URL as `ANTHROPIC_BEDROCK_BASE_URL`, and sets `CLAUDE_CODE_USE_BEDROCK=1` when
 launching the Claude runtime. Bedrock gateway setup does not use an Anthropic
 auth token.
 
-### Gemini
+### Removed Gemini ACP Support
 
-Use one of:
+NeverWrite no longer registers a `gemini-acp` provider. Google redirected
+Gemini CLI subscription usage toward Antigravity, and Antigravity is closed
+source and does not expose ACP support for third-party apps. That leaves no
+stable ACP path for NeverWrite to launch or authenticate Gemini as an app-owned
+runtime.
 
-- Google terminal login from the setup UI.
-- Gemini Developer API key saved in the setup UI, stored as `GEMINI_API_KEY`.
-- Existing OAuth credentials in `~/.gemini/oauth_creds.json`.
-- Process environment `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
-
-NeverWrite sets `GEMINI_DEFAULT_AUTH_TYPE` when launching Gemini for known
-methods: `oauth-personal` for Google login and `gemini-api-key` for API-key
-auth. `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` are supported in the
-backend setup payload, but the current provider settings UI does not expose
-fields for them.
-
-NeverWrite launches Gemini as `gemini --acp`, but handles it internally through
-the legacy ACP compatibility path. Gemini model and mode changes use
-`session/set_model` and `session/set_mode`, not `session/set_config_option`.
-If Gemini does not advertise real model options, NeverWrite does not invent an
-`Auto` model and the chat composer has no model selector.
-
-Gemini can emit internal `update_topic` activity for provider-owned chat topic
-metadata. NeverWrite filters that activity from the visible timeline because it
-is not assistant reasoning, user-facing tool work, or a reviewable change.
+Antigravity can still be used manually from a terminal outside NeverWrite. It is
+not managed by the AI Providers setup UI, does not participate in NeverWrite
+chat sessions, and does not receive NeverWrite's review/change-control events.
 
 ### Grok
 
@@ -251,7 +232,6 @@ These `NEVERWRITE_*` variables are relevant to AI runtime setup and packaging:
 | --- | --- |
 | `NEVERWRITE_CODEX_ACP_BIN` | Runtime launch override for Codex in dev or local troubleshooting. |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Runtime launch override for Claude in dev or local troubleshooting. |
-| `NEVERWRITE_GEMINI_ACP_BIN` | Runtime launch override for Gemini in dev or local troubleshooting. |
 | `NEVERWRITE_GROK_ACP_BIN` | Runtime launch override for Grok in dev or local troubleshooting. |
 | `NEVERWRITE_KILO_ACP_BIN` | Runtime launch override for Kilo in dev or local troubleshooting. |
 | `NEVERWRITE_OPENCODE_ACP_BIN` | Runtime launch override for OpenCode in dev or local troubleshooting. |
@@ -290,7 +270,7 @@ it on PATH or launch the app with an explicit override:
 
 ```bash
 cd apps/desktop
-NEVERWRITE_GEMINI_ACP_BIN=/absolute/path/to/gemini npm run dev
+NEVERWRITE_GROK_ACP_BIN=/absolute/path/to/grok npm run dev
 ```
 
 For sidecar-only AI runtime smoke testing:
@@ -346,7 +326,6 @@ Current packaging expectations:
 
 - Codex is bundled as a native sidecar binary.
 - Claude is bundled through embedded Node plus vendored runtime files.
-- Gemini is integrated but not bundled by default.
 - Grok is integrated but not bundled by default.
 - Kilo is integrated but not bundled by default.
 - OpenCode is integrated but not bundled by default.
@@ -365,7 +344,7 @@ Common fixes:
 - Set the provider-specific `NEVERWRITE_*_ACP_BIN` variable before launching the app.
 - Supply a custom binary path through `ai_update_setup` if you are exercising
   the backend API directly or a caller that exposes this field.
-- For Gemini, Grok, Kilo, or OpenCode, install the CLI separately; they are not bundled in releases.
+- For Grok, Kilo, or OpenCode, install the CLI separately; they are not bundled in releases.
 - For packaged Codex or Claude, check that `native-backend/binaries/` and
   `native-backend/embedded/` exist inside the packaged app resources.
 
@@ -382,12 +361,10 @@ reconnected or configured through environment variables.
 
 ### Provider Terminal Auth
 
-Integrated terminal auth is supported for Claude, Gemini, Grok, Kilo, and
+Integrated terminal auth is supported for Claude, Grok, Kilo, and
 OpenCode. If terminal auth opens but the provider remains unready:
 
 - Confirm the terminal process exited successfully.
-- For Gemini, look for provider success output such as authentication succeeded
-  or successful Google sign-in.
 - For Grok, confirm `grok login` completed successfully and that active CLI auth
   exists under `~/.grok/`, currently `~/.grok/auth.json`. You can also configure
   `XAI_API_KEY` through the setup UI or the process environment.
@@ -424,7 +401,7 @@ GUI-launched apps often inherit a different PATH than interactive shells.
 Development can resolve Codex and Claude from vendor paths if those artifacts
 exist. Packaged builds should resolve Codex and Claude from
 `NEVERWRITE_ELECTRON_ACP_RESOURCE_DIR`, which Electron sets to the staged
-resources directory. Gemini, Grok, Kilo, and OpenCode still require an external
+resources directory. Grok, Kilo, and OpenCode still require an external
 CLI or explicit runtime override in both development and packaged builds.
 
 If a provider works in `npm run dev` but not in a packaged app, verify:

@@ -209,9 +209,9 @@ Runtime setup metadata is stored under app data:
 ```
 
 The setup file can include non-secret values such as custom runtime binary paths,
-auth method selection, gateway/base URLs, cloud project/location values, and a
-list of which secret environment keys are configured. On Unix-like systems the
-file is written with owner-only permissions when possible.
+auth method selection, gateway/base URLs, and a list of which secret environment
+keys are configured. On Unix-like systems the file is written with owner-only
+permissions when possible.
 
 API keys and secret headers for supported runtimes are stored through the OS
 credential store using the service name:
@@ -223,12 +223,17 @@ NeverWrite AI Provider Secrets
 Secret account names are runtime/key pairs such as `codex:OPENAI_API_KEY` or
 `claude:ANTHROPIC_API_KEY`. Supported secret env keys include `CODEX_API_KEY`,
 `OPENAI_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
-`ANTHROPIC_CUSTOM_HEADERS`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and
-`KILO_API_KEY`, and `OPENCODE_API_KEY`.
+`ANTHROPIC_CUSTOM_HEADERS`, `XAI_API_KEY`, `KILO_API_KEY`, and
+`OPENCODE_API_KEY`.
+
+`GEMINI_API_KEY` and `GOOGLE_API_KEY` are still treated as sensitive when they
+appear in inherited process environments or diagnostic logs, but NeverWrite no
+longer stores them as provider setup secrets because Gemini ACP support has been
+removed.
 
 Do not share `runtime-setup.json` without reviewing it: even when secret values
 are not stored there, it can reveal private endpoint URLs, local binary paths,
-project ids, and which credentials are configured.
+and which credentials are configured.
 
 Some provider login methods use provider-owned CLI authentication outside
 NeverWrite's app data directory. For example, a runtime CLI may keep its own

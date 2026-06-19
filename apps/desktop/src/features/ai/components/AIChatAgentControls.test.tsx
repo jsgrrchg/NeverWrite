@@ -482,7 +482,7 @@ describe("AIChatAgentControls", () => {
     it("hides the model selector when there are no real model options", () => {
         renderComponent(
             <AIChatAgentControls
-                runtimeId="gemini-acp"
+                runtimeId="grok-acp"
                 modelId=""
                 modeId="yolo"
                 effortsByModel={{}}
@@ -490,7 +490,7 @@ describe("AIChatAgentControls", () => {
                 modes={[
                     {
                         id: "yolo",
-                        runtimeId: "gemini-acp",
+                        runtimeId: "grok-acp",
                         name: "YOLO",
                         description: "",
                         disabled: false,

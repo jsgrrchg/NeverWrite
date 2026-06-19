@@ -138,7 +138,6 @@ For local troubleshooting, the most useful overrides are:
 ```text
 NEVERWRITE_CODEX_ACP_BIN
 NEVERWRITE_CLAUDE_ACP_BIN
-NEVERWRITE_GEMINI_ACP_BIN
 NEVERWRITE_GROK_ACP_BIN
 NEVERWRITE_KILO_ACP_BIN
 NEVERWRITE_OPENCODE_ACP_BIN
@@ -149,7 +148,7 @@ Important packaging expectations:
 - Codex is intended to be bundled as a sidecar runtime in release builds.
 - Claude is intended to be bundled through embedded Node plus vendored runtime
   files.
-- Gemini, Grok, Kilo, and OpenCode are integrated but not bundled by default, so
+- Grok, Kilo, and OpenCode are integrated but not bundled by default, so
   they need an external CLI or explicit binary override.
 
 If a provider works in your terminal but not in the app:
@@ -166,10 +165,10 @@ Secure credential storage is unavailable. Reconnect this AI provider or configur
 
 For terminal auth issues:
 
-- Integrated terminal auth applies to Claude, Gemini, Grok, Kilo, and OpenCode.
+- Integrated terminal auth applies to Claude, Grok, Kilo, and OpenCode.
   Codex ChatGPT auth does not use the integrated auth terminal.
-- Confirm the terminal process exits successfully. For Gemini, Grok, and
-  OpenCode, successful auth output can mark the provider verified before exit.
+- Confirm the terminal process exits successfully. For Grok and OpenCode,
+  successful auth output can mark the provider verified before exit.
 - For Grok, verify `grok login`, `XAI_API_KEY`, or active CLI auth under
   `~/.grok/`, currently `~/.grok/auth.json`.
 - If the auth terminal cannot start, check whether the configured runtime command
@@ -188,18 +187,14 @@ npm run electron:ai-runtime:smoke
 cargo test -p neverwrite-native-backend ai
 ```
 
-Gemini and Grok use NeverWrite's legacy ACP compatibility path. If either
-runtime does not expose real model options during session startup, the chat
-composer intentionally hides the model selector instead of showing a synthetic
-`Auto` model.
+Grok uses NeverWrite's legacy ACP compatibility path. If the runtime does not
+expose real model options during session startup, the chat composer
+intentionally hides the model selector instead of showing a synthetic `Auto`
+model.
 
 Grok can reject model switches after a chat has started when the target model
 requires a different provider-side `agentType`. Start a new Grok chat with the
 desired model when the UI reports that the switch is incompatible.
-
-Gemini may emit internal `update_topic` activity for provider-owned chat
-metadata. NeverWrite filters those events from the timeline, so their absence
-does not indicate that Gemini thinking or tool events are broken.
 
 ## Web Clipper
 

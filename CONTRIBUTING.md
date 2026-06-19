@@ -221,7 +221,6 @@ For development, these optional variables can override default runtime paths:
 | ---------- | --------- |
 | `NEVERWRITE_CODEX_ACP_BIN` | Override Codex ACP runtime binary |
 | `NEVERWRITE_CLAUDE_ACP_BIN` | Override Claude ACP runtime binary |
-| `NEVERWRITE_GEMINI_ACP_BIN` | Override Gemini ACP runtime binary |
 | `NEVERWRITE_KILO_ACP_BIN` | Override Kilo ACP runtime binary |
 | `NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS` | Allow unpacked extension origins |
 

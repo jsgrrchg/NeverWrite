@@ -34,6 +34,12 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## Unreleased
+
+### Removed
+
+- Removed the Gemini ACP provider integration after upstream Gemini CLI subscription changes redirected users toward Antigravity, which does not expose ACP support for third-party apps.
+
 ## [0.3.5] - 2026-06-17
 
 ### Added

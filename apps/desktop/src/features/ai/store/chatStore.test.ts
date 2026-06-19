@@ -34,6 +34,7 @@ import {
     disposeChatStoreRuntime,
     flushDeltasSync,
     initializeChatStoreRuntime,
+    REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
     resetChatStore,
     useChatStore,
 } from "./chatStore";
@@ -2104,8 +2105,6 @@ describe("chatStore", () => {
             methodId: "openai-api-key",
             codexApiKey: { action: "unchanged" },
             openaiApiKey: { action: "unchanged" },
-            geminiApiKey: { action: "unchanged" },
-            googleApiKey: { action: "unchanged" },
             gatewayHeaders: { action: "unchanged" },
             anthropicCustomHeaders: { action: "unchanged" },
             anthropicAuthToken: { action: "unchanged" },
@@ -2188,9 +2187,7 @@ describe("chatStore", () => {
             customBinaryPath: "/usr/local/bin/grok",
             codexApiKey: { action: "unchanged" },
             openaiApiKey: { action: "unchanged" },
-            geminiApiKey: { action: "unchanged" },
             xaiApiKey: { action: "set", value: "xai-test-secret" },
-            googleApiKey: { action: "unchanged" },
             gatewayHeaders: { action: "unchanged" },
             anthropicCustomHeaders: { action: "unchanged" },
             anthropicAuthToken: { action: "unchanged" },
@@ -2201,9 +2198,7 @@ describe("chatStore", () => {
             methodId: "grok-login",
             codexApiKey: { action: "unchanged" },
             openaiApiKey: { action: "unchanged" },
-            geminiApiKey: { action: "unchanged" },
             xaiApiKey: { action: "unchanged" },
-            googleApiKey: { action: "unchanged" },
             gatewayHeaders: { action: "unchanged" },
             anthropicCustomHeaders: { action: "unchanged" },
             anthropicAuthToken: { action: "unchanged" },
@@ -7133,7 +7128,7 @@ describe("chatStore", () => {
     });
 
     it("does not duplicate image attachments when saving an edited queued screenshot message", async () => {
-        let sentAttachments: AIChatAttachment[] | null = null;
+        let sentAttachments: AIChatAttachment[] = [];
         invokeMock.mockImplementation(async (command, args) => {
             if (command === "ai_send_message") {
                 sentAttachments =
@@ -7142,7 +7137,7 @@ describe("chatStore", () => {
                     "attachments" in args &&
                     Array.isArray(args.attachments)
                         ? (args.attachments as AIChatAttachment[])
-                        : null;
+                        : [];
                 return {
                     ...sessionPayload,
                     status: "streaming" as const,
@@ -7200,7 +7195,7 @@ describe("chatStore", () => {
         await useChatStore.getState().sendMessage();
 
         expect(
-            sentAttachments?.filter(
+            sentAttachments.filter(
                 (attachment) =>
                     attachment.filePath ===
                         "/vault/assets/chat/screenshot.png" &&
@@ -12684,6 +12679,77 @@ describe("chatStore", () => {
         });
         expect(
             useChatStore.getState().sessionsById["persisted:history-1"]
+                ?.resumeReconnectFailed,
+        ).toBe(true);
+    });
+
+    it("blocks removed Gemini ACP saved chats instead of reconnecting them", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "persisted:gemini-history": {
+                    sessionId: "persisted:gemini-history",
+                    historySessionId: "gemini-history",
+                    status: "idle",
+                    runtimeId: "gemini-acp",
+                    modelId: "gemini-pro",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 4,
+                    loadedPersistedMessageStart: null,
+                    resumeContextPending: false,
+                },
+            },
+            sessionOrder: ["persisted:gemini-history"],
+            activeSessionId: "persisted:gemini-history",
+            selectedRuntimeId: "codex-acp",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (
+                command === "ai_create_session" ||
+                command === "ai_resume_runtime_session" ||
+                command === "ai_load_session_history_page"
+            ) {
+                throw new Error("Gemini ACP chats should not reconnect");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        const nextSessionId = await useChatStore
+            .getState()
+            .resumeSession("persisted:gemini-history");
+
+        expect(nextSessionId).toBeNull();
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) =>
+                    command === "ai_create_session" ||
+                    command === "ai_resume_runtime_session" ||
+                    command === "ai_load_session_history_page",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore
+                .getState()
+                .sessionsById["persisted:gemini-history"]?.messages.at(-1),
+        ).toMatchObject({
+            kind: "error",
+            content: REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
+        });
+        expect(
+            useChatStore.getState().sessionsById["persisted:gemini-history"]
                 ?.resumeReconnectFailed,
         ).toBe(true);
     });
