@@ -21,6 +21,8 @@ export function useChatFindShortcut({
     onOpen,
 }: UseChatFindShortcutArgs): void {
     useEffect(() => {
+        // rootRef.current can become non-null after an early empty render without
+        // any dependency changing, so retry the scoped listener after each render.
         const root = rootRef.current;
         if (!root) return;
         const platform = getDesktopPlatform();
@@ -38,5 +40,5 @@ export function useChatFindShortcut({
         };
         root.addEventListener("keydown", onKeyDown);
         return () => root.removeEventListener("keydown", onKeyDown);
-    }, [disabled, onOpen, rootRef]);
+    });
 }
