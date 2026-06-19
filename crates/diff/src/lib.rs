@@ -411,7 +411,7 @@ fn merge_word_diff_ranges(ranges: &[WordDiffRange]) -> Vec<WordDiffRange> {
     }
 
     let mut sorted = ranges.to_vec();
-    sorted.sort_by(|left, right| left.from.cmp(&right.from));
+    sorted.sort_by_key(|range| range.from);
 
     let mut merged = vec![sorted[0].clone()];
     for range in sorted.into_iter().skip(1) {
