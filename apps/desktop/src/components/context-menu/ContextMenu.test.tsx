@@ -218,6 +218,62 @@ describe("ContextMenu scroll-to-close behaviour", () => {
         });
     });
 
+    it("keeps the submenu hover bridge attached when opening to the left", () => {
+        const originalInnerWidth = window.innerWidth;
+        Object.defineProperty(window, "innerWidth", {
+            configurable: true,
+            value: 200,
+        });
+
+        try {
+            render(
+                <ContextMenu
+                    menu={{ x: 100, y: 100, payload: undefined }}
+                    entries={[
+                        {
+                            label: "New Agent",
+                            children: [{ label: "Claude", action: vi.fn() }],
+                        },
+                    ]}
+                    onClose={vi.fn()}
+                />,
+            );
+
+            const parentItem = screen.getByRole("button", {
+                name: "New Agent",
+            }).parentElement;
+            expect(parentItem).not.toBeNull();
+            Object.defineProperty(parentItem, "getBoundingClientRect", {
+                value: () => ({
+                    left: 180,
+                    top: 100,
+                    right: 190,
+                    bottom: 130,
+                    width: 10,
+                    height: 30,
+                }),
+            });
+
+            fireEvent.mouseEnter(parentItem!);
+
+            const submenuSurface = screen.getByRole("button", {
+                name: "Claude",
+            }).parentElement;
+            const submenuBridge = submenuSurface?.parentElement;
+
+            expect(submenuBridge).not.toBeNull();
+            expect(submenuBridge).toHaveStyle({
+                right: "100%",
+                paddingRight: "4px",
+            });
+        } finally {
+            Object.defineProperty(window, "innerWidth", {
+                configurable: true,
+                value: originalInnerWidth,
+            });
+        }
+    });
+
     it("resets open submenu state when the menu identity changes", () => {
         const { rerender } = render(
             <ContextMenu
