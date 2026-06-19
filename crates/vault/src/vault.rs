@@ -81,7 +81,7 @@ impl Vault {
             }
 
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "md") {
+            if path.extension().is_none_or(|ext| ext != "md") {
                 continue;
             }
 
@@ -156,7 +156,7 @@ impl Vault {
                 continue;
             }
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "pdf") {
+            if path.extension().is_none_or(|ext| ext != "pdf") {
                 continue;
             }
 
