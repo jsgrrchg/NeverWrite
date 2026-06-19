@@ -3,6 +3,7 @@ import {
     CHAT_FIND_ACTIVE_HIGHLIGHT,
     CHAT_FIND_HIGHLIGHT,
     applyChatFindHighlights,
+    buildRangesForQuery,
     clearChatFindHighlights,
     setActiveChatFindHighlight,
 } from "./chatFindHighlights";
@@ -36,6 +37,10 @@ function installHighlightMock() {
             ...(globalThis.CSS ?? {}),
             highlights,
         },
+    });
+    Object.defineProperty(HTMLElement.prototype, "checkVisibility", {
+        configurable: true,
+        value: () => true,
     });
 
     return store;
@@ -93,5 +98,51 @@ describe("chatFindHighlights", () => {
             rangeA2,
             rangeB,
         ]);
+    });
+
+    it("matches across inline text nodes in the same visible block", () => {
+        const root = document.createElement("div");
+        const block = document.createElement("div");
+        const emphasis = document.createElement("strong");
+        const plain = document.createElement("span");
+        emphasis.textContent = "lo";
+        plain.textContent = "world";
+        block.append("hel", emphasis, plain);
+        root.append(block);
+        document.body.append(root);
+
+        const ranges = buildRangesForQuery(root, "lowo", false);
+
+        expect(ranges).toHaveLength(1);
+        expect(ranges[0]?.toString()).toBe("lowo");
+    });
+
+    it("does not match across separate chat rows", () => {
+        const root = document.createElement("div");
+        const rowA = document.createElement("div");
+        const rowB = document.createElement("div");
+        rowA.dataset.chatRow = "true";
+        rowB.dataset.chatRow = "true";
+        rowA.textContent = "hello";
+        rowB.textContent = "world";
+        root.append(rowA, rowB);
+        document.body.append(root);
+
+        expect(buildRangesForQuery(root, "lowo", false)).toHaveLength(0);
+    });
+
+    it("does not match across separate blocks in one chat row", () => {
+        const root = document.createElement("div");
+        const row = document.createElement("div");
+        const blockA = document.createElement("div");
+        const blockB = document.createElement("div");
+        row.dataset.chatRow = "true";
+        blockA.textContent = "hello";
+        blockB.textContent = "world";
+        row.append(blockA, blockB);
+        root.append(row);
+        document.body.append(root);
+
+        expect(buildRangesForQuery(root, "lowo", false)).toHaveLength(0);
     });
 });

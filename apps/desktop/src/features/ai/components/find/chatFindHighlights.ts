@@ -8,13 +8,46 @@
 //
 // Matches may span several text nodes (markdown splits text across <em>, <code>,
 // <a>, ... elements), so we flatten all text into one string with a segment map
-// from a global UTF-16 offset back to its node + local offset.
+// from a global UTF-16 offset back to its node + local offset. A sentinel
+// separator is inserted between visible blocks so matches cannot bridge separate
+// messages, paragraphs, list items, or code blocks.
 
 export const CHAT_FIND_HIGHLIGHT = "chat-find";
 export const CHAT_FIND_ACTIVE_HIGHLIGHT = "chat-find-active";
 
 // Safety cap so a pathological 1-char query on a huge chat can't lock the UI.
 export const MAX_CHAT_FIND_MATCHES = 2000;
+
+const SEARCH_BLOCK_SEPARATOR = "\0";
+const SEARCH_BLOCK_TAGS = new Set([
+    "ARTICLE",
+    "BLOCKQUOTE",
+    "DD",
+    "DIV",
+    "DL",
+    "DT",
+    "FIGCAPTION",
+    "FIGURE",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "LI",
+    "OL",
+    "P",
+    "PRE",
+    "SECTION",
+    "TABLE",
+    "TBODY",
+    "TD",
+    "TFOOT",
+    "TH",
+    "THEAD",
+    "TR",
+    "UL",
+]);
 
 type ChatFindHighlightOwnerId = string;
 
@@ -73,6 +106,20 @@ function isVisibleTextNode(node: Text): boolean {
     return el.offsetParent !== null;
 }
 
+function findSearchBlock(node: Text, root: HTMLElement): Element | HTMLElement {
+    let current = node.parentElement;
+    while (current && current !== root) {
+        if (
+            current.hasAttribute("data-chat-row") ||
+            SEARCH_BLOCK_TAGS.has(current.tagName)
+        ) {
+            return current;
+        }
+        current = current.parentElement;
+    }
+    return root;
+}
+
 function collectSegments(root: HTMLElement): {
     fullText: string;
     segments: TextSegment[];
@@ -92,12 +139,20 @@ function collectSegments(root: HTMLElement): {
     const segments: TextSegment[] = [];
     const parts: string[] = [];
     let cursor = 0;
+    let previousBlock: Element | HTMLElement | null = null;
     let current = walker.nextNode() as Text | null;
     while (current) {
+        const block = findSearchBlock(current, root);
+        if (previousBlock && previousBlock !== block) {
+            parts.push(SEARCH_BLOCK_SEPARATOR);
+            cursor += SEARCH_BLOCK_SEPARATOR.length;
+        }
+
         const len = current.data.length;
         segments.push({ node: current, start: cursor, end: cursor + len });
         parts.push(current.data);
         cursor += len;
+        previousBlock = block;
         current = walker.nextNode() as Text | null;
     }
     return { fullText: parts.join(""), segments };
@@ -142,6 +197,7 @@ export function buildRangesForQuery(
     caseSensitive: boolean,
 ): Range[] {
     if (!query) return [];
+    if (query.includes(SEARCH_BLOCK_SEPARATOR)) return [];
 
     const { fullText, segments } = collectSegments(root);
     if (segments.length === 0) return [];
