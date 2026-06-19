@@ -44,8 +44,6 @@ interface AIChatMessageListProps {
     messages: AIChatMessage[];
     status: AIChatSessionStatus;
     readOnly?: boolean;
-    highlightedMessageIds?: string[];
-    activeHighlightedMessageId?: string | null;
     hasOlderMessages?: boolean;
     isLoadingOlderMessages?: boolean;
     visibleWorkCycleId?: string | null;
@@ -313,8 +311,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     messages,
     status,
     readOnly = false,
-    highlightedMessageIds = [],
-    activeHighlightedMessageId = null,
     hasOlderMessages = false,
     isLoadingOlderMessages = false,
     visibleWorkCycleId = null,
@@ -514,11 +510,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             visibleWorkCycleId,
         ],
     );
-    const highlightedMessageIdSet = useMemo(
-        () => new Set(highlightedMessageIds),
-        [highlightedMessageIds],
-    );
-
     useLayoutEffect(() => {
         if (restoredScopeRef.current === viewStateScope) {
             return;
@@ -627,19 +618,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             pendingPrependAdjustmentRef.current = null;
         }
     }, [isLoadingOlderMessages, messages.length]);
-
-    useEffect(() => {
-        if (!activeHighlightedMessageId) {
-            return;
-        }
-        const container = containerRef.current;
-        if (!container) return;
-        const target = container.querySelector(
-            `[data-chat-message-id="${CSS.escape(activeHighlightedMessageId)}"]`,
-        ) as HTMLElement | null;
-        if (!target) return;
-        target.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, [activeHighlightedMessageId]);
 
     // Anchor scroll position when container width changes (e.g. sidebar resize).
     // Tracks the topmost visible chat row and its viewport offset on every scroll,
@@ -781,31 +759,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                                 data-chat-message-id={
                                     row.kind === "message"
                                         ? row.message.id
-                                        : undefined
-                                }
-                                className={
-                                    row.kind === "message" &&
-                                    highlightedMessageIdSet.has(row.message.id)
-                                        ? "rounded-md"
-                                        : undefined
-                                }
-                                style={
-                                    row.kind === "message" &&
-                                    highlightedMessageIdSet.has(row.message.id)
-                                        ? {
-                                              backgroundColor:
-                                                  row.message.id ===
-                                                  activeHighlightedMessageId
-                                                      ? "color-mix(in srgb, var(--accent) 14%, transparent)"
-                                                      : "color-mix(in srgb, var(--accent) 7%, transparent)",
-                                              boxShadow:
-                                                  row.message.id ===
-                                                  activeHighlightedMessageId
-                                                      ? "0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent)"
-                                                      : "0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent)",
-                                              scrollMarginTop: 72,
-                                              scrollMarginBottom: 72,
-                                          }
                                         : undefined
                                 }
                             >
