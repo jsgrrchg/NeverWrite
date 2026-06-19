@@ -117,7 +117,7 @@ const SUPPORTED_COMMANDS = new Set([
 ]);
 
 const NATIVE_BACKEND_SECRET_JSON_KEY_PATTERN =
-    /("(?:codex_api_key|openai_api_key|xai_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
+    /("(?:codex_api_key|openai_api_key|gemini_api_key|xai_api_key|google_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
 const NATIVE_BACKEND_SECRET_ENV_PATTERN =
     /\b((?:CODEX_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_CUSTOM_HEADERS|GEMINI_API_KEY|GOOGLE_API_KEY|XAI_API_KEY)\s*=\s*)([^\s"',}]+)/gu;
 
