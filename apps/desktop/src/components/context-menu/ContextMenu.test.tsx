@@ -190,6 +190,34 @@ describe("ContextMenu scroll-to-close behaviour", () => {
         expect(callOrder).toEqual(["close", "action"]);
     });
 
+    it("keeps the submenu hover bridge attached to the parent item", () => {
+        render(
+            <ContextMenu
+                menu={{ x: 100, y: 100, payload: undefined }}
+                entries={[
+                    {
+                        label: "New Agent",
+                        children: [{ label: "Claude", action: vi.fn() }],
+                    },
+                ]}
+                onClose={vi.fn()}
+            />,
+        );
+
+        fireEvent.mouseEnter(screen.getByRole("button", { name: "New Agent" }));
+
+        const submenuSurface = screen.getByRole("button", {
+            name: "Claude",
+        }).parentElement;
+        const submenuBridge = submenuSurface?.parentElement;
+
+        expect(submenuBridge).not.toBeNull();
+        expect(submenuBridge).toHaveStyle({
+            left: "100%",
+            paddingLeft: "4px",
+        });
+    });
+
     it("resets open submenu state when the menu identity changes", () => {
         const { rerender } = render(
             <ContextMenu

@@ -22,6 +22,7 @@ export interface ContextMenuState<T = void> {
 }
 
 const EMPTY_SUBMENU_DIRECTIONS: Readonly<Record<string, "left" | "right">> = {};
+const SUBMENU_GAP_PX = 4;
 
 export function ContextMenu<T>({
     menu,
@@ -312,74 +313,97 @@ export function ContextMenu<T>({
                                     top: -4,
                                     [submenuDirection === "right"
                                         ? "left"
-                                        : "right"]: "calc(100% + 4px)",
+                                        : "right"]: "100%",
                                     zIndex: zIndex + 1,
-                                    display: "inline-flex",
-                                    flexDirection: "column",
-                                    alignItems: "stretch",
-                                    width: "fit-content",
-                                    minWidth,
-                                    padding: 4,
-                                    borderRadius: 8,
-                                    backgroundColor: "var(--bg-secondary)",
-                                    border: "1px solid var(--border)",
-                                    boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+                                    paddingLeft:
+                                        submenuDirection === "right"
+                                            ? SUBMENU_GAP_PX
+                                            : 0,
+                                    paddingRight:
+                                        submenuDirection === "left"
+                                            ? SUBMENU_GAP_PX
+                                            : 0,
                                 }}
                             >
-                                {entry.children!.map((child, childIndex) => {
-                                    if (child.type === "separator") {
-                                        return (
-                                            <div
-                                                key={`submenu-separator-${childIndex}`}
-                                                style={{
-                                                    borderTop:
-                                                        "1px solid var(--border)",
-                                                    margin: "4px 0",
-                                                }}
-                                            />
-                                        );
-                                    }
+                                <div
+                                    style={{
+                                        display: "inline-flex",
+                                        flexDirection: "column",
+                                        alignItems: "stretch",
+                                        width: "fit-content",
+                                        minWidth,
+                                        padding: 4,
+                                        borderRadius: 8,
+                                        backgroundColor: "var(--bg-secondary)",
+                                        border: "1px solid var(--border)",
+                                        boxShadow:
+                                            "0 4px 16px rgba(0,0,0,0.25)",
+                                    }}
+                                >
+                                    {entry.children!.map(
+                                        (child, childIndex) => {
+                                            if (child.type === "separator") {
+                                                return (
+                                                    <div
+                                                        key={`submenu-separator-${childIndex}`}
+                                                        style={{
+                                                            borderTop:
+                                                                "1px solid var(--border)",
+                                                            margin: "4px 0",
+                                                        }}
+                                                    />
+                                                );
+                                            }
 
-                                    return (
-                                        <button
-                                            key={`${child.label}-${childIndex}`}
-                                            type="button"
-                                            disabled={child.disabled}
-                                            onClick={() => {
-                                                if (child.disabled) return;
-                                                closeAndRunAction(child.action);
-                                            }}
-                                            className="text-left px-3 py-1.5 text-xs rounded"
-                                            style={{
-                                                display: "block",
-                                                color: child.danger
-                                                    ? "#ef4444"
-                                                    : "var(--text-primary)",
-                                                background: "transparent",
-                                                opacity: child.disabled
-                                                    ? 0.45
-                                                    : 1,
-                                                cursor: child.disabled
-                                                    ? "default"
-                                                    : "pointer",
-                                                whiteSpace: "nowrap",
-                                            }}
-                                            onMouseEnter={(event) => {
-                                                if (child.disabled) return;
-                                                event.currentTarget.style.backgroundColor =
-                                                    child.danger
-                                                        ? "color-mix(in srgb, #ef4444 10%, var(--bg-secondary))"
-                                                        : "var(--bg-tertiary)";
-                                            }}
-                                            onMouseLeave={(event) => {
-                                                event.currentTarget.style.backgroundColor =
-                                                    "transparent";
-                                            }}
-                                        >
-                                            {child.label}
-                                        </button>
-                                    );
-                                })}
+                                            return (
+                                                <button
+                                                    key={`${child.label}-${childIndex}`}
+                                                    type="button"
+                                                    disabled={child.disabled}
+                                                    onClick={() => {
+                                                        if (child.disabled) {
+                                                            return;
+                                                        }
+                                                        closeAndRunAction(
+                                                            child.action,
+                                                        );
+                                                    }}
+                                                    className="text-left px-3 py-1.5 text-xs rounded"
+                                                    style={{
+                                                        display: "block",
+                                                        color: child.danger
+                                                            ? "#ef4444"
+                                                            : "var(--text-primary)",
+                                                        background:
+                                                            "transparent",
+                                                        opacity: child.disabled
+                                                            ? 0.45
+                                                            : 1,
+                                                        cursor: child.disabled
+                                                            ? "default"
+                                                            : "pointer",
+                                                        whiteSpace: "nowrap",
+                                                    }}
+                                                    onMouseEnter={(event) => {
+                                                        if (child.disabled) {
+                                                            return;
+                                                        }
+                                                        event.currentTarget.style.backgroundColor =
+                                                            child.danger
+                                                                ? "color-mix(in srgb, #ef4444 10%, var(--bg-secondary))"
+                                                                : "var(--bg-tertiary)";
+                                                    }}
+                                                    onMouseLeave={(event) => {
+                                                        event.currentTarget.style.backgroundColor =
+                                                            "transparent";
+                                                    }}
+                                                >
+                                                    {child.label}
+                                                </button>
+                                            );
+                                        },
+                                    )}
+                                </div>
                             </div>
                         ) : null}
                     </div>
