@@ -125,6 +125,8 @@ const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
 const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
+const LEGACY_GEMINI_RUNTIME_ID: &str = "gemini-acp";
+const LEGACY_GEMINI_SECRET_ENV_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 const RUNTIME_SETUP_LOAD_ERROR_MESSAGE: &str = "Secure credential storage is unavailable. Reconnect this AI provider or configure an environment variable before starting a session.";
 const OPENCODE_AUTH_UNVERIFIED_MESSAGE: &str = "OpenCode auth is managed by the OpenCode CLI. NeverWrite could not verify local OpenCode credentials, but OpenCode may still use /connect, environment variables, or a project .env.";
 
@@ -502,6 +504,7 @@ impl RuntimeSetupStore {
     }
 
     fn load(&self) -> Result<HashMap<String, RuntimeSetupState>, String> {
+        self.cleanup_removed_runtime_secrets_best_effort();
         let raw = match std::fs::read_to_string(&self.path) {
             Ok(raw) => raw,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -590,6 +593,14 @@ impl RuntimeSetupStore {
             self.save(&setup)?;
         }
         Ok(setup)
+    }
+
+    fn cleanup_removed_runtime_secrets_best_effort(&self) {
+        for env_key in LEGACY_GEMINI_SECRET_ENV_KEYS {
+            let _ = self
+                .secrets
+                .delete_secret(LEGACY_GEMINI_RUNTIME_ID, env_key);
+        }
     }
 
     fn save(&self, setup: &HashMap<String, RuntimeSetupState>) -> Result<(), String> {
@@ -9827,6 +9838,50 @@ mod tests {
         assert!(runtime_descriptors()
             .iter()
             .all(|descriptor| descriptor.runtime.id != "gemini-acp"));
+    }
+
+    #[test]
+    fn removed_gemini_runtime_secrets_are_cleaned_up_best_effort() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        secrets
+            .set_secret(
+                LEGACY_GEMINI_RUNTIME_ID,
+                "GEMINI_API_KEY",
+                "legacy-gemini-key",
+            )
+            .unwrap();
+        secrets
+            .set_secret(
+                LEGACY_GEMINI_RUNTIME_ID,
+                "GOOGLE_API_KEY",
+                "legacy-google-key",
+            )
+            .unwrap();
+
+        let _native_ai = test_native_ai_with_secret_store(store_path, secrets.clone());
+
+        assert_eq!(
+            secrets.stored_secret(LEGACY_GEMINI_RUNTIME_ID, "GEMINI_API_KEY"),
+            None
+        );
+        assert_eq!(
+            secrets.stored_secret(LEGACY_GEMINI_RUNTIME_ID, "GOOGLE_API_KEY"),
+            None
+        );
+    }
+
+    #[test]
+    fn removed_gemini_runtime_secret_cleanup_failure_does_not_block_setup_load() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        secrets.fail_delete(true);
+
+        let native_ai = test_native_ai_with_secret_store(store_path, secrets);
+
+        assert!(native_ai.inner.lock().unwrap().setup_load_error.is_none());
     }
 
     #[test]
