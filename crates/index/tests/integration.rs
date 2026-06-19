@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use neverwrite_index::VaultIndex;
 use neverwrite_types::{
     AdvancedSearchFileScope, AdvancedSearchParams, NoteDocument, NoteId, NotePath, PdfDocument,
-    SearchTermParam, TextRange, VaultEntryDto, WikiLink,
+    PdfMetadata, SearchTermParam, TextRange, VaultEntryDto, WikiLink,
 };
 use neverwrite_vault::Vault;
 
@@ -737,15 +737,15 @@ fn register_pdf_adds_to_index() {
 #[test]
 fn register_pdf_metadata_adds_to_index_without_content_extraction() {
     let mut index = build_sample_index();
-    index.register_pdf_metadata(
-        NoteId("papers/quantum".into()),
-        NotePath(PathBuf::from("papers/quantum.pdf")),
-        "Quantum Computing".into(),
-        0,
-        1000,
-        900,
-        5000,
-    );
+    index.register_pdf_metadata(PdfMetadata {
+        id: NoteId("papers/quantum".into()),
+        path: NotePath(PathBuf::from("papers/quantum.pdf")),
+        title: "Quantum Computing".into(),
+        page_count: 0,
+        modified_at: 1000,
+        created_at: 900,
+        size: 5000,
+    });
 
     assert!(index
         .pdf_metadata
@@ -796,25 +796,25 @@ fn reindex_pdf_updates_metadata() {
 #[test]
 fn reindex_pdf_metadata_updates_metadata() {
     let mut index = build_sample_index();
-    index.register_pdf_metadata(
-        NoteId("report".into()),
-        NotePath(PathBuf::from("report.pdf")),
-        "Old Title".into(),
-        0,
-        1000,
-        900,
-        5000,
-    );
+    index.register_pdf_metadata(PdfMetadata {
+        id: NoteId("report".into()),
+        path: NotePath(PathBuf::from("report.pdf")),
+        title: "Old Title".into(),
+        page_count: 0,
+        modified_at: 1000,
+        created_at: 900,
+        size: 5000,
+    });
 
-    index.reindex_pdf_metadata(
-        NoteId("report".into()),
-        NotePath(PathBuf::from("report.pdf")),
-        "New Title".into(),
-        0,
-        2000,
-        900,
-        8000,
-    );
+    index.reindex_pdf_metadata(PdfMetadata {
+        id: NoteId("report".into()),
+        path: NotePath(PathBuf::from("report.pdf")),
+        title: "New Title".into(),
+        page_count: 0,
+        modified_at: 2000,
+        created_at: 900,
+        size: 8000,
+    });
 
     let meta = &index.pdf_metadata[&NoteId("report".into())];
     assert_eq!(meta.title, "New Title");
