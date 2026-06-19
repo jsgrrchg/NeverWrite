@@ -45,8 +45,7 @@ use neverwrite_ai::{
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
     AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
-    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID,
-    OPENCODE_RUNTIME_ID,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -148,10 +147,8 @@ enum AcpProtocolFlavor {
 }
 
 const NO_ACP_ARGS: &[&str] = &[];
-const GEMINI_ACP_ARGS: &[&str] = &["--acp"];
 const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
-const GEMINI_TOPIC_TOOL_NAME: &str = "update_topic";
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
     RuntimeDefinition {
@@ -172,16 +169,6 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
         acp_protocol: AcpProtocolFlavor::Current14,
-        supports_native_resume: false,
-    },
-    RuntimeDefinition {
-        id: GEMINI_RUNTIME_ID,
-        name: "Gemini",
-        description: "Gemini ACP-compatible agent runtime.",
-        default_executable: "gemini",
-        bin_env_var: "NEVERWRITE_GEMINI_ACP_BIN",
-        acp_args: GEMINI_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -264,15 +251,9 @@ struct AiRuntimeSetupPayload {
     #[serde(default)]
     openai_api_key: Option<AiSecretPatch>,
     #[serde(default)]
-    gemini_api_key: Option<AiSecretPatch>,
-    #[serde(default)]
     xai_api_key: Option<AiSecretPatch>,
     #[serde(default)]
     kilo_api_key: Option<AiSecretPatch>,
-    #[serde(default)]
-    google_api_key: Option<AiSecretPatch>,
-    google_cloud_project: Option<String>,
-    google_cloud_location: Option<String>,
     gateway_base_url: Option<String>,
     #[serde(default)]
     gateway_headers: Option<AiSecretPatch>,
@@ -772,7 +753,6 @@ fn secret_env_keys_for_runtime(runtime_id: &str) -> &'static [&'static str] {
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_CUSTOM_HEADERS",
         ],
-        GEMINI_RUNTIME_ID => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         GROK_RUNTIME_ID => &["XAI_API_KEY"],
         KILO_RUNTIME_ID => &["KILO_API_KEY"],
         _ => &[],
@@ -1019,7 +999,6 @@ enum AcpCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpConfigOptionRemoteCommand {
     SetConfigOption,
-    SetMode,
     SetModel,
     LocalOnly,
 }
@@ -1566,8 +1545,7 @@ impl NativeAi {
                         handle.set_model(&session_id, &model_id)?;
                         None
                     }
-                    AcpConfigOptionRemoteCommand::SetMode
-                    | AcpConfigOptionRemoteCommand::LocalOnly => None,
+                    AcpConfigOptionRemoteCommand::LocalOnly => None,
                 }
             }
             _ => None,
@@ -1606,10 +1584,6 @@ impl NativeAi {
         let config_options = match (self.session_handle(&input.session_id)?, remote_command) {
             (Some(handle), AcpConfigOptionRemoteCommand::SetConfigOption) => {
                 Some(handle.set_config_option(&input.session_id, &input.option_id, &input.value)?)
-            }
-            (Some(handle), AcpConfigOptionRemoteCommand::SetMode) => {
-                handle.set_mode(&input.session_id, &input.value)?;
-                None
             }
             (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
                 handle.set_model(&input.session_id, &input.value)?;
@@ -2402,7 +2376,6 @@ struct NativeAcpClient {
     url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
     completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
-    suppressed_gemini_topic_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
@@ -2760,65 +2733,8 @@ impl NativeAcpClient {
             .unwrap_or(false)
     }
 
-    fn remember_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) {
-        if let Ok(mut ids) = self.suppressed_gemini_topic_tool_calls.lock() {
-            ids.insert(call_state_key(session_id, tool_call_id));
-        }
-    }
-
-    fn forget_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) {
-        if let Ok(mut ids) = self.suppressed_gemini_topic_tool_calls.lock() {
-            ids.remove(&call_state_key(session_id, tool_call_id));
-        }
-    }
-
-    fn has_suppressed_gemini_topic_tool_call(&self, session_id: &str, tool_call_id: &str) -> bool {
-        self.suppressed_gemini_topic_tool_calls
-            .lock()
-            .ok()
-            .map(|ids| ids.contains(&call_state_key(session_id, tool_call_id)))
-            .unwrap_or(false)
-    }
-
-    fn session_runtime_id(&self, session_id: &str) -> Option<String> {
-        self.session_state.lock().ok().and_then(|state| {
-            state
-                .sessions
-                .get(session_id)
-                .map(|metadata| metadata.session.runtime_id.clone())
-        })
-    }
-
-    fn should_suppress_gemini_topic_tool_call(
-        &self,
-        session_id: &str,
-        tool_call: &ToolCall,
-    ) -> bool {
-        if self.session_runtime_id(session_id).as_deref() != Some(GEMINI_RUNTIME_ID) {
-            return false;
-        }
-
-        should_suppress_gemini_topic_tool_call(tool_call)
-    }
-
     fn should_suppress_tool_call_update(&self, session_id: &str, update: &ToolCallUpdate) -> bool {
         let tool_call_id = &update.tool_call_id.0;
-        if self.has_suppressed_gemini_topic_tool_call(session_id, tool_call_id) {
-            if tool_call_update_is_terminal(update) {
-                self.forget_suppressed_gemini_topic_tool_call(session_id, tool_call_id);
-            }
-            return true;
-        }
-
-        if self.session_runtime_id(session_id).as_deref() == Some(GEMINI_RUNTIME_ID)
-            && should_suppress_gemini_topic_tool_call_update(update)
-        {
-            if !tool_call_update_is_terminal(update) {
-                self.remember_suppressed_gemini_topic_tool_call(session_id, tool_call_id);
-            }
-            return true;
-        }
-
         if self.has_suppressed_status_tool_call(session_id, tool_call_id) {
             if tool_call_update_is_terminal(update) {
                 self.forget_suppressed_status_tool_call(session_id, tool_call_id);
@@ -3531,17 +3447,6 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
-                if self.should_suppress_gemini_topic_tool_call(&session_id, &tool_call) {
-                    if tool_call.status != ToolCallStatus::Completed
-                        && tool_call.status != ToolCallStatus::Failed
-                    {
-                        self.remember_suppressed_gemini_topic_tool_call(
-                            &session_id,
-                            &tool_call.tool_call_id.0,
-                        );
-                    }
-                    return Ok(());
-                }
                 if should_suppress_status_tool_call(&tool_call) {
                     self.remember_suppressed_status_tool_call(
                         &session_id,
@@ -3688,7 +3593,7 @@ fn remember_prompt_capabilities(
 
 fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
     // ACP 0.12 does not expose the newer elicitation capability flags through the
-    // umbrella `unstable` feature. Gemini and Grok stay on the legacy surface.
+    // umbrella `unstable` feature. Grok stays on the legacy surface.
     acp12::schema::ClientCapabilities::new().fs(acp12::schema::FileSystemCapabilities::new())
 }
 
@@ -4207,7 +4112,6 @@ async fn run_acp12_actor_inner(
         url_elicitation_waiters,
         completed_url_elicitations,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
-        suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -4410,7 +4314,6 @@ async fn run_acp_actor_inner(
         url_elicitation_waiters,
         completed_url_elicitations,
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
-        suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -5106,7 +5009,7 @@ fn acp_child_exit_message(status: std::process::ExitStatus) -> String {
 }
 
 fn should_suppress_internal_text_chunk(runtime_id: &str, text: &str) -> bool {
-    if !matches!(runtime_id, GEMINI_RUNTIME_ID | GROK_RUNTIME_ID) {
+    if runtime_id != GROK_RUNTIME_ID {
         return false;
     }
 
@@ -5482,22 +5385,7 @@ fn acp_config_option_remote_command(
         };
     }
 
-    if runtime_id != GEMINI_RUNTIME_ID {
-        return AcpConfigOptionRemoteCommand::SetConfigOption;
-    }
-
-    let category = config_options
-        .iter()
-        .find(|option| option.id == option_id)
-        .map(|option| &option.category);
-    match category {
-        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
-        Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::SetMode,
-        Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-        None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
-        None if option_id == "mode" => AcpConfigOptionRemoteCommand::SetMode,
-        None => AcpConfigOptionRemoteCommand::LocalOnly,
-    }
+    AcpConfigOptionRemoteCommand::SetConfigOption
 }
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
     AiPermissionOptionPayload {
@@ -6280,47 +6168,6 @@ fn should_suppress_status_tool_call_update(update: &ToolCallUpdate) -> bool {
             .is_some_and(|event_type| event_type == "status")
 }
 
-fn is_gemini_topic_tool_title(title: &str) -> bool {
-    let title = title.trim();
-    title.starts_with("Update topic to:") || title.starts_with("Update tactical intent:")
-}
-
-fn is_gemini_topic_tool_name(name: &str) -> bool {
-    name.trim() == GEMINI_TOPIC_TOOL_NAME
-}
-
-fn gemini_topic_tool_name_from_meta(meta: Option<&Meta>) -> Option<String> {
-    let meta = meta?;
-    ["tool_name", "toolName", "name", "tool"]
-        .iter()
-        .find_map(|key| meta_string(meta, key))
-}
-
-fn gemini_topic_tool_name_from_raw(raw: Option<&Value>) -> Option<String> {
-    raw_string_field(raw, &["tool_name", "toolName", "name", "tool"])
-}
-
-fn should_suppress_gemini_topic_tool_call(tool_call: &ToolCall) -> bool {
-    gemini_topic_tool_name_from_meta(tool_call.meta.as_ref())
-        .as_deref()
-        .is_some_and(is_gemini_topic_tool_name)
-        || gemini_topic_tool_name_from_raw(tool_call.raw_input.as_ref())
-            .as_deref()
-            .is_some_and(is_gemini_topic_tool_name)
-        || is_gemini_topic_tool_title(&tool_call.title)
-}
-
-fn should_suppress_gemini_topic_tool_call_update(update: &ToolCallUpdate) -> bool {
-    gemini_topic_tool_name_from_meta(update.meta.as_ref())
-        .as_deref()
-        .is_some_and(is_gemini_topic_tool_name)
-        || update
-            .fields
-            .title
-            .as_deref()
-            .is_some_and(is_gemini_topic_tool_title)
-}
-
 fn tool_call_update_is_terminal(update: &ToolCallUpdate) -> bool {
     matches!(
         update.fields.status.as_ref(),
@@ -6579,7 +6426,7 @@ impl RuntimeDescriptorAuthTags for AiRuntimeDescriptor {
 }
 
 fn default_models(runtime_id: &str) -> Vec<AiModelOption> {
-    if matches!(runtime_id, GEMINI_RUNTIME_ID | GROK_RUNTIME_ID) {
+    if runtime_id == GROK_RUNTIME_ID {
         return Vec::new();
     }
 
@@ -6883,14 +6730,6 @@ fn acp_process_spec(
         env.insert("XAI_API_KEY".to_string(), String::new());
     }
     let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
-    if let Some(method) = auth_method.as_deref() {
-        if runtime_id == GEMINI_RUNTIME_ID {
-            env.insert(
-                "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
-                gemini_cli_auth_type(method).to_string(),
-            );
-        }
-    }
     if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
             env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
@@ -7146,19 +6985,10 @@ fn resolve_macos_homebrew_runtime_fallback(_runtime_id: &str) -> Option<PathBuf>
 fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
     match runtime_id {
         CLAUDE_RUNTIME_ID => default_claude_terminal_auth_method(),
-        GEMINI_RUNTIME_ID => "login_with_google",
         GROK_RUNTIME_ID => "grok-login",
         KILO_RUNTIME_ID => "kilo-login",
         OPENCODE_RUNTIME_ID => "opencode-login",
         _ => "terminal-login",
-    }
-}
-
-fn gemini_cli_auth_type(method_id: &str) -> &str {
-    match method_id {
-        "login_with_google" => "oauth-personal",
-        "use_gemini" => "gemini-api-key",
-        method_id => method_id,
     }
 }
 
@@ -7177,7 +7007,7 @@ fn auth_terminal_launch_config(
         )
     })?;
     let mut args = resolved.args;
-    let mut env = setup.env.clone();
+    let env = setup.env.clone();
     let display_name = match (runtime_id, method_id) {
         (CLAUDE_RUNTIME_ID, "claude-ai-login") => {
             args.extend([
@@ -7200,13 +7030,6 @@ fn auth_terminal_launch_config(
         (CLAUDE_RUNTIME_ID, "claude-login") => {
             args.push("--cli".to_string());
             "Claude Login".to_string()
-        }
-        (GEMINI_RUNTIME_ID, "login_with_google") => {
-            env.insert(
-                "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
-                gemini_cli_auth_type(method_id).to_string(),
-            );
-            "Gemini Login".to_string()
         }
         (GROK_RUNTIME_ID, "grok-login") => {
             args.push("login".to_string());
@@ -7424,16 +7247,6 @@ fn inherited_auth_method(
                     auth_invalidated_at_ms,
                 )
             }),
-        GEMINI_RUNTIME_ID => env_secret_present("GEMINI_API_KEY")
-            .then(|| "use_gemini".to_string())
-            .or_else(|| env_secret_present("GOOGLE_API_KEY").then(|| "use_gemini".to_string()))
-            .or_else(|| {
-                inherited_persisted_auth_method(
-                    runtime_id,
-                    include_persisted,
-                    auth_invalidated_at_ms,
-                )
-            }),
         GROK_RUNTIME_ID => env_secret_present("XAI_API_KEY")
             .then(|| "xai-api-key".to_string())
             .or_else(|| {
@@ -7515,8 +7328,6 @@ fn persisted_cli_auth_method_for_home_with_invalidated_at(
             };
             Some(method_id.to_string())
         }
-        GEMINI_RUNTIME_ID => non_empty_file_exists(&home.join(".gemini").join("oauth_creds.json"))
-            .then(|| "login_with_google".to_string()),
         KILO_RUNTIME_ID if non_empty_file_exists_any(kilo_auth_file_candidates(home)) => {
             Some("kilo-login".to_string())
         }
@@ -7696,16 +7507,6 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .env
             .get("ANTHROPIC_API_KEY")
             .is_some_and(|value| !value.is_empty()),
-        "use_gemini" => {
-            setup
-                .env
-                .get("GEMINI_API_KEY")
-                .is_some_and(|value| !value.is_empty())
-                || setup
-                    .env
-                    .get("GOOGLE_API_KEY")
-                    .is_some_and(|value| !value.is_empty())
-        }
         "kilo-api-key" => setup
             .env
             .get("KILO_API_KEY")
@@ -7755,7 +7556,6 @@ fn is_local_auth_method(method_id: &str) -> bool {
         "codex-api-key"
             | "openai-api-key"
             | "anthropic-api-key"
-            | "use_gemini"
             | "kilo-api-key"
             | "xai-api-key"
             | "gateway"
@@ -7797,10 +7597,6 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
                     .is_some_and(|value| !value.is_empty())
                     .then(|| "console-login".to_string())
             }),
-        GEMINI_RUNTIME_ID => ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
-            .into_iter()
-            .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()))
-            .then(|| "use_gemini".to_string()),
         KILO_RUNTIME_ID => setup
             .env
             .get("KILO_API_KEY")
@@ -7853,13 +7649,9 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
         "ANTHROPIC_BEDROCK_BASE_URL",
         "CLAUDE_CODE_USE_BEDROCK",
         "AWS_BEARER_TOKEN_BEDROCK",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
         "XAI_API_KEY",
         "OPENCODE_API_KEY",
         "KILO_API_KEY",
-        "GOOGLE_CLOUD_PROJECT",
-        "GOOGLE_CLOUD_LOCATION",
     ] {
         setup.env.remove(key);
     }
@@ -7999,19 +7791,6 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
             },
         ],
         CLAUDE_RUNTIME_ID => claude_auth_methods_for_environment(is_claude_remote_environment()),
-        GEMINI_RUNTIME_ID => vec![
-            AiAuthMethod {
-                id: "login_with_google".to_string(),
-                name: "Log in with Google".to_string(),
-                description: "Open a Gemini sign-in terminal for Google account authentication."
-                    .to_string(),
-            },
-            AiAuthMethod {
-                id: "use_gemini".to_string(),
-                name: "Gemini API key".to_string(),
-                description: "Use a Gemini Developer API key stored locally.".to_string(),
-            },
-        ],
         GROK_RUNTIME_ID => vec![
             AiAuthMethod {
                 id: "grok-login".to_string(),
@@ -8052,7 +7831,6 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
     match runtime_id {
         CODEX_RUNTIME_ID => vec!["chatgpt", "openai-api-key", "codex-api-key"],
         CLAUDE_RUNTIME_ID => claude_auth_method_ids_for_environment(is_claude_remote_environment()),
-        GEMINI_RUNTIME_ID => vec!["login_with_google", "use_gemini"],
         GROK_RUNTIME_ID => vec!["grok-login", "xai-api-key"],
         KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
         OPENCODE_RUNTIME_ID => vec!["opencode-login"],
@@ -8289,14 +8067,6 @@ fn update_auth_state(
             touched_auth = true;
         }
     }
-    if runtime_id == GEMINI_RUNTIME_ID {
-        if let Some(patch) = input.gemini_api_key.clone() {
-            touched_auth |= apply_secret_patch(setup, "GEMINI_API_KEY", patch, "use_gemini");
-        }
-        if let Some(patch) = input.google_api_key.clone() {
-            touched_auth |= apply_secret_patch(setup, "GOOGLE_API_KEY", patch, "use_gemini");
-        }
-    }
     if runtime_id == GROK_RUNTIME_ID {
         if let Some(patch) = input.xai_api_key.clone() {
             touched_auth |= apply_secret_patch(setup, "XAI_API_KEY", patch, "xai-api-key");
@@ -8305,27 +8075,6 @@ fn update_auth_state(
     if runtime_id == KILO_RUNTIME_ID {
         if let Some(patch) = input.kilo_api_key.clone() {
             touched_auth |= apply_secret_patch(setup, "KILO_API_KEY", patch, "kilo-api-key");
-        }
-    }
-
-    if input.google_cloud_project.is_some() {
-        if let Some(value) = input
-            .google_cloud_project
-            .and_then(normalize_optional_string)
-        {
-            setup.env.insert("GOOGLE_CLOUD_PROJECT".to_string(), value);
-        } else {
-            setup.env.remove("GOOGLE_CLOUD_PROJECT");
-        }
-    }
-    if input.google_cloud_location.is_some() {
-        if let Some(value) = input
-            .google_cloud_location
-            .and_then(normalize_optional_string)
-        {
-            setup.env.insert("GOOGLE_CLOUD_LOCATION".to_string(), value);
-        } else {
-            setup.env.remove("GOOGLE_CLOUD_LOCATION");
         }
     }
 
@@ -8647,12 +8396,6 @@ fn native_image_attachment_limits_for_runtime(
             max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
             max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
             allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
-        },
-        Some(GEMINI_RUNTIME_ID) => NativeImageAttachmentLimits {
-            runtime_label: "Gemini",
-            max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
-            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
-            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
         },
         Some(GROK_RUNTIME_ID) => NativeImageAttachmentLimits {
             runtime_label: "Grok",
@@ -9271,10 +9014,6 @@ fn spawn_auth_terminal_output_reader(
 
 fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> bool {
     match runtime_id {
-        GEMINI_RUNTIME_ID => {
-            buffer.contains("Authentication succeeded")
-                || buffer.contains("successfully signed in with Google")
-        }
         OPENCODE_RUNTIME_ID => {
             let lower = buffer.to_ascii_lowercase();
             lower.contains("authentication successful")
@@ -9295,36 +9034,16 @@ fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> boo
     }
 }
 
-fn acp_session_wire_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
-    acp_session_wire_path(runtime_id, cwd)
-}
-
-fn acp_session_wire_path(runtime_id: &str, path: &Path) -> PathBuf {
-    if runtime_id == GEMINI_RUNTIME_ID {
-        return PathBuf::from(normalize_path_for_node_acp(path));
-    }
-    path.to_path_buf()
-}
-
-fn acp_process_launch_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
-    if runtime_id == GEMINI_RUNTIME_ID {
-        return PathBuf::from(normalize_path_for_node_acp(cwd));
-    }
+fn acp_session_wire_cwd(_runtime_id: &str, cwd: &Path) -> PathBuf {
     cwd.to_path_buf()
 }
 
-fn normalize_path_for_node_acp(path: &Path) -> String {
-    strip_windows_verbatim_prefix(&path.to_string_lossy().replace('\\', "/"))
+fn acp_session_wire_path(_runtime_id: &str, path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
-fn strip_windows_verbatim_prefix(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("//?/UNC/") {
-        return format!("//{rest}");
-    }
-    if let Some(rest) = path.strip_prefix("//?/") {
-        return rest.to_string();
-    }
-    path.to_string()
+fn acp_process_launch_cwd(_runtime_id: &str, cwd: &Path) -> PathBuf {
+    cwd.to_path_buf()
 }
 
 fn spawn_auth_terminal_exit_monitor(
@@ -9561,7 +9280,6 @@ mod tests {
             url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
             completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
-            suppressed_gemini_topic_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -10097,10 +9815,18 @@ mod tests {
     fn native_resume_is_currently_limited_to_codex() {
         assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
-        assert!(!runtime_supports_native_resume(GEMINI_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(GROK_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
+    }
+
+    #[test]
+    fn gemini_runtime_is_not_registered() {
+        assert!(validate_runtime_id("gemini-acp").is_err());
+        assert!(runtime_definition("gemini-acp").is_none());
+        assert!(runtime_descriptors()
+            .iter()
+            .all(|descriptor| descriptor.runtime.id != "gemini-acp"));
     }
 
     #[test]
@@ -11484,12 +11210,12 @@ mod tests {
     fn pending_terminal_auth_records_method_without_auth_ready() {
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
 
-        mark_runtime_auth_pending(&session_state, GEMINI_RUNTIME_ID, "login_with_google");
+        mark_runtime_auth_pending(&session_state, KILO_RUNTIME_ID, "kilo-login");
 
         let state = session_state.lock().unwrap();
-        let setup = state.setup.get(GEMINI_RUNTIME_ID).expect("runtime setup");
+        let setup = state.setup.get(KILO_RUNTIME_ID).expect("runtime setup");
         assert!(!setup.auth_ready);
-        assert_eq!(setup.auth_method.as_deref(), Some("login_with_google"));
+        assert_eq!(setup.auth_method.as_deref(), Some("kilo-login"));
         assert_eq!(setup.message, None);
     }
 
@@ -11498,21 +11224,21 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
         let temp = tempfile::tempdir().unwrap();
-        let runtime = temp.path().join("fake-gemini");
+        let runtime = temp.path().join("fake-kilo");
         fs::write(&runtime, "#!/bin/sh\n").unwrap();
 
         ai.update_setup(&json!({
-            "runtimeId": GEMINI_RUNTIME_ID,
+            "runtimeId": KILO_RUNTIME_ID,
             "input": {
                 "custom_binary_path": runtime,
-                "gemini_api_key": { "action": "set", "value": "test-key" }
+                "kilo_api_key": { "action": "set", "value": "test-key" }
             }
         }))
         .expect("setup should update");
 
         let status = ai
             .logout(&json!({
-                "runtimeId": GEMINI_RUNTIME_ID,
+                "runtimeId": KILO_RUNTIME_ID,
                 "vaultPath": temp.path()
             }))
             .expect("logout should clear local setup");
@@ -11806,12 +11532,12 @@ mod tests {
     #[test]
     fn path_lookup_resolves_windows_cmd_shims_from_pathext() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("gemini"), "#!/usr/bin/env node\n").unwrap();
-        let shim = temp.path().join("gemini.cmd");
+        fs::write(temp.path().join("kilo"), "#!/usr/bin/env node\n").unwrap();
+        let shim = temp.path().join("kilo.cmd");
         fs::write(&shim, "").unwrap();
 
         let resolved = find_program_in_path_entries(
-            "gemini",
+            "kilo",
             vec![temp.path().to_path_buf()],
             &parse_windows_pathext(Some(".COM;.EXE;.BAT;.CMD")),
         );
@@ -11823,12 +11549,12 @@ mod tests {
     #[test]
     fn explicit_program_path_prefers_windows_extension_shim() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("gemini"), "#!/usr/bin/env node\n").unwrap();
-        let shim = temp.path().join("gemini.cmd");
+        fs::write(temp.path().join("kilo"), "#!/usr/bin/env node\n").unwrap();
+        let shim = temp.path().join("kilo.cmd");
         fs::write(&shim, "").unwrap();
 
         let resolved = resolve_command_candidate(
-            &temp.path().join("gemini").display().to_string(),
+            &temp.path().join("kilo").display().to_string(),
             AiRuntimeBinarySource::Custom,
         );
 
@@ -12245,11 +11971,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_and_grok_use_legacy_acp12_protocol() {
-        assert_eq!(
-            acp_protocol_flavor(GEMINI_RUNTIME_ID),
-            AcpProtocolFlavor::Legacy12
-        );
+    fn grok_uses_legacy_acp12_protocol() {
         assert_eq!(
             acp_protocol_flavor(GROK_RUNTIME_ID),
             AcpProtocolFlavor::Legacy12
@@ -12272,9 +11994,9 @@ mod tests {
     }
 
     #[test]
-    fn gemini_session_without_model_config_does_not_synthesize_auto_model() {
+    fn grok_session_without_model_config_does_not_synthesize_auto_model() {
         let session = session_from_acp_response(
-            GEMINI_RUNTIME_ID,
+            GROK_RUNTIME_ID,
             "session-1".to_string(),
             None,
             Some(Vec::new()),
@@ -12287,22 +12009,22 @@ mod tests {
                 .config_options
                 .iter()
                 .all(|option| !matches!(option.category, AiConfigOptionCategory::Model)),
-            "Gemini must not receive a synthetic Auto model when ACP exposes no model option"
+            "Grok must not receive a synthetic Auto model when ACP exposes no model option"
         );
     }
 
     #[test]
     fn config_options_infer_core_categories_from_ids() {
         let options = map_session_config_options(
-            GEMINI_RUNTIME_ID,
+            CODEX_RUNTIME_ID,
             vec![
                 SessionConfigOption::select(
                     "model",
                     "Model",
-                    "gemini-2.5-pro",
+                    "provider-model",
                     vec![SessionConfigSelectOption::new(
-                        "gemini-2.5-pro",
-                        "Gemini 2.5 Pro",
+                        "provider-model",
+                        "Provider Model",
                     )],
                 ),
                 SessionConfigOption::select(
@@ -12331,7 +12053,7 @@ mod tests {
     #[test]
     fn session_modes_derive_from_mode_config_option_when_mode_state_missing() {
         let session = session_from_acp_response(
-            GEMINI_RUNTIME_ID,
+            CODEX_RUNTIME_ID,
             "session-1".to_string(),
             None,
             Some(vec![SessionConfigOption::select(
@@ -12361,18 +12083,18 @@ mod tests {
         let config_options = acp12_session_config_options(
             None,
             Some(acp12::schema::SessionModelState::new(
-                "gemini-2.5-pro",
+                "grok-build",
                 vec![
-                    acp12::schema::ModelInfo::new("gemini-2.5-flash", "Gemini 2.5 Flash").meta(
+                    acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5").meta(
                         acp12::schema::Meta::from_iter([(
                             "agentType".to_string(),
-                            serde_json::json!("flash-agent"),
+                            serde_json::json!("composer-agent"),
                         )]),
                     ),
-                    acp12::schema::ModelInfo::new("gemini-2.5-pro", "Gemini 2.5 Pro").meta(
+                    acp12::schema::ModelInfo::new("grok-build", "Grok Build").meta(
                         acp12::schema::Meta::from_iter([(
                             "agentType".to_string(),
-                            serde_json::json!("pro-agent"),
+                            serde_json::json!("build-agent"),
                         )]),
                     ),
                 ],
@@ -12381,18 +12103,18 @@ mod tests {
         .expect("legacy model state should map")
         .expect("model option should be synthesized");
 
-        let mapped = map_session_config_options(GEMINI_RUNTIME_ID, config_options);
+        let mapped = map_session_config_options(GROK_RUNTIME_ID, config_options);
 
         assert_eq!(mapped.len(), 1);
         assert!(matches!(mapped[0].category, AiConfigOptionCategory::Model));
-        assert_eq!(mapped[0].value, "gemini-2.5-pro");
+        assert_eq!(mapped[0].value, "grok-build");
         assert_eq!(
             mapped[0]
                 .options
                 .iter()
                 .map(|option| option.label.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Gemini 2.5 Flash", "Gemini 2.5 Pro"]
+            vec!["Composer 2.5", "Grok Build"]
         );
         assert_eq!(
             mapped[0]
@@ -12400,7 +12122,7 @@ mod tests {
                 .iter()
                 .map(|option| option.agent_type.as_deref())
                 .collect::<Vec<_>>(),
-            vec![Some("flash-agent"), Some("pro-agent")]
+            vec![Some("composer-agent"), Some("build-agent")]
         );
     }
 
@@ -12450,15 +12172,11 @@ mod tests {
     #[test]
     fn internal_mode_update_text_chunks_are_suppressed() {
         assert!(should_suppress_internal_text_chunk(
-            GEMINI_RUNTIME_ID,
-            "[MODE_UPDATE] yolo"
-        ));
-        assert!(should_suppress_internal_text_chunk(
             GROK_RUNTIME_ID,
             "  [MODE_UPDATE] default\n"
         ));
         assert!(!should_suppress_internal_text_chunk(
-            GEMINI_RUNTIME_ID,
+            GROK_RUNTIME_ID,
             "[MODE_UPDATE]"
         ));
         assert!(!should_suppress_internal_text_chunk(
@@ -12466,7 +12184,7 @@ mod tests {
             "[MODE_UPDATE] yolo"
         ));
         assert!(!should_suppress_internal_text_chunk(
-            GEMINI_RUNTIME_ID,
+            GROK_RUNTIME_ID,
             "Please mention [MODE_UPDATE] yolo in the document"
         ));
     }
@@ -13222,56 +12940,6 @@ mod tests {
             mapped[0].category,
             AiConfigOptionCategory::Reasoning
         ));
-    }
-
-    #[test]
-    fn gemini_config_options_route_to_supported_acp_methods() {
-        let options = map_session_config_options(
-            GEMINI_RUNTIME_ID,
-            vec![
-                SessionConfigOption::select(
-                    "model",
-                    "Model",
-                    "gemini-2.5-pro",
-                    vec![SessionConfigSelectOption::new(
-                        "gemini-2.5-pro",
-                        "Gemini 2.5 Pro",
-                    )],
-                )
-                .category(SessionConfigOptionCategory::Model),
-                SessionConfigOption::select(
-                    "mode",
-                    "Mode",
-                    "default",
-                    vec![SessionConfigSelectOption::new("default", "Default")],
-                )
-                .category(SessionConfigOptionCategory::Mode),
-                SessionConfigOption::select(
-                    "thought_level",
-                    "Thought Level",
-                    "high",
-                    vec![SessionConfigSelectOption::new("high", "High")],
-                )
-                .category(SessionConfigOptionCategory::ThoughtLevel),
-            ],
-        );
-
-        assert_eq!(
-            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetModel
-        );
-        assert_eq!(
-            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "mode"),
-            AcpConfigOptionRemoteCommand::SetMode
-        );
-        assert_eq!(
-            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "thought_level"),
-            AcpConfigOptionRemoteCommand::LocalOnly
-        );
-        assert_eq!(
-            acp_config_option_remote_command(CODEX_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetConfigOption
-        );
     }
 
     #[test]
@@ -14285,75 +13953,7 @@ mod tests {
     }
 
     #[test]
-    fn session_tool_call_suppresses_gemini_update_topic_tool() {
-        let (event_tx, event_rx) = mpsc::channel();
-        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
-        insert_test_managed_session(&session_state, GEMINI_RUNTIME_ID, "session-1");
-        let client = test_client_with_state(event_tx, session_state);
-
-        let tool_call = ToolCall::new(
-            ToolCallId::from("gemini-topic-1"),
-            "Update topic to: \"Editing cuento.md\"",
-        )
-        .kind(ToolKind::Other)
-        .status(ToolCallStatus::Completed)
-        .raw_input(json!({
-            "tool_name": GEMINI_TOPIC_TOOL_NAME,
-            "title": "Editing cuento.md",
-            "summary": "Editing the selected paragraph.",
-        }))
-        .content(vec![ToolCallContent::from(
-            "## Topic: **Editing cuento.md**\n\n**Summary:**\nEditing the selected paragraph.",
-        )]);
-
-        run_client_future(client.session_notification(SessionNotification::new(
-            "session-1",
-            SessionUpdate::ToolCall(tool_call),
-        )))
-        .unwrap();
-
-        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
-    }
-
-    #[test]
-    fn session_tool_call_suppresses_gemini_topic_update_after_suppressed_start() {
-        let (event_tx, event_rx) = mpsc::channel();
-        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
-        insert_test_managed_session(&session_state, GEMINI_RUNTIME_ID, "session-1");
-        let client = test_client_with_state(event_tx, session_state);
-
-        let started = ToolCall::new(
-            ToolCallId::from("gemini-topic-1"),
-            "Update topic to: \"Editing cuento.md\"",
-        )
-        .kind(ToolKind::Other)
-        .status(ToolCallStatus::InProgress);
-        run_client_future(client.session_notification(SessionNotification::new(
-            "session-1",
-            SessionUpdate::ToolCall(started),
-        )))
-        .unwrap();
-        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
-
-        let completed = ToolCallUpdate::new(
-            "gemini-topic-1",
-            ToolCallUpdateFields::new()
-                .status(ToolCallStatus::Completed)
-                .content(vec![ToolCallContent::from(
-                    "## Topic: **Editing cuento.md**",
-                )]),
-        );
-        run_client_future(client.session_notification(SessionNotification::new(
-            "session-1",
-            SessionUpdate::ToolCallUpdate(completed),
-        )))
-        .unwrap();
-
-        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
-    }
-
-    #[test]
-    fn session_tool_call_keeps_update_topic_title_for_non_gemini_runtime() {
+    fn session_tool_call_keeps_update_topic_title() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
         insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "session-1");
@@ -14862,32 +14462,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_persisted_gemini_oauth_credentials() {
-        let temp = tempfile::tempdir().unwrap();
-        let gemini_dir = temp.path().join(".gemini");
-        fs::create_dir_all(&gemini_dir).unwrap();
-        fs::write(gemini_dir.join("oauth_creds.json"), "{}").unwrap();
-
-        assert_eq!(
-            persisted_cli_auth_method_for_home(GEMINI_RUNTIME_ID, temp.path(), false),
-            Some("login_with_google".to_string())
-        );
-    }
-
-    #[test]
-    fn ignores_empty_persisted_gemini_oauth_credentials() {
-        let temp = tempfile::tempdir().unwrap();
-        let gemini_dir = temp.path().join(".gemini");
-        fs::create_dir_all(&gemini_dir).unwrap();
-        fs::write(gemini_dir.join("oauth_creds.json"), "").unwrap();
-
-        assert_eq!(
-            persisted_cli_auth_method_for_home(GEMINI_RUNTIME_ID, temp.path(), false),
-            None
-        );
-    }
-
-    #[test]
     fn detects_persisted_claude_credentials_for_environment() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join(".claude.json"), "{}").unwrap();
@@ -15229,45 +14803,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_terminal_launch_config_forces_gemini_google_login_method() {
-        let current_exe = std::env::current_exe().unwrap();
-        let setup = RuntimeSetupState {
-            custom_binary_path: Some(current_exe.display().to_string()),
-            ..RuntimeSetupState::default()
-        };
-
-        let config = auth_terminal_launch_config(
-            GEMINI_RUNTIME_ID,
-            "login_with_google",
-            &setup,
-            std::env::current_dir().unwrap(),
-        )
-        .unwrap();
-
-        assert!(config.args.is_empty());
-        assert_eq!(config.display_name, "Gemini Login");
-        assert_eq!(
-            config
-                .env
-                .get("GEMINI_DEFAULT_AUTH_TYPE")
-                .map(String::as_str),
-            Some("oauth-personal")
-        );
-    }
-
-    #[test]
-    fn gemini_auth_terminal_success_output_is_detected_before_exit() {
-        assert!(auth_terminal_output_indicates_success(
-            GEMINI_RUNTIME_ID,
-            "\u{1b}[33mAuthentication succeeded\u{1b}[0m\nYou've successfully signed in with Google."
-        ));
-        assert!(!auth_terminal_output_indicates_success(
-            CLAUDE_RUNTIME_ID,
-            "Authentication succeeded"
-        ));
-    }
-
-    #[test]
     fn opencode_auth_terminal_success_output_is_detected_before_exit() {
         assert!(auth_terminal_output_indicates_success(
             OPENCODE_RUNTIME_ID,
@@ -15313,47 +14848,6 @@ mod tests {
             runtime_secret_store_mode_from_env(Some("plaintext")),
             RuntimeSecretStoreMode::OsKeyring
         );
-    }
-
-    #[test]
-    fn gemini_api_key_setup_persists_across_native_ai_instances() {
-        let temp = tempfile::tempdir().unwrap();
-        let store_path = temp.path().join("runtime-setup.json");
-        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
-        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
-        let current_exe = std::env::current_exe().unwrap();
-
-        native_ai
-            .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
-                "input": {
-                    "custom_binary_path": current_exe,
-                    "gemini_api_key": {
-                        "action": "set",
-                        "value": "gemini-test-secret",
-                    },
-                },
-            }))
-            .unwrap();
-
-        let encoded = fs::read_to_string(&store_path).unwrap();
-        assert!(!encoded.contains("gemini-test-secret"));
-        assert!(encoded.contains("GEMINI_API_KEY"));
-
-        let rehydrated_native_ai = test_native_ai_with_secret_store(store_path, secrets);
-        let status = rehydrated_native_ai
-            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
-            .unwrap();
-
-        assert_eq!(
-            status.get("auth_ready").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            status.get("auth_method").and_then(Value::as_str),
-            Some("use_gemini")
-        );
-        assert!(!status.to_string().contains("gemini-test-secret"));
     }
 
     #[test]
@@ -15876,26 +15370,26 @@ mod tests {
 
         let error = native_ai
             .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
+                "runtime_id": KILO_RUNTIME_ID,
                 "input": {
-                    "gemini_api_key": {
+                    "kilo_api_key": {
                         "action": "set",
-                        "value": "gemini-new-secret",
+                        "value": "kilo-new-secret",
                     },
                 },
             }))
             .expect_err("secret store failure should reject setup update");
 
         assert!(error.contains("test set_secret failure"));
-        assert!(!error.contains("gemini-new-secret"));
+        assert!(!error.contains("kilo-new-secret"));
         let state = native_ai.inner.lock().unwrap();
         let setup = state
             .setup
-            .get(GEMINI_RUNTIME_ID)
+            .get(KILO_RUNTIME_ID)
             .cloned()
             .unwrap_or_default();
         assert!(!setup.auth_ready);
-        assert!(!setup.env.contains_key("GEMINI_API_KEY"));
+        assert!(!setup.env.contains_key("KILO_API_KEY"));
     }
 
     #[test]
@@ -15907,11 +15401,11 @@ mod tests {
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "runtimes": {
-                    GEMINI_RUNTIME_ID: {
+                    KILO_RUNTIME_ID: {
                         "custom_binary_path": null,
-                        "auth_method": "use_gemini",
+                        "auth_method": "kilo-api-key",
                         "env": {
-                            "GEMINI_API_KEY": "legacy-gemini-secret"
+                            "KILO_API_KEY": "legacy-kilo-secret"
                         }
                     }
                 }
@@ -15925,7 +15419,7 @@ mod tests {
 
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets);
         let status = native_ai
-            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .get_setup_status(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .unwrap();
 
         assert_eq!(
@@ -15941,26 +15435,26 @@ mod tests {
             .and_then(Value::as_str)
             .expect("setup load failure should be visible");
         assert!(message.contains("Secure credential storage is unavailable"));
-        assert!(!message.contains("legacy-gemini-secret"));
+        assert!(!message.contains("legacy-kilo-secret"));
         assert_eq!(fs::read_to_string(&store_path).unwrap(), original);
 
         let update_error = native_ai
             .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
+                "runtime_id": KILO_RUNTIME_ID,
                 "input": {
-                    "custom_binary_path": temp.path().join("fake-gemini")
+                    "custom_binary_path": temp.path().join("fake-kilo")
                 },
             }))
             .expect_err("updates should not rewrite setup while migration is failing");
         assert!(update_error.contains("Secure credential storage is unavailable"));
-        assert!(!update_error.contains("legacy-gemini-secret"));
+        assert!(!update_error.contains("legacy-kilo-secret"));
         assert_eq!(fs::read_to_string(&store_path).unwrap(), original);
 
         let logout_error = native_ai
-            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .logout(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .expect_err("logout should not rewrite setup while migration is failing");
         assert!(logout_error.contains("Secure credential storage is unavailable"));
-        assert!(!logout_error.contains("legacy-gemini-secret"));
+        assert!(!logout_error.contains("legacy-kilo-secret"));
         assert_eq!(fs::read_to_string(&store_path).unwrap(), original);
     }
 
@@ -15971,14 +15465,6 @@ mod tests {
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets);
 
-        native_ai
-            .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
-                "input": {
-                    "gemini_api_key": { "action": "set", "value": "gemini-secret" },
-                },
-            }))
-            .unwrap();
         native_ai
             .update_setup(&json!({
                 "runtime_id": CODEX_RUNTIME_ID,
@@ -16013,13 +15499,11 @@ mod tests {
             .unwrap();
 
         let encoded = fs::read_to_string(&store_path).unwrap();
-        assert!(!encoded.contains("gemini-secret"));
         assert!(!encoded.contains("openai-secret"));
         assert!(!encoded.contains("claude-secret"));
         assert!(!encoded.contains("kilo-secret"));
         assert!(!encoded.contains("xai-secret"));
         assert!(encoded.contains("\"secret_env_keys\""));
-        assert!(encoded.contains("GEMINI_API_KEY"));
         assert!(encoded.contains("OPENAI_API_KEY"));
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(encoded.contains("KILO_API_KEY"));
@@ -16036,11 +15520,11 @@ mod tests {
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "runtimes": {
-                    GEMINI_RUNTIME_ID: {
+                    KILO_RUNTIME_ID: {
                         "custom_binary_path": current_exe,
-                        "auth_method": "use_gemini",
+                        "auth_method": "kilo-api-key",
                         "env": {
-                            "GEMINI_API_KEY": "legacy-gemini-secret"
+                            "KILO_API_KEY": "legacy-kilo-secret"
                         }
                     }
                 }
@@ -16052,7 +15536,7 @@ mod tests {
 
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
         let status = native_ai
-            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .get_setup_status(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .unwrap();
 
         assert_eq!(
@@ -16061,13 +15545,13 @@ mod tests {
         );
         assert_eq!(
             secrets
-                .get_secret(GEMINI_RUNTIME_ID, "GEMINI_API_KEY")
+                .get_secret(KILO_RUNTIME_ID, "KILO_API_KEY")
                 .expect("migrated secret should be readable"),
-            Some("legacy-gemini-secret".to_string())
+            Some("legacy-kilo-secret".to_string())
         );
         let migrated = fs::read_to_string(&store_path).unwrap();
         assert!(migrated.contains("\"version\": 2"));
-        assert!(!migrated.contains("legacy-gemini-secret"));
+        assert!(!migrated.contains("legacy-kilo-secret"));
     }
 
     #[test]
@@ -16118,58 +15602,6 @@ mod tests {
         let persisted = fs::read_to_string(&store_path).unwrap_or_default();
         assert!(!persisted.contains("GEMINI_API_KEY"));
         assert!(!persisted.contains("wrong-runtime-secret"));
-    }
-
-    #[test]
-    fn logout_removes_persisted_gemini_api_key_setup() {
-        let temp = tempfile::tempdir().unwrap();
-        let store_path = temp.path().join("runtime-setup.json");
-        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
-        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
-
-        native_ai
-            .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
-                "input": {
-                    "gemini_api_key": {
-                        "action": "set",
-                        "value": "gemini-test-secret",
-                    },
-                    "google_api_key": {
-                        "action": "set",
-                        "value": "google-test-secret",
-                    },
-                },
-            }))
-            .unwrap();
-        assert!(store_path.exists());
-
-        native_ai
-            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
-            .unwrap();
-
-        assert!(!store_path.exists());
-        assert_eq!(
-            secrets
-                .get_secret(GEMINI_RUNTIME_ID, "GEMINI_API_KEY")
-                .expect("secret store should remain readable"),
-            None
-        );
-        assert_eq!(
-            secrets
-                .get_secret(GEMINI_RUNTIME_ID, "GOOGLE_API_KEY")
-                .expect("secret store should remain readable"),
-            None
-        );
-        let setup = native_ai.inner.lock().unwrap();
-        let gemini_setup = setup
-            .setup
-            .get(GEMINI_RUNTIME_ID)
-            .expect("Gemini setup entry should remain in memory");
-        assert!(!gemini_setup.env.contains_key("GEMINI_API_KEY"));
-        assert!(!gemini_setup.env.contains_key("GOOGLE_API_KEY"));
-        assert_eq!(gemini_setup.auth_method, None);
-        assert!(!gemini_setup.auth_ready);
     }
 
     #[test]
@@ -16267,11 +15699,11 @@ mod tests {
 
         native_ai
             .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
+                "runtime_id": KILO_RUNTIME_ID,
                 "input": {
-                    "gemini_api_key": {
+                    "kilo_api_key": {
                         "action": "set",
-                        "value": "gemini-test-secret",
+                        "value": "kilo-test-secret",
                     },
                 },
             }))
@@ -16279,108 +15711,26 @@ mod tests {
 
         secrets.fail_delete(true);
         let error = native_ai
-            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .logout(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .expect_err("secret store delete failure should reject logout");
 
         assert!(error.contains("test delete_secret failure"));
-        assert!(!error.contains("gemini-test-secret"));
+        assert!(!error.contains("kilo-test-secret"));
         assert_eq!(
-            secrets.stored_secret(GEMINI_RUNTIME_ID, "GEMINI_API_KEY"),
-            Some("gemini-test-secret".to_string())
+            secrets.stored_secret(KILO_RUNTIME_ID, "KILO_API_KEY"),
+            Some("kilo-test-secret".to_string())
         );
         let setup = native_ai.inner.lock().unwrap();
-        let gemini_setup = setup
+        let kilo_setup = setup
             .setup
-            .get(GEMINI_RUNTIME_ID)
-            .expect("Gemini setup should remain committed after failed logout");
-        assert!(gemini_setup.auth_ready);
-        assert_eq!(gemini_setup.auth_method.as_deref(), Some("use_gemini"));
+            .get(KILO_RUNTIME_ID)
+            .expect("Kilo setup should remain committed after failed logout");
+        assert!(kilo_setup.auth_ready);
+        assert_eq!(kilo_setup.auth_method.as_deref(), Some("kilo-api-key"));
         assert_eq!(
-            gemini_setup.env.get("GEMINI_API_KEY").map(String::as_str),
-            Some("gemini-test-secret")
+            kilo_setup.env.get("KILO_API_KEY").map(String::as_str),
+            Some("kilo-test-secret")
         );
-    }
-
-    #[test]
-    fn gemini_acp_session_cwd_uses_node_friendly_separators() {
-        let cwd = PathBuf::from(r"C:\Users\jsgrr\Vault");
-
-        let gemini_cwd = acp_session_wire_cwd(GEMINI_RUNTIME_ID, &cwd);
-        let codex_cwd = acp_session_wire_cwd(CODEX_RUNTIME_ID, &cwd);
-
-        assert_eq!(gemini_cwd.to_string_lossy(), "C:/Users/jsgrr/Vault");
-        assert_eq!(codex_cwd, cwd);
-    }
-
-    #[test]
-    fn gemini_acp_session_cwd_strips_windows_verbatim_prefix() {
-        let cwd = PathBuf::from(r"\\?\C:\Users\jsgrr\Vault");
-        let unc = PathBuf::from(r"\\?\UNC\server\share\Vault");
-
-        assert_eq!(
-            acp_session_wire_cwd(GEMINI_RUNTIME_ID, &cwd).to_string_lossy(),
-            "C:/Users/jsgrr/Vault"
-        );
-        assert_eq!(
-            acp_process_launch_cwd(GEMINI_RUNTIME_ID, &cwd).to_string_lossy(),
-            "C:/Users/jsgrr/Vault"
-        );
-        assert_eq!(
-            acp_session_wire_cwd(GEMINI_RUNTIME_ID, &unc).to_string_lossy(),
-            "//server/share/Vault"
-        );
-    }
-
-    #[test]
-    fn acp_process_spec_maps_gemini_api_key_method_to_cli_auth_type() {
-        let current_exe = std::env::current_exe().unwrap();
-        let setup = RuntimeSetupState {
-            custom_binary_path: Some(current_exe.display().to_string()),
-            auth_method: Some("use_gemini".to_string()),
-            ..RuntimeSetupState::default()
-        };
-
-        let spec = acp_process_spec(GEMINI_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
-            .expect("Gemini ACP process spec should resolve");
-
-        assert_eq!(
-            spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
-            Some("gemini-api-key")
-        );
-    }
-
-    #[test]
-    fn acp_process_spec_maps_inherited_gemini_api_key_to_cli_auth_type() {
-        let _guard = ENV_TEST_LOCK.lock().unwrap();
-        let previous_gemini = std::env::var_os("GEMINI_API_KEY");
-        let previous_google = std::env::var_os("GOOGLE_API_KEY");
-        std::env::set_var("GEMINI_API_KEY", "gemini-env-secret");
-        std::env::remove_var("GOOGLE_API_KEY");
-
-        let current_exe = std::env::current_exe().unwrap();
-        let setup = RuntimeSetupState {
-            custom_binary_path: Some(current_exe.display().to_string()),
-            ..RuntimeSetupState::default()
-        };
-
-        let spec = acp_process_spec(GEMINI_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
-            .expect("Gemini ACP process spec should resolve");
-
-        match previous_gemini {
-            Some(value) => std::env::set_var("GEMINI_API_KEY", value),
-            None => std::env::remove_var("GEMINI_API_KEY"),
-        }
-        match previous_google {
-            Some(value) => std::env::set_var("GOOGLE_API_KEY", value),
-            None => std::env::remove_var("GOOGLE_API_KEY"),
-        }
-
-        assert_eq!(spec.auth_method.as_deref(), Some("use_gemini"));
-        assert_eq!(
-            spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
-            Some("gemini-api-key")
-        );
-        assert_eq!(spec.env.get("GEMINI_API_KEY"), None);
     }
 
     #[test]
