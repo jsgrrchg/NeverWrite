@@ -36,7 +36,10 @@ import {
     type AIRuntimeConnectionState,
     type QueuedChatMessage,
 } from "../types";
-import { useChatStore } from "../store/chatStore";
+import {
+    REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
+    useChatStore,
+} from "../store/chatStore";
 import { AIChatMessageList } from "./AIChatMessageList";
 import { AIChatComposer } from "./AIChatComposer";
 import { AIChatContextBar } from "./AIChatContextBar";
@@ -241,9 +244,11 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const runtimeLabel =
         activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
     const isClosedSubagent = Boolean(session?.parentSessionId && session.closedAt);
+    const isRemovedGeminiAcpSession = session?.runtimeId === "gemini-acp";
     const agentControlsDisabled =
         !session ||
         isClosedSubagent ||
+        isRemovedGeminiAcpSession ||
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
     const lockIncompatibleModelSwitches =
@@ -708,6 +713,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     disabled={
                         !session ||
                         isClosedSubagent ||
+                        isRemovedGeminiAcpSession ||
                         isPendingSessionCreation ||
                         activeConnection.status === "loading" ||
                         Boolean(session.isResumingSession)
@@ -715,6 +721,8 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     placeholderText={
                         isClosedSubagent
                             ? "This subagent was closed by its parent thread."
+                            : isRemovedGeminiAcpSession
+                              ? REMOVED_GEMINI_ACP_COMPOSER_MESSAGE
                             : isPendingSessionCreation
                               ? pendingSessionError
                                   ? "Agent unavailable"

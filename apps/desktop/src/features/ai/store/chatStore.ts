@@ -197,6 +197,8 @@ const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
     "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
+export const REMOVED_GEMINI_ACP_COMPOSER_MESSAGE =
+    "Gemini ACP is no longer supported by Google.";
 const _pendingTrackedPersistedReconcileByKey = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -534,6 +536,10 @@ function isLiveRuntimeSession(session: AIChatSession) {
 
 function isClosedSubagentSession(session: AIChatSession) {
     return Boolean(session.parentSessionId && session.closedAt);
+}
+
+function isRemovedGeminiAcpSession(session: Pick<AIChatSession, "runtimeId">) {
+    return session.runtimeId === "gemini-acp";
 }
 
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
@@ -9703,6 +9709,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
             // can't be resumed — attempting it errors ("AI session not found")
             // and flips the entry into a bogus reconnecting state.
             if (isClaudeTerminalRuntimeId(session.runtimeId)) return sessionId;
+            if (isRemovedGeminiAcpSession(session)) {
+                set((currentState) => {
+                    const currentSession = currentState.sessionsById[sessionId];
+                    if (!currentSession) return currentState;
+                    return {
+                        sessionsById: {
+                            ...currentState.sessionsById,
+                            [sessionId]: {
+                                ...currentSession,
+                                isResumingSession: false,
+                                resumeReconnectFailed: true,
+                            },
+                        },
+                    };
+                });
+                get().applySessionError({
+                    session_id: sessionId,
+                    message: REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
+                });
+                return null;
+            }
             if (session.isPendingSessionCreation) return sessionId;
             if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;

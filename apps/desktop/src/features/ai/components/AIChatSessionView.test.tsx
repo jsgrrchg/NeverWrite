@@ -26,23 +26,30 @@ vi.mock("./AIChatMessageList", () => ({
 
 vi.mock("./AIChatComposer", () => ({
     AIChatComposer: ({
+        disabled,
         expanded,
         footer,
         onToggleExpanded,
         onPasteImage,
+        placeholderText,
     }: {
+        disabled?: boolean;
         expanded?: boolean;
         footer?: ReactNode;
         onToggleExpanded?: () => void;
         onPasteImage?: (file: File) => void;
+        placeholderText?: string;
     }) => (
         <div>
             <button
                 type="button"
                 data-testid="chat-composer"
+                data-disabled={String(Boolean(disabled))}
                 data-expanded={String(Boolean(expanded))}
                 onClick={onToggleExpanded}
-            />
+            >
+                {placeholderText}
+            </button>
             <div data-testid="chat-composer-footer">{footer}</div>
             <button
                 type="button"
@@ -165,6 +172,36 @@ describe("AIChatSessionView", () => {
         });
 
         expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
+    });
+
+    it("blocks the composer for saved Gemini ACP chats", () => {
+        const sessionId = "persisted:gemini-history";
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [sessionId]: {
+                    ...createSession(sessionId, "Gemini history"),
+                    runtimeId: "gemini-acp",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                },
+            },
+            activeSessionId: sessionId,
+        }));
+        useEditorStore.getState().openChat(sessionId, {
+            title: "Gemini history",
+            paneId: "primary",
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.getByTestId("chat-composer")).toHaveAttribute(
+            "data-disabled",
+            "true",
+        );
+        expect(
+            screen.getByText("Gemini ACP is no longer supported by Google."),
+        ).toBeInTheDocument();
     });
 
     it("removes expired screenshots from the composer", async () => {
