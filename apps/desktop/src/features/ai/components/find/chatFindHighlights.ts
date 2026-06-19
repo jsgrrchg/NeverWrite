@@ -67,7 +67,18 @@ const highlightEntries = new Map<
     ChatFindHighlightEntry
 >();
 
+function getHighlightRegistry(): HighlightRegistry | null {
+    return typeof CSS !== "undefined" &&
+        "highlights" in CSS &&
+        typeof Highlight !== "undefined"
+        ? CSS.highlights
+        : null;
+}
+
 function syncChatFindHighlights(): void {
+    const highlightRegistry = getHighlightRegistry();
+    if (!highlightRegistry) return;
+
     const ranges: Range[] = [];
     const activeRanges: Range[] = [];
 
@@ -79,18 +90,18 @@ function syncChatFindHighlights(): void {
     }
 
     if (ranges.length > 0) {
-        CSS.highlights.set(CHAT_FIND_HIGHLIGHT, new Highlight(...ranges));
+        highlightRegistry.set(CHAT_FIND_HIGHLIGHT, new Highlight(...ranges));
     } else {
-        CSS.highlights.delete(CHAT_FIND_HIGHLIGHT);
+        highlightRegistry.delete(CHAT_FIND_HIGHLIGHT);
     }
 
     if (activeRanges.length > 0) {
-        CSS.highlights.set(
+        highlightRegistry.set(
             CHAT_FIND_ACTIVE_HIGHLIGHT,
             new Highlight(...activeRanges),
         );
     } else {
-        CSS.highlights.delete(CHAT_FIND_ACTIVE_HIGHLIGHT);
+        highlightRegistry.delete(CHAT_FIND_ACTIVE_HIGHLIGHT);
     }
 }
 
