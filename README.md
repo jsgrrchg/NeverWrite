@@ -132,10 +132,10 @@ crates/
 ### Requirements
 
 - Rust and Cargo
-- Node.js 22+ and npm for `apps/desktop` and JavaScript tooling
-- pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
+- Node.js 22.12.0+ and npm for `apps/desktop`
+- Node.js 22+ and pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
 
-CI and release workflows are pinned to Node.js 22, so local development should use Node 22 or newer.
+CI and release workflows are pinned to Node.js 22. Use Node 22.12.0 or newer for desktop work so Electron's install tooling matches the declared engine.
 
 ### Desktop app
 

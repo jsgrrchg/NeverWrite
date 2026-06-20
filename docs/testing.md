@@ -8,7 +8,7 @@ NeverWrite is not a top-level JavaScript workspace. Run JavaScript commands from
 - Web clipper: `apps/web-clipper`, `pnpm`, `pnpm-lock.yaml`, pinned to `pnpm@10.33.0`
 - Rust workspace: repo root, `cargo`
 
-CI uses Node.js 22. Use Node 22 or newer locally for both JavaScript apps.
+CI uses Node.js 22. Use Node 22.12.0 or newer for `apps/desktop`, and Node 22 or newer for `apps/web-clipper`.
 
 ## Quick Checks
 
@@ -201,7 +201,7 @@ Desktop release validation lives in [`.github/workflows/release-desktop.yml`](..
 
 ## Troubleshooting
 
-- If JavaScript install/build behavior differs from CI, check Node first. CI uses Node.js 22, and both app packages declare `node >=22`.
+- If JavaScript install/build behavior differs from CI, check Node first. CI uses Node.js 22, `apps/desktop` declares `node >=22.12.0`, and `apps/web-clipper` declares `node >=22`.
 - If desktop dependency commands fail, make sure you are in `apps/desktop` and using `npm`, not `pnpm`.
 - If web clipper commands fail or create the wrong lockfile, make sure you are in `apps/web-clipper` and using `pnpm`, not `npm`.
 - If `electron:vault-editor:smoke` or `electron:ai-runtime:smoke` cannot find the sidecar, build it with `cargo build -p neverwrite-native-backend` from the repo root or `npm run electron:sidecar:build` from `apps/desktop`.

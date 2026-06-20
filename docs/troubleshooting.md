@@ -66,7 +66,7 @@ If the app does not open:
   `neverwrite-native-backend.exe`.
 - If this is a packaged app, verify the installed app bundle/resources are not
   partially removed by an antivirus, quarantine tool, or failed update.
-- If this is development, run from `apps/desktop` with Node 22+:
+- If this is development, run from `apps/desktop` with Node 22.12.0+:
 
 ```bash
 cd apps/desktop
