@@ -1241,7 +1241,9 @@ body.dragging-tab * {
 
 /* "Find in chat" matches, painted via the CSS Custom Highlight API. The active
    match is distinguished by a stronger background. ::highlight() only supports a
-   small subset of properties (background-color, color, text-decoration). */
+   small subset of properties (background-color, color, text-decoration).
+   Lightning CSS currently warns about ::highlight(), but the warning appears
+   speculative for this standards-backed selector and is intentionally ignored. */
 ::highlight(chat-find) {
     background-color: color-mix(in srgb, var(--accent) 28%, transparent);
     color: inherit;
