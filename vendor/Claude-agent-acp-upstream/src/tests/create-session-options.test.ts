@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { AgentSideConnection, RequestError, SessionNotification } from "@agentclientprotocol/sdk";
+import { RequestError, SessionNotification } from "@agentclientprotocol/sdk";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import type { ClaudeAcpAgent as ClaudeAcpAgentType } from "../acp-agent.js";
+import type { AcpClient, ClaudeAcpAgent as ClaudeAcpAgentType } from "../acp-agent.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -47,13 +47,13 @@ describe("createSession options merging", () => {
   let agent: ClaudeAcpAgentType;
   let ClaudeAcpAgent: typeof ClaudeAcpAgentType;
 
-  function createMockClient(): AgentSideConnection {
+  function createMockClient(): AcpClient {
     return {
       sessionUpdate: async (_notification: SessionNotification) => {},
       requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
       readTextFile: async () => ({ content: "" }),
       writeTextFile: async () => ({}),
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
   }
 
   beforeEach(async () => {
@@ -550,14 +550,15 @@ describe("createSession options merging", () => {
     });
 
     it("rejects a cwd that points at a file with invalidParams", async () => {
-      const file = path.join(os.tmpdir(), "claude-acp-cwd-is-a-file.txt");
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-acp-cwd-is-a-file-"));
+      const file = path.join(dir, "not-a-directory.txt");
       fs.writeFileSync(file, "not a directory");
       try {
         await expect(agent.newSession({ cwd: file, mcpServers: [] })).rejects.toMatchObject({
           code: RequestError.invalidParams().code,
         });
       } finally {
-        fs.rmSync(file, { force: true });
+        fs.rmSync(dir, { recursive: true, force: true });
       }
     });
 

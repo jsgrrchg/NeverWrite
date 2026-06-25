@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { spawn, spawnSync } from "child_process";
 import {
-  Agent,
-  AgentSideConnection,
   AvailableCommand,
-  Client,
-  ClientSideConnection,
+  client as acpClient,
   CreateElicitationRequest,
   CreateElicitationResponse,
+  methods,
   ndJsonStream,
   NewSessionResponse,
+  PromptRequest,
+  PromptResponse,
   ReadTextFileRequest,
   ReadTextFileResponse,
   RequestPermissionRequest,
@@ -36,6 +36,10 @@ import {
   describeAlwaysAllow,
   streamEventToAcpNotifications,
   messageIdForGrouping,
+  buildConfigOptions,
+  discoverCustomAgents,
+  runPromptWithCancellation,
+  type AcpClient,
   type SDKMessageFilter,
 } from "../acp-agent.js";
 import { Pushable } from "../utils.js";
@@ -105,6 +109,8 @@ function mockSessionState(overrides: Record<string, any> = {}) {
       cachedWriteTokens: 0,
     },
     configOptions: [],
+    agents: [],
+    currentAgent: "default",
     abortController: new AbortController(),
     emitRawSDKMessages: false,
     contextWindowSize: 200000,
@@ -158,8 +164,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     child.kill();
   });
 
-  class TestClient implements Client {
-    agent: Agent;
+  class TestClient {
     files: Map<string, string> = new Map();
     receivedText: string = "";
     // Records for the AskUserQuestion elicitation test.
@@ -169,8 +174,7 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     resolveAvailableCommands: (commands: AvailableCommand[]) => void;
     availableCommandsPromise: Promise<AvailableCommand[]>;
 
-    constructor(agent: Agent) {
-      this.agent = agent;
+    constructor() {
       this.resolveAvailableCommands = () => {};
       this.availableCommandsPromise = new Promise((resolve) => {
         this.resolveAvailableCommands = resolve;
@@ -248,21 +252,35 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
     }
   }
 
+  type TestConnection = {
+    prompt(params: PromptRequest): Promise<PromptResponse>;
+  };
+
   async function setupTestSession(cwd: string): Promise<{
     client: TestClient;
-    connection: ClientSideConnection;
+    connection: TestConnection;
     newSessionResponse: NewSessionResponse;
   }> {
-    let client;
     const input = nodeToWebWritable(child.stdin!);
     const output = nodeToWebReadable(child.stdout!);
     const stream = ndJsonStream(input, output);
-    const connection = new ClientSideConnection((agent) => {
-      client = new TestClient(agent);
-      return client;
-    }, stream);
 
-    await connection.initialize({
+    const client = new TestClient();
+    // `connect(...)` keeps the connection open and exposes the agent-side peer
+    // handle as `connection.agent`, valid for the lifetime of the connection.
+    const { agent: ctx } = acpClient({ name: "test-client" })
+      .onNotification(methods.client.session.update, (c) => client.sessionUpdate(c.params))
+      .onRequest(methods.client.session.requestPermission, (c) =>
+        client.requestPermission(c.params),
+      )
+      .onRequest(methods.client.fs.readTextFile, (c) => client.readTextFile(c.params))
+      .onRequest(methods.client.fs.writeTextFile, (c) => client.writeTextFile(c.params))
+      .onRequest(methods.client.elicitation.create, (c) =>
+        client.unstable_createElicitation(c.params),
+      )
+      .connect(stream);
+
+    await ctx.request(methods.agent.initialize, {
       protocolVersion: 1,
       clientCapabilities: {
         fs: {
@@ -275,12 +293,16 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
       },
     });
 
-    const newSessionResponse = await connection.newSession({
+    const newSessionResponse = await ctx.request(methods.agent.session.new, {
       cwd,
       mcpServers: [],
     });
 
-    return { client: client!, connection, newSessionResponse };
+    const connection: TestConnection = {
+      prompt: (params) => ctx.request(methods.agent.session.prompt, params),
+    };
+
+    return { client, connection, newSessionResponse };
   }
 
   it("should connect to the ACP subprocess", async () => {
@@ -848,7 +870,7 @@ describe("tool conversions", () => {
         received.message.role,
         "test",
         {},
-        {} as AgentSideConnection,
+        {} as AcpClient,
         console,
       ),
     ).toStrictEqual([
@@ -1762,11 +1784,153 @@ describe("permission requests", () => {
   });
 });
 
+describe("permission request cancellation", () => {
+  function injectSession(agent: ClaudeAcpAgent, sessionId: string) {
+    function* empty() {}
+    const gen = Object.assign(empty(), { interrupt: vi.fn(), close: vi.fn() });
+    agent.sessions[sessionId] = {
+      query: gen as any,
+      input: new Pushable(),
+      cancelled: false,
+      cwd: "/test",
+      sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+      modes: { currentModeId: "default", availableModes: [] },
+      models: { currentModelId: "default", availableModels: [] },
+      modelInfos: [],
+      settingsManager: { dispose: vi.fn() } as any,
+      accumulatedUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+      },
+      configOptions: [],
+      agents: [],
+      currentAgent: "default",
+      abortController: new AbortController(),
+      emitRawSDKMessages: false,
+      contextWindowSize: 200000,
+      taskState: new Map(),
+      toolUseCache: {},
+      messageIdToUuid: new Map(),
+    } as any;
+    return agent.sessions[sessionId]!;
+  }
+
+  it("forwards the tool-call signal so a pending permission request is cancelled on abort", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const mockClient = {
+      sessionUpdate: async () => {},
+      // A `$/cancel_request`-aware client settles the request once the agent
+      // aborts it; model that by rejecting when the forwarded signal fires.
+      requestPermission: (_params: RequestPermissionRequest, signal?: AbortSignal) => {
+        receivedSignal = signal;
+        return new Promise<RequestPermissionResponse>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("Request cancelled")), {
+            once: true,
+          });
+        });
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    injectSession(agent, "session-1");
+
+    const controller = new AbortController();
+    const pending = agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+      signal: controller.signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+    } as any);
+    // Let canUseTool reach the awaited requestPermission before cancelling.
+    await Promise.resolve();
+
+    // The tool-call signal is threaded through as the cancellation signal.
+    expect(receivedSignal).toBe(controller.signal);
+
+    controller.abort();
+
+    await expect(pending).rejects.toThrow("Tool use aborted");
+  });
+
+  it("treats a cancelled permission outcome as an aborted tool use", async () => {
+    const mockClient = {
+      sessionUpdate: async () => {},
+      requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    injectSession(agent, "session-1");
+
+    await expect(
+      agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+        signal: new AbortController().signal,
+        suggestions: [],
+        toolUseID: "tool-1",
+      } as any),
+    ).rejects.toThrow("Tool use aborted");
+  });
+});
+
+describe("runPromptWithCancellation", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  it("cancels the in-flight prompt when the request signal aborts ($/cancel_request)", async () => {
+    const promptResult = deferred<PromptResponse>();
+    const cancel = vi.fn(async () => {});
+    const agent = {
+      prompt: vi.fn(() => promptResult.promise),
+      cancel,
+      logger: { log: () => {}, error: () => {} },
+    } as any;
+
+    const controller = new AbortController();
+    const params = { sessionId: "session-1", prompt: [] } as any;
+    const pending = runPromptWithCancellation(agent, params, controller.signal);
+
+    // No cancel yet — the turn is running.
+    expect(cancel).not.toHaveBeenCalled();
+
+    // Client sends $/cancel_request -> the SDK aborts this request's signal.
+    controller.abort();
+    expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" });
+
+    // The prompt settles "cancelled" through the normal cancel path.
+    promptResult.resolve({ stopReason: "cancelled" });
+    await expect(pending).resolves.toEqual({ stopReason: "cancelled" });
+  });
+
+  it("does not cancel after the prompt settles normally", async () => {
+    const promptResult = deferred<PromptResponse>();
+    const cancel = vi.fn(async () => {});
+    const agent = {
+      prompt: vi.fn(() => promptResult.promise),
+      cancel,
+      logger: { log: () => {}, error: () => {} },
+    } as any;
+
+    const controller = new AbortController();
+    const params = { sessionId: "session-1", prompt: [] } as any;
+    const pending = runPromptWithCancellation(agent, params, controller.signal);
+
+    promptResult.resolve({ stopReason: "end_turn" });
+    await expect(pending).resolves.toEqual({ stopReason: "end_turn" });
+
+    // A late abort (e.g. per-request signal cleanup) must not cancel a later turn.
+    controller.abort();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+});
+
 describe("stop reason propagation", () => {
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
   }
 
@@ -2096,7 +2260,7 @@ describe("stop reason propagation", () => {
       sessionUpdate: async (u: any) => {
         sessionUpdates.push(u);
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
 
     const input = new Pushable<any>();
@@ -2263,7 +2427,7 @@ describe("session/close", () => {
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
   }
 
@@ -2293,6 +2457,8 @@ describe("session/close", () => {
         cachedWriteTokens: 0,
       },
       configOptions: [],
+      agents: [],
+      currentAgent: "default",
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       contextWindowSize: 200000,
@@ -2352,7 +2518,7 @@ describe("session/delete", () => {
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
   }
 
@@ -2376,6 +2542,8 @@ describe("session/delete", () => {
         cachedWriteTokens: 0,
       },
       configOptions: [],
+      agents: [],
+      currentAgent: "default",
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       contextWindowSize: 200000,
@@ -2439,7 +2607,7 @@ describe("getOrCreateSession param change detection", () => {
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
   }
 
@@ -2476,6 +2644,8 @@ describe("getOrCreateSession param change detection", () => {
         cachedWriteTokens: 0,
       },
       configOptions: [],
+      agents: [],
+      currentAgent: "default",
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       contextWindowSize: 200000,
@@ -2664,7 +2834,7 @@ describe("usage_update computation", () => {
       sessionUpdate: async (notification: any) => {
         updates.push(notification);
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
     return { agent, updates };
   }
@@ -3043,6 +3213,26 @@ describe("usage_update computation", () => {
     expect(usageUpdates).toHaveLength(2);
     expect(usageUpdates[0].update.size).toBe(1000000);
     expect(usageUpdates[1].update.size).toBe(1000000);
+  });
+
+  it("infers the 1M window from a model's description when the ID lacks a 1m token (issue #596)", async () => {
+    // Semantic aliases like `default` resolve to a 1M-context model but carry
+    // no "1m" token in the modelId — the SDK signals 1M only via the
+    // human-facing displayName/description (e.g. "Opus 4.7 with 1M context").
+    // Inference must read those so the session reports the correct window from
+    // the first mid-stream update instead of the 200k placeholder.
+    const { agent } = createMockAgentWithCapture();
+    injectSession(agent, [{ type: "system", subtype: "session_state_changed", state: "idle" }]);
+    const session = agent.sessions["test-session"];
+    session.models = { currentModelId: "claude-sonnet-4-6", availableModels: [] };
+    session.modelInfos = [
+      { value: "default", displayName: "Default", description: "Opus 4.7 with 1M context" },
+    ] as any;
+    expect(session.contextWindowSize).toBe(200000);
+
+    await (agent as any).applyConfigOptionValue("test-session", session, "model", "default");
+
+    expect(session.contextWindowSize).toBe(1000000);
   });
 
   it("result with no matching modelUsage preserves the learned window", async () => {
@@ -3586,7 +3776,7 @@ describe("assembled assistant text fallback", () => {
       sessionUpdate: async (notification: any) => {
         updates.push(notification);
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
     return { agent, updates };
   }
@@ -3614,6 +3804,20 @@ describe("assembled assistant text fallback", () => {
         type: "content_block_delta" as const,
         index: 0,
         delta: { type: "text_delta" as const, text },
+      },
+    };
+  }
+
+  function thinkingDelta(thinking: string) {
+    return {
+      type: "stream_event" as const,
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      event: {
+        type: "content_block_delta" as const,
+        index: 0,
+        delta: { type: "thinking_delta" as const, thinking },
       },
     };
   }
@@ -3775,6 +3979,37 @@ describe("assembled assistant text fallback", () => {
     expect(messageChunkTexts(updates)).toEqual(["hello ", "world"]);
   });
 
+  it("dedupes streamed text when the user echo activates the turn mid-message, between a thinking and a text block", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Production ordering captured with: inside a single message id, the
+    // thinking block streams, THEN the SDK replays the user message that
+    // activates the turn, THEN the text block streams. Turn activation runs
+    // `resetTurnScratch()`; if that nulls `currentStreamMessageId`, every text
+    // delta after the echo streams untracked, so the consolidated `assistant`
+    // text fails dedupe and is re-emitted as a duplicate. #785 fixed the
+    // stream-before-echo case but left this residual mid-message path.
+    injectSessionEchoAt(agent, [
+      messageStart("msg-mixed"),
+      thinkingDelta("private reasoning"),
+      "ECHO",
+      textDelta("Starting now."),
+      assistantMessage("msg-mixed", [
+        { type: "thinking", thinking: "private reasoning" },
+        { type: "text", text: "Starting now." },
+      ]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // The text streamed once; the consolidated copy must be deduped, not doubled.
+    expect(messageChunkTexts(updates)).toEqual(["Starting now."]);
+    // The thinking streamed before the echo (still tracked) so it is deduped —
+    // mirrors the production signature where only the text block doubled.
+    expect(thoughtChunkTexts(updates)).toEqual(["private reasoning"]);
+  });
+
   it("dedupes per block type: streamed text is dropped but an un-streamed thinking block in the same message is forwarded", async () => {
     const { agent, updates } = createMockAgentWithCapture();
     // Gateway streams the text live but delivers the thinking block only in the
@@ -3798,6 +4033,134 @@ describe("assembled assistant text fallback", () => {
     expect(messageChunkTexts(updates)).toEqual(["streamed text"]);
     // The un-streamed thinking block is forwarded despite text having streamed.
     expect(thoughtChunkTexts(updates)).toEqual(["private reasoning"]);
+  });
+
+  it("forwards only the un-streamed remainder when the stream is cut short mid-block", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // The stream stops partway ("hello ") but the consolidated message carries
+    // the whole block ("hello world"). The streamed prefix must not be re-sent,
+    // and the un-streamed tail must still reach the client — dropping the whole
+    // assembled block would truncate the answer to "hello ".
+    injectSession(agent, [
+      messageStart("msg-partial"),
+      textDelta("hello "),
+      assistantMessage("msg-partial", [{ type: "text", text: "hello world" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // The streamed prefix, then just the tail from the consolidated message.
+    expect(messageChunkTexts(updates)).toEqual(["hello ", "world"]);
+  });
+
+  it("dedupes streamed text even when the consolidated message carries a different id", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    // Some gateways assign one id during the stream and a different one (or only
+    // a uuid) on the assembled message. Dedupe must key on content, not the id,
+    // or the consolidated block re-emits already-streamed text as a duplicate.
+    injectSession(agent, [
+      messageStart("msg-stream-id"),
+      textDelta("hello "),
+      textDelta("world"),
+      assistantMessage("msg-DIFFERENT-id", [{ type: "text", text: "hello world" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // Only the streamed deltas — the assembled copy is deduped despite the id
+    // mismatch.
+    expect(messageChunkTexts(updates)).toEqual(["hello ", "world"]);
+  });
+
+  it("dedupes a streamed text block even when an empty thinking delta precedes it", async () => {
+    // An empty thinking delta (some gateways emit them — #793) must not create
+    // a zero-length streamedBlocks entry: that entry can never satisfy the
+    // consolidated handler's `text.length > 0` guard, so it would stall the
+    // diff cursor and re-emit the real, already-streamed text as a duplicate.
+    const { agent, updates } = createMockAgentWithCapture();
+    injectSession(agent, [
+      messageStart("msg-empty-thinking"),
+      thinkingDelta(""),
+      textDelta("real answer"),
+      assistantMessage("msg-empty-thinking", [{ type: "text", text: "real answer" }]),
+      result(),
+      idle,
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "hi" }] });
+
+    // The streamed text appears once; the consolidated copy is deduped.
+    expect(messageChunkTexts(updates)).toEqual(["real answer"]);
+  });
+
+  it("does not re-emit the next turn's text after a turn is cancelled mid-stream", async () => {
+    // Regression: streamedBlocks is reset inside the consolidated-assistant
+    // branch, but a cancelled turn `break`s out before reaching it (the
+    // `if (session.cancelled) break;` guard), and streamedBlocks is
+    // session-scoped — so a cancelled turn's streamed text used to leak into
+    // the next turn. Block indices restart at 0 per message, so the leftover
+    // "Hello there" would fuse with turn 2's first block and make its
+    // consolidated copy fail the prefix dedupe, re-emitting "Second answer" as
+    // a duplicate. The fix resets streamedBlocks on each top-level
+    // `message_start`, bounding the record to one in-flight message.
+    const { agent, updates } = createMockAgentWithCapture();
+
+    let releaseCancel!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      releaseCancel = resolve;
+    });
+
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        const u1 = await iter.next();
+        yield userEcho(u1.value); // activate turn 1
+        yield messageStart("msg-1");
+        yield textDelta("Hello ");
+        yield textDelta("there"); // streamedBlocks = [{ index: 0, text: "Hello there" }]
+        await cancelled; // hold until the test has cancelled turn 1
+        // Turn 1's consolidated message arrives while cancelled → hits the
+        // `if (session.cancelled) break;` guard, skipping the streamedBlocks
+        // reset. The leftover entry must not survive into turn 2.
+        yield assistantMessage("msg-1", [{ type: "text", text: "Hello there" }]);
+        yield idle; // settles turn 1 as cancelled
+        const u2 = await iter.next();
+        yield userEcho(u2.value); // activate turn 2
+        yield messageStart("msg-2"); // resets streamedBlocks (the fix)
+        yield textDelta("Second answer");
+        yield assistantMessage("msg-2", [{ type: "text", text: "Second answer" }]);
+        yield result();
+        yield idle;
+      }
+      return messageGenerator();
+    });
+
+    const first = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "first" }],
+    });
+    // Wait until turn 1's deltas have streamed before cancelling.
+    const deadline = Date.now() + 1000;
+    while (!messageChunkTexts(updates).includes("there")) {
+      if (Date.now() > deadline) throw new Error("turn 1 stream never arrived");
+      await new Promise((r) => setTimeout(r, 1));
+    }
+
+    await agent.cancel({ sessionId: "test-session" });
+    releaseCancel();
+    await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "second" }] });
+
+    // Turn 2's text appears exactly once (the live delta); the consolidated copy
+    // is deduped despite the cancelled turn's leftover streamed text.
+    expect(messageChunkTexts(updates).filter((t) => t === "Second answer")).toEqual([
+      "Second answer",
+    ]);
   });
 
   it("does not leak subagent assistant text into the top-level feed", async () => {
@@ -3872,7 +4235,7 @@ describe("emitRawSDKMessages", () => {
       extNotification: async (method: string, params: any) => {
         extNotifications.push({ method, params });
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
     return { agent, updates, extNotifications };
   }
@@ -4093,7 +4456,7 @@ describe("result origin handling", () => {
       sessionUpdate: async (notification: any) => {
         updates.push(notification);
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
     return { agent, updates };
   }
@@ -4247,7 +4610,7 @@ describe("memory_recall handling", () => {
       sessionUpdate: async (notification: any) => {
         updates.push(notification);
       },
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
     return { agent, updates };
   }
@@ -4404,7 +4767,7 @@ describe("post-error recovery", () => {
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
   }
 
@@ -4495,6 +4858,8 @@ describe("post-error recovery", () => {
         cachedWriteTokens: 0,
       },
       configOptions: [],
+      agents: [],
+      currentAgent: "default",
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       contextWindowSize: 200000,
@@ -5002,7 +5367,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
     return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
   }
 
@@ -5063,6 +5428,8 @@ describe("session/cancel wedge recovery (issue #680)", () => {
         cachedWriteTokens: 0,
       },
       configOptions: [],
+      agents: [],
+      currentAgent: "default",
       abortController: new AbortController(),
       emitRawSDKMessages: false,
       contextWindowSize: 200000,
@@ -5223,14 +5590,9 @@ describe("streamEventToAcpNotifications", () => {
       },
     } as Parameters<typeof streamEventToAcpNotifications>[0];
 
-    const result = streamEventToAcpNotifications(
-      message,
-      "test",
-      {},
-      {} as AgentSideConnection,
-      console,
-      { messageId },
-    );
+    const result = streamEventToAcpNotifications(message, "test", {}, {} as AcpClient, console, {
+      messageId,
+    });
 
     expect(result).toEqual([
       {
@@ -5254,7 +5616,7 @@ describe("toAcpNotifications messageId", () => {
       "assistant",
       "test",
       {},
-      {} as AgentSideConnection,
+      {} as AcpClient,
       console,
       { messageId },
     );
@@ -5277,7 +5639,7 @@ describe("toAcpNotifications messageId", () => {
       "user",
       "test",
       {},
-      {} as AgentSideConnection,
+      {} as AcpClient,
       console,
       { messageId },
     );
@@ -5291,7 +5653,7 @@ describe("toAcpNotifications messageId", () => {
       "assistant",
       "test",
       {},
-      {} as AgentSideConnection,
+      {} as AcpClient,
       console,
       { messageId },
     );
@@ -5302,14 +5664,7 @@ describe("toAcpNotifications messageId", () => {
   });
 
   it("omits messageId when none is supplied", () => {
-    const result = toAcpNotifications(
-      "hello",
-      "assistant",
-      "test",
-      {},
-      {} as AgentSideConnection,
-      console,
-    );
+    const result = toAcpNotifications("hello", "assistant", "test", {}, {} as AcpClient, console);
     expect(result[0].update).not.toHaveProperty("messageId");
   });
 
@@ -5326,12 +5681,61 @@ describe("toAcpNotifications messageId", () => {
       "assistant",
       "test",
       {},
-      {} as AgentSideConnection,
+      {} as AcpClient,
       console,
       { messageId, registerHooks: false },
     );
     expect(result[0].update.sessionUpdate).toBe("tool_call");
     expect(result[0].update).not.toHaveProperty("messageId");
+  });
+});
+
+describe("toAcpNotifications thinking chunks", () => {
+  it("emits an agent_thought_chunk for non-empty thinking text", () => {
+    const result = toAcpNotifications(
+      [{ type: "thinking", thinking: "let me reason", signature: "" }],
+      "assistant",
+      "test",
+      {},
+      {} as AcpClient,
+      console,
+    );
+
+    expect(result).toEqual([
+      {
+        sessionId: "test",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "let me reason" },
+        },
+      },
+    ]);
+  });
+
+  it("skips empty thinking blocks (display: 'omitted' signature-only blocks)", () => {
+    const result = toAcpNotifications(
+      [{ type: "thinking", thinking: "", signature: "abc" }],
+      "assistant",
+      "test",
+      {},
+      {} as AcpClient,
+      console,
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("skips empty thinking deltas", () => {
+    const result = toAcpNotifications(
+      [{ type: "thinking_delta", thinking: "", estimated_tokens: 0 }],
+      "assistant",
+      "test",
+      {},
+      {} as AcpClient,
+      console,
+    );
+
+    expect(result).toEqual([]);
   });
 });
 
@@ -5369,5 +5773,179 @@ describe("messageIdForGrouping", () => {
   it("returns undefined when there is no usable id", () => {
     expect(messageIdForGrouping({ type: "system", message: {} })).toBeUndefined();
     expect(messageIdForGrouping({ type: "assistant", uuid: "", message: {} })).toBeUndefined();
+  });
+});
+
+describe("agent selection config option", () => {
+  const baseModes = { currentModeId: "default", availableModes: [] };
+  const baseModels = { currentModelId: "default", availableModels: [] };
+
+  describe("discoverCustomAgents", () => {
+    it("filters out Claude Code's built-in subagents", async () => {
+      const q = {
+        supportedAgents: async () => [
+          { name: "claude", description: "catch-all" },
+          { name: "Explore", description: "search" },
+          { name: "general-purpose", description: "gp" },
+          { name: "Plan", description: "architect" },
+          { name: "statusline-setup", description: "status" },
+          { name: "my-reviewer", description: "Reviews code" },
+          { name: "my-writer", description: "Writes docs" },
+        ],
+      } as any;
+      const agents = await discoverCustomAgents(q);
+      expect(agents.map((a) => a.name)).toEqual(["my-reviewer", "my-writer"]);
+    });
+
+    it("excludes a custom agent named 'default' (reserved sentinel)", async () => {
+      const q = {
+        supportedAgents: async () => [
+          { name: "default", description: "collides with the synthetic Default entry" },
+          { name: "my-reviewer", description: "Reviews code" },
+        ],
+      } as any;
+      const agents = await discoverCustomAgents(q);
+      expect(agents.map((a) => a.name)).toEqual(["my-reviewer"]);
+    });
+
+    it("returns an empty list when discovery throws", async () => {
+      const q = {
+        supportedAgents: async () => {
+          throw new Error("control request failed");
+        },
+      } as any;
+      expect(await discoverCustomAgents(q)).toEqual([]);
+    });
+  });
+
+  describe("buildConfigOptions agent option", () => {
+    it("omits the agent option when no custom agents are configured", () => {
+      const options = buildConfigOptions(baseModes, baseModels, [], undefined, [], "default");
+      expect(options.find((o) => o.id === "agent")).toBeUndefined();
+    });
+
+    it("adds an agent option with a synthetic Default entry when custom agents exist", () => {
+      const agents = [
+        { name: "my-reviewer", description: "Reviews code" },
+        // empty description should normalize to undefined, not ""
+        { name: "my-writer", description: "" },
+      ];
+      const options = buildConfigOptions(
+        baseModes,
+        baseModels,
+        [],
+        undefined,
+        agents,
+        "my-reviewer",
+      );
+      const agentOption = options.find((o) => o.id === "agent");
+      expect(agentOption).toBeDefined();
+      expect(agentOption!.currentValue).toBe("my-reviewer");
+      expect(agentOption!.type).toBe("select");
+      const entries = (agentOption as any).options;
+      expect(entries.map((o: any) => o.value)).toEqual(["default", "my-reviewer", "my-writer"]);
+      expect(entries[2].description).toBeUndefined();
+    });
+  });
+
+  describe("switching the agent", () => {
+    function createMockAgent() {
+      const mockClient = { sessionUpdate: async () => {} } as unknown as AcpClient;
+      return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    }
+
+    const agents = [{ name: "my-reviewer", description: "Reviews code" }];
+
+    function injectSession(agent: ClaudeAcpAgent, sessionId: string) {
+      function* empty() {}
+      const applyFlagSettings = vi.fn(async () => {});
+      const gen = Object.assign(empty(), {
+        interrupt: vi.fn(),
+        close: vi.fn(),
+        applyFlagSettings,
+      });
+      agent.sessions[sessionId] = {
+        query: gen as any,
+        input: new Pushable(),
+        cancelled: false,
+        cwd: "/test",
+        sessionFingerprint: JSON.stringify({ cwd: "/test", mcpServers: [] }),
+        modes: { currentModeId: "default", availableModes: [] },
+        models: { currentModelId: "default", availableModels: [] },
+        modelInfos: [],
+        settingsManager: { dispose: vi.fn() } as any,
+        accumulatedUsage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+        },
+        configOptions: buildConfigOptions(baseModes, baseModels, [], undefined, agents, "default"),
+        agents,
+        currentAgent: "default",
+        abortController: new AbortController(),
+        emitRawSDKMessages: false,
+        contextWindowSize: 200000,
+        taskState: new Map(),
+        toolUseCache: {},
+        messageIdToUuid: new Map(),
+      };
+      return { session: agent.sessions[sessionId]!, applyFlagSettings };
+    }
+
+    it("applies the agent flag live without restarting the subprocess", async () => {
+      const agent = createMockAgent();
+      const { session, applyFlagSettings } = injectSession(agent, "s1");
+
+      const result = await agent.setSessionConfigOption({
+        sessionId: "s1",
+        configId: "agent",
+        value: "my-reviewer",
+      });
+
+      expect(applyFlagSettings).toHaveBeenCalledWith({ agent: "my-reviewer" });
+      expect(session.currentAgent).toBe("my-reviewer");
+      // The whole point of the SDK >= 0.3.161 approach: no process teardown.
+      expect(session.query.interrupt).not.toHaveBeenCalled();
+      expect(session.abortController.signal.aborted).toBe(false);
+      expect(agent.sessions["s1"]).toBe(session);
+      const agentOption = result.configOptions.find((o) => o.id === "agent");
+      expect(agentOption?.currentValue).toBe("my-reviewer");
+    });
+
+    it("clears the flag (agent: null) when switching back to default", async () => {
+      const agent = createMockAgent();
+      const { session, applyFlagSettings } = injectSession(agent, "s2");
+      session.currentAgent = "my-reviewer";
+
+      await agent.setSessionConfigOption({
+        sessionId: "s2",
+        configId: "agent",
+        value: "default",
+      });
+
+      expect(applyFlagSettings).toHaveBeenCalledWith({ agent: null });
+      expect(session.currentAgent).toBe("default");
+    });
+
+    it("leaves tracked state untouched when the live switch is rejected", async () => {
+      const agent = createMockAgent();
+      const { session, applyFlagSettings } = injectSession(agent, "s3");
+      applyFlagSettings.mockRejectedValueOnce(new Error("control channel closed"));
+
+      await expect(
+        agent.setSessionConfigOption({
+          sessionId: "s3",
+          configId: "agent",
+          value: "my-reviewer",
+        }),
+      ).rejects.toThrow("control channel closed");
+
+      // The flag never applied, so neither currentAgent nor the config option
+      // moves — no desync with the agent the SDK is actually running.
+      expect(session.currentAgent).toBe("default");
+      const agentOption = session.configOptions.find((o) => o.id === "agent");
+      expect(agentOption?.currentValue).toBe("default");
+    });
   });
 });

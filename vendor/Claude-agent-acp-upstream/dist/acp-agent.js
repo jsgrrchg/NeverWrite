@@ -1,4 +1,4 @@
-import { AgentSideConnection, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
+import { agent as acpAgent, methods, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
 import { deleteSession, getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -246,13 +246,54 @@ export function describeAlwaysAllow(suggestions, toolName) {
     }
     return `Always Allow ${parts.join(" and ")}`;
 }
-// Implement the ACP Agent interface
+/**
+ * Bridges {@link AcpClient} to the connection-scoped {@link AgentContext}
+ * exposed by `AgentApp.connect(...)` as `connection.client`. The peer handle is
+ * valid for the entire connection lifetime, so it is captured once at
+ * construction.
+ */
+class ClientConnection {
+    ctx;
+    constructor(ctx) {
+        this.ctx = ctx;
+    }
+    sessionUpdate(params) {
+        return this.ctx.notify(methods.client.session.update, params);
+    }
+    requestPermission(params, signal) {
+        return this.ctx.request(methods.client.session.requestPermission, params, {
+            cancellationSignal: signal,
+        });
+    }
+    readTextFile(params) {
+        return this.ctx.request(methods.client.fs.readTextFile, params);
+    }
+    writeTextFile(params) {
+        return this.ctx.request(methods.client.fs.writeTextFile, params);
+    }
+    unstable_createElicitation(params, signal) {
+        return this.ctx.request(methods.client.elicitation.create, params, {
+            cancellationSignal: signal,
+        });
+    }
+    unstable_completeElicitation(params) {
+        return this.ctx.notify(methods.client.elicitation.complete, params);
+    }
+    extNotification(method, params) {
+        return this.ctx.notify(method, params);
+    }
+}
 export class ClaudeAcpAgent {
+    sessions;
+    client;
+    clientCapabilities;
+    logger;
+    gatewayAuthRequest;
+    /** Grace period before a `session/cancel` forces a wedged prompt loop to
+     *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
+     *  tests can shrink it. */
+    forceCancelGraceMs = DEFAULT_FORCE_CANCEL_GRACE_MS;
     constructor(client, logger) {
-        /** Grace period before a `session/cancel` forces a wedged prompt loop to
-         *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
-         *  tests can shrink it. */
-        this.forceCancelGraceMs = DEFAULT_FORCE_CANCEL_GRACE_MS;
         this.sessions = {};
         this.client = client;
         this.logger = logger ?? console;
@@ -546,12 +587,17 @@ export class ClaudeAcpAgent {
         // (whose delta events don't carry it) can all be tagged with the same,
         // replay-stable id.
         let currentStreamMessageId;
-        // Per-message-id record of which assistant content actually streamed live
-        // via `stream_event` deltas, split by block type, so the consolidated
-        // `assistant` message can drop the duplicate blocks that already reached the
-        // client as chunks while still forwarding any that a non-streaming gateway
-        const streamedTextIds = new Set();
-        const streamedThinkingIds = new Set();
+        // The text/thinking blocks that have actually streamed live as
+        // `stream_event` deltas for the message the next consolidated `assistant`
+        // will repeat, in stream order, each accumulated to its full streamed text.
+        // The consolidated handler diffs each assembled block against these and
+        // forwards only the un-streamed remainder — nothing if it streamed in full
+        // (the common case), the whole block if it never streamed (a non-streaming
+        // gateway), or just the tail if the stream was cut short mid-block. Matching
+        // on content rather than the Anthropic message id makes dedupe robust to
+        // gateways that don't carry a stable/matching id across the stream and the
+        // consolidated message. Reset after each consolidated message consumes it.
+        const streamedBlocks = [];
         // Stop reason accumulated for the active turn (result subtype, refusal,
         // max_tokens, …). Reset per turn; read when the turn settles at idle.
         let stopReason = "end_turn";
@@ -562,7 +608,14 @@ export class ClaudeAcpAgent {
             lastAssistantError = undefined;
             lastRefusalExplanation = null;
             compactionInProgress = false;
-            currentStreamMessageId = undefined;
+            // Do NOT reset currentStreamMessageId or streamedBlocks here. Turn
+            // activation can fire mid-message (the replayed user echo with
+            // --replay-user-messages lands between a message's blocks); clearing the
+            // streamed-content record on activation would drop the blocks that
+            // streamed before the echo, so the consolidated assistant message would
+            // re-emit them as duplicates. streamedBlocks is bounded instead by being
+            // cleared when each consolidated message consumes it. #785 stopped
+            // resetting the streamed-content tracking here but left this line.
             stopReason = "end_turn";
             session.accumulatedUsage = {
                 inputTokens: 0,
@@ -1153,20 +1206,50 @@ export class ClaudeAcpAgent {
                         // it) can all be tagged with the same, replay-stable id.
                         if (message.event.type === "message_start") {
                             currentStreamMessageId = message.event.message.id || undefined;
-                        }
-                        // Record that this top-level message id actually streamed text/
-                        // thinking, so the `assistant` case below knows its assembled blocks
-                        // are duplicates (filter them) rather than the only copy (forward
-                        // them). Gated on `parent_tool_use_id === null` so a subagent stream
-                        // can't attribute its content to the top-level message id.
-                        if (currentStreamMessageId &&
-                            message.parent_tool_use_id === null &&
-                            message.event.type === "content_block_delta") {
-                            if (message.event.delta.type === "text_delta") {
-                                streamedTextIds.add(currentStreamMessageId);
+                            // A new top-level message starts: clear any streamed-content
+                            // residue from a prior message that never reached its
+                            // consolidated reset — a cancelled turn breaks out before the
+                            // reset, and the synthetic-auth/system/local-command paths
+                            // `break` early too. Block indices restart at 0 each message, so
+                            // leftover entries would otherwise collide with this message's
+                            // blocks and re-emit (or truncate) already-streamed text. Gated on
+                            // `parent_tool_use_id === null` so a subagent stream can't clear
+                            // the top-level record. Fires once, before any of this message's
+                            // blocks, so it doesn't disturb the mid-message turn-activation
+                            // path the way resetting on turn activation would.
+                            if (message.parent_tool_use_id === null) {
+                                streamedBlocks.length = 0;
                             }
-                            else if (message.event.delta.type === "thinking_delta") {
-                                streamedThinkingIds.add(currentStreamMessageId);
+                        }
+                        // Accumulate the text/thinking actually streamed live, so the
+                        // `assistant` case below can diff its assembled blocks against what
+                        // already reached the client as chunks and forward only the
+                        // remainder. Gated on `parent_tool_use_id === null` so a subagent
+                        // stream can't attribute its content to the top-level message.
+                        // Contiguous deltas of the same block (same index and type) extend
+                        // the current entry; anything else opens a new one.
+                        if (message.parent_tool_use_id === null &&
+                            message.event.type === "content_block_delta") {
+                            const delta = message.event.delta;
+                            const chunk = delta.type === "text_delta"
+                                ? { type: "text", text: delta.text }
+                                : delta.type === "thinking_delta"
+                                    ? { type: "thinking", text: delta.thinking }
+                                    : undefined;
+                            // Skip empty deltas (some gateways emit empty thinking chunks —
+                            // #793): appending "" is a no-op, but pushing a "" entry would
+                            // create a block the consolidated handler's `text.length > 0`
+                            // guard can never consume, stalling the diff cursor and
+                            // re-emitting the next block as a duplicate.
+                            if (chunk && chunk.text.length > 0) {
+                                const index = message.event.index;
+                                const last = streamedBlocks[streamedBlocks.length - 1];
+                                if (last && last.index === index && last.type === chunk.type) {
+                                    last.text += chunk.text;
+                                }
+                                else {
+                                    streamedBlocks.push({ index, type: chunk.type, text: chunk.text });
+                                }
                             }
                         }
                         if (message.parent_tool_use_id === null &&
@@ -1340,40 +1423,65 @@ export class ClaudeAcpAgent {
                         }
                         let content;
                         if (message.type === "assistant" && message.parent_tool_use_id === null) {
-                            // Top-level assistant message: drop text/thinking blocks already
-                            // streamed live as chunks, and forward (as a fallback) any that were
-                            // not, so non-streaming gateways still deliver the final answer.
-                            const id = messageIdForGrouping(message);
-                            content = message.message.content.filter((item) => {
-                                // Non-text blocks (tool_use, etc.) always pass through; their own
-                                // dedupe (`toolUseCache`) collapses the streamed/assembled pair.
+                            // Top-level assistant message: each text/thinking block may have
+                            // already been streamed live as deltas. Diff each against what
+                            // streamed (`streamedBlocks`, in document order) and forward only
+                            // the un-streamed remainder — nothing if it streamed in full (the
+                            // common case), the whole block if it never streamed (a
+                            // non-streaming gateway), or just the tail if the stream was cut
+                            // short mid-block. `streamPos` walks the streamed blocks in step
+                            // with the assembled text/thinking blocks; tool_use and other
+                            // blocks pass through untouched (their own `toolUseCache` collapses
+                            // the streamed/assembled pair) without advancing it.
+                            const blocks = message.message.content;
+                            const kept = [];
+                            let streamPos = 0;
+                            for (const item of blocks) {
                                 if (item.type !== "text" && item.type !== "thinking") {
-                                    return true;
+                                    kept.push(item);
+                                    continue;
                                 }
-                                // Already delivered live as a chunk of this exact type — drop the
-                                // duplicate. Checked per type so streaming one (e.g. text) doesn't
-                                // suppress an un-streamed block of the other (e.g. thinking).
-                                const streamedLive = id !== undefined &&
-                                    (item.type === "text" ? streamedTextIds : streamedThinkingIds).has(id);
-                                if (streamedLive) {
-                                    return false;
+                                const full = item.type === "text" ? item.text : item.thinking;
+                                // Empty assembled blocks carry nothing (some gateways emit an
+                                // empty `thinking` block before the real text) — drop them.
+                                if (full.length === 0) {
+                                    continue;
                                 }
-                                // Empty assembled blocks carry nothing (some gateways emit an empty
-                                // `thinking` block before the real text) — don't forward stray
-                                // empty chunks.
-                                const text = item.type === "text" ? item.text : item.thinking;
-                                if (text.length === 0) {
-                                    return false;
+                                // A streamed block of the same type whose accumulated text is a
+                                // prefix of this one was already (at least partly) delivered as
+                                // chunks; consume it and forward only what's left. A non-empty
+                                // streamed text is required so an empty/aborted streamed block
+                                // doesn't swallow the assembled copy.
+                                const streamed = streamedBlocks[streamPos];
+                                if (streamed &&
+                                    streamed.type === item.type &&
+                                    streamed.text.length > 0 &&
+                                    full.startsWith(streamed.text)) {
+                                    streamPos++;
+                                    const remainder = full.slice(streamed.text.length);
+                                    if (remainder.length === 0) {
+                                        continue;
+                                    }
+                                    // Overwrite in place with just the un-streamed tail (the
+                                    // assembled message isn't read again after this) so the block
+                                    // keeps its exact SDK type.
+                                    if (item.type === "text") {
+                                        item.text = remainder;
+                                    }
+                                    else {
+                                        item.thinking = remainder;
+                                    }
+                                    kept.push(item);
+                                    continue;
                                 }
-                                return true;
-                            });
-                            // The consolidated message is the last place this id is needed for
-                            // dedupe — drop it so the streamed-id sets stay bounded to in-flight
-                            // streams rather than growing for the session's whole life.
-                            if (id !== undefined) {
-                                streamedTextIds.delete(id);
-                                streamedThinkingIds.delete(id);
+                                // Not matched: never streamed (or the stream diverged from the
+                                // assembled text) — forward the block in full.
+                                kept.push(item);
                             }
+                            content = kept;
+                            // Consumed: reset so the next message's blocks accumulate fresh and
+                            // the record stays bounded to the in-flight message.
+                            streamedBlocks.length = 0;
                         }
                         else if (message.type === "assistant") {
                             // Subagent assistant message (`parent_tool_use_id !== null`). It is
@@ -1758,6 +1866,24 @@ export class ClaudeAcpAgent {
         const response = await this.client.writeTextFile(params);
         return response;
     }
+    /** Forward a permission request to the client, wiring the tool call's
+     *  `signal` through as a `cancellationSignal`. When the turn is cancelled
+     *  while the client's prompt is still open the signal aborts, the SDK sends
+     *  `$/cancel_request`, and the client settles the request (a `cancelled`
+     *  outcome or a `requestCancelled` rejection). Either way we surface the same
+     *  "Tool use aborted" the callers already expect, so a cancelled dialog no
+     *  longer leaves the `await` hanging. */
+    async requestPermissionFromClient(params, signal) {
+        try {
+            return await this.client.requestPermission(params, signal);
+        }
+        catch (error) {
+            if (signal.aborted) {
+                throw new Error("Tool use aborted", { cause: error });
+            }
+            throw error;
+        }
+    }
     canUseTool(sessionId) {
         return async (toolName, toolInput, { signal, suggestions, toolUseID }) => {
             const alwaysAllowLabel = describeAlwaysAllow(suggestions, toolName);
@@ -1800,7 +1926,7 @@ export class ClaudeAcpAgent {
                 // `buildAvailableModes`/`ALLOW_BYPASS`. The `plan` option is a
                 // "keep planning" reject path; it's always present in `availableModes`.
                 const options = optionsAll.filter((o) => session.modes.availableModes.some((m) => m.id === o.optionId));
-                const response = await this.client.requestPermission({
+                const response = await this.requestPermissionFromClient({
                     options,
                     sessionId,
                     toolCall: {
@@ -1808,7 +1934,7 @@ export class ClaudeAcpAgent {
                         rawInput: toolInput,
                         ...toolInfoFromToolUse({ name: toolName, input: toolInput, id: toolUseID }, supportsTerminalOutput, session?.cwd),
                     },
-                });
+                }, signal);
                 if (signal.aborted || response.outcome?.outcome === "cancelled") {
                     throw new Error("Tool use aborted");
                 }
@@ -1851,7 +1977,7 @@ export class ClaudeAcpAgent {
                     ],
                 };
             }
-            const response = await this.client.requestPermission({
+            const response = await this.requestPermissionFromClient({
                 options: [
                     {
                         kind: "allow_always",
@@ -1867,7 +1993,7 @@ export class ClaudeAcpAgent {
                     rawInput: toolInput,
                     ...toolInfoFromToolUse({ name: toolName, input: toolInput, id: toolUseID }, supportsTerminalOutput, session?.cwd),
                 },
-            });
+            }, signal);
             if (signal.aborted || response.outcome?.outcome === "cancelled") {
                 throw new Error("Tool use aborted");
             }
@@ -1917,13 +2043,18 @@ export class ClaudeAcpAgent {
                 return { action: "decline" };
             }
             try {
-                const response = await this.client.unstable_createElicitation(createRequest);
+                const response = await this.client.unstable_createElicitation(createRequest, signal);
                 if (signal.aborted) {
                     return { action: "cancel" };
                 }
                 return createElicitationResponseToElicitResult(response);
             }
             catch (error) {
+                // A cancellation we requested (signal aborted) settles as a cancel, not
+                // a hard decline — the elicitation was abandoned, not refused.
+                if (signal.aborted) {
+                    return { action: "cancel" };
+                }
                 this.logger.error(`Failed to forward MCP elicitation: ${error}`);
                 return { action: "decline" };
             }
@@ -1942,9 +2073,14 @@ export class ClaudeAcpAgent {
         const createRequest = askUserQuestionsToCreateRequest(questions, sessionId, toolUseID);
         let response;
         try {
-            response = await this.client.unstable_createElicitation(createRequest);
+            response = await this.client.unstable_createElicitation(createRequest, signal);
         }
         catch (error) {
+            // A cancellation we requested (signal aborted) settles as an aborted tool
+            // use, matching the post-response check below.
+            if (signal.aborted) {
+                throw new Error("Tool use aborted", { cause: error });
+            }
             this.logger.error(`Failed to present AskUserQuestion elicitation: ${error}`);
             return { behavior: "deny", message: "Could not present the question to the user." };
         }
@@ -1989,18 +2125,22 @@ export class ClaudeAcpAgent {
             session.configOptions = session.configOptions.map((o) => o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o);
         }
         else if (configId === "model") {
+            // `ModelInfo.supportsAutoMode` is the canonical SDK signal for clamping
+            // modes below; its `displayName`/`description` also let us infer the
+            // context window for semantic aliases (e.g. `default`) whose ID alone
+            // carries no "1m" token.
+            const newModelInfo = session.modelInfos.find((m) => m.value === value);
             if (session.models.currentModelId !== value) {
                 // The cached context window was learned for the previous model; reset
                 // to the new model's heuristic so mid-stream updates between now and
                 // the next `result` reflect the user's selection instead of the old
                 // model's window.
-                session.contextWindowSize = inferContextWindowFromModel(value) ?? DEFAULT_CONTEXT_WINDOW;
+                session.contextWindowSize =
+                    inferContextWindowFromModel(value, newModelInfo?.displayName, newModelInfo?.description) ?? DEFAULT_CONTEXT_WINDOW;
             }
             session.models = { ...session.models, currentModelId: value };
             // Recompute availableModes for the new model and clamp the current
             // mode if the SDK no longer offers it (today: "auto" on Haiku).
-            // `ModelInfo.supportsAutoMode` is the canonical SDK signal.
-            const newModelInfo = session.modelInfos.find((m) => m.value === value);
             const newAvailableModes = buildAvailableModes(newModelInfo);
             // Capture BEFORE mutating session.modes so the log message reflects
             // the invalidated mode rather than "default".
@@ -2029,7 +2169,7 @@ export class ClaudeAcpAgent {
             // Rebuild config options since effort levels depend on the selected model
             const effortOpt = session.configOptions.find((o) => o.id === "effort");
             const currentEffort = typeof effortOpt?.currentValue === "string" ? effortOpt.currentValue : undefined;
-            session.configOptions = buildConfigOptions(session.modes, session.models, session.modelInfos, currentEffort);
+            session.configOptions = buildConfigOptions(session.modes, session.models, session.modelInfos, currentEffort, session.agents, session.currentAgent);
             // Sync effort with the SDK if it changed after the model switch
             const newEffortOpt = session.configOptions.find((o) => o.id === "effort");
             const newEffort = typeof newEffortOpt?.currentValue === "string" ? newEffortOpt.currentValue : undefined;
@@ -2053,6 +2193,18 @@ export class ClaudeAcpAgent {
                     },
                 });
             }
+        }
+        else if (configId === "agent") {
+            // Live agent switch — no subprocess restart needed. Apply the SDK flag
+            // first so a rejected control request leaves both `currentAgent` and the
+            // config option untouched (no UI/SDK desync). Passing `null` clears the
+            // flag layer back to the standard Claude Code agent; the change takes
+            // effect on the next turn (SDK >= 0.3.161).
+            await session.query.applyFlagSettings({
+                agent: value === DEFAULT_AGENT_ID ? null : value,
+            });
+            session.currentAgent = value;
+            session.configOptions = session.configOptions.map((o) => o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o);
         }
         else {
             session.configOptions = session.configOptions.map((o) => o.id === configId && typeof o.currentValue === "string" ? { ...o, currentValue: value } : o);
@@ -2405,7 +2557,17 @@ export class ClaudeAcpAgent {
             currentModeId: effectiveMode,
             availableModes,
         };
-        const configOptions = buildConfigOptions(modes, models, allowedModels, settingsManager.getSettings().effortLevel);
+        const agents = await discoverCustomAgents(q);
+        // Only adopt the requested agent as the selected value if it's one we
+        // actually surface in the picker. A built-in (filtered out above) or
+        // otherwise-unknown name would leave the config option's `currentValue`
+        // pointing at an entry not in its own `options` list, which clients render
+        // as a blank/invalid selection.
+        const requestedAgent = userProvidedOptions?.agent;
+        const currentAgent = requestedAgent && agents.some((a) => a.name === requestedAgent)
+            ? requestedAgent
+            : DEFAULT_AGENT_ID;
+        const configOptions = buildConfigOptions(modes, models, allowedModels, settingsManager.getSettings().effortLevel, agents, currentAgent);
         // Apply the initial effort level to the SDK so it matches the UI default
         const initialEffort = configOptions.find((o) => o.id === "effort");
         if (initialEffort &&
@@ -2432,9 +2594,11 @@ export class ClaudeAcpAgent {
             models,
             modelInfos: allowedModels,
             configOptions,
+            agents,
+            currentAgent,
             abortController,
             emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
-            contextWindowSize: inferContextWindowFromModel(models.currentModelId) ?? DEFAULT_CONTEXT_WINDOW,
+            contextWindowSize: inferContextWindowFromModel(models.currentModelId, currentModelInfo?.displayName, currentModelInfo?.description) ?? DEFAULT_CONTEXT_WINDOW,
             taskState,
             toolUseCache: {},
             messageIdToUuid: new Map(),
@@ -2578,7 +2742,39 @@ function buildAvailableModes(modelInfo) {
 function toSdkEffortLevel(value) {
     return value === undefined || value === "default" ? null : value;
 }
-function buildConfigOptions(modes, models, modelInfos, currentEffortLevel) {
+// `supportedAgents()` always returns Claude Code's built-in subagents — the
+// ones used for Task-tool delegation (Explore, Plan, etc.) — even when the user
+// has configured none of their own. Those aren't meaningful *main-thread*
+// personas, so we filter them out and only surface the Agent picker when the
+// user (or a plugin/project) has configured custom agents. Update this set if
+// the SDK's built-in roster changes.
+export const BUILTIN_AGENT_NAMES = new Set([
+    "claude",
+    "general-purpose",
+    "Explore",
+    "Plan",
+    "statusline-setup",
+]);
+// Value of the synthetic "Default" entry in the agent picker, which maps to the
+// standard Claude Code agent (`applyFlagSettings({ agent: null })`). It is a
+// reserved sentinel: a custom agent named exactly this would collide with it
+// (two options sharing the value, selection silently routing to `null`), so we
+// exclude that name from discovery.
+export const DEFAULT_AGENT_ID = "default";
+/** Discover user/plugin/project-configured main-thread agents, excluding the
+ *  built-in subagents and the reserved "default" sentinel. Returns an empty
+ *  list if discovery fails so a flaky control request never blocks session
+ *  creation. */
+export async function discoverCustomAgents(q) {
+    try {
+        const agents = await q.supportedAgents();
+        return agents.filter((a) => !BUILTIN_AGENT_NAMES.has(a.name) && a.name !== DEFAULT_AGENT_ID);
+    }
+    catch {
+        return [];
+    }
+}
+export function buildConfigOptions(modes, models, modelInfos, currentEffortLevel, agents = [], currentAgent = DEFAULT_AGENT_ID) {
     const options = [
         {
             id: "mode",
@@ -2633,6 +2829,27 @@ function buildConfigOptions(modes, models, modelInfos, currentEffortLevel) {
             type: "select",
             currentValue: validEffort,
             options: effortOptions,
+        });
+    }
+    // Only surface the Agent picker when there's a real choice — i.e. the user
+    // has configured at least one custom agent (built-ins are filtered out in
+    // discoverCustomAgents). With none configured, "Default" would be the only
+    // entry, so we omit the option entirely.
+    if (agents.length > 0) {
+        options.push({
+            id: "agent",
+            name: "Agent",
+            description: "Main-thread agent persona",
+            type: "select",
+            currentValue: currentAgent,
+            options: [
+                { value: DEFAULT_AGENT_ID, name: "Default", description: "Standard Claude Code agent" },
+                ...agents.map((a) => ({
+                    value: a.name,
+                    name: a.name,
+                    description: a.description || undefined,
+                })),
+            ],
         });
     }
     return options;
@@ -3062,13 +3279,17 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
                 break;
             case "thinking":
             case "thinking_delta":
-                update = {
-                    sessionUpdate: "agent_thought_chunk",
-                    content: {
-                        type: "text",
-                        text: chunk.thinking,
-                    },
-                };
+                // Recent models default `thinking.display` to "omitted", which streams
+                // signature-only thinking blocks whose text is empty.
+                if (chunk.thinking.length > 0) {
+                    update = {
+                        sessionUpdate: "agent_thought_chunk",
+                        content: {
+                            type: "text",
+                            text: chunk.thinking,
+                        },
+                    };
+                }
                 break;
             case "tool_use":
             case "server_tool_use":
@@ -3325,15 +3546,62 @@ export function streamEventToAcpNotifications(message, sessionId, toolUseCache, 
             return [];
     }
 }
+/** Run a `session/prompt` while honoring `$/cancel_request` for it. ACP clients
+ *  normally stop a turn with the `session/cancel` notification, but `signal`
+ *  (the prompt request's abort signal) also fires when the client sends the
+ *  generic `$/cancel_request` for this prompt — the protocol's complementary
+ *  cancellation fallback. Route that to the same `agent.cancel` path so a client
+ *  using only the generic mechanism still stops the turn (and the prompt
+ *  resolves "cancelled" instead of running to completion).
+ *
+ *  The listener is scoped to this call: once the prompt settles it is removed,
+ *  so a later teardown-time abort of the (per-request) signal can't cancel a
+ *  subsequent turn. `signal` also aborts on connection close, in which case
+ *  cancelling the in-flight turn is the desired behavior anyway. */
+export async function runPromptWithCancellation(agent, params, signal) {
+    const onAbort = () => {
+        // Fire-and-forget: nothing awaits this listener, so swallow (and log) any
+        // rejection rather than surfacing it as an unhandled rejection.
+        agent.cancel({ sessionId: params.sessionId }).catch((error) => {
+            agent.logger.error(`Failed to cancel prompt via $/cancel_request: ${error}`);
+        });
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+        return await agent.prompt(params);
+    }
+    finally {
+        signal.removeEventListener("abort", onAbort);
+    }
+}
 export function runAcp() {
     const input = nodeToWebWritable(process.stdout);
     const output = nodeToWebReadable(process.stdin);
     const stream = ndJsonStream(input, output);
+    // `connect(...)` returns a connection-scoped peer handle (`connection.client`)
+    // that stays valid for the whole connection, so the agent captures it once.
+    // Handlers close over `agent`, which is assigned synchronously right after
+    // `connect()` returns — before the connection processes any inbound message.
+    // It cannot be `const`: its value depends on `connection.client`, which does
+    // not exist until `connect()` has been called.
+    // eslint-disable-next-line prefer-const
     let agent;
-    const connection = new AgentSideConnection((client) => {
-        agent = new ClaudeAcpAgent(client);
-        return agent;
-    }, stream);
+    const connection = acpAgent({ name: "claude-code-acp" })
+        .onRequest(methods.agent.initialize, (ctx) => agent.initialize(ctx.params))
+        .onRequest(methods.agent.session.new, (ctx) => agent.newSession(ctx.params))
+        .onRequest(methods.agent.session.load, (ctx) => agent.loadSession(ctx.params))
+        .onRequest(methods.agent.session.fork, (ctx) => agent.unstable_forkSession(ctx.params))
+        .onRequest(methods.agent.session.list, (ctx) => agent.listSessions(ctx.params))
+        .onRequest(methods.agent.session.delete, (ctx) => agent.deleteSession(ctx.params))
+        .onRequest(methods.agent.session.resume, (ctx) => agent.resumeSession(ctx.params))
+        .onRequest(methods.agent.session.close, (ctx) => agent.closeSession(ctx.params))
+        .onRequest(methods.agent.session.setMode, (ctx) => agent.setSessionMode(ctx.params))
+        .onRequest(methods.agent.session.setConfigOption, (ctx) => agent.setSessionConfigOption(ctx.params))
+        .onRequest(methods.agent.authenticate, (ctx) => agent.authenticate(ctx.params))
+        .onRequest(methods.agent.session.prompt, (ctx) => runPromptWithCancellation(agent, ctx.params, ctx.signal))
+        .onNotification(methods.agent.session.cancel, (ctx) => agent.cancel(ctx.params))
+        .connect(stream);
+    agent = new ClaudeAcpAgent(new ClientConnection(connection.client));
     return { connection, agent };
 }
 function commonPrefixLength(a, b) {
@@ -3343,14 +3611,21 @@ function commonPrefixLength(a, b) {
     }
     return i;
 }
-/** Best-effort first guess of a model's context window from its ID, used only
- *  as a fallback when the SDK's authoritative `getContextUsage` is unavailable
- *  (and until a `result` message arrives with the `modelUsage` value).
+/** Best-effort first guess of a model's context window, used only as a
+ *  fallback when the SDK's authoritative `getContextUsage` is unavailable (and
+ *  until a `result` message arrives with the `modelUsage` value).
+ *
  *  Anthropic 1M-context variants encode "1m" as a distinct token in the SDK
  *  model ID (e.g., "claude-opus-4-6-1m"), which `\b1m\b` catches without also
- *  matching things like "10m" or embedded substrings. */
-function inferContextWindowFromModel(model) {
-    if (/\b1m\b/i.test(model))
+ *  matching things like "10m" or embedded substrings. Semantic aliases like
+ *  `default` carry no such token in the ID, but the SDK's human-facing
+ *  `displayName`/`description` do (e.g. "Opus 4.7 (1M context)"), so callers
+ *  pass those too — the same `\b1m\b` token appears in "1M context". The SDK's
+ *  `ModelInfo` exposes no structured context-window field, so this text scan is
+ *  the only pre-`result` signal available. A miss falls back to the default
+ *  window and is corrected by `result.modelUsage` within one turn. */
+function inferContextWindowFromModel(...texts) {
+    if (texts.some((text) => text != null && /\b1m\b/i.test(text)))
         return 1_000_000;
     return null;
 }
