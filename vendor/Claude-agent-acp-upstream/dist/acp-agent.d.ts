@@ -1,5 +1,5 @@
-import { Agent, AgentSideConnection, AuthenticateRequest, CancelNotification, ClientCapabilities, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
+import { AgentInfo, CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -89,6 +89,14 @@ type Session = {
     models: SessionModelState;
     modelInfos: ModelInfo[];
     configOptions: SessionConfigOption[];
+    /** Custom main-thread agent personas the user (or a plugin/project) has
+     *  configured, discovered via `supportedAgents()` with Claude Code's built-in
+     *  subagents filtered out. Empty when none are configured, in which case the
+     *  "agent" config option is omitted entirely. */
+    agents: AgentInfo[];
+    /** The currently selected main-thread agent name, or "default" for the
+     *  standard Claude Code agent (no `agent` flag applied). */
+    currentAgent: string;
     abortController: AbortController;
     /** Signal the consumer races `query.next()` against. Aborted by cancel()
      *  (after a grace period) to force the active turn to settle "cancelled" when
@@ -237,11 +245,32 @@ export declare function resolvePermissionMode(defaultMode?: unknown, logger?: Lo
  * tool so "Always Allow" is never a blank check without disclosure.
  */
 export declare function describeAlwaysAllow(suggestions: PermissionUpdate[] | undefined, toolName: string): string;
-export declare class ClaudeAcpAgent implements Agent {
+/**
+ * Client-facing surface the agent calls back into. This is the subset of ACP
+ * client methods the agent actually uses, expressed as a narrow interface so
+ * tests can supply lightweight mocks. In production it is backed by
+ * {@link ClientConnection} over the SDK's typed `AgentContext`.
+ */
+export interface AcpClient {
+    sessionUpdate(params: SessionNotification): Promise<void>;
+    /** `signal`, when aborted, sends `$/cancel_request` for the in-flight
+     *  permission request so the client can dismiss its prompt (and settle our
+     *  await) instead of leaving the dialog open after the turn was cancelled. */
+    requestPermission(params: RequestPermissionRequest, signal?: AbortSignal): Promise<RequestPermissionResponse>;
+    readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>;
+    writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
+    /** `signal`, when aborted, sends `$/cancel_request` for the in-flight
+     *  elicitation so the client can dismiss its prompt and settle our await. */
+    unstable_createElicitation(params: CreateElicitationRequest, signal?: AbortSignal): Promise<CreateElicitationResponse>;
+    unstable_completeElicitation(params: CompleteElicitationNotification): Promise<void>;
+    /** Send a custom (extension) notification, e.g. `_claude/sdkMessage`. */
+    extNotification(method: string, params: Record<string, unknown>): Promise<void>;
+}
+export declare class ClaudeAcpAgent {
     sessions: {
         [key: string]: Session;
     };
-    client: AgentSideConnection;
+    client: AcpClient;
     clientCapabilities?: ClientCapabilities;
     logger: Logger;
     gatewayAuthRequest?: GatewayAuthRequest;
@@ -249,7 +278,7 @@ export declare class ClaudeAcpAgent implements Agent {
      *  return "cancelled". See {@link DEFAULT_FORCE_CANCEL_GRACE_MS}. Mutable so
      *  tests can shrink it. */
     forceCancelGraceMs: number;
-    constructor(client: AgentSideConnection, logger?: Logger);
+    constructor(client: AcpClient, logger?: Logger);
     initialize(request: InitializeRequest): Promise<InitializeResponse>;
     newSession(params: NewSessionRequest): Promise<NewSessionResponse>;
     unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse>;
@@ -301,6 +330,14 @@ export declare class ClaudeAcpAgent implements Agent {
     private replaySessionHistory;
     readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>;
     writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
+    /** Forward a permission request to the client, wiring the tool call's
+     *  `signal` through as a `cancellationSignal`. When the turn is cancelled
+     *  while the client's prompt is still open the signal aborts, the SDK sends
+     *  `$/cancel_request`, and the client settles the request (a `cancelled`
+     *  outcome or a `requestCancelled` rejection). Either way we surface the same
+     *  "Tool use aborted" the callers already expect, so a cancelled dialog no
+     *  longer leaves the `await` hanging. */
+    private requestPermissionFromClient;
     canUseTool(sessionId: string): CanUseTool;
     /**
      * Handle elicitation requests that originate from MCP servers by forwarding
@@ -327,6 +364,14 @@ export declare class ClaudeAcpAgent implements Agent {
     private validateCwd;
     private createSession;
 }
+export declare const BUILTIN_AGENT_NAMES: Set<string>;
+export declare const DEFAULT_AGENT_ID = "default";
+/** Discover user/plugin/project-configured main-thread agents, excluding the
+ *  built-in subagents and the reserved "default" sentinel. Returns an empty
+ *  list if discovery fails so a flaky control request never blocks session
+ *  creation. */
+export declare function discoverCustomAgents(q: Query): Promise<AgentInfo[]>;
+export declare function buildConfigOptions(modes: SessionModeState, models: SessionModelState, modelInfos: ModelInfo[], currentEffortLevel?: string, agents?: AgentInfo[], currentAgent?: string): SessionConfigOption[];
 export declare function promptToClaude(prompt: PromptRequest): SDKUserMessage;
 /**
  * Resolves the ACP `messageId` for a Claude SDK message (live) or a persisted
@@ -348,7 +393,7 @@ export declare function messageIdForGrouping(message: {
  * Convert an SDKAssistantMessage (Claude) to a SessionNotification (ACP).
  * Only handles text, image, and thinking chunks for now.
  */
-export declare function toAcpNotifications(content: string | ContentBlockParam[] | BetaContentBlock[] | BetaRawContentBlockDelta[], role: "assistant" | "user", sessionId: string, toolUseCache: ToolUseCache, client: AgentSideConnection, logger: Logger, options?: {
+export declare function toAcpNotifications(content: string | ContentBlockParam[] | BetaContentBlock[] | BetaRawContentBlockDelta[], role: "assistant" | "user", sessionId: string, toolUseCache: ToolUseCache, client: AcpClient, logger: Logger, options?: {
     registerHooks?: boolean;
     clientCapabilities?: ClientCapabilities;
     parentToolUseId?: string | null;
@@ -356,14 +401,27 @@ export declare function toAcpNotifications(content: string | ContentBlockParam[]
     taskState?: TaskState;
     messageId?: string;
 }): SessionNotification[];
-export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AgentSideConnection, logger: Logger, options?: {
+export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AcpClient, logger: Logger, options?: {
     clientCapabilities?: ClientCapabilities;
     cwd?: string;
     taskState?: TaskState;
     messageId?: string;
 }): SessionNotification[];
+/** Run a `session/prompt` while honoring `$/cancel_request` for it. ACP clients
+ *  normally stop a turn with the `session/cancel` notification, but `signal`
+ *  (the prompt request's abort signal) also fires when the client sends the
+ *  generic `$/cancel_request` for this prompt — the protocol's complementary
+ *  cancellation fallback. Route that to the same `agent.cancel` path so a client
+ *  using only the generic mechanism still stops the turn (and the prompt
+ *  resolves "cancelled" instead of running to completion).
+ *
+ *  The listener is scoped to this call: once the prompt settles it is removed,
+ *  so a later teardown-time abort of the (per-request) signal can't cancel a
+ *  subsequent turn. `signal` also aborts on connection close, in which case
+ *  cancelling the in-flight turn is the desired behavior anyway. */
+export declare function runPromptWithCancellation(agent: Pick<ClaudeAcpAgent, "prompt" | "cancel" | "logger">, params: PromptRequest, signal: AbortSignal): Promise<PromptResponse>;
 export declare function runAcp(): {
-    connection: AgentSideConnection;
+    connection: import("@agentclientprotocol/sdk").AgentConnection;
     agent: ClaudeAcpAgent;
 };
 export {};

@@ -470,7 +470,8 @@ describe("createSession options merging", () => {
             });
         });
         it("rejects a cwd that points at a file with invalidParams", async () => {
-            const file = path.join(os.tmpdir(), "claude-acp-cwd-is-a-file.txt");
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-acp-cwd-is-a-file-"));
+            const file = path.join(dir, "not-a-directory.txt");
             fs.writeFileSync(file, "not a directory");
             try {
                 await expect(agent.newSession({ cwd: file, mcpServers: [] })).rejects.toMatchObject({
@@ -478,7 +479,7 @@ describe("createSession options merging", () => {
                 });
             }
             finally {
-                fs.rmSync(file, { force: true });
+                fs.rmSync(dir, { recursive: true, force: true });
             }
         });
         it("accepts an existing absolute directory", async () => {
