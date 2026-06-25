@@ -3353,7 +3353,7 @@ function UserInputRequestMessage({
                                                         };
                                                     });
                                                 }}
-                                                className="rounded-md px-2.5 py-1.5 text-left transition-colors"
+                                                className="rounded-md px-2.5 py-1.5 text-left transition-[background-color,border-color,color,box-shadow,transform] duration-100 ease-out active:translate-y-px active:scale-[0.99] active:shadow-inner"
                                                 style={{
                                                     fontSize: "0.78em",
                                                     color: isSelected
@@ -3518,7 +3518,7 @@ function UserInputRequestMessage({
                         type="button"
                         disabled={!isPending}
                         onClick={() => submitAnswers(true)}
-                        className="rounded-md px-3 py-1 font-medium"
+                        className="rounded-md px-3 py-1 font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-100 ease-out active:translate-y-px active:scale-[0.97] active:shadow-inner"
                         style={{
                             fontSize: "0.79em",
                             color: "var(--text-secondary)",
@@ -3535,7 +3535,7 @@ function UserInputRequestMessage({
                         type="button"
                         disabled={!isPending}
                         onClick={() => submitAnswers(false)}
-                        className="rounded-md px-3 py-1 font-medium"
+                        className="rounded-md px-3 py-1 font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-100 ease-out active:translate-y-px active:scale-[0.97] active:shadow-inner"
                         style={{
                             fontSize: "0.79em",
                             color: "#fff",
