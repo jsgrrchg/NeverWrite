@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
@@ -688,5 +688,63 @@ describe("AIChatMessageList streaming run indicator", () => {
         ).not.toBeInTheDocument();
         expect(screen.getAllByText("Implement")).toHaveLength(1);
         expect(screen.getByText("Started implementation")).toBeInTheDocument();
+    });
+
+    it("scrolls to a requested chat message row and highlights it", async () => {
+        const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            value: scrollIntoView,
+            configurable: true,
+        });
+
+        const messages: AIChatMessage[] = [
+            {
+                id: "user-1",
+                role: "user",
+                kind: "text",
+                content: "First prompt",
+                timestamp: 10,
+            },
+            {
+                id: "user-2",
+                role: "user",
+                kind: "text",
+                content: "Second prompt",
+                timestamp: 20,
+            },
+        ];
+        const onComplete = vi.fn();
+
+        try {
+            const view = renderComponent(
+                <AIChatMessageList
+                    sessionId="session-outline"
+                    messages={messages}
+                    status="idle"
+                    scrollToMessageId="user-2"
+                    onScrollToMessageComplete={onComplete}
+                />,
+            );
+
+            await waitFor(() => {
+                expect(scrollIntoView).toHaveBeenCalledWith({
+                    block: "center",
+                    behavior: "smooth",
+                });
+                expect(onComplete).toHaveBeenCalledTimes(1);
+            });
+
+            expect(
+                view.container.querySelector(
+                    '[data-chat-message-id="user-2"]',
+                ),
+            ).toHaveAttribute("data-chat-outline-active", "true");
+        } finally {
+            Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+                value: originalScrollIntoView,
+                configurable: true,
+            });
+        }
     });
 });

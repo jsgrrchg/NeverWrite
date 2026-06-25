@@ -34,6 +34,7 @@ import {
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     type AIComposerPart,
+    type AIChatMessage,
     type AIRuntimeConnectionState,
     type QueuedChatMessage,
 } from "../types";
@@ -75,6 +76,10 @@ import {
     getSessionTitle,
     getSessionTitleText,
 } from "../sessionPresentation";
+import {
+    ChatPromptOutlineMenu,
+    type ChatPromptOutlineItem,
+} from "./ChatPromptOutlineMenu";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -82,6 +87,23 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
     status: "idle",
     message: null,
 };
+const PROMPT_OUTLINE_LABEL_MAX_LENGTH = 96;
+
+function buildPromptOutlineLabel(message: AIChatMessage) {
+    const source = (message.content || message.title || "").trim();
+    const normalized = source.replace(/\s+/g, " ").trim();
+    const fallback =
+        (message.attachments?.length ?? 0) > 0
+            ? "Prompt with attachments"
+            : "Untitled prompt";
+    const label = normalized || fallback;
+
+    if (label.length <= PROMPT_OUTLINE_LABEL_MAX_LENGTH) {
+        return label;
+    }
+
+    return `${label.slice(0, PROMPT_OUTLINE_LABEL_MAX_LENGTH - 1).trimEnd()}…`;
+}
 
 function ChatContentColumn({
     children,
@@ -109,7 +131,12 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         string | null
     >(null);
     const [findOpen, setFindOpen] = useState(false);
+    const [promptOutlineOpen, setPromptOutlineOpen] = useState(false);
+    const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(
+        null,
+    );
     const rootRef = useRef<HTMLDivElement>(null);
+    const promptOutlineButtonRef = useRef<HTMLButtonElement>(null);
 
     // Resolve sessionId from the active ChatTab in this pane
     const sessionId = useEditorStore((state) => {
@@ -502,13 +529,16 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     // Close the finder when switching to another session.
     useEffect(() => {
         setFindOpen(false);
+        setPromptOutlineOpen(false);
+        setScrollToMessageId(null);
     }, [sessionId]);
 
     // The message list owns the finder UI and is unmounted while the composer is
-    // expanded, so keep the finder state aligned with that visibility boundary.
+    // expanded, so keep local message-list overlays aligned with that boundary.
     useEffect(() => {
         if (composerExpanded) {
             setFindOpen(false);
+            setPromptOutlineOpen(false);
         }
     }, [composerExpanded]);
 
@@ -548,6 +578,22 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
     const findDisabled = composerExpanded;
+    const promptOutlineDisabled = composerExpanded;
+    const hasEarlierMessages = (session?.loadedPersistedMessageStart ?? 0) > 0;
+    const promptOutlineItems = useMemo<ChatPromptOutlineItem[]>(
+        () =>
+            (session?.messages ?? [])
+                .filter(
+                    (message) =>
+                        message.role === "user" && message.kind === "text",
+                )
+                .map((message, index) => ({
+                    id: message.id,
+                    label: buildPromptOutlineLabel(message),
+                    ordinal: index + 1,
+                })),
+        [session?.messages],
+    );
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId || isSubagent) return;
@@ -672,6 +718,49 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     </button>
                 ) : null}
                 <button
+                    ref={promptOutlineButtonRef}
+                    type="button"
+                    onClick={() => {
+                        if (promptOutlineDisabled) return;
+                        setPromptOutlineOpen((value) => !value);
+                    }}
+                    disabled={promptOutlineDisabled}
+                    aria-label="User prompts"
+                    aria-pressed={promptOutlineOpen}
+                    title={
+                        promptOutlineDisabled
+                            ? "User prompts are unavailable while the composer is expanded"
+                            : "User prompts"
+                    }
+                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
+                    style={{
+                        color: promptOutlineOpen
+                            ? "var(--accent)"
+                            : "var(--text-secondary)",
+                        border: "none",
+                        backgroundColor: "transparent",
+                        opacity: promptOutlineDisabled ? 0.45 : 1,
+                    }}
+                >
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <path d="M3 3.5h8" />
+                        <path d="M3 7h8" />
+                        <path d="M3 10.5h8" />
+                        <path d="M1.5 3.5h.01" />
+                        <path d="M1.5 7h.01" />
+                        <path d="M1.5 10.5h.01" />
+                    </svg>
+                </button>
+                <button
                     type="button"
                     onClick={() => {
                         if (findDisabled) return;
@@ -712,6 +801,18 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         <path d="M9 9L12.5 12.5" />
                     </svg>
                 </button>
+                {promptOutlineOpen ? (
+                    <ChatPromptOutlineMenu
+                        anchorRef={promptOutlineButtonRef}
+                        items={promptOutlineItems}
+                        hasEarlierMessages={hasEarlierMessages}
+                        onSelect={(messageId) => {
+                            setPromptOutlineOpen(false);
+                            setScrollToMessageId(messageId);
+                        }}
+                        onClose={() => setPromptOutlineOpen(false)}
+                    />
+                ) : null}
             </div>
 
             <AIChatRuntimeBanner
@@ -742,6 +843,10 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }
                     visibleWorkCycleId={session?.visibleWorkCycleId ?? null}
                     findOpen={findOpen}
+                    scrollToMessageId={scrollToMessageId}
+                    onScrollToMessageComplete={() => {
+                        setScrollToMessageId(null);
+                    }}
                     onCloseFind={() => {
                         setFindOpen(false);
                         rootRef.current?.focus();

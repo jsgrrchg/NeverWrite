@@ -49,6 +49,8 @@ interface AIChatMessageListProps {
     isLoadingOlderMessages?: boolean;
     visibleWorkCycleId?: string | null;
     findOpen?: boolean;
+    scrollToMessageId?: string | null;
+    onScrollToMessageComplete?: () => void;
     onCloseFind?: () => void;
     chatFontSize?: number;
     chatFontFamily?: EditorFontFamily;
@@ -316,6 +318,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     isLoadingOlderMessages = false,
     visibleWorkCycleId = null,
     findOpen = false,
+    scrollToMessageId = null,
+    onScrollToMessageComplete,
     onCloseFind,
     chatFontSize = 14,
     chatFontFamily = "system",
@@ -347,6 +351,8 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         previousScrollTop: number;
     } | null>(null);
     const [showScrollButton, setShowScrollButton] = useState(false);
+    const [outlineHighlightedMessageId, setOutlineHighlightedMessageId] =
+        useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         hasSelection: boolean;
     }> | null>(null);
@@ -677,6 +683,41 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         };
     }, []);
 
+    useLayoutEffect(() => {
+        if (!scrollToMessageId) return;
+
+        const container = containerRef.current;
+        if (!container) {
+            onScrollToMessageComplete?.();
+            return;
+        }
+
+        const target = Array.from(
+            container.querySelectorAll<HTMLElement>("[data-chat-message-id]"),
+        ).find(
+            (node) => node.dataset.chatMessageId === scrollToMessageId,
+        );
+
+        if (!target) {
+            onScrollToMessageComplete?.();
+            return;
+        }
+
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        setOutlineHighlightedMessageId(scrollToMessageId);
+        onScrollToMessageComplete?.();
+    }, [onScrollToMessageComplete, scrollToMessageId, timelineRows]);
+
+    useEffect(() => {
+        if (!outlineHighlightedMessageId) return;
+
+        const timeoutId = window.setTimeout(() => {
+            setOutlineHighlightedMessageId(null);
+        }, 1200);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [outlineHighlightedMessageId]);
+
     return (
         <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">
             {findOpen && (
@@ -762,6 +803,28 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                                 data-chat-message-id={
                                     row.kind === "message"
                                         ? row.message.id
+                                        : undefined
+                                }
+                                data-chat-outline-active={
+                                    row.kind === "message" &&
+                                    row.message.id ===
+                                        outlineHighlightedMessageId
+                                        ? "true"
+                                        : undefined
+                                }
+                                style={
+                                    row.kind === "message" &&
+                                    row.message.id ===
+                                        outlineHighlightedMessageId
+                                        ? {
+                                              borderRadius: 8,
+                                              outline:
+                                                  "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+                                              background:
+                                                  "color-mix(in srgb, var(--accent) 8%, transparent)",
+                                              transition:
+                                                  "background 160ms ease, outline-color 160ms ease",
+                                          }
                                         : undefined
                                 }
                             >
