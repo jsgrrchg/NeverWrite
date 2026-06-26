@@ -34,6 +34,39 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.0] - 2026-06-26
+
+### Added
+
+- Added per-pane stacked tabs for editor panes, with an Obsidian-style sliding pane layout, persistent per-pane mode, horizontal spine rails, tab type icons, close buttons on every spine, and adaptive sizing for narrow panes.
+- Added full drag-and-drop support for stacked tabs, including reordering within a stacked pane, moving stacked columns between panes, splitting them out, and preserving stacked mode when tabs are inserted, moved, or panes are merged.
+- Added lazy mounting for stacked tab content so off-screen editor, PDF, CSV, file, chat, review, and history columns stay lightweight until they are revealed.
+- Added hover previews for wikilinks, including previews for full notes, heading sections, unresolved notes, PDFs, images, and relative assets.
+- Added a global "Note preview on hover" editor setting with a configurable hover delay, plus a keyboard shortcut for previewing the link at the caret.
+- Added chat transcript search to active agent tabs and chat history, with Cmd/Ctrl+F support, CSS-highlighted matches, match counts, previous/next navigation, Unicode-safe matching, and pane-scoped highlights.
+- Added a prompt outline menu for AI chats so long conversations can be navigated by user prompts.
+- Added a visible rename button to the chat title bar, making the existing inline rename flow discoverable without relying on double-click.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.51.0`.
+- Updated the desktop runtime to Electron `42.4`.
+- Improved AI user-input option buttons with a pressed state.
+
+### Fixed
+
+- Fixed a live preview crash that could corrupt editor layout or break mode switching after dragging a selection across rendered Markdown tables.
+- Fixed chat search behavior while the composer is expanded, when Escape is pressed, and when matches span separate message blocks.
+- Fixed wikilink hover preview flicker by prefetching note content before the tooltip opens and keeping the popover width stable.
+- Fixed wikilink previews for relative assets.
+- Fixed stacked tab scrolling so activating an already visible column no longer unexpectedly shifts neighboring columns.
+- Fixed stacked tab hover styling so stacked columns no longer receive the normal tab-strip hover background.
+- Hardened stacked tabs against narrow panes and overlay z-index conflicts.
+
+### Security
+
+- Updated Undici from `6.25.0` to `6.27.0`.
+
 ## [0.3.6] - 2026-06-19
 
 ### Added
