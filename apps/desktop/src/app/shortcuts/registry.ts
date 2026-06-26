@@ -42,6 +42,7 @@ export type ShortcutActionId =
     | "remove_heading"
     | "bold_selection"
     | "highlight_selection"
+    | "preview_link_at_caret"
     | "add_selection_to_chat"
     | "save_note";
 
@@ -380,6 +381,15 @@ const shortcutDefinitions = [
         },
     },
     {
+        id: "preview_link_at_caret",
+        label: "Preview Link at Caret",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "p", modifiers: ["meta", "alt"] }],
+            windows: [{ key: "p", modifiers: ["ctrl", "alt"] }],
+        },
+    },
+    {
         id: "add_selection_to_chat",
         label: "Add Selection to Chat",
         category: "AI",
@@ -464,6 +474,7 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "remove_heading",
     "bold_selection",
     "highlight_selection",
+    "preview_link_at_caret",
     "toggle_live_preview",
     "save_note",
     "add_selection_to_chat",

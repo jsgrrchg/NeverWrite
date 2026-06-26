@@ -22,6 +22,8 @@ export interface Settings {
     justifyText: boolean;
     livePreviewEnabled: boolean;
     inlineReviewEnabled: boolean;
+    hoverPreviewEnabled: boolean;
+    hoverPreviewDelayMs: number; // 0–2000
     pdfFilter: PdfFilterMode;
     tabSize: 2 | 4;
     editorSpellcheck: boolean;
@@ -63,6 +65,8 @@ const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const GLOBAL_SETTING_KEYS = [
     "vimModeEnabled",
     "vimRelativeLineNumbers",
+    "hoverPreviewEnabled",
+    "hoverPreviewDelayMs",
 ] as const;
 
 type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -180,6 +184,8 @@ const defaults: Settings = {
     justifyText: false,
     livePreviewEnabled: true,
     inlineReviewEnabled: true,
+    hoverPreviewEnabled: true,
+    hoverPreviewDelayMs: 300,
     pdfFilter: "none",
     tabSize: 2,
     editorSpellcheck: false,
@@ -365,7 +371,7 @@ function hasVaultScopedSettings(raw: string | null) {
     );
 }
 
-function hasStoredVimSettings(raw: string | null) {
+function hasStoredGlobalSettings(raw: string | null) {
     const state = extractPersistedState(raw);
     if (!state) return false;
 
@@ -431,6 +437,15 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             inlineReviewEnabled:
                 parsed.state.inlineReviewEnabled ??
                 defaults.inlineReviewEnabled,
+            hoverPreviewEnabled:
+                parsed.state.hoverPreviewEnabled ??
+                defaults.hoverPreviewEnabled,
+            hoverPreviewDelayMs: normalizeIntInRange(
+                parsed.state.hoverPreviewDelayMs,
+                defaults.hoverPreviewDelayMs,
+                0,
+                2000,
+            ),
             pdfFilter: normalizePdfFilterMode(parsed.state.pdfFilter),
             tabSize: normalizeTabSize(parsed.state.tabSize),
             editorSpellcheck:
@@ -552,6 +567,8 @@ function pickSettings(state: SettingsStore): Settings {
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,
+        hoverPreviewEnabled: state.hoverPreviewEnabled,
+        hoverPreviewDelayMs: state.hoverPreviewDelayMs,
         pdfFilter: state.pdfFilter,
         tabSize: state.tabSize,
         editorSpellcheck: state.editorSpellcheck,
@@ -591,6 +608,8 @@ function pickGlobalSettings(
     return {
         vimModeEnabled: settings.vimModeEnabled,
         vimRelativeLineNumbers: settings.vimRelativeLineNumbers,
+        hoverPreviewEnabled: settings.hoverPreviewEnabled,
+        hoverPreviewDelayMs: settings.hoverPreviewDelayMs,
     };
 }
 
@@ -666,12 +685,14 @@ function migrateGlobalSpellcheckToVault(vaultPath: string) {
     }
 }
 
-function migrateVaultVimSettingsToGlobal(vaultRaw: string | null) {
+function migrateVaultGlobalSettingsToGlobal(vaultRaw: string | null) {
     try {
-        if (hasStoredVimSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))) {
+        if (
+            hasStoredGlobalSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))
+        ) {
             return;
         }
-        if (!hasStoredVimSettings(vaultRaw)) return;
+        if (!hasStoredGlobalSettings(vaultRaw)) return;
 
         const vaultSettings = extractSettingsFromStorage(vaultRaw);
         if (!vaultSettings) return;
@@ -689,7 +710,7 @@ function loadSettings(vaultPath: string | null): Settings {
         }
         const raw = safeStorageGetItem(getStorageKey(vaultPath));
         if (vaultPath) {
-            migrateVaultVimSettingsToGlobal(raw);
+            migrateVaultGlobalSettingsToGlobal(raw);
         }
         const settings = extractSettingsFromStorage(raw) ?? defaults;
         return vaultPath ? mergeGlobalSettings(settings) : settings;

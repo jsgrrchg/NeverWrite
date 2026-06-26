@@ -41,7 +41,8 @@ export async function navigateWikilink(target: string) {
                 .getState()
                 .entries.find(
                     (candidate) =>
-                        candidate.kind === "file" &&
+                        (candidate.kind === "file" ||
+                            candidate.kind === "pdf") &&
                         candidate.relative_path === resource.relativePath,
                 ) ?? null;
         if (entry) {
@@ -67,7 +68,8 @@ export async function openWikilinkInNewTab(target: string) {
                 .getState()
                 .entries.find(
                     (candidate) =>
-                        candidate.kind === "file" &&
+                        (candidate.kind === "file" ||
+                            candidate.kind === "pdf") &&
                         candidate.relative_path === resource.relativePath,
                 ) ?? null;
         if (entry) {

@@ -80,6 +80,36 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(true);
     });
 
+    it("persists hover preview settings globally across vaults", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/hover-one" });
+
+        useSettingsStore.getState().setSetting("hoverPreviewEnabled", false);
+        useSettingsStore.getState().setSetting("hoverPreviewDelayMs", 500);
+
+        expect(useSettingsStore.getState().hoverPreviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().hoverPreviewDelayMs).toBe(500);
+        expect(
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? ""),
+        ).toMatchObject({
+            state: {
+                hoverPreviewEnabled: false,
+                hoverPreviewDelayMs: 500,
+            },
+        });
+        expect(
+            JSON.parse(
+                localStorage.getItem(
+                    "neverwrite:settings:/vaults/hover-one",
+                ) ?? "",
+            ).state,
+        ).not.toHaveProperty("hoverPreviewEnabled");
+
+        useVaultStore.setState({ vaultPath: "/vaults/hover-two" });
+
+        expect(useSettingsStore.getState().hoverPreviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().hoverPreviewDelayMs).toBe(500);
+    });
+
     it("persists settings per vault", () => {
         useVaultStore.setState({ vaultPath: "/vaults/devtools" });
 

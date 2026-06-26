@@ -1105,6 +1105,8 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         editorActiveLineHighlight,
         justifyText,
         tabSize,
+        hoverPreviewEnabled,
+        hoverPreviewDelayMs,
         vimModeEnabled,
         vimRelativeLineNumbers,
         setSetting,
@@ -1148,6 +1150,23 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             ["Tab size", "Number of spaces inserted when pressing Tab.", 2, 4],
         ],
     );
+    const showPreview = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Preview",
+        [
+            [
+                "Note preview on hover",
+                "Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference applies to all vaults.",
+                "wikilink",
+                "popover",
+                "tooltip",
+            ],
+            [
+                "Hover delay",
+                "Time the pointer must rest on a wikilink before the preview opens, in milliseconds.",
+            ],
+        ],
+    );
     const showVim = sectionHasSettingsSearchMatches(searchQuery, "Vim", [
         [
             "Vim key bindings",
@@ -1163,7 +1182,13 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         ["Text width", "Maximum width of the editor content, in pixels."],
     ]);
 
-    if (!showTypography && !showFormatting && !showVim && !showLayout) {
+    if (
+        !showTypography &&
+        !showFormatting &&
+        !showPreview &&
+        !showVim &&
+        !showLayout
+    ) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1294,6 +1319,39 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                             { value: 4, label: "4" },
                         ]}
                         onChange={(v) => setSetting("tabSize", v as 2 | 4)}
+                    />
+                }
+            />
+
+            {showPreview ? <SectionLabel>Preview</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Preview"
+                label="Note preview on hover"
+                description="Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference applies to all vaults."
+                keywords={["wikilink", "popover", "tooltip"]}
+                control={
+                    <Toggle
+                        value={hoverPreviewEnabled}
+                        onChange={(v) => setSetting("hoverPreviewEnabled", v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Preview"
+                label="Hover delay"
+                description="Time the pointer must rest on a wikilink before the preview opens, in milliseconds."
+                control={
+                    <SliderField
+                        value={hoverPreviewDelayMs}
+                        min={100}
+                        max={1500}
+                        step={50}
+                        onChange={(v) =>
+                            setSetting("hoverPreviewDelayMs", v)
+                        }
+                        formatValue={(value) => `${value}ms`}
                     />
                 }
             />
@@ -4354,6 +4412,9 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Line wrapping",
         "Justify text",
         "Tab size",
+        "Preview",
+        "Note preview on hover",
+        "Hover delay",
         "Layout",
         "Text width",
     ],

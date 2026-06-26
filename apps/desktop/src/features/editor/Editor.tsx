@@ -63,6 +63,7 @@ import {
 // Re-export for existing importers (e.g. UnifiedBar).
 export { REQUEST_CLOSE_ACTIVE_TAB_EVENT };
 import { wikilinkExtension } from "./extensions/wikilinks";
+import { showWikilinkPreviewAtCaret } from "./extensions/wikilinkHoverPreview";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
 import {
@@ -106,6 +107,7 @@ import {
     baseTheme,
     syntaxCompartment,
     livePreviewCompartment,
+    hoverPreviewCompartment,
     alignmentCompartment,
     wrappingCompartment,
     activeLineCompartment,
@@ -117,6 +119,7 @@ import {
     lineNumberCompartment,
     getSyntaxExtension,
     getLivePreviewExtension,
+    getWikilinkHoverPreviewExtension,
     getAlignmentExtension,
     getWrappingExtension,
     getActiveLineExtension,
@@ -488,6 +491,12 @@ export function Editor({
     const justifyText = useSettingsStore((s) => s.justifyText);
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
+    const hoverPreviewEnabled = useSettingsStore(
+        (s) => s.hoverPreviewEnabled,
+    );
+    const hoverPreviewDelayMs = useSettingsStore(
+        (s) => s.hoverPreviewDelayMs,
+    );
     const tabSize = useSettingsStore((s) => s.tabSize);
     const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled);
     const vimRelativeLineNumbers = useSettingsStore(
@@ -2583,6 +2592,13 @@ export function Editor({
                                 return true;
                             },
                         },
+                        {
+                            key:
+                                getCodeMirrorShortcut(
+                                    "preview_link_at_caret",
+                                ) ?? "Mod-Alt-p",
+                            run: showWikilinkPreviewAtCaret,
+                        },
                         ...defaultKeymap,
                         ...historyKeymap,
                         ...searchKeymap,
@@ -2591,6 +2607,12 @@ export function Editor({
                         resolveWikilinksBatch,
                         () => activeTabRef.current?.noteId ?? null,
                         navigateWikilink,
+                    ),
+                    hoverPreviewCompartment.of(
+                        getWikilinkHoverPreviewExtension(
+                            useSettingsStore.getState().hoverPreviewEnabled,
+                            useSettingsStore.getState().hoverPreviewDelayMs,
+                        ),
                     ),
                     urlLinksExtension,
                     imagePasteDropExtension(),
@@ -3378,6 +3400,18 @@ export function Editor({
         scheduleMergeViewSync,
         vaultPath,
     ]);
+
+    // Reconfigure the wikilink hover preview when its toggle or delay changes.
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: hoverPreviewCompartment.reconfigure(
+                getWikilinkHoverPreviewExtension(
+                    hoverPreviewEnabled,
+                    hoverPreviewDelayMs,
+                ),
+            ),
+        });
+    }, [hoverPreviewEnabled, hoverPreviewDelayMs]);
 
     useEffect(() => {
         runMergeViewSync();
