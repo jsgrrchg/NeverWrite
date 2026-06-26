@@ -92,9 +92,10 @@ function FileTabStripButton({
 
 interface FileTextTabViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function FileTextTabView({ paneId }: FileTextTabViewProps) {
+export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const syntaxCompartmentRef = useRef(new Compartment());
@@ -165,6 +166,7 @@ export function FileTextTabView({ paneId }: FileTextTabViewProps) {
         flushCurrentSave,
     } = useEditableFileResource({
         paneId,
+        tabId,
         getCurrentContent,
         applyIncomingContent: replaceEditorDocument,
         autosaveDelayMs: editorAutosaveDelayMs,

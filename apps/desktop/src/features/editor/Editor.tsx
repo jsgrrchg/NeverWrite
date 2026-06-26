@@ -231,6 +231,13 @@ interface EditorProps {
     paneId?: string;
     emptyStateMessage?: string;
     isVisible?: boolean;
+    /**
+     * When set, this Editor instance binds to a specific tab instead of the
+     * pane's active tab. Used by stacked-tabs columns, where several note
+     * editors are mounted side-by-side in the same pane. When undefined the
+     * behavior is identical to before (renders the pane's active tab).
+     */
+    tabId?: string;
 }
 
 const MERGE_SYNC_FOCUS_DEBOUNCE_MS = 120;
@@ -312,6 +319,7 @@ export function Editor({
     paneId,
     emptyStateMessage = "Open a note from the left panel",
     isVisible = true,
+    tabId: boundTabId,
 }: EditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -456,12 +464,20 @@ export function Editor({
     const paneState = useEditorStore(
         useShallow((state) => selectEditorPaneState(state, paneId)),
     );
-    const activeTabId = paneState.activeTabId;
+    // The tab this instance renders: an explicit bound tab (stacked columns)
+    // or the pane's active tab (classic single-editor pane).
+    const activeTabId = boundTabId ?? paneState.activeTabId;
     const paneTabs = paneState.tabs;
+    // Whether this instance owns the pane's active tab. In default mode this is
+    // always true; in stacked mode only the active column owns pane-level
+    // concerns (keyboard, save/close-active commands, reveal targeting).
+    const isPaneActiveInstance =
+        boundTabId === undefined || boundTabId === paneState.activeTabId;
     const isPaneFocused = useEditorStore((state) =>
         paneId ? selectFocusedPaneId(state) === paneId : true,
     );
-    const isInteractionActive = isPaneFocused && isVisible;
+    const isInteractionActive =
+        isPaneFocused && isVisible && isPaneActiveInstance;
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const pendingSelectionReveal = useEditorStore(
@@ -527,9 +543,10 @@ export function Editor({
     const activeTabInfo = useEditorStore(
         useShallow((state) => {
             const pane = selectEditorPaneState(state, paneId);
+            const resolvedTabId = boundTabId ?? pane.activeTabId;
             const tab =
                 pane.tabs.find(
-                    (candidate) => candidate.id === pane.activeTabId,
+                    (candidate) => candidate.id === resolvedTabId,
                 ) ?? null;
             if (!tab || !isEditableNoteTab(tab)) return null;
             return {
@@ -3484,7 +3501,7 @@ export function Editor({
             if (!view) return;
             const pane = selectEditorPaneState(state, paneId);
             const previousPane = selectEditorPaneState(prev, paneId);
-            const tabId = pane.activeTabId;
+            const tabId = boundTabId ?? pane.activeTabId;
             if (!tabId) return;
 
             const tab = pane.tabs.find((candidate) => candidate.id === tabId);
@@ -3720,6 +3737,7 @@ export function Editor({
         });
         return unsub;
     }, [
+        boundTabId,
         clearPendingLocalOpIfCurrent,
         createEditorState,
         getPaneSnapshot,

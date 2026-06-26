@@ -12,6 +12,7 @@ import {
     useEditorStore,
     isFileTab,
     selectEditorPaneActiveTab,
+    selectPaneTab,
     type FileTab,
 } from "../../app/store/editorStore";
 import {
@@ -36,11 +37,14 @@ function clampScrollOffset(offset: number) {
 
 interface FileTabViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function FileTabView({ paneId }: FileTabViewProps) {
+export function FileTabView({ paneId, tabId }: FileTabViewProps) {
     const tab = useEditorStore((state) => {
-        const current = selectEditorPaneActiveTab(state, paneId);
+        const current = tabId
+            ? selectPaneTab(state, paneId, tabId)
+            : selectEditorPaneActiveTab(state, paneId);
         return current && isFileTab(current) ? current : null;
     });
 
@@ -60,7 +64,7 @@ export function FileTabView({ paneId }: FileTabViewProps) {
     }
 
     if (tab.viewer === "csv") {
-        return <CsvFileTabView key={tab.id} paneId={paneId} />;
+        return <CsvFileTabView key={tab.id} paneId={paneId} tabId={tabId} />;
     }
 
     if (tab.viewer === "html") {
@@ -68,7 +72,7 @@ export function FileTabView({ paneId }: FileTabViewProps) {
     }
 
     if (fileViewerNeedsTextContent(tab.viewer)) {
-        return <FileTextTabView key={tab.id} paneId={paneId} />;
+        return <FileTextTabView key={tab.id} paneId={paneId} tabId={tabId} />;
     }
 
     return (

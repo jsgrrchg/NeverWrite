@@ -48,6 +48,11 @@ function normalizeReloadText(text: string) {
 
 interface UseEditableFileResourceOptions {
     paneId?: string;
+    /**
+     * When set, bind to a specific tab instead of the pane's active tab.
+     * Used by stacked-tabs columns. Undefined preserves the active-tab behavior.
+     */
+    tabId?: string;
     getCurrentContent: () => string | null;
     applyIncomingContent: (nextContent: string) => void;
     acceptTab?: (tab: FileTab) => boolean;
@@ -58,6 +63,7 @@ interface UseEditableFileResourceOptions {
 // autosave, reload and external-conflict behavior without diverging.
 export function useEditableFileResource({
     paneId,
+    tabId: boundTabId,
     getCurrentContent,
     applyIncomingContent,
     acceptTab = defaultAcceptEditableFileTab,
@@ -75,7 +81,7 @@ export function useEditableFileResource({
     const lastVaultPathRef = useRef<string | null>(vaultPath);
 
     const tab = useEditorStore((state) =>
-        getActiveEditableFileTab(state, paneId, acceptTab),
+        getActiveEditableFileTab(state, paneId, acceptTab, boundTabId),
     );
     const hasExternalConflict = useEditorStore((state) => {
         const relativePath = tab?.relativePath;
@@ -312,7 +318,7 @@ export function useEditableFileResource({
         const unsubscribe = useEditorStore.subscribe((state, prev) => {
             const paneState = selectEditorPaneState(state, paneId);
             const previousPaneState = selectEditorPaneState(prev, paneId);
-            const activeTabId = paneState.activeTabId;
+            const activeTabId = boundTabId ?? paneState.activeTabId;
             if (!activeTabId) return;
 
             const currentTab = paneState.tabs.find(
@@ -615,7 +621,14 @@ export function useEditableFileResource({
         });
 
         return unsubscribe;
-    }, [acceptTab, applyIncomingContent, getCurrentContent, paneId, vaultPath]);
+    }, [
+        acceptTab,
+        applyIncomingContent,
+        boundTabId,
+        getCurrentContent,
+        paneId,
+        vaultPath,
+    ]);
 
     useEffect(() => {
         return () => {
@@ -684,10 +697,12 @@ function getActiveEditableFileTab(
     state: ReturnType<typeof useEditorStore.getState>,
     paneId: string | undefined,
     acceptTab: (tab: FileTab) => boolean,
+    boundTabId?: string,
 ) {
     const pane = selectEditorPaneState(state, paneId);
+    const resolvedTabId = boundTabId ?? pane.activeTabId;
     const current = pane.tabs.find(
-        (candidate) => candidate.id === pane.activeTabId,
+        (candidate) => candidate.id === resolvedTabId,
     );
 
     return current && isFileTab(current) && acceptTab(current) ? current : null;

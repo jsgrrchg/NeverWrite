@@ -19,6 +19,7 @@ import {
     useEditorStore,
     isPdfTab,
     selectEditorPaneActiveTab,
+    selectPaneTab,
     type PdfTab,
 } from "../../app/store/editorStore";
 import {
@@ -306,11 +307,14 @@ function clampContinuousWindow(
 
 interface PdfTabViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function PdfTabView({ paneId }: PdfTabViewProps) {
+export function PdfTabView({ paneId, tabId }: PdfTabViewProps) {
     const tab = useEditorStore((s) => {
-        const current = selectEditorPaneActiveTab(s, paneId);
+        const current = tabId
+            ? selectPaneTab(s, paneId, tabId)
+            : selectEditorPaneActiveTab(s, paneId);
         return current && isPdfTab(current) ? current : null;
     });
 
