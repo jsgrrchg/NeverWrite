@@ -1104,13 +1104,14 @@ function getSingletonWorkspaceTabKind(
 
 function insertNormalizedTab(
     state: Pick<
-        EditorWorkspaceState,
+        EditorPaneState,
         | "tabs"
         | "pinnedTabIds"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
         | "tabNavigationIndex"
+        | "tabDisplayMode"
     >,
     incoming: Tab,
     index?: number,
@@ -1131,6 +1132,7 @@ function insertNormalizedTab(
                       );
             return {
                 tabs,
+                tabDisplayMode: state.tabDisplayMode,
                 pinnedTabIds: state.pinnedTabIds.filter(
                     (tabId) => tabId !== incoming.id,
                 ),
@@ -1154,6 +1156,7 @@ function insertNormalizedTab(
     tabs.splice(boundedIndex, 0, incoming);
     return {
         tabs,
+        tabDisplayMode: state.tabDisplayMode,
         pinnedTabIds: state.pinnedTabIds.filter(
             (tabId) => tabId !== incoming.id,
         ),
@@ -1163,13 +1166,14 @@ function insertNormalizedTab(
 
 function removeTabFromWorkspaceState(
     state: Pick<
-        EditorWorkspaceState,
+        EditorPaneState,
         | "tabs"
         | "pinnedTabIds"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
         | "tabNavigationIndex"
+        | "tabDisplayMode"
     >,
     tabId: string,
 ) {
@@ -1210,6 +1214,8 @@ function removeTabFromWorkspaceState(
             );
             return {
                 tabs,
+                tabDisplayMode: state.tabDisplayMode,
+                pinnedTabIds: state.pinnedTabIds.filter((id) => id !== tabId),
                 activeTabId,
                 activationHistory,
                 tabNavigationHistory: navigation.history,
@@ -1223,6 +1229,7 @@ function removeTabFromWorkspaceState(
 
     return {
         tabs,
+        tabDisplayMode: state.tabDisplayMode,
         pinnedTabIds: state.pinnedTabIds.filter((id) => id !== tabId),
         activeTabId,
         activationHistory,
@@ -1264,6 +1271,7 @@ function mergePaneStates(
         activationHistory,
         tabNavigationHistory,
         tabNavigationIndex,
+        tabDisplayMode: targetPane.tabDisplayMode,
     });
 }
 
@@ -2049,7 +2057,9 @@ function mutatePaneWorkspace(
         | "tabNavigationIndex"
     >,
     paneId: string,
-    mutate: (pane: EditorPaneState) => Partial<PaneWorkspaceState>,
+    mutate: (
+        pane: EditorPaneState,
+    ) => Partial<PaneWorkspaceState> & { tabDisplayMode?: TabDisplayMode },
     options?: {
         focusedPaneId?: string | null;
     },
@@ -2085,7 +2095,9 @@ function mutateFocusedPaneWorkspace(
         | "tabNavigationHistory"
         | "tabNavigationIndex"
     >,
-    mutate: (pane: EditorPaneState) => Partial<PaneWorkspaceState>,
+    mutate: (
+        pane: EditorPaneState,
+    ) => Partial<PaneWorkspaceState> & { tabDisplayMode?: TabDisplayMode },
     options?: {
         preserveFocus?: boolean;
     },

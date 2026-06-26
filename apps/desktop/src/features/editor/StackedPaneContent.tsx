@@ -5,6 +5,7 @@ import React, {
     useRef,
     useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
     useEditorStore,
     selectEditorPaneState,
@@ -22,6 +23,7 @@ import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorksp
 import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { resolveEditorPanelView } from "./editorPanelView";
+import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 
 const LazyExcalidrawTabView = React.lazy(() =>
     import("../maps/ExcalidrawTabView").then((m) => ({
@@ -80,6 +82,10 @@ export function StackedPaneContent({
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
     const switchTab = useEditorStore((state) => state.switchTab);
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
+    const moveTabToPane = useEditorStore((state) => state.moveTabToPane);
+    const moveTabToPaneDropTarget = useEditorStore(
+        (state) => state.moveTabToPaneDropTarget,
+    );
 
     const tabs = pane.tabs;
     const tabCount = tabs.length;
@@ -188,29 +194,66 @@ export function StackedPaneContent({
         recomputeStack();
     }, [activeIndex, tabCount, recomputeStack]);
 
-    // Column reorder via spine drag. MVP scope: within the same pane only.
-    const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
-    const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
-    const handleColumnDrop = useCallback(
-        (targetTabId: string) => {
-            const sourceTabId = draggingTabId;
-            setDraggingTabId(null);
-            setDragOverTabId(null);
-            if (!paneId || !sourceTabId || sourceTabId === targetTabId) {
-                return;
-            }
-            const currentTabs = pane.tabs;
-            const fromIndex = currentTabs.findIndex(
-                (t) => t.id === sourceTabId,
-            );
-            const toIndex = currentTabs.findIndex((t) => t.id === targetTabId);
-            if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) {
-                return;
-            }
-            reorderPaneTabs(paneId, fromIndex, toIndex);
+    // Pointer-based drag shared with the normal tab strip: lets a column be
+    // reordered within the pane AND dragged out to other panes / new splits,
+    // using the same drop-target resolution as the classic strip.
+    const {
+        dragPreviewNodeRef,
+        dragPreviewTabId,
+        draggingTabId,
+        tabStripRef,
+        registerTabNode,
+        handlePointerDown,
+        handlePointerMove,
+        handlePointerUp,
+        handleLostPointerCapture,
+        consumeSuppressedClick,
+    } = useWorkspaceTabDrag({
+        tabs,
+        sourcePaneId: paneId,
+        onCommitReorder: (fromIndex, toIndex) => {
+            if (paneId) reorderPaneTabs(paneId, fromIndex, toIndex);
         },
-        [draggingTabId, pane.tabs, paneId, reorderPaneTabs],
+        onCommitWorkspaceDrop: (tabId, target) => {
+            if (target.type === "strip") {
+                moveTabToPane(tabId, target.paneId, target.index);
+                return;
+            }
+            if (target.type === "pane-center") {
+                if (target.paneId !== paneId) {
+                    moveTabToPane(tabId, target.paneId);
+                }
+                return;
+            }
+            moveTabToPaneDropTarget(tabId, target.paneId, target.direction);
+        },
+        onActivate: switchTab,
+        liveReorder: false,
+    });
+
+    // The horizontal column row is both the stack scroll container and the drag
+    // hook's geometry container, so both refs point at the same node.
+    const setScrollContainer = useCallback(
+        (node: HTMLDivElement | null) => {
+            scrollRef.current = node;
+            (tabStripRef as React.MutableRefObject<HTMLDivElement | null>).current =
+                node;
+        },
+        [tabStripRef],
     );
+
+    const handleSpineClick = useCallback(
+        (tabId: string) => {
+            if (consumeSuppressedClick(tabId)) return;
+            switchTab(tabId);
+        },
+        [consumeSuppressedClick, switchTab],
+    );
+
+    const dragPreviewTab =
+        dragPreviewTabId === null
+            ? null
+            : (tabs.find((tab) => tab.id === dragPreviewTabId) ?? null);
 
     if (tabCount === 0) {
         if (paneId) {
@@ -226,10 +269,14 @@ export function StackedPaneContent({
 
     return (
         <div
-            ref={scrollRef}
+            ref={setScrollContainer}
             role="tablist"
             aria-orientation="horizontal"
             aria-label="Stacked tabs"
+            // data-pane-tab-strip lets the shared drop resolver treat this
+            // column row as a drop target, so tabs from other panes land here
+            // (inserted at a column position) just like the classic tab strip.
+            data-pane-tab-strip={paneId}
             // isolate: keep the sticky spine rails' z-index contained so they
             // can't paint over sibling overlays (e.g. the right peek panel).
             className="isolate relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
@@ -256,6 +303,7 @@ export function StackedPaneContent({
                         key={tab.id}
                         tab={tab}
                         paneId={paneId}
+                        index={index}
                         isActive={isActive}
                         isPaneFocused={isPaneFocused}
                         isContent={isContent}
@@ -264,23 +312,13 @@ export function StackedPaneContent({
                         shouldMount={isActive || isContent}
                         emptyStateMessage={emptyStateMessage}
                         isDragging={draggingTabId === tab.id}
-                        isDragOver={
-                            dragOverTabId === tab.id &&
-                            draggingTabId !== null &&
-                            draggingTabId !== tab.id
-                        }
+                        registerTabNode={registerTabNode}
+                        onSpineClick={() => handleSpineClick(tab.id)}
                         onActivate={() => switchTab(tab.id)}
-                        onDragStart={() => setDraggingTabId(tab.id)}
-                        onDragEnter={() => {
-                            if (draggingTabId && draggingTabId !== tab.id) {
-                                setDragOverTabId(tab.id);
-                            }
-                        }}
-                        onDrop={() => handleColumnDrop(tab.id)}
-                        onDragEnd={() => {
-                            setDraggingTabId(null);
-                            setDragOverTabId(null);
-                        }}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onLostPointerCapture={handleLostPointerCapture}
                     />
                 );
             })}
@@ -295,6 +333,47 @@ export function StackedPaneContent({
                     />
                 ))}
             </SpineRail>
+
+            {dragPreviewTab
+                ? createPortal(
+                      <div
+                          ref={dragPreviewNodeRef}
+                          data-pane-tab-drag-preview="true"
+                          style={{
+                              position: "fixed",
+                              left: 0,
+                              top: 0,
+                              maxWidth: 240,
+                              height: 28,
+                              padding: "0 10px",
+                              display: "flex",
+                              alignItems: "center",
+                              borderRadius: 4,
+                              border: "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
+                              background: "var(--bg-primary)",
+                              color: "var(--text-primary)",
+                              boxShadow:
+                                  "inset 0 -2px 0 0 var(--accent), 0 10px 24px rgba(15, 23, 42, 0.15)",
+                              pointerEvents: "none",
+                              zIndex: 9999,
+                              willChange: "transform",
+                          }}
+                      >
+                          <span
+                              style={{
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                              }}
+                          >
+                              {dragPreviewTab.title}
+                          </span>
+                      </div>,
+                      document.body,
+                  )
+                : null}
         </div>
     );
 }
@@ -371,9 +450,17 @@ function SpineButton({
     );
 }
 
+interface DragCoords {
+    clientX: number;
+    clientY: number;
+    screenX: number;
+    screenY: number;
+}
+
 interface StackedColumnProps {
     tab: Tab;
     paneId?: string;
+    index: number;
     isActive: boolean;
     isPaneFocused: boolean;
     isContent: boolean;
@@ -382,17 +469,26 @@ interface StackedColumnProps {
     shouldMount: boolean;
     emptyStateMessage?: string;
     isDragging: boolean;
-    isDragOver: boolean;
+    registerTabNode: (tabId: string, node: HTMLDivElement | null) => void;
+    onSpineClick: () => void;
     onActivate: () => void;
-    onDragStart: () => void;
-    onDragEnter: () => void;
-    onDrop: () => void;
-    onDragEnd: () => void;
+    onPointerDown: (
+        tabId: string,
+        index: number,
+        event: React.PointerEvent<HTMLDivElement>,
+    ) => void;
+    onPointerMove: (
+        tabId: string,
+        event: React.PointerEvent<HTMLDivElement>,
+    ) => void;
+    onPointerUp: (pointerId?: number, coords?: DragCoords) => void;
+    onLostPointerCapture: (pointerId: number) => void;
 }
 
 function StackedColumn({
     tab,
     paneId,
+    index,
     isActive,
     isPaneFocused,
     isContent,
@@ -401,28 +497,25 @@ function StackedColumn({
     shouldMount,
     emptyStateMessage,
     isDragging,
-    isDragOver,
+    registerTabNode,
+    onSpineClick,
     onActivate,
-    onDragStart,
-    onDragEnter,
-    onDrop,
-    onDragEnd,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onLostPointerCapture,
 }: StackedColumnProps) {
-    const dropTargetProps = {
-        onDragEnter,
-        onDragOver: (event: React.DragEvent) => {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-        },
-        onDrop: (event: React.DragEvent) => {
-            event.preventDefault();
-            onDrop();
-        },
-    };
+    const tabId = tab.id;
+    const setColumnRef = useCallback(
+        (node: HTMLDivElement | null) => registerTabNode(tabId, node),
+        [registerTabNode, tabId],
+    );
 
     return (
         <div
-            data-stacked-column-id={tab.id}
+            ref={setColumnRef}
+            data-stacked-column-id={tabId}
+            data-pane-tab-id={tabId}
             data-stacked-column-active={isActive ? "true" : undefined}
             // No overflow:hidden here — it would become the sticky containing
             // block and stop the in-flow spine from pinning. Content clipping is
@@ -435,30 +528,43 @@ function StackedColumn({
                 borderRight: "1px solid var(--border)",
                 opacity: isDragging ? 0.5 : 1,
             }}
-            onMouseDownCapture={() => {
-                if (!isActive) onActivate();
-            }}
-            {...dropTargetProps}
         >
             {/* The in-flow spine only renders while the panel is content; once it
                 is fully scrolled under a rail, the rail's duplicate represents
                 it. It is sticky so the leading panel's spine stays pinned at the
                 rail edge as the content scrolls (this is what keeps the very
-                first panel from sliding away when no rail covers it yet). */}
+                first panel from sliding away when no rail covers it yet). It is
+                also the drag handle: dragging it reorders within the pane or
+                moves the column to another pane. */}
             {isContent && (
                 <StackedColumnSpine
                     title={tab.title}
                     isActive={isActive}
-                    isDragOver={isDragOver}
                     stickyLeft={leftStackWidth}
-                    onClick={onActivate}
-                    onDragStart={onDragStart}
-                    onDragEnd={onDragEnd}
+                    onClick={onSpineClick}
+                    onPointerDown={(event) =>
+                        onPointerDown(tabId, index, event)
+                    }
+                    onPointerMove={(event) => onPointerMove(tabId, event)}
+                    onPointerUp={(event) =>
+                        onPointerUp(event.pointerId, {
+                            clientX: event.clientX,
+                            clientY: event.clientY,
+                            screenX: event.screenX,
+                            screenY: event.screenY,
+                        })
+                    }
+                    onLostPointerCapture={(event) =>
+                        onLostPointerCapture(event.pointerId)
+                    }
                 />
             )}
             <div
                 className="absolute inset-y-0 right-0 overflow-hidden"
                 style={{ left: SPINE_WIDTH }}
+                onMouseDownCapture={() => {
+                    if (!isActive) onActivate();
+                }}
             >
                 {shouldMount ? (
                     <StackedColumnBody
@@ -476,39 +582,48 @@ function StackedColumn({
     );
 }
 
-// The canonical, in-flow spine for a panel (role=tab). When the panel scrolls
-// under a rail this spine is covered by the rail's opaque duplicate.
+// The canonical, in-flow spine for a panel (role=tab) and the column's drag
+// handle. When the panel scrolls under a rail this spine is covered by the
+// rail's opaque duplicate. Rendered as a div (not a button) so its pointer
+// events match the shared drag hook's element type.
 function StackedColumnSpine({
     title,
     isActive,
-    isDragOver,
     stickyLeft,
     onClick,
-    onDragStart,
-    onDragEnd,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onLostPointerCapture,
 }: {
     title: string;
     isActive: boolean;
-    isDragOver: boolean;
     stickyLeft: number;
     onClick: () => void;
-    onDragStart: () => void;
-    onDragEnd: () => void;
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
+    onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
+    onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
+    onLostPointerCapture: (event: React.PointerEvent<HTMLDivElement>) => void;
 }) {
     return (
-        <button
-            type="button"
+        <div
             role="tab"
+            tabIndex={0}
             aria-selected={isActive}
-            onClick={onClick}
-            draggable
-            onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                onDragStart();
-            }}
-            onDragEnd={onDragEnd}
             title={title}
-            className="z-20 flex shrink-0 items-center justify-center py-3 self-stretch"
+            onClick={onClick}
+            onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onClick();
+                }
+            }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onLostPointerCapture={onLostPointerCapture}
+            className="no-drag z-20 flex shrink-0 items-center justify-center py-3 self-stretch"
             style={{
                 position: "sticky",
                 left: stickyLeft,
@@ -517,9 +632,7 @@ function StackedColumnSpine({
                 background: isActive
                     ? "var(--bg-primary)"
                     : "var(--bg-secondary)",
-                borderRight: isDragOver
-                    ? "2px solid var(--accent)"
-                    : "1px solid var(--border)",
+                borderRight: "1px solid var(--border)",
                 boxShadow: isActive ? "inset 2px 0 0 var(--accent)" : "none",
                 color: isActive
                     ? "var(--text-primary)"
@@ -536,7 +649,7 @@ function StackedColumnSpine({
             >
                 {title}
             </span>
-        </button>
+        </div>
     );
 }
 
