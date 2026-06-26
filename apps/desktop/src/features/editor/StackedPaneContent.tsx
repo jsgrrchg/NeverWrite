@@ -201,6 +201,7 @@ export function StackedPaneContent({
         dragPreviewNodeRef,
         dragPreviewTabId,
         draggingTabId,
+        projectedDropIndex,
         tabStripRef,
         registerTabNode,
         handlePointerDown,
@@ -254,6 +255,44 @@ export function StackedPaneContent({
         dragPreviewTabId === null
             ? null
             : (tabs.find((tab) => tab.id === dragPreviewTabId) ?? null);
+
+    // Insertion indicator for reordering columns within this pane. (Dragging a
+    // column to ANOTHER pane is previewed by the global cross-pane overlay.)
+    const draggingOriginalIndex = draggingTabId
+        ? tabs.findIndex((tab) => tab.id === draggingTabId)
+        : -1;
+    const insertionIndicatorIndex =
+        draggingOriginalIndex === -1 || projectedDropIndex == null
+            ? null
+            : projectedDropIndex > draggingOriginalIndex
+              ? projectedDropIndex + 1
+              : projectedDropIndex;
+    const insertionIndicatorRef = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => {
+        const indicator = insertionIndicatorRef.current;
+        if (!indicator) return;
+        const strip = scrollRef.current;
+        if (insertionIndicatorIndex === null || !strip) {
+            indicator.style.display = "none";
+            return;
+        }
+        const columnNodes = Array.from(
+            strip.querySelectorAll<HTMLElement>("[data-pane-tab-id]"),
+        );
+        if (columnNodes.length === 0) {
+            indicator.style.display = "none";
+            return;
+        }
+        let left: number;
+        if (insertionIndicatorIndex < columnNodes.length) {
+            left = columnNodes[insertionIndicatorIndex].offsetLeft;
+        } else {
+            const last = columnNodes[columnNodes.length - 1];
+            left = last.offsetLeft + last.offsetWidth;
+        }
+        indicator.style.display = "";
+        indicator.style.transform = `translateX(${left - 1}px)`;
+    }, [insertionIndicatorIndex]);
 
     if (tabCount === 0) {
         if (paneId) {
@@ -333,6 +372,27 @@ export function StackedPaneContent({
                     />
                 ))}
             </SpineRail>
+
+            {/* Insertion indicator for in-pane column reordering. Absolutely
+                positioned in content coordinates so it scrolls with the columns;
+                the effect above sets its transform and visibility. */}
+            <div
+                ref={insertionIndicatorRef}
+                aria-hidden="true"
+                style={{
+                    position: "absolute",
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    width: 2,
+                    background: "var(--accent)",
+                    boxShadow:
+                        "0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent)",
+                    pointerEvents: "none",
+                    zIndex: 60,
+                    display: "none",
+                }}
+            />
 
             {dragPreviewTab
                 ? createPortal(
