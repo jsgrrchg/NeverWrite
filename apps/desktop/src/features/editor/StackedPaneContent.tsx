@@ -4,6 +4,7 @@ import React, {
     useLayoutEffect,
     useRef,
     useState,
+    type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { confirm } from "@neverwrite/runtime";
@@ -30,6 +31,7 @@ import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorksp
 import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { resolveEditorPanelView } from "./editorPanelView";
+import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
 
 const LazyExcalidrawTabView = React.lazy(() =>
@@ -87,6 +89,7 @@ export function StackedPaneContent({
 }: StackedPaneContentProps) {
     const pane = useEditorStore((state) => selectEditorPaneState(state, paneId));
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
+    const chatSessionsById = useChatStore((state) => state.sessionsById);
     const switchTab = useEditorStore((state) => state.switchTab);
     const closeTab = useEditorStore((state) => state.closeTab);
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
@@ -361,6 +364,10 @@ export function StackedPaneContent({
                         key={tab.id}
                         tab={tab}
                         isActive={tab.id === activeTabId}
+                        icon={renderEditorTabLeadingIcon(
+                            tab,
+                            chatSessionsById,
+                        )}
                         onClick={() => switchTab(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
                     />
@@ -385,6 +392,10 @@ export function StackedPaneContent({
                         shouldMount={isActive || isContent}
                         emptyStateMessage={emptyStateMessage}
                         isDragging={draggingTabId === tab.id}
+                        icon={renderEditorTabLeadingIcon(
+                            tab,
+                            chatSessionsById,
+                        )}
                         registerTabNode={registerTabNode}
                         onSpineClick={() => handleSpineClick(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
@@ -403,6 +414,10 @@ export function StackedPaneContent({
                         key={tab.id}
                         tab={tab}
                         isActive={tab.id === activeTabId}
+                        icon={renderEditorTabLeadingIcon(
+                            tab,
+                            chatSessionsById,
+                        )}
                         onClick={() => switchTab(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
                     />
@@ -542,6 +557,15 @@ function SpineCloseButton({
     );
 }
 
+function SpineIcon({ icon }: { icon: ReactNode }) {
+    if (!icon) return null;
+    return (
+        <div className="mt-1 flex shrink-0 items-center justify-center">
+            {icon}
+        </div>
+    );
+}
+
 function SpineTitle({ title }: { title: string }) {
     return (
         <div className="flex min-h-0 flex-1 items-center justify-center">
@@ -566,11 +590,13 @@ function SpineTitle({ title }: { title: string }) {
 function SpineButton({
     tab,
     isActive,
+    icon,
     onClick,
     onRequestClose,
 }: {
     tab: Tab;
     isActive: boolean;
+    icon: ReactNode;
     onClick: () => void;
     onRequestClose: () => void;
 }) {
@@ -605,6 +631,7 @@ function SpineButton({
                 title={tab.title}
                 onRequestClose={onRequestClose}
             />
+            <SpineIcon icon={icon} />
             <SpineTitle title={tab.title} />
         </div>
     );
@@ -629,6 +656,7 @@ interface StackedColumnProps {
     shouldMount: boolean;
     emptyStateMessage?: string;
     isDragging: boolean;
+    icon: ReactNode;
     registerTabNode: (tabId: string, node: HTMLDivElement | null) => void;
     onSpineClick: () => void;
     onRequestClose: () => void;
@@ -658,6 +686,7 @@ function StackedColumn({
     shouldMount,
     emptyStateMessage,
     isDragging,
+    icon,
     registerTabNode,
     onSpineClick,
     onRequestClose,
@@ -703,6 +732,7 @@ function StackedColumn({
                     title={tab.title}
                     isActive={isActive}
                     stickyLeft={leftStackWidth}
+                    icon={icon}
                     onClick={onSpineClick}
                     onRequestClose={onRequestClose}
                     onPointerDown={(event) =>
@@ -753,6 +783,7 @@ function StackedColumnSpine({
     title,
     isActive,
     stickyLeft,
+    icon,
     onClick,
     onRequestClose,
     onPointerDown,
@@ -763,6 +794,7 @@ function StackedColumnSpine({
     title: string;
     isActive: boolean;
     stickyLeft: number;
+    icon: ReactNode;
     onClick: () => void;
     onRequestClose: () => void;
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -808,6 +840,7 @@ function StackedColumnSpine({
                 title={title}
                 onRequestClose={onRequestClose}
             />
+            <SpineIcon icon={icon} />
             <SpineTitle title={title} />
         </div>
     );
