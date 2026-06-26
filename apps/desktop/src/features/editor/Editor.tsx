@@ -63,6 +63,7 @@ import {
 // Re-export for existing importers (e.g. UnifiedBar).
 export { REQUEST_CLOSE_ACTIVE_TAB_EVENT };
 import { wikilinkExtension } from "./extensions/wikilinks";
+import { wikilinkHoverPreviewExtension } from "./extensions/wikilinkHoverPreview";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
 import {
@@ -2592,6 +2593,7 @@ export function Editor({
                         () => activeTabRef.current?.noteId ?? null,
                         navigateWikilink,
                     ),
+                    wikilinkHoverPreviewExtension(),
                     urlLinksExtension,
                     imagePasteDropExtension(),
                     EditorView.updateListener.of((update) => {
