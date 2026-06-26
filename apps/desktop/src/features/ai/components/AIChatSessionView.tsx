@@ -24,6 +24,7 @@ import {
     selectEditorPaneActiveTab,
     selectEditorWorkspaceTabs,
     selectFocusedPaneId,
+    selectPaneTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -123,9 +124,10 @@ function ChatContentColumn({
 
 interface AIChatSessionViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
+export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
     const [imageAttachmentNotice, setImageAttachmentNotice] = useState<
         string | null
@@ -138,9 +140,12 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const rootRef = useRef<HTMLDivElement>(null);
     const promptOutlineButtonRef = useRef<HTMLButtonElement>(null);
 
-    // Resolve sessionId from the active ChatTab in this pane
+    // Resolve sessionId from this column's ChatTab (stacked) or the pane's
+    // active ChatTab (normal mode, when no explicit tabId is bound).
     const sessionId = useEditorStore((state) => {
-        const tab = selectEditorPaneActiveTab(state, paneId);
+        const tab = tabId
+            ? selectPaneTab(state, paneId, tabId)
+            : selectEditorPaneActiveTab(state, paneId);
         return tab && isChatTab(tab) ? tab.sessionId : null;
     });
 

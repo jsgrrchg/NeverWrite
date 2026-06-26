@@ -592,29 +592,20 @@ function StackedColumnBody({
                     activePane={isPaneFocused}
                 />
             );
-        // Views that still resolve the pane's active tab. They only show real
-        // content for the active column; inactive columns show a lightweight
-        // placeholder until activated. (Cross-instance support is a follow-up.)
+        // tabId-aware AI views: each column renders its own session/review
+        // independently, so they work even when not the active column.
         case "ai-chat":
-            return isActive ? (
+            return (
                 <React.Suspense fallback={null}>
-                    <LazyAIChatSessionView paneId={paneId} />
+                    <LazyAIChatSessionView paneId={paneId} tabId={tab.id} />
                 </React.Suspense>
-            ) : (
-                <StackedColumnPlaceholder tab={tab} />
             );
         case "ai-review":
-            return isActive ? (
-                <AIReviewView paneId={paneId} />
-            ) : (
-                <StackedColumnPlaceholder tab={tab} />
-            );
+            return <AIReviewView paneId={paneId} tabId={tab.id} />;
+        // Singleton view (only one chat-history tab can exist), so it is safe to
+        // render directly in its column.
         case "ai-chat-history":
-            return isActive ? (
-                <AIChatHistoryWorkspaceView />
-            ) : (
-                <StackedColumnPlaceholder tab={tab} />
-            );
+            return <AIChatHistoryWorkspaceView />;
         case "graph":
             return isActive ? (
                 <React.Suspense fallback={null}>
