@@ -84,6 +84,10 @@ const hoverTheme = EditorView.baseTheme({
         font: "inherit",
         color: "var(--text-primary)",
         lineHeight: "1.4",
+        // Stable width so the box doesn't jump horizontally when a loading
+        // placeholder is replaced by the rendered note content.
+        minWidth: "240px",
+        boxSizing: "border-box",
     },
     ".cm-wikilink-hover-title": {
         fontWeight: "700",
@@ -349,6 +353,25 @@ const caretPreviewKeymap = keymap.of([
     },
 ]);
 
+// Warm the note content cache as soon as the pointer enters a wikilink, before
+// the open delay elapses. By the time the tooltip opens the read has usually
+// completed, so it renders content directly instead of flashing a "Loading…"
+// placeholder and then reflowing. loadNotePreviewContent dedupes by note id, so
+// repeated mouseover events are cheap (cache hit, no extra read).
+const prefetchHandler = EditorView.domEventHandlers({
+    mouseover(event) {
+        const node = event.target;
+        if (!(node instanceof HTMLElement)) return false;
+        const link = node.closest<HTMLElement>("[data-wikilink-target]");
+        const raw = link?.dataset.wikilinkTarget;
+        if (!raw) return false;
+        const { base } = parseWikilinkTarget(raw);
+        const note = findPreviewNote(base);
+        if (note) void loadNotePreviewContent(note.id);
+        return false;
+    },
+});
+
 /**
  * Show a floating preview when hovering over a `[[wikilink]]`, plus a
  * keyboard-triggered preview for the link under the caret.
@@ -357,5 +380,11 @@ export function wikilinkHoverPreviewExtension(
     hoverTime: number = DEFAULT_WIKILINK_HOVER_DELAY_MS,
 ) {
     const tooltip = hoverTooltip(buildWikilinkHoverTooltip, { hoverTime });
-    return [tooltip, caretPreviewField, caretPreviewKeymap, hoverTheme];
+    return [
+        tooltip,
+        prefetchHandler,
+        caretPreviewField,
+        caretPreviewKeymap,
+        hoverTheme,
+    ];
 }

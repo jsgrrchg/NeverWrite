@@ -10,6 +10,7 @@ import {
     wikilinkHoverPreviewExtension,
 } from "./wikilinkHoverPreview";
 import { getWikilinkHoverPreviewExtension } from "../editorExtensions";
+import { wikilinkExtension } from "./wikilinks";
 import { invalidateNotePreviewCache } from "./notePreviewSource";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
@@ -233,7 +234,7 @@ describe("getWikilinkHoverPreviewExtension", () => {
     it("registers the hover extension when enabled", () => {
         const extension = getWikilinkHoverPreviewExtension(true, 300);
         expect(Array.isArray(extension)).toBe(true);
-        expect(extension).toHaveLength(4);
+        expect(extension).toHaveLength(5);
     });
 
     it("registers nothing when disabled", () => {
@@ -241,7 +242,7 @@ describe("getWikilinkHoverPreviewExtension", () => {
     });
 
     it("builds the extension with a configurable delay", () => {
-        expect(wikilinkHoverPreviewExtension(750)).toHaveLength(4);
+        expect(wikilinkHoverPreviewExtension(750)).toHaveLength(5);
     });
 });
 
@@ -277,6 +278,55 @@ describe("showWikilinkPreviewAtCaret", () => {
         const { parent, view } = createConfiguredView("see [[Ghost]] now", 0);
         expect(showWikilinkPreviewAtCaret(view)).toBe(false);
         expect(view.dom.querySelector(".cm-wikilink-hover")).toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("prefetches note content on pointer enter so the preview opens without a flash", async () => {
+        seedNote("Note", "Note");
+        vi.mocked(invoke).mockResolvedValue({ content: "# Note body" });
+
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const view = new EditorView({
+            state: EditorState.create({
+                doc: "see [[Note]] here",
+                selection: EditorSelection.cursor(0),
+                extensions: [
+                    wikilinkExtension(
+                        (_noteId, targets) =>
+                            new Map(
+                                targets.map((t) => [t, "valid" as const]),
+                            ),
+                        () => "current",
+                        () => {},
+                    ),
+                    wikilinkHoverPreviewExtension(),
+                ],
+            }),
+            parent,
+        });
+
+        // Simulate the pointer entering the rendered wikilink span.
+        const link = view.dom.querySelector<HTMLElement>(
+            "[data-wikilink-target]",
+        );
+        expect(link).not.toBeNull();
+        link?.dispatchEvent(
+            new MouseEvent("mouseover", { bubbles: true }),
+        );
+
+        // Once the prefetch read resolves, opening the tooltip renders content
+        // straight from cache — no second read.
+        await vi.waitFor(() => {
+            const mounted = buildWikilinkHoverTooltip(view, 7)?.create?.(view);
+            const body = mounted?.dom.querySelector(".cm-wikilink-hover-body");
+            expect(body?.querySelector(".cm-note-embed-h1")?.textContent).toBe(
+                "Note body",
+            );
+        });
+        expect(invoke).toHaveBeenCalledTimes(1);
 
         view.destroy();
         parent.remove();
