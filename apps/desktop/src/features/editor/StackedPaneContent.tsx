@@ -43,21 +43,28 @@ const LazyAIChatSessionView = React.lazy(() =>
 
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
-// Fixed reading width of each note panel. The pane scrolls horizontally between
-// panels (Andy Matuschak "sliding panes" / Obsidian stacked tabs).
-const PANEL_WIDTH = 600;
+// Preferred reading width of each note panel. The pane scrolls horizontally
+// between panels (Andy Matuschak "sliding panes" / Obsidian stacked tabs).
+const PREFERRED_PANEL_WIDTH = 600;
 
 // Width of a panel's vertical spine (rotated title).
 const SPINE_WIDTH = 32;
 
-// How far a panel must scroll before it becomes a spine. With uniform panel
-// widths the stack boundaries are deterministic from scrollLeft.
-const SCROLL_PER_PANEL = PANEL_WIDTH - SPINE_WIDTH;
+// Floor for the panel width so a panel never collapses to (almost) nothing when
+// the pane is very narrow.
+const MIN_PANEL_WIDTH = 280;
 
 const SUPPORTS_RESIZE_OBSERVER = typeof ResizeObserver !== "undefined";
 
 function clamp(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), max);
+}
+
+// Panels never exceed the available width, so a usable content panel always
+// fits (otherwise a wide fixed panel in a narrow pane shows only spines).
+function resolvePanelWidth(viewport: number) {
+    if (viewport <= 0) return PREFERRED_PANEL_WIDTH;
+    return clamp(viewport, MIN_PANEL_WIDTH, PREFERRED_PANEL_WIDTH);
 }
 
 interface StackedPaneContentProps {
@@ -88,9 +95,14 @@ export function StackedPaneContent({
     // position so left and right behave identically (no per-panel sticky, so no
     // z-index races or handoff gaps — the rails simply cover panels that have
     // scrolled underneath them).
-    const [stack, setStack] = useState<{ left: number; right: number }>({
+    const [stack, setStack] = useState<{
+        left: number;
+        right: number;
+        panelWidth: number;
+    }>({
         left: 0,
         right: 0,
+        panelWidth: PREFERRED_PANEL_WIDTH,
     });
 
     const recomputeStack = useCallback(() => {
@@ -99,14 +111,16 @@ export function StackedPaneContent({
         const count = tabCountRef.current;
         if (count === 0) return;
         const viewport = container.clientWidth;
+        const panelWidth = resolvePanelWidth(viewport);
+        const scrollPerPanel = panelWidth - SPINE_WIDTH;
         const scrollLeft = container.scrollLeft;
-        const maxScroll = Math.max(0, count * PANEL_WIDTH - viewport);
+        const maxScroll = Math.max(0, count * panelWidth - viewport);
 
         // Panel i is left-stacked once scrolled past it: scrollLeft >= (i+1)*step.
-        let left = Math.floor(scrollLeft / SCROLL_PER_PANEL + 0.0001);
+        let left = Math.floor(scrollLeft / scrollPerPanel + 0.0001);
         // Panel (count-1-j) is right-stacked symmetrically from the far edge.
         let right = Math.floor(
-            (maxScroll - scrollLeft) / SCROLL_PER_PANEL + 0.0001,
+            (maxScroll - scrollLeft) / scrollPerPanel + 0.0001,
         );
         left = clamp(left, 0, count - 1);
         right = clamp(right, 0, count - 1);
@@ -116,9 +130,11 @@ export function StackedPaneContent({
         }
 
         setStack((prev) =>
-            prev.left === left && prev.right === right
+            prev.left === left &&
+            prev.right === right &&
+            prev.panelWidth === panelWidth
                 ? prev
-                : { left, right },
+                : { left, right, panelWidth },
         );
     }, []);
 
@@ -161,9 +177,10 @@ export function StackedPaneContent({
         const container = scrollRef.current;
         if (container && activeIndex >= 0) {
             const viewport = container.clientWidth;
-            const maxScroll = Math.max(0, tabCount * PANEL_WIDTH - viewport);
+            const panelWidth = resolvePanelWidth(viewport);
+            const maxScroll = Math.max(0, tabCount * panelWidth - viewport);
             container.scrollLeft = clamp(
-                activeIndex * SCROLL_PER_PANEL,
+                activeIndex * (panelWidth - SPINE_WIDTH),
                 0,
                 maxScroll,
             );
@@ -213,7 +230,9 @@ export function StackedPaneContent({
             role="tablist"
             aria-orientation="horizontal"
             aria-label="Stacked tabs"
-            className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
+            // isolate: keep the sticky spine rails' z-index contained so they
+            // can't paint over sibling overlays (e.g. the right peek panel).
+            className="isolate relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
         >
             {/* Left spine rail: a zero-width sticky anchor whose opaque spines
                 cover panels that have scrolled underneath it. */}
@@ -241,6 +260,7 @@ export function StackedPaneContent({
                         isPaneFocused={isPaneFocused}
                         isContent={isContent}
                         leftStackWidth={stack.left * SPINE_WIDTH}
+                        panelWidth={stack.panelWidth}
                         shouldMount={isActive || isContent}
                         emptyStateMessage={emptyStateMessage}
                         isDragging={draggingTabId === tab.id}
@@ -358,6 +378,7 @@ interface StackedColumnProps {
     isPaneFocused: boolean;
     isContent: boolean;
     leftStackWidth: number;
+    panelWidth: number;
     shouldMount: boolean;
     emptyStateMessage?: string;
     isDragging: boolean;
@@ -376,6 +397,7 @@ function StackedColumn({
     isPaneFocused,
     isContent,
     leftStackWidth,
+    panelWidth,
     shouldMount,
     emptyStateMessage,
     isDragging,
@@ -407,7 +429,7 @@ function StackedColumn({
             // handled by the inner content wrapper instead.
             className="relative flex h-full min-h-0"
             style={{
-                width: PANEL_WIDTH,
+                width: panelWidth,
                 flexShrink: 0,
                 background: "var(--bg-primary)",
                 borderRight: "1px solid var(--border)",
