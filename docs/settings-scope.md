@@ -39,15 +39,17 @@ The main settings store uses these keys:
 | `neverwrite:settings:<vault-path>` | Per-vault | Main `Settings` values for the vault, excluding explicitly global keys. |
 | `neverwrite:lastVaultPath` | Global app state | Initial vault path lookup for hydration, not a user-facing setting itself. |
 
-`GLOBAL_SETTING_KEYS` currently contains only:
+`GLOBAL_SETTING_KEYS` currently contains:
 
 | Setting | Scope |
 | --- | --- |
 | `vimModeEnabled` | Global |
 | `vimRelativeLineNumbers` | Global |
+| `hoverPreviewEnabled` | Global |
+| `hoverPreviewDelayMs` | Global |
 
 When a vault is open, `settingsStore` writes all other `Settings` values to
-`neverwrite:settings:<vault-path>` and writes the Vim values back to
+`neverwrite:settings:<vault-path>` and writes the global keys back to
 `neverwrite:settings`. When no vault is available, the fallback key can contain a
 full `Settings` object.
 
@@ -77,6 +79,8 @@ the same Settings stores.
 | Editor / Formatting | `tabSize` | Per-vault | `2` | `neverwrite:settings:<vault-path>` | Normalized to `2` or `4`. |
 | Editor / Vim | `vimModeEnabled` | Global | `false` | `neverwrite:settings` | Migrated from vault-scoped data if found. |
 | Editor / Vim | `vimRelativeLineNumbers` | Global | `false` | `neverwrite:settings` | Migrated from vault-scoped data if found. |
+| Editor / Preview | `hoverPreviewEnabled` | Global | `true` | `neverwrite:settings` | Toggles the wikilink hover preview across all vaults. |
+| Editor / Preview | `hoverPreviewDelayMs` | Global | `300` | `neverwrite:settings` | Open delay for the hover preview; clamped to `0..2000`. |
 | Editor / Layout | `editorContentWidth` | Per-vault | `940` | `neverwrite:settings:<vault-path>` | Clamped to `600..1200`. |
 | PDF toolbar | `pdfFilter` | Per-vault | `none` | `neverwrite:settings:<vault-path>` | Cycled from the PDF tab toolbar. Valid values are `none`, `dark`, `sepia`, and `grayscale`. |
 | AI / Context | `inlineReviewEnabled` | Per-vault | `true` | `neverwrite:settings:<vault-path>` | Gates inline review in source mode. This is a review-system correctness setting. |

@@ -1156,7 +1156,7 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         [
             [
                 "Note preview on hover",
-                "Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference is saved per vault.",
+                "Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference applies to all vaults.",
                 "wikilink",
                 "popover",
                 "tooltip",
@@ -1328,7 +1328,7 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 searchQuery={searchQuery}
                 section="Preview"
                 label="Note preview on hover"
-                description="Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference is saved per vault."
+                description="Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference applies to all vaults."
                 keywords={["wikilink", "popover", "tooltip"]}
                 control={
                     <Toggle

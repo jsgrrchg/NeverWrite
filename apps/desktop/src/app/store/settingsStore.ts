@@ -65,6 +65,8 @@ const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const GLOBAL_SETTING_KEYS = [
     "vimModeEnabled",
     "vimRelativeLineNumbers",
+    "hoverPreviewEnabled",
+    "hoverPreviewDelayMs",
 ] as const;
 
 type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -369,7 +371,7 @@ function hasVaultScopedSettings(raw: string | null) {
     );
 }
 
-function hasStoredVimSettings(raw: string | null) {
+function hasStoredGlobalSettings(raw: string | null) {
     const state = extractPersistedState(raw);
     if (!state) return false;
 
@@ -606,6 +608,8 @@ function pickGlobalSettings(
     return {
         vimModeEnabled: settings.vimModeEnabled,
         vimRelativeLineNumbers: settings.vimRelativeLineNumbers,
+        hoverPreviewEnabled: settings.hoverPreviewEnabled,
+        hoverPreviewDelayMs: settings.hoverPreviewDelayMs,
     };
 }
 
@@ -681,12 +685,14 @@ function migrateGlobalSpellcheckToVault(vaultPath: string) {
     }
 }
 
-function migrateVaultVimSettingsToGlobal(vaultRaw: string | null) {
+function migrateVaultGlobalSettingsToGlobal(vaultRaw: string | null) {
     try {
-        if (hasStoredVimSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))) {
+        if (
+            hasStoredGlobalSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))
+        ) {
             return;
         }
-        if (!hasStoredVimSettings(vaultRaw)) return;
+        if (!hasStoredGlobalSettings(vaultRaw)) return;
 
         const vaultSettings = extractSettingsFromStorage(vaultRaw);
         if (!vaultSettings) return;
@@ -704,7 +710,7 @@ function loadSettings(vaultPath: string | null): Settings {
         }
         const raw = safeStorageGetItem(getStorageKey(vaultPath));
         if (vaultPath) {
-            migrateVaultVimSettingsToGlobal(raw);
+            migrateVaultGlobalSettingsToGlobal(raw);
         }
         const settings = extractSettingsFromStorage(raw) ?? defaults;
         return vaultPath ? mergeGlobalSettings(settings) : settings;
