@@ -63,6 +63,7 @@ export function StackedPaneContent({
     const pane = useEditorStore((state) => selectEditorPaneState(state, paneId));
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
     const switchTab = useEditorStore((state) => state.switchTab);
+    const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
 
     const tabs = pane.tabs;
     const activeTabId = pane.activeTabId;
@@ -172,6 +173,30 @@ export function StackedPaneContent({
         el?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }, [activeTabId]);
 
+    // Column reorder via header drag. MVP scope: within the same pane only.
+    const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+    const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
+    const handleColumnDrop = useCallback(
+        (targetTabId: string) => {
+            const sourceTabId = draggingTabId;
+            setDraggingTabId(null);
+            setDragOverTabId(null);
+            if (!paneId || !sourceTabId || sourceTabId === targetTabId) {
+                return;
+            }
+            const currentTabs = pane.tabs;
+            const fromIndex = currentTabs.findIndex(
+                (t) => t.id === sourceTabId,
+            );
+            const toIndex = currentTabs.findIndex((t) => t.id === targetTabId);
+            if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) {
+                return;
+            }
+            reorderPaneTabs(paneId, fromIndex, toIndex);
+        },
+        [draggingTabId, pane.tabs, paneId, reorderPaneTabs],
+    );
+
     if (tabs.length === 0) {
         if (paneId) {
             return <WorkspacePaneEmptyState paneId={paneId} />;
@@ -206,11 +231,28 @@ export function StackedPaneContent({
                         isCollapsed={isCollapsed}
                         shouldMount={shouldMount}
                         emptyStateMessage={emptyStateMessage}
+                        isDragging={draggingTabId === tab.id}
+                        isDragOver={
+                            dragOverTabId === tab.id &&
+                            draggingTabId !== null &&
+                            draggingTabId !== tab.id
+                        }
                         onActivate={() => switchTab(tab.id)}
                         onCollapse={() => collapseColumn(tab.id)}
                         onExpand={() => {
                             expandColumn(tab.id);
                             switchTab(tab.id);
+                        }}
+                        onDragStart={() => setDraggingTabId(tab.id)}
+                        onDragEnter={() => {
+                            if (draggingTabId && draggingTabId !== tab.id) {
+                                setDragOverTabId(tab.id);
+                            }
+                        }}
+                        onDrop={() => handleColumnDrop(tab.id)}
+                        onDragEnd={() => {
+                            setDraggingTabId(null);
+                            setDragOverTabId(null);
                         }}
                         registerColumn={registerColumn}
                     />
@@ -228,9 +270,15 @@ interface StackedColumnProps {
     isCollapsed: boolean;
     shouldMount: boolean;
     emptyStateMessage?: string;
+    isDragging: boolean;
+    isDragOver: boolean;
     onActivate: () => void;
     onCollapse: () => void;
     onExpand: () => void;
+    onDragStart: () => void;
+    onDragEnter: () => void;
+    onDrop: () => void;
+    onDragEnd: () => void;
     registerColumn: (tabId: string, el: HTMLElement | null) => void;
 }
 
@@ -242,9 +290,15 @@ function StackedColumn({
     isCollapsed,
     shouldMount,
     emptyStateMessage,
+    isDragging,
+    isDragOver,
     onActivate,
     onCollapse,
     onExpand,
+    onDragStart,
+    onDragEnter,
+    onDrop,
+    onDragEnd,
     registerColumn,
 }: StackedColumnProps) {
     const tabId = tab.id;
@@ -252,6 +306,22 @@ function StackedColumn({
         (el: HTMLElement | null) => registerColumn(tabId, el),
         [registerColumn, tabId],
     );
+
+    // Drop-target wiring shared by collapsed and expanded columns.
+    const dropTargetProps = {
+        onDragEnter,
+        onDragOver: (event: React.DragEvent) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+        },
+        onDrop: (event: React.DragEvent) => {
+            event.preventDefault();
+            onDrop();
+        },
+    };
+    const dragOverBorder = isDragOver
+        ? "2px solid var(--accent)"
+        : "1px solid var(--border)";
 
     if (isCollapsed) {
         return (
@@ -264,11 +334,19 @@ function StackedColumn({
                     width: COLLAPSED_COLUMN_WIDTH,
                     minWidth: COLLAPSED_COLUMN_WIDTH,
                     flexShrink: 0,
+                    borderLeft: dragOverBorder,
                     borderRight: "1px solid var(--border)",
                     background: "var(--bg-secondary)",
+                    opacity: isDragging ? 0.5 : 1,
                 }}
+                {...dropTargetProps}
             >
-                <StackedColumnSpine title={tab.title} onExpand={onExpand} />
+                <StackedColumnSpine
+                    title={tab.title}
+                    onExpand={onExpand}
+                    onDragStart={onDragStart}
+                    onDragEnd={onDragEnd}
+                />
             </div>
         );
     }
@@ -283,15 +361,20 @@ function StackedColumn({
                 width: STACKED_COLUMN_WIDTH,
                 minWidth: STACKED_COLUMN_WIDTH,
                 flexShrink: 0,
+                borderLeft: dragOverBorder,
                 borderRight: "1px solid var(--border)",
                 background: "var(--bg-primary)",
+                opacity: isDragging ? 0.5 : 1,
             }}
+            {...dropTargetProps}
         >
             <StackedColumnHeader
                 title={tab.title}
                 isActive={isActive}
                 onActivate={onActivate}
                 onCollapse={onCollapse}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
             />
             <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
                 {shouldMount ? (
@@ -313,18 +396,28 @@ function StackedColumn({
 function StackedColumnSpine({
     title,
     onExpand,
+    onDragStart,
+    onDragEnd,
 }: {
     title: string;
     onExpand: () => void;
+    onDragStart: () => void;
+    onDragEnd: () => void;
 }) {
     return (
         <button
             type="button"
             onClick={onExpand}
+            draggable
+            onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                onDragStart();
+            }}
+            onDragEnd={onDragEnd}
             aria-label={`Expand ${title}`}
             title={title}
             className="flex h-full w-full items-center justify-center py-2"
-            style={{ background: "var(--bg-secondary)" }}
+            style={{ background: "var(--bg-secondary)", cursor: "grab" }}
         >
             <span
                 className="truncate text-[12px] font-medium"
@@ -356,11 +449,15 @@ function StackedColumnHeader({
     isActive,
     onActivate,
     onCollapse,
+    onDragStart,
+    onDragEnd,
 }: {
     title: string;
     isActive: boolean;
     onActivate: () => void;
     onCollapse: () => void;
+    onDragStart: () => void;
+    onDragEnd: () => void;
 }) {
     return (
         <div
@@ -379,9 +476,15 @@ function StackedColumnHeader({
             <button
                 type="button"
                 onClick={onActivate}
+                draggable
+                onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    onDragStart();
+                }}
+                onDragEnd={onDragEnd}
                 className="flex min-w-0 flex-1 items-center px-3 text-left"
                 title={title}
-                style={{ height: "100%" }}
+                style={{ height: "100%", cursor: "grab" }}
             >
                 <span
                     className="min-w-0 flex-1 truncate text-[12px] font-medium"
