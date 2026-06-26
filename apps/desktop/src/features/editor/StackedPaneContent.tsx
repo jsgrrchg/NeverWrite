@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
     useEditorStore,
     selectEditorPaneState,
@@ -41,6 +41,13 @@ const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 // scrolls horizontally between them, mirroring Obsidian's stacked tabs.
 const STACKED_COLUMN_WIDTH = 640;
 
+// Pre-mount columns within this horizontal margin of the viewport so scrolling
+// reveals ready content instead of a skeleton.
+const COLUMN_PREFETCH_MARGIN_PX = 800;
+
+const SUPPORTS_INTERSECTION_OBSERVER =
+    typeof IntersectionObserver !== "undefined";
+
 interface StackedPaneContentProps {
     paneId?: string;
     emptyStateMessage?: string;
@@ -58,6 +65,80 @@ export function StackedPaneContent({
     const activeTabId = pane.activeTabId;
     const isPaneFocused = paneId ? focusedPaneId === paneId : true;
 
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const observerRef = useRef<IntersectionObserver | null>(null);
+    const columnElsRef = useRef(new Map<string, HTMLElement>());
+    const [visibleTabIds, setVisibleTabIds] = useState<ReadonlySet<string>>(
+        () => new Set(),
+    );
+
+    // Heavy column bodies (CodeMirror, PDF, etc.) only mount while near the
+    // viewport. The fixed column width bounds how many intersect at once, which
+    // caps the number of simultaneously live editor instances.
+    useEffect(() => {
+        if (!SUPPORTS_INTERSECTION_OBSERVER) {
+            return;
+        }
+        const root = scrollRef.current;
+        if (!root) {
+            return;
+        }
+        const observer = new IntersectionObserver(
+            (entries) => {
+                setVisibleTabIds((prev) => {
+                    const next = new Set(prev);
+                    let changed = false;
+                    for (const entry of entries) {
+                        const id = (entry.target as HTMLElement).dataset
+                            .stackedColumnId;
+                        if (!id) continue;
+                        if (entry.isIntersecting) {
+                            if (!next.has(id)) {
+                                next.add(id);
+                                changed = true;
+                            }
+                        } else if (next.has(id)) {
+                            next.delete(id);
+                            changed = true;
+                        }
+                    }
+                    return changed ? next : prev;
+                });
+            },
+            {
+                root,
+                rootMargin: `0px ${COLUMN_PREFETCH_MARGIN_PX}px`,
+                threshold: 0,
+            },
+        );
+        observerRef.current = observer;
+        for (const el of columnElsRef.current.values()) {
+            observer.observe(el);
+        }
+        return () => {
+            observer.disconnect();
+            observerRef.current = null;
+        };
+    }, []);
+
+    const registerColumn = useCallback(
+        (tabId: string, el: HTMLElement | null) => {
+            const map = columnElsRef.current;
+            const observer = observerRef.current;
+            const previous = map.get(tabId);
+            if (previous && previous !== el) {
+                observer?.unobserve(previous);
+            }
+            if (el) {
+                map.set(tabId, el);
+                observer?.observe(el);
+            } else {
+                map.delete(tabId);
+            }
+        },
+        [],
+    );
+
     if (tabs.length === 0) {
         if (paneId) {
             return <WorkspacePaneEmptyState paneId={paneId} />;
@@ -66,43 +147,107 @@ export function StackedPaneContent({
     }
 
     return (
-        <div className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden">
+        <div
+            ref={scrollRef}
+            className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
+        >
             {tabs.map((tab) => {
                 const isActive = tab.id === activeTabId;
+                // Always keep the active column mounted; otherwise gate on
+                // viewport visibility (mount everything when IO is unavailable,
+                // e.g. tests).
+                const shouldMount =
+                    !SUPPORTS_INTERSECTION_OBSERVER ||
+                    isActive ||
+                    visibleTabIds.has(tab.id);
                 return (
-                    <div
+                    <StackedColumn
                         key={tab.id}
-                        data-stacked-column-id={tab.id}
-                        data-stacked-column-active={
-                            isActive ? "true" : undefined
-                        }
-                        className="relative flex h-full min-h-0 flex-col overflow-hidden"
-                        style={{
-                            width: STACKED_COLUMN_WIDTH,
-                            minWidth: STACKED_COLUMN_WIDTH,
-                            flexShrink: 0,
-                            borderRight: "1px solid var(--border)",
-                            background: "var(--bg-primary)",
-                        }}
-                    >
-                        <StackedColumnHeader
-                            title={tab.title}
-                            isActive={isActive}
-                            onActivate={() => switchTab(tab.id)}
-                        />
-                        <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
-                            <StackedColumnBody
-                                paneId={paneId}
-                                tab={tab}
-                                isActive={isActive}
-                                isPaneFocused={isPaneFocused}
-                                emptyStateMessage={emptyStateMessage}
-                            />
-                        </div>
-                    </div>
+                        tab={tab}
+                        paneId={paneId}
+                        isActive={isActive}
+                        isPaneFocused={isPaneFocused}
+                        shouldMount={shouldMount}
+                        emptyStateMessage={emptyStateMessage}
+                        onActivate={() => switchTab(tab.id)}
+                        registerColumn={registerColumn}
+                    />
                 );
             })}
         </div>
+    );
+}
+
+interface StackedColumnProps {
+    tab: Tab;
+    paneId?: string;
+    isActive: boolean;
+    isPaneFocused: boolean;
+    shouldMount: boolean;
+    emptyStateMessage?: string;
+    onActivate: () => void;
+    registerColumn: (tabId: string, el: HTMLElement | null) => void;
+}
+
+function StackedColumn({
+    tab,
+    paneId,
+    isActive,
+    isPaneFocused,
+    shouldMount,
+    emptyStateMessage,
+    onActivate,
+    registerColumn,
+}: StackedColumnProps) {
+    const tabId = tab.id;
+    const setRef = useCallback(
+        (el: HTMLElement | null) => registerColumn(tabId, el),
+        [registerColumn, tabId],
+    );
+
+    return (
+        <div
+            ref={setRef}
+            data-stacked-column-id={tabId}
+            data-stacked-column-active={isActive ? "true" : undefined}
+            className="relative flex h-full min-h-0 flex-col overflow-hidden"
+            style={{
+                width: STACKED_COLUMN_WIDTH,
+                minWidth: STACKED_COLUMN_WIDTH,
+                flexShrink: 0,
+                borderRight: "1px solid var(--border)",
+                background: "var(--bg-primary)",
+            }}
+        >
+            <StackedColumnHeader
+                title={tab.title}
+                isActive={isActive}
+                onActivate={onActivate}
+            />
+            <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
+                {shouldMount ? (
+                    <StackedColumnBody
+                        paneId={paneId}
+                        tab={tab}
+                        isActive={isActive}
+                        isPaneFocused={isPaneFocused}
+                        emptyStateMessage={emptyStateMessage}
+                    />
+                ) : (
+                    <StackedColumnSkeleton />
+                )}
+            </div>
+        </div>
+    );
+}
+
+function StackedColumnSkeleton() {
+    return (
+        <div
+            className="h-full w-full"
+            aria-hidden="true"
+            style={{ background: "var(--bg-primary)" }}
+        />
     );
 }
 
