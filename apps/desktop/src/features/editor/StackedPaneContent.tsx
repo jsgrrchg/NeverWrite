@@ -41,6 +41,9 @@ const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 // scrolls horizontally between them, mirroring Obsidian's stacked tabs.
 const STACKED_COLUMN_WIDTH = 640;
 
+// Width of a collapsed column spine (rotated title only).
+const COLLAPSED_COLUMN_WIDTH = 34;
+
 // Pre-mount columns within this horizontal margin of the viewport so scrolling
 // reveals ready content instead of a skeleton.
 const COLUMN_PREFETCH_MARGIN_PX = 800;
@@ -139,6 +142,36 @@ export function StackedPaneContent({
         [],
     );
 
+    // Ephemeral per-pane collapse state. The active column is always expanded
+    // (derived in StackedColumn), so this only tracks user-collapsed columns.
+    const [collapsedTabIds, setCollapsedTabIds] = useState<ReadonlySet<string>>(
+        () => new Set(),
+    );
+    const collapseColumn = useCallback((tabId: string) => {
+        setCollapsedTabIds((prev) => {
+            if (prev.has(tabId)) return prev;
+            const next = new Set(prev);
+            next.add(tabId);
+            return next;
+        });
+    }, []);
+    const expandColumn = useCallback((tabId: string) => {
+        setCollapsedTabIds((prev) => {
+            if (!prev.has(tabId)) return prev;
+            const next = new Set(prev);
+            next.delete(tabId);
+            return next;
+        });
+    }, []);
+
+    // Reveal the active column horizontally whenever it changes — covers both
+    // in-pane clicks and external activation (quick switcher, links, search).
+    useEffect(() => {
+        if (!activeTabId) return;
+        const el = columnElsRef.current.get(activeTabId);
+        el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }, [activeTabId]);
+
     if (tabs.length === 0) {
         if (paneId) {
             return <WorkspacePaneEmptyState paneId={paneId} />;
@@ -153,13 +186,16 @@ export function StackedPaneContent({
         >
             {tabs.map((tab) => {
                 const isActive = tab.id === activeTabId;
-                // Always keep the active column mounted; otherwise gate on
-                // viewport visibility (mount everything when IO is unavailable,
-                // e.g. tests).
+                // The active column is always expanded.
+                const isCollapsed =
+                    !isActive && collapsedTabIds.has(tab.id);
+                // Mount the heavy body only when expanded and (active or near
+                // the viewport). Mount everything when IO is unavailable.
                 const shouldMount =
-                    !SUPPORTS_INTERSECTION_OBSERVER ||
-                    isActive ||
-                    visibleTabIds.has(tab.id);
+                    !isCollapsed &&
+                    (!SUPPORTS_INTERSECTION_OBSERVER ||
+                        isActive ||
+                        visibleTabIds.has(tab.id));
                 return (
                     <StackedColumn
                         key={tab.id}
@@ -167,9 +203,15 @@ export function StackedPaneContent({
                         paneId={paneId}
                         isActive={isActive}
                         isPaneFocused={isPaneFocused}
+                        isCollapsed={isCollapsed}
                         shouldMount={shouldMount}
                         emptyStateMessage={emptyStateMessage}
                         onActivate={() => switchTab(tab.id)}
+                        onCollapse={() => collapseColumn(tab.id)}
+                        onExpand={() => {
+                            expandColumn(tab.id);
+                            switchTab(tab.id);
+                        }}
                         registerColumn={registerColumn}
                     />
                 );
@@ -183,9 +225,12 @@ interface StackedColumnProps {
     paneId?: string;
     isActive: boolean;
     isPaneFocused: boolean;
+    isCollapsed: boolean;
     shouldMount: boolean;
     emptyStateMessage?: string;
     onActivate: () => void;
+    onCollapse: () => void;
+    onExpand: () => void;
     registerColumn: (tabId: string, el: HTMLElement | null) => void;
 }
 
@@ -194,9 +239,12 @@ function StackedColumn({
     paneId,
     isActive,
     isPaneFocused,
+    isCollapsed,
     shouldMount,
     emptyStateMessage,
     onActivate,
+    onCollapse,
+    onExpand,
     registerColumn,
 }: StackedColumnProps) {
     const tabId = tab.id;
@@ -204,6 +252,26 @@ function StackedColumn({
         (el: HTMLElement | null) => registerColumn(tabId, el),
         [registerColumn, tabId],
     );
+
+    if (isCollapsed) {
+        return (
+            <div
+                ref={setRef}
+                data-stacked-column-id={tabId}
+                data-stacked-column-collapsed="true"
+                className="relative flex h-full min-h-0 flex-col overflow-hidden"
+                style={{
+                    width: COLLAPSED_COLUMN_WIDTH,
+                    minWidth: COLLAPSED_COLUMN_WIDTH,
+                    flexShrink: 0,
+                    borderRight: "1px solid var(--border)",
+                    background: "var(--bg-secondary)",
+                }}
+            >
+                <StackedColumnSpine title={tab.title} onExpand={onExpand} />
+            </div>
+        );
+    }
 
     return (
         <div
@@ -223,6 +291,7 @@ function StackedColumn({
                 title={tab.title}
                 isActive={isActive}
                 onActivate={onActivate}
+                onCollapse={onCollapse}
             />
             <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
                 {shouldMount ? (
@@ -241,6 +310,37 @@ function StackedColumn({
     );
 }
 
+function StackedColumnSpine({
+    title,
+    onExpand,
+}: {
+    title: string;
+    onExpand: () => void;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onExpand}
+            aria-label={`Expand ${title}`}
+            title={title}
+            className="flex h-full w-full items-center justify-center py-2"
+            style={{ background: "var(--bg-secondary)" }}
+        >
+            <span
+                className="truncate text-[12px] font-medium"
+                style={{
+                    color: "var(--text-secondary)",
+                    writingMode: "vertical-rl",
+                    transform: "rotate(180deg)",
+                    maxHeight: "100%",
+                }}
+            >
+                {title}
+            </span>
+        </button>
+    );
+}
+
 function StackedColumnSkeleton() {
     return (
         <div
@@ -255,16 +355,16 @@ function StackedColumnHeader({
     title,
     isActive,
     onActivate,
+    onCollapse,
 }: {
     title: string;
     isActive: boolean;
     onActivate: () => void;
+    onCollapse: () => void;
 }) {
     return (
-        <button
-            type="button"
-            onClick={onActivate}
-            className="flex shrink-0 items-center gap-2 px-3 text-left"
+        <div
+            className="flex shrink-0 items-center"
             style={{
                 height: 33,
                 minHeight: 33,
@@ -273,23 +373,50 @@ function StackedColumnHeader({
                 background: isActive
                     ? "var(--bg-primary)"
                     : "var(--bg-secondary)",
-                boxShadow: isActive
-                    ? "inset 0 2px 0 var(--accent)"
-                    : "none",
+                boxShadow: isActive ? "inset 0 2px 0 var(--accent)" : "none",
             }}
-            title={title}
         >
-            <span
-                className="min-w-0 flex-1 truncate text-[12px] font-medium"
-                style={{
-                    color: isActive
-                        ? "var(--text-primary)"
-                        : "var(--text-secondary)",
-                }}
+            <button
+                type="button"
+                onClick={onActivate}
+                className="flex min-w-0 flex-1 items-center px-3 text-left"
+                title={title}
+                style={{ height: "100%" }}
             >
-                {title}
-            </span>
-        </button>
+                <span
+                    className="min-w-0 flex-1 truncate text-[12px] font-medium"
+                    style={{
+                        color: isActive
+                            ? "var(--text-primary)"
+                            : "var(--text-secondary)",
+                    }}
+                >
+                    {title}
+                </span>
+            </button>
+            <button
+                type="button"
+                onClick={onCollapse}
+                aria-label={`Collapse ${title}`}
+                title="Collapse"
+                className="flex shrink-0 items-center justify-center px-2"
+                style={{ height: "100%", color: "var(--text-secondary)" }}
+            >
+                <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                >
+                    <path d="M10 3L5 8l5 5" />
+                </svg>
+            </button>
+        </div>
     );
 }
 
