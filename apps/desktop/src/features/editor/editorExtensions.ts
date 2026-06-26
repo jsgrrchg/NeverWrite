@@ -20,6 +20,7 @@ import type {
 import { vim } from "@replit/codemirror-vim";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { livePreviewExtension } from "./extensions/livePreview";
+import { wikilinkHoverPreviewExtension } from "./extensions/wikilinkHoverPreview";
 import { vimStatusBarExtension } from "./extensions/vimStatusBar";
 import { resolveWikilink } from "./wikilinkResolution";
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
@@ -158,6 +159,8 @@ export const baseTheme = EditorView.theme({
 export const syntaxCompartment = new Compartment();
 // Compartment for the live preview extension (reconfigured when vault changes)
 export const livePreviewCompartment = new Compartment();
+// Compartment for the wikilink hover preview (toggle + configurable delay)
+export const hoverPreviewCompartment = new Compartment();
 // Compartment for justified alignment
 export const alignmentCompartment = new Compartment();
 // Compartment for line wrapping
@@ -257,6 +260,17 @@ export function getLivePreviewExtension(
             openLinkContextMenu,
         }),
     ];
+}
+
+// Wikilink hover preview. Returns an empty extension when disabled so the
+// `hoverTooltip` is not registered at all; otherwise it applies the configured
+// open delay. Lives in its own compartment so the per-vault toggle and delay
+// can be reconfigured without recreating the editor state.
+export function getWikilinkHoverPreviewExtension(
+    enabled: boolean,
+    delayMs: number,
+) {
+    return enabled ? wikilinkHoverPreviewExtension(delayMs) : [];
 }
 
 // Vim modal editing. Must take precedence over the default keymap, so the

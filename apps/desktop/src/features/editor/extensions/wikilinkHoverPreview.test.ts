@@ -4,7 +4,11 @@
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildWikilinkHoverTooltip } from "./wikilinkHoverPreview";
+import {
+    buildWikilinkHoverTooltip,
+    wikilinkHoverPreviewExtension,
+} from "./wikilinkHoverPreview";
+import { getWikilinkHoverPreviewExtension } from "../editorExtensions";
 import { invalidateNotePreviewCache } from "./notePreviewSource";
 import { useVaultStore } from "../../../app/store/vaultStore";
 
@@ -171,6 +175,7 @@ describe("buildWikilinkHoverTooltip", () => {
                     id: "diagram.png",
                     path: "/vault/diagram.png",
                     relative_path: "diagram.png",
+                    title: "diagram",
                     file_name: "diagram.png",
                     extension: "png",
                     kind: "file",
@@ -220,5 +225,21 @@ describe("buildWikilinkHoverTooltip", () => {
 
         view.destroy();
         parent.remove();
+    });
+});
+
+describe("getWikilinkHoverPreviewExtension", () => {
+    it("registers the hover extension when enabled", () => {
+        const extension = getWikilinkHoverPreviewExtension(true, 300);
+        expect(Array.isArray(extension)).toBe(true);
+        expect(extension).toHaveLength(2);
+    });
+
+    it("registers nothing when disabled", () => {
+        expect(getWikilinkHoverPreviewExtension(false, 300)).toEqual([]);
+    });
+
+    it("builds the extension with a configurable delay", () => {
+        expect(wikilinkHoverPreviewExtension(750)).toHaveLength(2);
     });
 });

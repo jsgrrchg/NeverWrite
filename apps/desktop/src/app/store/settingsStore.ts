@@ -22,6 +22,8 @@ export interface Settings {
     justifyText: boolean;
     livePreviewEnabled: boolean;
     inlineReviewEnabled: boolean;
+    hoverPreviewEnabled: boolean;
+    hoverPreviewDelayMs: number; // 0–2000
     pdfFilter: PdfFilterMode;
     tabSize: 2 | 4;
     editorSpellcheck: boolean;
@@ -180,6 +182,8 @@ const defaults: Settings = {
     justifyText: false,
     livePreviewEnabled: true,
     inlineReviewEnabled: true,
+    hoverPreviewEnabled: true,
+    hoverPreviewDelayMs: 300,
     pdfFilter: "none",
     tabSize: 2,
     editorSpellcheck: false,
@@ -431,6 +435,15 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             inlineReviewEnabled:
                 parsed.state.inlineReviewEnabled ??
                 defaults.inlineReviewEnabled,
+            hoverPreviewEnabled:
+                parsed.state.hoverPreviewEnabled ??
+                defaults.hoverPreviewEnabled,
+            hoverPreviewDelayMs: normalizeIntInRange(
+                parsed.state.hoverPreviewDelayMs,
+                defaults.hoverPreviewDelayMs,
+                0,
+                2000,
+            ),
             pdfFilter: normalizePdfFilterMode(parsed.state.pdfFilter),
             tabSize: normalizeTabSize(parsed.state.tabSize),
             editorSpellcheck:
@@ -552,6 +565,8 @@ function pickSettings(state: SettingsStore): Settings {
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,
+        hoverPreviewEnabled: state.hoverPreviewEnabled,
+        hoverPreviewDelayMs: state.hoverPreviewDelayMs,
         pdfFilter: state.pdfFilter,
         tabSize: state.tabSize,
         editorSpellcheck: state.editorSpellcheck,
