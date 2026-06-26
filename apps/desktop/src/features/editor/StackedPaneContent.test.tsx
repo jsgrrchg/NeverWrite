@@ -52,7 +52,7 @@ describe("StackedPaneContent", () => {
         ).toHaveAttribute("aria-selected", "false");
     });
 
-    it("collapses a column to a spine and keeps it activatable", () => {
+    it("starts non-active columns collapsed and expands them on spine click", () => {
         setEditorTabs(
             [
                 {
@@ -76,26 +76,32 @@ describe("StackedPaneContent", () => {
 
         renderComponent(<EditorPaneContent />);
 
-        // Collapse the inactive "Beta" column via its header collapse button.
+        // Accordion default: only the active column is expanded; Beta is a spine.
+        expect(
+            screen.getByRole("tab", { name: /beta/i }),
+        ).toHaveAttribute("aria-expanded", "false");
+
+        // Clicking Beta's spine expands and activates it.
         act(() => {
-            screen
-                .getByRole("button", { name: /collapse beta/i })
-                .click();
+            screen.getByRole("tab", { name: /beta/i }).click();
         });
-
-        // It becomes a spine offering to expand again.
-        const expandButton = screen.getByRole("tab", { name: /expand beta/i });
-        expect(expandButton).toHaveAttribute("aria-expanded", "false");
-
-        act(() => {
-            expandButton.click();
-        });
-
-        // Expanding activates it.
-        expect(useEditorStore.getState().focusedPaneId).toBeTruthy();
         expect(
             screen.getByRole("tab", { name: /beta/i }),
         ).toHaveAttribute("aria-selected", "true");
+        expect(
+            screen.getByRole("tab", { name: /beta/i }),
+        ).toHaveAttribute("aria-expanded", "true");
+
+        // Re-activate Alpha, then toggle Beta shut from its spine.
+        act(() => {
+            screen.getByRole("tab", { name: /alpha/i }).click();
+        });
+        act(() => {
+            screen.getByRole("tab", { name: /beta/i }).click();
+        });
+        expect(
+            screen.getByRole("tab", { name: /beta/i }),
+        ).toHaveAttribute("aria-expanded", "false");
     });
 
     it("does not render the stacked tablist in default mode", () => {
