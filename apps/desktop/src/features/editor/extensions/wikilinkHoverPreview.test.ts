@@ -3,8 +3,13 @@
  */
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildWikilinkHoverTooltip } from "./wikilinkHoverPreview";
+import { invalidateNotePreviewCache } from "./notePreviewSource";
+import { useVaultStore } from "../../../app/store/vaultStore";
+
+vi.mock("@neverwrite/runtime", () => ({ invoke: vi.fn() }));
+import { invoke } from "@neverwrite/runtime";
 
 function createView(doc: string) {
     const parent = document.createElement("div");
@@ -17,8 +22,26 @@ function createView(doc: string) {
     return { parent, view };
 }
 
+function seedNote(id: string, title: string) {
+    useVaultStore.setState({
+        vaultPath: "/vault",
+        notes: [
+            {
+                id,
+                path: `/vault/${id}.md`,
+                title,
+                modified_at: 0,
+                created_at: 0,
+            },
+        ],
+    });
+}
+
 afterEach(() => {
     document.body.innerHTML = "";
+    vi.clearAllMocks();
+    invalidateNotePreviewCache("Note");
+    useVaultStore.setState({ notes: [] });
 });
 
 describe("buildWikilinkHoverTooltip", () => {
@@ -55,6 +78,67 @@ describe("buildWikilinkHoverTooltip", () => {
     it("returns null outside any wikilink", () => {
         const { parent, view } = createView("before [[Target]] after");
         expect(buildWikilinkHoverTooltip(view, 2)).toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("renders loading then note content, and serves the second hover from cache", async () => {
+        seedNote("Note", "Note");
+        vi.mocked(invoke).mockResolvedValue({
+            content: "# Note body\nhello world",
+        });
+
+        const { parent, view } = createView("see [[Note]] here");
+
+        // First hover: no synchronous content, so a loading placeholder shows
+        // while the async read resolves.
+        const first = buildWikilinkHoverTooltip(view, 7)?.create?.(view);
+        const firstBody = first?.dom.querySelector(".cm-wikilink-hover-body");
+        expect(firstBody?.textContent).toBe("Loading…");
+
+        await vi.waitFor(() => {
+            expect(firstBody?.querySelector(".cm-note-embed-h1")?.textContent).toBe(
+                "Note body",
+            );
+        });
+        expect(firstBody?.textContent).toContain("hello world");
+        expect(invoke).toHaveBeenCalledTimes(1);
+
+        // Second hover: content is cached, so it renders synchronously with no
+        // additional read.
+        const second = buildWikilinkHoverTooltip(view, 7)?.create?.(view);
+        const secondBody = second?.dom.querySelector(".cm-wikilink-hover-body");
+        expect(secondBody?.querySelector(".cm-note-embed-h1")?.textContent).toBe(
+            "Note body",
+        );
+        expect(invoke).toHaveBeenCalledTimes(1);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("does not repaint after the tooltip is destroyed", async () => {
+        seedNote("Note", "Note");
+        let resolveRead: (value: { content: string }) => void = () => {};
+        vi.mocked(invoke).mockReturnValue(
+            new Promise((resolve) => {
+                resolveRead = resolve;
+            }),
+        );
+
+        const { parent, view } = createView("see [[Note]] here");
+        const mounted = buildWikilinkHoverTooltip(view, 7)?.create?.(view);
+        const body = mounted?.dom.querySelector(".cm-wikilink-hover-body");
+        expect(body?.textContent).toBe("Loading…");
+
+        mounted?.destroy?.();
+        resolveRead({ content: "# Note body" });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Still the placeholder — the resolved load was ignored post-destroy.
+        expect(body?.querySelector(".cm-note-embed-h1")).toBeNull();
 
         view.destroy();
         parent.remove();
