@@ -186,9 +186,13 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "Editor" }));
 
-        expect(screen.getByText("Autosave delay")).toBeInTheDocument();
+        const autosaveLabel = screen.getByText("Autosave delay");
+        const autosaveRow = autosaveLabel.parentElement?.parentElement;
+        expect(autosaveRow).not.toBeNull();
 
-        const input = screen.getByDisplayValue("300");
+        const input = within(autosaveRow as HTMLElement).getByDisplayValue(
+            "300",
+        );
 
         fireEvent.focus(input);
         fireEvent.change(input, { target: { value: "750" } });
@@ -651,6 +655,24 @@ describe("SettingsPanel", () => {
         fireEvent.click(toggle);
 
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(false);
+        expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+
+    it("renders and persists the wikilink hover preview toggle in editor settings", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+
+        const label = screen.getByText("Note preview on hover");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        const toggle = within(row as HTMLElement).getByRole("switch");
+        expect(toggle).toHaveAttribute("aria-checked", "true");
+
+        fireEvent.click(toggle);
+
+        expect(useSettingsStore.getState().hoverPreviewEnabled).toBe(false);
         expect(toggle).toHaveAttribute("aria-checked", "false");
     });
 
