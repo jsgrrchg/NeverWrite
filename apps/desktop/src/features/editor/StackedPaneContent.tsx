@@ -186,21 +186,45 @@ export function StackedPaneContent({
         };
     }, [recomputeStack]);
 
-    // Reveal the active panel: scroll so it becomes the leading content panel
-    // just right of the left spine stack. Covers clicks, quick switcher, links
-    // and search. Recompute the stack right after so rails update in the same
-    // frame.
+    // Reveal the active panel ONLY when it isn't already visible — i.e. when it
+    // is collapsed into a spine rail (off-screen). If the active column is
+    // already an open content column, leave the scroll position alone so that
+    // clicking one visible column doesn't shove its neighbours into the rails.
+    // (This still reveals on activation from the quick switcher, links, search,
+    // etc. when the target is off-screen.)
     useLayoutEffect(() => {
         const container = scrollRef.current;
         if (container && activeIndex >= 0) {
             const viewport = container.clientWidth;
             const panelWidth = resolvePanelWidth(viewport);
+            const scrollPerPanel = panelWidth - SPINE_WIDTH;
             const maxScroll = Math.max(0, tabCount * panelWidth - viewport);
-            container.scrollLeft = clamp(
-                activeIndex * (panelWidth - SPINE_WIDTH),
+            const scrollLeft = container.scrollLeft;
+
+            // Rail counts at the current scroll position.
+            const left = clamp(
+                Math.floor(scrollLeft / scrollPerPanel + 0.0001),
                 0,
-                maxScroll,
+                tabCount - 1,
             );
+            let right = clamp(
+                Math.floor((maxScroll - scrollLeft) / scrollPerPanel + 0.0001),
+                0,
+                tabCount - 1,
+            );
+            if (left + right > tabCount - 1) {
+                right = tabCount - 1 - left;
+            }
+
+            const alreadyVisible =
+                activeIndex >= left && activeIndex <= tabCount - 1 - right;
+            if (!alreadyVisible) {
+                container.scrollLeft = clamp(
+                    activeIndex * scrollPerPanel,
+                    0,
+                    maxScroll,
+                );
+            }
         }
         recomputeStack();
     }, [activeIndex, tabCount, recomputeStack]);
