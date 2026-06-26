@@ -559,6 +559,19 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
 
                 <div className="relative flex min-w-0 flex-1 self-stretch overflow-hidden">
                     {hasTabs ? (
+                        isStackedTabs ? (
+                            <div className="flex min-w-0 flex-1 items-center px-3">
+                                <span
+                                    className="truncate text-xs font-medium"
+                                    style={{
+                                        color: "var(--text-secondary)",
+                                        opacity: 0.7,
+                                    }}
+                                >
+                                    Stacked tabs
+                                </span>
+                            </div>
+                        ) : (
                         <div
                             ref={tabStripRef}
                             data-pane-tab-strip={paneId}
@@ -845,6 +858,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                                 }}
                             />
                         </div>
+                        )
                     ) : (
                         <div className="flex min-w-0 flex-1 items-center px-3">
                             <span
