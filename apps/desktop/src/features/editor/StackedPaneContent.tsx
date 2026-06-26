@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+} from "react";
 import {
     useEditorStore,
     selectEditorPaneState,
@@ -44,13 +50,15 @@ const PANEL_WIDTH = 700;
 // Width of a panel's vertical spine (rotated title).
 const SPINE_WIDTH = 32;
 
-// A panel's body only counts as "revealed" (worth mounting its heavy editor)
-// once more than its spine plus this buffer is visible.
-const CONTENT_REVEAL_BUFFER_PX = 64;
+// How far a panel must scroll before it becomes a spine. With uniform panel
+// widths the stack boundaries are deterministic from scrollLeft.
+const SCROLL_PER_PANEL = PANEL_WIDTH - SPINE_WIDTH;
 
-const SUPPORTS_INTERSECTION_OBSERVER =
-    typeof IntersectionObserver !== "undefined";
 const SUPPORTS_RESIZE_OBSERVER = typeof ResizeObserver !== "undefined";
+
+function clamp(value: number, min: number, max: number) {
+    return Math.min(Math.max(value, min), max);
+}
 
 interface StackedPaneContentProps {
     paneId?: string;
@@ -67,116 +75,50 @@ export function StackedPaneContent({
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
 
     const tabs = pane.tabs;
+    const tabCount = tabs.length;
     const activeTabId = pane.activeTabId;
     const activeIndex = tabs.findIndex((t) => t.id === activeTabId);
     const isPaneFocused = paneId ? focusedPaneId === paneId : true;
 
     const scrollRef = useRef<HTMLDivElement>(null);
-    const observerRef = useRef<IntersectionObserver | null>(null);
-    const columnElsRef = useRef(new Map<string, HTMLElement>());
-    // Tabs whose content panel (beyond the spine) is actually revealed.
-    const [revealedTabIds, setRevealedTabIds] = useState<ReadonlySet<string>>(
-        () => new Set(),
-    );
-    // Tabs currently scrolled off the right edge — rendered as a stacked spine
-    // overlay pinned to the right (left spines accumulate naturally via sticky).
-    const [rightSpineIds, setRightSpineIds] = useState<readonly string[]>([]);
+    const tabCountRef = useRef(tabCount);
+    tabCountRef.current = tabCount;
 
-    const tabsRef = useRef(tabs);
-    tabsRef.current = tabs;
+    // How many panels are stacked as spines on each edge. Derived from scroll
+    // position so left and right behave identically (no per-panel sticky, so no
+    // z-index races or handoff gaps — the rails simply cover panels that have
+    // scrolled underneath them).
+    const [stack, setStack] = useState<{ left: number; right: number }>({
+        left: 0,
+        right: 0,
+    });
 
-    // Heavy panel bodies (CodeMirror, PDF, etc.) only mount once their content
-    // is scrolled into view. Left-pinned spines keep the panel technically on
-    // screen, so we gate on how much of the panel is visible, not intersection.
-    useEffect(() => {
-        if (!SUPPORTS_INTERSECTION_OBSERVER) {
-            return;
-        }
-        const root = scrollRef.current;
-        if (!root) {
-            return;
-        }
-        const observer = new IntersectionObserver(
-            (entries) => {
-                setRevealedTabIds((prev) => {
-                    const next = new Set(prev);
-                    let changed = false;
-                    for (const entry of entries) {
-                        const id = (entry.target as HTMLElement).dataset
-                            .stackedColumnId;
-                        if (!id) continue;
-                        const revealed =
-                            entry.isIntersecting &&
-                            entry.intersectionRect.width >
-                                SPINE_WIDTH + CONTENT_REVEAL_BUFFER_PX;
-                        if (revealed) {
-                            if (!next.has(id)) {
-                                next.add(id);
-                                changed = true;
-                            }
-                        } else if (next.has(id)) {
-                            next.delete(id);
-                            changed = true;
-                        }
-                    }
-                    return changed ? next : prev;
-                });
-            },
-            {
-                root,
-                threshold: Array.from({ length: 11 }, (_, i) => i / 10),
-            },
-        );
-        observerRef.current = observer;
-        for (const el of columnElsRef.current.values()) {
-            observer.observe(el);
-        }
-        return () => {
-            observer.disconnect();
-            observerRef.current = null;
-        };
-    }, []);
-
-    const registerColumn = useCallback(
-        (tabId: string, el: HTMLElement | null) => {
-            const map = columnElsRef.current;
-            const observer = observerRef.current;
-            const previous = map.get(tabId);
-            if (previous && previous !== el) {
-                observer?.unobserve(previous);
-            }
-            if (el) {
-                map.set(tabId, el);
-                observer?.observe(el);
-            } else {
-                map.delete(tabId);
-            }
-        },
-        [],
-    );
-
-    // Panels scrolled off the right edge become a stacked spine overlay on the
-    // right. Computed imperatively from geometry on every scroll frame.
-    const recomputeRightSpines = useCallback(() => {
+    const recomputeStack = useCallback(() => {
         const container = scrollRef.current;
         if (!container) return;
-        const containerRect = container.getBoundingClientRect();
-        const ids: string[] = [];
-        for (const tab of tabsRef.current) {
-            const el = columnElsRef.current.get(tab.id);
-            if (!el) continue;
-            const rect = el.getBoundingClientRect();
-            // The panel's content has slid past the right edge (only a spine's
-            // worth would remain), so represent it in the right overlay.
-            if (rect.left >= containerRect.right - SPINE_WIDTH) {
-                ids.push(tab.id);
-            }
+        const count = tabCountRef.current;
+        if (count === 0) return;
+        const viewport = container.clientWidth;
+        const scrollLeft = container.scrollLeft;
+        const maxScroll = Math.max(0, count * PANEL_WIDTH - viewport);
+
+        // Panel i is left-stacked once scrolled past it: scrollLeft >= (i+1)*step.
+        let left = Math.floor(scrollLeft / SCROLL_PER_PANEL + 0.0001);
+        // Panel (count-1-j) is right-stacked symmetrically from the far edge.
+        let right = Math.floor(
+            (maxScroll - scrollLeft) / SCROLL_PER_PANEL + 0.0001,
+        );
+        left = clamp(left, 0, count - 1);
+        right = clamp(right, 0, count - 1);
+        // Always keep at least one panel revealed between the rails.
+        if (left + right > count - 1) {
+            right = count - 1 - left;
         }
-        setRightSpineIds((prev) =>
-            prev.length === ids.length &&
-            prev.every((id, i) => id === ids[i])
+
+        setStack((prev) =>
+            prev.left === left && prev.right === right
                 ? prev
-                : ids,
+                : { left, right },
         );
     }, []);
 
@@ -186,22 +128,22 @@ export function StackedPaneContent({
         let raf = 0;
         const schedule = () => {
             if (typeof requestAnimationFrame === "undefined") {
-                recomputeRightSpines();
+                recomputeStack();
                 return;
             }
             if (raf) return;
             raf = requestAnimationFrame(() => {
                 raf = 0;
-                recomputeRightSpines();
+                recomputeStack();
             });
         };
         container.addEventListener("scroll", schedule, { passive: true });
         let resizeObserver: ResizeObserver | null = null;
         if (SUPPORTS_RESIZE_OBSERVER) {
-            resizeObserver = new ResizeObserver(() => recomputeRightSpines());
+            resizeObserver = new ResizeObserver(() => recomputeStack());
             resizeObserver.observe(container);
         }
-        recomputeRightSpines();
+        recomputeStack();
         return () => {
             container.removeEventListener("scroll", schedule);
             resizeObserver?.disconnect();
@@ -209,19 +151,25 @@ export function StackedPaneContent({
                 cancelAnimationFrame(raf);
             }
         };
-    }, [recomputeRightSpines]);
+    }, [recomputeStack]);
 
-    // Reveal the active panel by scrolling its content out from under the left
-    // spine stack — covers clicks, quick switcher, links and search.
-    useEffect(() => {
-        if (!activeTabId) return;
+    // Reveal the active panel: scroll so it becomes the leading content panel
+    // just right of the left spine stack. Covers clicks, quick switcher, links
+    // and search. Recompute the stack right after so rails update in the same
+    // frame.
+    useLayoutEffect(() => {
         const container = scrollRef.current;
-        const el = columnElsRef.current.get(activeTabId);
-        if (!container || !el) return;
-        const leftSpines = Math.max(0, activeIndex) * SPINE_WIDTH;
-        container.scrollLeft = Math.max(0, el.offsetLeft - leftSpines);
-        recomputeRightSpines();
-    }, [activeTabId, activeIndex, recomputeRightSpines]);
+        if (container && activeIndex >= 0) {
+            const viewport = container.clientWidth;
+            const maxScroll = Math.max(0, tabCount * PANEL_WIDTH - viewport);
+            container.scrollLeft = clamp(
+                activeIndex * SCROLL_PER_PANEL,
+                0,
+                maxScroll,
+            );
+        }
+        recomputeStack();
+    }, [activeIndex, tabCount, recomputeStack]);
 
     // Column reorder via spine drag. MVP scope: within the same pane only.
     const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
@@ -247,16 +195,17 @@ export function StackedPaneContent({
         [draggingTabId, pane.tabs, paneId, reorderPaneTabs],
     );
 
-    if (tabs.length === 0) {
+    if (tabCount === 0) {
         if (paneId) {
             return <WorkspacePaneEmptyState paneId={paneId} />;
         }
         return null;
     }
 
-    const rightSpineTabs = rightSpineIds
-        .map((id) => tabs.find((t) => t.id === id))
-        .filter((t): t is Tab => Boolean(t));
+    const firstContent = stack.left;
+    const lastContent = tabCount - 1 - stack.right;
+    const leftStackTabs = tabs.slice(0, stack.left);
+    const rightStackTabs = stack.right > 0 ? tabs.slice(lastContent + 1) : [];
 
     return (
         <div
@@ -266,24 +215,33 @@ export function StackedPaneContent({
             aria-label="Stacked tabs"
             className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
         >
+            {/* Left spine rail: a zero-width sticky anchor whose opaque spines
+                cover panels that have scrolled underneath it. */}
+            <SpineRail side="left" count={stack.left}>
+                {leftStackTabs.map((tab) => (
+                    <SpineButton
+                        key={tab.id}
+                        tab={tab}
+                        isActive={tab.id === activeTabId}
+                        onClick={() => switchTab(tab.id)}
+                    />
+                ))}
+            </SpineRail>
+
             {tabs.map((tab, index) => {
                 const isActive = tab.id === activeTabId;
-                // Mount the heavy body when its content is revealed (or always,
-                // when IntersectionObserver is unavailable, e.g. tests). The
-                // active panel always mounts so it stays interactive.
-                const shouldMount =
-                    !SUPPORTS_INTERSECTION_OBSERVER ||
-                    isActive ||
-                    revealedTabIds.has(tab.id);
+                const isContent =
+                    index >= firstContent && index <= lastContent;
                 return (
                     <StackedColumn
                         key={tab.id}
                         tab={tab}
                         paneId={paneId}
-                        index={index}
                         isActive={isActive}
                         isPaneFocused={isPaneFocused}
-                        shouldMount={shouldMount}
+                        isContent={isContent}
+                        leftStackWidth={stack.left * SPINE_WIDTH}
+                        shouldMount={isActive || isContent}
                         emptyStateMessage={emptyStateMessage}
                         isDragging={draggingTabId === tab.id}
                         isDragOver={
@@ -303,58 +261,103 @@ export function StackedPaneContent({
                             setDraggingTabId(null);
                             setDragOverTabId(null);
                         }}
-                        registerColumn={registerColumn}
                     />
                 );
             })}
 
-            {rightSpineTabs.length > 0 && (
-                <div
-                    aria-hidden="true"
-                    className="pointer-events-none sticky top-0 flex h-full flex-row self-stretch"
-                    style={{ right: 0, zIndex: 2000 }}
-                >
-                    {rightSpineTabs.map((tab) => (
-                        <button
-                            key={tab.id}
-                            type="button"
-                            tabIndex={-1}
-                            onClick={() => switchTab(tab.id)}
-                            title={tab.title}
-                            className="pointer-events-auto flex h-full items-center justify-center py-3"
-                            style={{
-                                width: SPINE_WIDTH,
-                                flexShrink: 0,
-                                cursor: "pointer",
-                                background: "var(--bg-secondary)",
-                                borderLeft: "1px solid var(--border)",
-                                color: "var(--text-secondary)",
-                            }}
-                        >
-                            <span
-                                className="truncate text-[12px] font-medium"
-                                style={{
-                                    writingMode: "vertical-rl",
-                                    transform: "rotate(180deg)",
-                                    maxHeight: "100%",
-                                }}
-                            >
-                                {tab.title}
-                            </span>
-                        </button>
-                    ))}
-                </div>
-            )}
+            <SpineRail side="right" count={stack.right}>
+                {rightStackTabs.map((tab) => (
+                    <SpineButton
+                        key={tab.id}
+                        tab={tab}
+                        isActive={tab.id === activeTabId}
+                        onClick={() => switchTab(tab.id)}
+                    />
+                ))}
+            </SpineRail>
         </div>
+    );
+}
+
+// A zero-width sticky anchor pinned to one edge; its absolutely-positioned,
+// opaque child row of spines overlays panels scrolling underneath without
+// taking layout space (so it never shifts the scrollable content).
+function SpineRail({
+    side,
+    count,
+    children,
+}: {
+    side: "left" | "right";
+    count: number;
+    children: React.ReactNode;
+}) {
+    if (count <= 0) return null;
+    return (
+        <div
+            className="pointer-events-none sticky top-0 self-stretch"
+            style={{ [side]: 0, width: 0, zIndex: 50 } as React.CSSProperties}
+        >
+            <div
+                className="absolute inset-y-0 flex flex-row"
+                style={{ [side]: 0 } as React.CSSProperties}
+            >
+                {children}
+            </div>
+        </div>
+    );
+}
+
+function SpineButton({
+    tab,
+    isActive,
+    onClick,
+}: {
+    tab: Tab;
+    isActive: boolean;
+    onClick: () => void;
+}) {
+    return (
+        <button
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={onClick}
+            title={tab.title}
+            className="pointer-events-auto flex h-full items-center justify-center py-3"
+            style={{
+                width: SPINE_WIDTH,
+                flexShrink: 0,
+                cursor: "pointer",
+                background: isActive
+                    ? "var(--bg-primary)"
+                    : "var(--bg-secondary)",
+                borderRight: "1px solid var(--border)",
+                color: isActive
+                    ? "var(--text-primary)"
+                    : "var(--text-secondary)",
+            }}
+        >
+            <span
+                className="truncate text-[12px] font-medium"
+                style={{
+                    writingMode: "vertical-rl",
+                    transform: "rotate(180deg)",
+                    maxHeight: "100%",
+                }}
+            >
+                {tab.title}
+            </span>
+        </button>
     );
 }
 
 interface StackedColumnProps {
     tab: Tab;
     paneId?: string;
-    index: number;
     isActive: boolean;
     isPaneFocused: boolean;
+    isContent: boolean;
+    leftStackWidth: number;
     shouldMount: boolean;
     emptyStateMessage?: string;
     isDragging: boolean;
@@ -364,15 +367,15 @@ interface StackedColumnProps {
     onDragEnter: () => void;
     onDrop: () => void;
     onDragEnd: () => void;
-    registerColumn: (tabId: string, el: HTMLElement | null) => void;
 }
 
 function StackedColumn({
     tab,
     paneId,
-    index,
     isActive,
     isPaneFocused,
+    isContent,
+    leftStackWidth,
     shouldMount,
     emptyStateMessage,
     isDragging,
@@ -382,14 +385,7 @@ function StackedColumn({
     onDragEnter,
     onDrop,
     onDragEnd,
-    registerColumn,
 }: StackedColumnProps) {
-    const tabId = tab.id;
-    const setRef = useCallback(
-        (el: HTMLElement | null) => registerColumn(tabId, el),
-        [registerColumn, tabId],
-    );
-
     const dropTargetProps = {
         onDragEnter,
         onDragOver: (event: React.DragEvent) => {
@@ -404,22 +400,17 @@ function StackedColumn({
 
     return (
         <div
-            ref={setRef}
-            data-stacked-column-id={tabId}
+            data-stacked-column-id={tab.id}
             data-stacked-column-active={isActive ? "true" : undefined}
-            className="relative h-full min-h-0 overflow-hidden"
+            // No overflow:hidden here — it would become the sticky containing
+            // block and stop the in-flow spine from pinning. Content clipping is
+            // handled by the inner content wrapper instead.
+            className="relative flex h-full min-h-0"
             style={{
                 width: PANEL_WIDTH,
                 flexShrink: 0,
-                // Sticky panels pin their left spine as they scroll off-screen;
-                // offsetting each by index * spine width makes the spines stack
-                // side-by-side at the left edge instead of overlapping.
-                position: "sticky",
-                left: index * SPINE_WIDTH,
-                zIndex: index,
                 background: "var(--bg-primary)",
                 borderRight: "1px solid var(--border)",
-                boxShadow: "-8px 0 16px -12px rgba(0, 0, 0, 0.35)",
                 opacity: isDragging ? 0.5 : 1,
             }}
             onMouseDownCapture={() => {
@@ -427,14 +418,22 @@ function StackedColumn({
             }}
             {...dropTargetProps}
         >
-            <StackedColumnSpine
-                title={tab.title}
-                isActive={isActive}
-                isDragOver={isDragOver}
-                onClick={onActivate}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-            />
+            {/* The in-flow spine only renders while the panel is content; once it
+                is fully scrolled under a rail, the rail's duplicate represents
+                it. It is sticky so the leading panel's spine stays pinned at the
+                rail edge as the content scrolls (this is what keeps the very
+                first panel from sliding away when no rail covers it yet). */}
+            {isContent && (
+                <StackedColumnSpine
+                    title={tab.title}
+                    isActive={isActive}
+                    isDragOver={isDragOver}
+                    stickyLeft={leftStackWidth}
+                    onClick={onActivate}
+                    onDragStart={onDragStart}
+                    onDragEnd={onDragEnd}
+                />
+            )}
             <div
                 className="absolute inset-y-0 right-0 overflow-hidden"
                 style={{ left: SPINE_WIDTH }}
@@ -455,12 +454,13 @@ function StackedColumn({
     );
 }
 
-// Always-visible vertical spine carrying the rotated tab title. Pinned at the
-// panel's left edge; clicking it scrolls/activates the panel.
+// The canonical, in-flow spine for a panel (role=tab). When the panel scrolls
+// under a rail this spine is covered by the rail's opaque duplicate.
 function StackedColumnSpine({
     title,
     isActive,
     isDragOver,
+    stickyLeft,
     onClick,
     onDragStart,
     onDragEnd,
@@ -468,6 +468,7 @@ function StackedColumnSpine({
     title: string;
     isActive: boolean;
     isDragOver: boolean;
+    stickyLeft: number;
     onClick: () => void;
     onDragStart: () => void;
     onDragEnd: () => void;
@@ -485,8 +486,10 @@ function StackedColumnSpine({
             }}
             onDragEnd={onDragEnd}
             title={title}
-            className="absolute inset-y-0 left-0 z-10 flex items-center justify-center py-3"
+            className="z-20 flex shrink-0 items-center justify-center py-3 self-stretch"
             style={{
+                position: "sticky",
+                left: stickyLeft,
                 width: SPINE_WIDTH,
                 cursor: "grab",
                 background: isActive
