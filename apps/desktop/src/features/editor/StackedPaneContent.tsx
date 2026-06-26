@@ -1,10 +1,4 @@
-import React, {
-    useCallback,
-    useEffect,
-    useLayoutEffect,
-    useRef,
-    useState,
-} from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
     useEditorStore,
     selectEditorPaneState,
@@ -47,9 +41,7 @@ const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 // panels (Andy Matuschak "sliding panes" / Obsidian stacked tabs).
 const PANEL_WIDTH = 700;
 
-// Width of a panel's vertical spine (rotated title). Spines are sticky and
-// accumulate at BOTH edges as you scroll: panels scrolled off to the left pin
-// their left spine, panels not yet reached pin their right spine.
+// Width of a panel's vertical spine (rotated title).
 const SPINE_WIDTH = 32;
 
 // A panel's body only counts as "revealed" (worth mounting its heavy editor)
@@ -59,21 +51,6 @@ const CONTENT_REVEAL_BUFFER_PX = 64;
 const SUPPORTS_INTERSECTION_OBSERVER =
     typeof IntersectionObserver !== "undefined";
 const SUPPORTS_RESIZE_OBSERVER = typeof ResizeObserver !== "undefined";
-
-// Scoped CSS that toggles spine/content visibility by pin state. data-pin is
-// written by the scroll handler. Left/open panels show their left spine and
-// content; right-pinned panels show only their right spine (content hidden and
-// background transparent so the active panel and the right spine stack read
-// cleanly).
-const STACKED_STYLES = `
-.nw-stacked .nw-stacked-spine-right { display: none; }
-.nw-stacked .nw-stacked-col[data-pin="right"] .nw-stacked-spine-right { display: flex; }
-.nw-stacked .nw-stacked-col[data-pin="right"] .nw-stacked-spine-left,
-.nw-stacked .nw-stacked-col[data-pin="right"] .nw-stacked-content { visibility: hidden; }
-.nw-stacked .nw-stacked-col[data-pin="right"] { background: transparent !important; box-shadow: none !important; }
-`;
-
-type PinState = "left" | "right" | "open";
 
 interface StackedPaneContentProps {
     paneId?: string;
@@ -101,14 +78,16 @@ export function StackedPaneContent({
     const [revealedTabIds, setRevealedTabIds] = useState<ReadonlySet<string>>(
         () => new Set(),
     );
+    // Tabs currently scrolled off the right edge — rendered as a stacked spine
+    // overlay pinned to the right (left spines accumulate naturally via sticky).
+    const [rightSpineIds, setRightSpineIds] = useState<readonly string[]>([]);
 
-    // Latest tab order for the scroll handler without re-subscribing listeners.
     const tabsRef = useRef(tabs);
     tabsRef.current = tabs;
 
     // Heavy panel bodies (CodeMirror, PDF, etc.) only mount once their content
-    // is scrolled into view. Pinned spines keep the panel technically on screen,
-    // so we gate on how much of the panel is visible, not mere intersection.
+    // is scrolled into view. Left-pinned spines keep the panel technically on
+    // screen, so we gate on how much of the panel is visible, not intersection.
     useEffect(() => {
         if (!SUPPORTS_INTERSECTION_OBSERVER) {
             return;
@@ -176,32 +155,29 @@ export function StackedPaneContent({
         [],
     );
 
-    // Classify each panel as pinned-left, pinned-right or open from its sticky
-    // geometry, and stamp data-pin so the scoped CSS shows the right spine. Done
-    // imperatively (no React state) so it stays cheap on every scroll frame.
-    const updatePinStates = useCallback(() => {
+    // Panels scrolled off the right edge become a stacked spine overlay on the
+    // right. Computed imperatively from geometry on every scroll frame.
+    const recomputeRightSpines = useCallback(() => {
         const container = scrollRef.current;
         if (!container) return;
-        const orderedTabs = tabsRef.current;
-        const count = orderedTabs.length;
         const containerRect = container.getBoundingClientRect();
-        orderedTabs.forEach((tab, index) => {
+        const ids: string[] = [];
+        for (const tab of tabsRef.current) {
             const el = columnElsRef.current.get(tab.id);
-            if (!el) return;
+            if (!el) continue;
             const rect = el.getBoundingClientRect();
-            const leftThreshold = containerRect.left + index * SPINE_WIDTH;
-            const rightThreshold =
-                containerRect.right - (count - 1 - index) * SPINE_WIDTH;
-            const pinnedLeft = rect.left <= leftThreshold + 1;
-            const pinnedRight =
-                !pinnedLeft && rect.right >= rightThreshold - 1;
-            const pin: PinState = pinnedRight
-                ? "right"
-                : pinnedLeft
-                  ? "left"
-                  : "open";
-            el.dataset.pin = pin;
-        });
+            // The panel's content has slid past the right edge (only a spine's
+            // worth would remain), so represent it in the right overlay.
+            if (rect.left >= containerRect.right - SPINE_WIDTH) {
+                ids.push(tab.id);
+            }
+        }
+        setRightSpineIds((prev) =>
+            prev.length === ids.length &&
+            prev.every((id, i) => id === ids[i])
+                ? prev
+                : ids,
+        );
     }, []);
 
     useEffect(() => {
@@ -209,24 +185,23 @@ export function StackedPaneContent({
         if (!container) return;
         let raf = 0;
         const schedule = () => {
-            if (raf || typeof requestAnimationFrame === "undefined") {
-                if (typeof requestAnimationFrame === "undefined") {
-                    updatePinStates();
-                }
+            if (typeof requestAnimationFrame === "undefined") {
+                recomputeRightSpines();
                 return;
             }
+            if (raf) return;
             raf = requestAnimationFrame(() => {
                 raf = 0;
-                updatePinStates();
+                recomputeRightSpines();
             });
         };
         container.addEventListener("scroll", schedule, { passive: true });
         let resizeObserver: ResizeObserver | null = null;
         if (SUPPORTS_RESIZE_OBSERVER) {
-            resizeObserver = new ResizeObserver(() => updatePinStates());
+            resizeObserver = new ResizeObserver(() => recomputeRightSpines());
             resizeObserver.observe(container);
         }
-        updatePinStates();
+        recomputeRightSpines();
         return () => {
             container.removeEventListener("scroll", schedule);
             resizeObserver?.disconnect();
@@ -234,21 +209,19 @@ export function StackedPaneContent({
                 cancelAnimationFrame(raf);
             }
         };
-    }, [updatePinStates]);
+    }, [recomputeRightSpines]);
 
     // Reveal the active panel by scrolling its content out from under the left
     // spine stack — covers clicks, quick switcher, links and search.
-    useLayoutEffect(() => {
-        if (activeTabId) {
-            const container = scrollRef.current;
-            const el = columnElsRef.current.get(activeTabId);
-            if (container && el) {
-                const leftSpines = Math.max(0, activeIndex) * SPINE_WIDTH;
-                container.scrollLeft = Math.max(0, el.offsetLeft - leftSpines);
-            }
-        }
-        updatePinStates();
-    }, [activeTabId, activeIndex, tabs, updatePinStates]);
+    useEffect(() => {
+        if (!activeTabId) return;
+        const container = scrollRef.current;
+        const el = columnElsRef.current.get(activeTabId);
+        if (!container || !el) return;
+        const leftSpines = Math.max(0, activeIndex) * SPINE_WIDTH;
+        container.scrollLeft = Math.max(0, el.offsetLeft - leftSpines);
+        recomputeRightSpines();
+    }, [activeTabId, activeIndex, recomputeRightSpines]);
 
     // Column reorder via spine drag. MVP scope: within the same pane only.
     const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
@@ -281,15 +254,18 @@ export function StackedPaneContent({
         return null;
     }
 
+    const rightSpineTabs = rightSpineIds
+        .map((id) => tabs.find((t) => t.id === id))
+        .filter((t): t is Tab => Boolean(t));
+
     return (
         <div
             ref={scrollRef}
             role="tablist"
             aria-orientation="horizontal"
             aria-label="Stacked tabs"
-            className="nw-stacked relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
+            className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
         >
-            <style>{STACKED_STYLES}</style>
             {tabs.map((tab, index) => {
                 const isActive = tab.id === activeTabId;
                 // Mount the heavy body when its content is revealed (or always,
@@ -305,8 +281,6 @@ export function StackedPaneContent({
                         tab={tab}
                         paneId={paneId}
                         index={index}
-                        spinesToRight={tabs.length - 1 - index}
-                        zIndex={1000 - Math.abs(index - activeIndex)}
                         isActive={isActive}
                         isPaneFocused={isPaneFocused}
                         shouldMount={shouldMount}
@@ -333,6 +307,44 @@ export function StackedPaneContent({
                     />
                 );
             })}
+
+            {rightSpineTabs.length > 0 && (
+                <div
+                    aria-hidden="true"
+                    className="pointer-events-none sticky top-0 flex h-full flex-row self-stretch"
+                    style={{ right: 0, zIndex: 2000 }}
+                >
+                    {rightSpineTabs.map((tab) => (
+                        <button
+                            key={tab.id}
+                            type="button"
+                            tabIndex={-1}
+                            onClick={() => switchTab(tab.id)}
+                            title={tab.title}
+                            className="pointer-events-auto flex h-full items-center justify-center py-3"
+                            style={{
+                                width: SPINE_WIDTH,
+                                flexShrink: 0,
+                                cursor: "pointer",
+                                background: "var(--bg-secondary)",
+                                borderLeft: "1px solid var(--border)",
+                                color: "var(--text-secondary)",
+                            }}
+                        >
+                            <span
+                                className="truncate text-[12px] font-medium"
+                                style={{
+                                    writingMode: "vertical-rl",
+                                    transform: "rotate(180deg)",
+                                    maxHeight: "100%",
+                                }}
+                            >
+                                {tab.title}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
@@ -341,8 +353,6 @@ interface StackedColumnProps {
     tab: Tab;
     paneId?: string;
     index: number;
-    spinesToRight: number;
-    zIndex: number;
     isActive: boolean;
     isPaneFocused: boolean;
     shouldMount: boolean;
@@ -361,8 +371,6 @@ function StackedColumn({
     tab,
     paneId,
     index,
-    spinesToRight,
-    zIndex,
     isActive,
     isPaneFocused,
     shouldMount,
@@ -399,17 +407,16 @@ function StackedColumn({
             ref={setRef}
             data-stacked-column-id={tabId}
             data-stacked-column-active={isActive ? "true" : undefined}
-            className="nw-stacked-col relative h-full min-h-0 overflow-hidden"
+            className="relative h-full min-h-0 overflow-hidden"
             style={{
                 width: PANEL_WIDTH,
                 flexShrink: 0,
-                // Sticky on both edges: panels pin their left spine when scrolled
-                // off the left, and their right spine when still off the right.
-                // Per-index offsets stack the spines side-by-side at each edge.
+                // Sticky panels pin their left spine as they scroll off-screen;
+                // offsetting each by index * spine width makes the spines stack
+                // side-by-side at the left edge instead of overlapping.
                 position: "sticky",
                 left: index * SPINE_WIDTH,
-                right: spinesToRight * SPINE_WIDTH,
-                zIndex,
+                zIndex: index,
                 background: "var(--bg-primary)",
                 borderRight: "1px solid var(--border)",
                 boxShadow: "-8px 0 16px -12px rgba(0, 0, 0, 0.35)",
@@ -421,16 +428,6 @@ function StackedColumn({
             {...dropTargetProps}
         >
             <StackedColumnSpine
-                side="left"
-                title={tab.title}
-                isActive={isActive}
-                isDragOver={isDragOver}
-                onClick={onActivate}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-            />
-            <StackedColumnSpine
-                side="right"
                 title={tab.title}
                 isActive={isActive}
                 isDragOver={isDragOver}
@@ -439,7 +436,7 @@ function StackedColumn({
                 onDragEnd={onDragEnd}
             />
             <div
-                className="nw-stacked-content absolute inset-y-0 right-0 overflow-hidden"
+                className="absolute inset-y-0 right-0 overflow-hidden"
                 style={{ left: SPINE_WIDTH }}
             >
                 {shouldMount ? (
@@ -458,11 +455,9 @@ function StackedColumn({
     );
 }
 
-// Vertical spine carrying the rotated tab title. The left spine is the canonical
-// tab handle (role=tab); the right spine is a visual duplicate shown only when
-// the panel is pinned to the right edge, so it is hidden from assistive tech.
+// Always-visible vertical spine carrying the rotated tab title. Pinned at the
+// panel's left edge; clicking it scrolls/activates the panel.
 function StackedColumnSpine({
-    side,
     title,
     isActive,
     isDragOver,
@@ -470,7 +465,6 @@ function StackedColumnSpine({
     onDragStart,
     onDragEnd,
 }: {
-    side: "left" | "right";
     title: string;
     isActive: boolean;
     isDragOver: boolean;
@@ -478,13 +472,11 @@ function StackedColumnSpine({
     onDragStart: () => void;
     onDragEnd: () => void;
 }) {
-    const isLeft = side === "left";
     return (
         <button
             type="button"
-            {...(isLeft
-                ? { role: "tab", "aria-selected": isActive }
-                : { "aria-hidden": true, tabIndex: -1 })}
+            role="tab"
+            aria-selected={isActive}
             onClick={onClick}
             draggable
             onDragStart={(event) => {
@@ -493,22 +485,17 @@ function StackedColumnSpine({
             }}
             onDragEnd={onDragEnd}
             title={title}
-            className={`${
-                isLeft ? "nw-stacked-spine-left" : "nw-stacked-spine-right"
-            } absolute inset-y-0 z-10 flex items-center justify-center py-3`}
+            className="absolute inset-y-0 left-0 z-10 flex items-center justify-center py-3"
             style={{
-                [isLeft ? "left" : "right"]: 0,
                 width: SPINE_WIDTH,
                 cursor: "grab",
                 background: isActive
                     ? "var(--bg-primary)"
                     : "var(--bg-secondary)",
-                [isLeft ? "borderRight" : "borderLeft"]: isDragOver
+                borderRight: isDragOver
                     ? "2px solid var(--accent)"
                     : "1px solid var(--border)",
-                boxShadow: isActive
-                    ? `inset ${isLeft ? "2px" : "-2px"} 0 0 var(--accent)`
-                    : "none",
+                boxShadow: isActive ? "inset 2px 0 0 var(--accent)" : "none",
                 color: isActive
                     ? "var(--text-primary)"
                     : "var(--text-secondary)",
