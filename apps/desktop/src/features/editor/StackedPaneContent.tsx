@@ -45,7 +45,7 @@ const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
 // Fixed reading width of each note panel. The pane scrolls horizontally between
 // panels (Andy Matuschak "sliding panes" / Obsidian stacked tabs).
-const PANEL_WIDTH = 700;
+const PANEL_WIDTH = 600;
 
 // Width of a panel's vertical spine (rotated title).
 const SPINE_WIDTH = 32;
