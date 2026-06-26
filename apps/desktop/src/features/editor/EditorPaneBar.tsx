@@ -131,6 +131,10 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
     const goBack = useEditorStore((state) => state.goBack);
     const goForward = useEditorStore((state) => state.goForward);
     const closePane = useEditorStore((state) => state.closePane);
+    const togglePaneTabDisplayMode = useEditorStore(
+        (state) => state.togglePaneTabDisplayMode,
+    );
+    const isStackedTabs = pane.tabDisplayMode === "stacked";
     const moveTabToNewSplit = useEditorStore(
         (state) => state.moveTabToNewSplit,
     );
@@ -1060,6 +1064,14 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
                     menu={paneContextMenu}
                     onClose={() => setPaneContextMenu(null)}
                     entries={[
+                        {
+                            label: isStackedTabs
+                                ? "Unstack tabs"
+                                : "Stack tabs",
+                            action: () => togglePaneTabDisplayMode(paneId),
+                            disabled: !hasTabs,
+                        },
+                        { type: "separator" },
                         {
                             label: `Close Pane ${paneIndex + 1}`,
                             action: () => closePane(paneId),
