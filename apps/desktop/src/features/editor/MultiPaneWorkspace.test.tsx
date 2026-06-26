@@ -222,6 +222,7 @@ describe("MultiPaneWorkspace", () => {
                     activationHistory: [],
                     tabNavigationHistory: [],
                     tabNavigationIndex: -1,
+                    tabDisplayMode: "default",
                 },
                 {
                     id: "secondary",
@@ -232,6 +233,7 @@ describe("MultiPaneWorkspace", () => {
                     activationHistory: [],
                     tabNavigationHistory: [],
                     tabNavigationIndex: -1,
+                    tabDisplayMode: "default",
                 },
                 {
                     id: "tertiary",
@@ -242,6 +244,7 @@ describe("MultiPaneWorkspace", () => {
                     activationHistory: [],
                     tabNavigationHistory: [],
                     tabNavigationIndex: -1,
+                    tabDisplayMode: "default",
                 },
             ],
             focusedPaneId: "primary",

@@ -382,6 +382,96 @@ describe("editorSession", () => {
         ]);
     });
 
+    it("persists and restores the per-pane stacked tab display mode", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "terminal-1",
+                            kind: "terminal",
+                            terminalId: "runtime-1",
+                            title: "Terminal 1",
+                            cwd: "/vaults/project-alpha",
+                        },
+                    ],
+                    activeTabId: "terminal-1",
+                    activationHistory: ["terminal-1"],
+                    tabNavigationHistory: ["terminal-1"],
+                    tabNavigationIndex: 0,
+                    tabDisplayMode: "stacked",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        {
+                            id: "terminal-2",
+                            kind: "terminal",
+                            terminalId: "runtime-2",
+                            title: "Terminal 2",
+                            cwd: "/vaults/project-alpha",
+                        },
+                    ],
+                    activeTabId: "terminal-2",
+                    activationHistory: ["terminal-2"],
+                    tabNavigationHistory: ["terminal-2"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+        });
+
+        expect(session.panes[0]?.tabDisplayMode).toBe("stacked");
+        expect(session.panes[1]?.tabDisplayMode).toBe("default");
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.panes?.[0]?.tabDisplayMode).toBe("stacked");
+        expect(restored?.panes?.[1]?.tabDisplayMode).toBe("default");
+    });
+
+    it("defaults the tab display mode when a persisted pane omits it", async () => {
+        const session = buildPersistedSession({
+            panes: [
+                {
+                    id: "primary",
+                    tabs: [
+                        {
+                            id: "terminal-1",
+                            kind: "terminal",
+                            terminalId: "runtime-1",
+                            title: "Terminal 1",
+                            cwd: "/vaults/project-alpha",
+                        },
+                    ],
+                    activeTabId: "terminal-1",
+                    activationHistory: ["terminal-1"],
+                    tabNavigationHistory: ["terminal-1"],
+                    tabNavigationIndex: 0,
+                },
+            ],
+            focusedPaneId: "primary",
+        });
+
+        // Simulate an older persisted payload that predates the field.
+        delete (session.panes[0] as { tabDisplayMode?: unknown }).tabDisplayMode;
+
+        localStorage.setItem(
+            getEditorSessionKey("/vaults/project-alpha"),
+            JSON.stringify(session),
+        );
+
+        const restored = await restorePersistedSession("/vaults/project-alpha");
+
+        expect(restored?.panes?.[0]?.tabDisplayMode).toBe("default");
+    });
+
     it("persists and restores workspace chat history tabs as first-class tabs", async () => {
         const session = buildPersistedSession({
             panes: [

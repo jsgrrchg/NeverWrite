@@ -60,7 +60,9 @@ export type {
 export { markSessionReady, readPersistedSession } from "./editorSession";
 export {
     createEditorPaneState,
+    DEFAULT_TAB_DISPLAY_MODE,
     getEffectivePaneWorkspace,
+    normalizeTabDisplayMode,
     selectEditorPaneActiveTab,
     selectEditorPaneState,
     selectEditorPaneTabs,
@@ -71,6 +73,8 @@ export {
     selectPaneCount,
     selectPaneNeighbor,
     selectPaneState,
+    selectPaneTab,
+    selectPaneTabDisplayMode,
 } from "./editorWorkspace";
 export type {
     EditorPaneInput,
@@ -78,6 +82,7 @@ export type {
     EditorWorkspaceState,
     EditorWorkspaceStore,
     ReloadedDetail,
+    TabDisplayMode,
     WorkspacePaneNeighborDirection,
 } from "./editorWorkspace";
 
