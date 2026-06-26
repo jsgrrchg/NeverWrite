@@ -207,6 +207,9 @@ export function StackedPaneContent({
     return (
         <div
             ref={scrollRef}
+            role="tablist"
+            aria-orientation="horizontal"
+            aria-label="Stacked tabs"
             className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
         >
             {tabs.map((tab) => {
@@ -407,6 +410,9 @@ function StackedColumnSpine({
     return (
         <button
             type="button"
+            role="tab"
+            aria-selected={false}
+            aria-expanded={false}
             onClick={onExpand}
             draggable
             onDragStart={(event) => {
@@ -475,6 +481,9 @@ function StackedColumnHeader({
         >
             <button
                 type="button"
+                role="tab"
+                aria-selected={isActive}
+                aria-expanded={true}
                 onClick={onActivate}
                 draggable
                 onDragStart={(event) => {
