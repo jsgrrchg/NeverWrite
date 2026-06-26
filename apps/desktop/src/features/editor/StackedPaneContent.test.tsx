@@ -52,7 +52,7 @@ describe("StackedPaneContent", () => {
         ).toHaveAttribute("aria-selected", "false");
     });
 
-    it("starts non-active columns collapsed and expands them on spine click", () => {
+    it("activates a panel when its spine is clicked", () => {
         setEditorTabs(
             [
                 {
@@ -76,12 +76,12 @@ describe("StackedPaneContent", () => {
 
         renderComponent(<EditorPaneContent />);
 
-        // Accordion default: only the active column is expanded; Beta is a spine.
+        // Both spines are always present; only the active one is selected.
         expect(
             screen.getByRole("tab", { name: /beta/i }),
-        ).toHaveAttribute("aria-expanded", "false");
+        ).toHaveAttribute("aria-selected", "false");
 
-        // Clicking Beta's spine expands and activates it.
+        // Clicking Beta's spine activates it (content reveals via scroll).
         act(() => {
             screen.getByRole("tab", { name: /beta/i }).click();
         });
@@ -89,19 +89,8 @@ describe("StackedPaneContent", () => {
             screen.getByRole("tab", { name: /beta/i }),
         ).toHaveAttribute("aria-selected", "true");
         expect(
-            screen.getByRole("tab", { name: /beta/i }),
-        ).toHaveAttribute("aria-expanded", "true");
-
-        // Re-activate Alpha, then toggle Beta shut from its spine.
-        act(() => {
-            screen.getByRole("tab", { name: /alpha/i }).click();
-        });
-        act(() => {
-            screen.getByRole("tab", { name: /beta/i }).click();
-        });
-        expect(
-            screen.getByRole("tab", { name: /beta/i }),
-        ).toHaveAttribute("aria-expanded", "false");
+            screen.getByRole("tab", { name: /alpha/i }),
+        ).toHaveAttribute("aria-selected", "false");
     });
 
     it("does not render the stacked tablist in default mode", () => {

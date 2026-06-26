@@ -37,18 +37,18 @@ const LazyAIChatSessionView = React.lazy(() =>
 
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
 
-// Width of the expanded content panel that sits to the right of a column's
-// spine. The pane scrolls horizontally between columns, mirroring Obsidian's
-// stacked tabs.
-const STACKED_COLUMN_WIDTH = 620;
+// Fixed reading width of each note panel. The pane scrolls horizontally between
+// panels (Andy Matuschak "sliding panes" / Obsidian stacked tabs).
+const PANEL_WIDTH = 700;
 
-// Width of a column's always-visible vertical spine (rotated title). Spines
-// stack like an accordion; clicking one expands its content panel.
+// Width of a panel's always-visible vertical spine (rotated title). Spines are
+// sticky and accumulate at the left edge as you scroll, so deeper panels read
+// as a stack of vertical titles you can scroll back through.
 const SPINE_WIDTH = 32;
 
-// Pre-mount columns within this horizontal margin of the viewport so scrolling
-// reveals ready content instead of a skeleton.
-const COLUMN_PREFETCH_MARGIN_PX = 800;
+// A panel's body only counts as "revealed" (worth mounting its heavy editor)
+// once more than its spine plus this buffer is visible.
+const CONTENT_REVEAL_BUFFER_PX = 64;
 
 const SUPPORTS_INTERSECTION_OBSERVER =
     typeof IntersectionObserver !== "undefined";
@@ -69,18 +69,20 @@ export function StackedPaneContent({
 
     const tabs = pane.tabs;
     const activeTabId = pane.activeTabId;
+    const activeIndex = tabs.findIndex((t) => t.id === activeTabId);
     const isPaneFocused = paneId ? focusedPaneId === paneId : true;
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const observerRef = useRef<IntersectionObserver | null>(null);
     const columnElsRef = useRef(new Map<string, HTMLElement>());
-    const [visibleTabIds, setVisibleTabIds] = useState<ReadonlySet<string>>(
+    // Tabs whose content panel (beyond the spine) is actually revealed.
+    const [revealedTabIds, setRevealedTabIds] = useState<ReadonlySet<string>>(
         () => new Set(),
     );
 
-    // Heavy column bodies (CodeMirror, PDF, etc.) only mount while near the
-    // viewport. The fixed column width bounds how many intersect at once, which
-    // caps the number of simultaneously live editor instances.
+    // Heavy panel bodies (CodeMirror, PDF, etc.) only mount once their content
+    // is scrolled into view. Pinned spines keep the panel technically on screen,
+    // so we gate on how much of the panel is visible, not mere intersection.
     useEffect(() => {
         if (!SUPPORTS_INTERSECTION_OBSERVER) {
             return;
@@ -91,14 +93,18 @@ export function StackedPaneContent({
         }
         const observer = new IntersectionObserver(
             (entries) => {
-                setVisibleTabIds((prev) => {
+                setRevealedTabIds((prev) => {
                     const next = new Set(prev);
                     let changed = false;
                     for (const entry of entries) {
                         const id = (entry.target as HTMLElement).dataset
                             .stackedColumnId;
                         if (!id) continue;
-                        if (entry.isIntersecting) {
+                        const revealed =
+                            entry.isIntersecting &&
+                            entry.intersectionRect.width >
+                                SPINE_WIDTH + CONTENT_REVEAL_BUFFER_PX;
+                        if (revealed) {
                             if (!next.has(id)) {
                                 next.add(id);
                                 changed = true;
@@ -113,8 +119,7 @@ export function StackedPaneContent({
             },
             {
                 root,
-                rootMargin: `0px ${COLUMN_PREFETCH_MARGIN_PX}px`,
-                threshold: 0,
+                threshold: Array.from({ length: 11 }, (_, i) => i / 10),
             },
         );
         observerRef.current = observer;
@@ -145,39 +150,18 @@ export function StackedPaneContent({
         [],
     );
 
-    // Ephemeral per-pane accordion state. A column is expanded when it is the
-    // active one OR the user explicitly expanded it; everything else shows just
-    // its vertical spine (Obsidian-style accordion). So by default only the
-    // active column is open and the rest are collapsed spines.
-    const [expandedTabIds, setExpandedTabIds] = useState<ReadonlySet<string>>(
-        () => new Set(),
-    );
-    const expandColumn = useCallback((tabId: string) => {
-        setExpandedTabIds((prev) => {
-            if (prev.has(tabId)) return prev;
-            const next = new Set(prev);
-            next.add(tabId);
-            return next;
-        });
-    }, []);
-    const collapseColumn = useCallback((tabId: string) => {
-        setExpandedTabIds((prev) => {
-            if (!prev.has(tabId)) return prev;
-            const next = new Set(prev);
-            next.delete(tabId);
-            return next;
-        });
-    }, []);
-
-    // Reveal the active column horizontally whenever it changes — covers both
-    // in-pane clicks and external activation (quick switcher, links, search).
+    // Reveal the active panel by scrolling its content out from under the left
+    // spine stack — covers clicks, quick switcher, links and search.
     useEffect(() => {
         if (!activeTabId) return;
+        const container = scrollRef.current;
         const el = columnElsRef.current.get(activeTabId);
-        el?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }, [activeTabId]);
+        if (!container || !el) return;
+        const leftSpines = Math.max(0, activeIndex) * SPINE_WIDTH;
+        container.scrollLeft = Math.max(0, el.offsetLeft - leftSpines);
+    }, [activeTabId, activeIndex]);
 
-    // Column reorder via header drag. MVP scope: within the same pane only.
+    // Column reorder via spine drag. MVP scope: within the same pane only.
     const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
     const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
     const handleColumnDrop = useCallback(
@@ -216,25 +200,23 @@ export function StackedPaneContent({
             aria-label="Stacked tabs"
             className="relative flex-1 min-h-0 min-w-0 w-full flex flex-row overflow-x-auto overflow-y-hidden"
         >
-            {tabs.map((tab) => {
+            {tabs.map((tab, index) => {
                 const isActive = tab.id === activeTabId;
-                // Expanded when active or explicitly expanded by the user.
-                const isExpanded = isActive || expandedTabIds.has(tab.id);
-                // Mount the heavy body only when expanded and (active or near
-                // the viewport). Mount everything when IO is unavailable.
+                // Mount the heavy body when its content is revealed (or always,
+                // when IntersectionObserver is unavailable, e.g. tests). The
+                // active panel always mounts so it stays interactive.
                 const shouldMount =
-                    isExpanded &&
-                    (!SUPPORTS_INTERSECTION_OBSERVER ||
-                        isActive ||
-                        visibleTabIds.has(tab.id));
+                    !SUPPORTS_INTERSECTION_OBSERVER ||
+                    isActive ||
+                    revealedTabIds.has(tab.id);
                 return (
                     <StackedColumn
                         key={tab.id}
                         tab={tab}
                         paneId={paneId}
+                        index={index}
                         isActive={isActive}
                         isPaneFocused={isPaneFocused}
-                        isExpanded={isExpanded}
                         shouldMount={shouldMount}
                         emptyStateMessage={emptyStateMessage}
                         isDragging={draggingTabId === tab.id}
@@ -243,20 +225,7 @@ export function StackedPaneContent({
                             draggingTabId !== null &&
                             draggingTabId !== tab.id
                         }
-                        onSpineClick={() => {
-                            if (isExpanded && !isActive) {
-                                // Toggle an already-open, non-active column shut.
-                                collapseColumn(tab.id);
-                            } else {
-                                // Open and activate a collapsed column.
-                                expandColumn(tab.id);
-                                switchTab(tab.id);
-                            }
-                        }}
-                        onActivate={() => {
-                            expandColumn(tab.id);
-                            switchTab(tab.id);
-                        }}
+                        onActivate={() => switchTab(tab.id)}
                         onDragStart={() => setDraggingTabId(tab.id)}
                         onDragEnter={() => {
                             if (draggingTabId && draggingTabId !== tab.id) {
@@ -279,14 +248,13 @@ export function StackedPaneContent({
 interface StackedColumnProps {
     tab: Tab;
     paneId?: string;
+    index: number;
     isActive: boolean;
     isPaneFocused: boolean;
-    isExpanded: boolean;
     shouldMount: boolean;
     emptyStateMessage?: string;
     isDragging: boolean;
     isDragOver: boolean;
-    onSpineClick: () => void;
     onActivate: () => void;
     onDragStart: () => void;
     onDragEnter: () => void;
@@ -298,14 +266,13 @@ interface StackedColumnProps {
 function StackedColumn({
     tab,
     paneId,
+    index,
     isActive,
     isPaneFocused,
-    isExpanded,
     shouldMount,
     emptyStateMessage,
     isDragging,
     isDragOver,
-    onSpineClick,
     onActivate,
     onDragStart,
     onDragEnter,
@@ -336,70 +303,67 @@ function StackedColumn({
             ref={setRef}
             data-stacked-column-id={tabId}
             data-stacked-column-active={isActive ? "true" : undefined}
-            data-stacked-column-expanded={isExpanded ? "true" : undefined}
-            className="relative flex h-full min-h-0 flex-row overflow-hidden"
+            className="relative h-full min-h-0 overflow-hidden"
             style={{
+                width: PANEL_WIDTH,
                 flexShrink: 0,
-                borderLeft: isDragOver
-                    ? "2px solid var(--accent)"
-                    : "1px solid var(--border)",
+                // Sticky panels pin their left spine as they scroll off-screen;
+                // offsetting each by index * spine width makes the spines stack
+                // side-by-side at the left edge instead of overlapping.
+                position: "sticky",
+                left: index * SPINE_WIDTH,
+                zIndex: index,
+                background: "var(--bg-primary)",
+                borderRight: "1px solid var(--border)",
+                boxShadow: "-8px 0 16px -12px rgba(0, 0, 0, 0.35)",
                 opacity: isDragging ? 0.5 : 1,
+            }}
+            onMouseDownCapture={() => {
+                if (!isActive) onActivate();
             }}
             {...dropTargetProps}
         >
             <StackedColumnSpine
                 title={tab.title}
                 isActive={isActive}
-                isExpanded={isExpanded}
-                onClick={onSpineClick}
+                isDragOver={isDragOver}
+                onClick={onActivate}
                 onDragStart={onDragStart}
                 onDragEnd={onDragEnd}
             />
-            {isExpanded && (
-                <div
-                    className="relative h-full min-h-0 overflow-hidden"
-                    style={{
-                        width: STACKED_COLUMN_WIDTH,
-                        minWidth: STACKED_COLUMN_WIDTH,
-                        flexShrink: 0,
-                        borderLeft: "1px solid var(--border)",
-                        background: "var(--bg-primary)",
-                    }}
-                    onMouseDownCapture={() => {
-                        if (!isActive) onActivate();
-                    }}
-                >
-                    {shouldMount ? (
-                        <StackedColumnBody
-                            paneId={paneId}
-                            tab={tab}
-                            isActive={isActive}
-                            isPaneFocused={isPaneFocused}
-                            emptyStateMessage={emptyStateMessage}
-                        />
-                    ) : (
-                        <StackedColumnSkeleton />
-                    )}
-                </div>
-            )}
+            <div
+                className="absolute inset-y-0 right-0 overflow-hidden"
+                style={{ left: SPINE_WIDTH }}
+            >
+                {shouldMount ? (
+                    <StackedColumnBody
+                        paneId={paneId}
+                        tab={tab}
+                        isActive={isActive}
+                        isPaneFocused={isPaneFocused}
+                        emptyStateMessage={emptyStateMessage}
+                    />
+                ) : (
+                    <StackedColumnSkeleton />
+                )}
+            </div>
         </div>
     );
 }
 
-// Always-visible vertical spine carrying the rotated tab title. Spines from
-// every column stack side-by-side like an accordion; clicking one toggles its
-// content panel open/closed.
+// Always-visible vertical spine carrying the rotated tab title. Pinned at the
+// panel's left edge; clicking it scrolls/activates the panel.
 function StackedColumnSpine({
     title,
     isActive,
-    isExpanded,
+    isDragOver,
     onClick,
     onDragStart,
     onDragEnd,
 }: {
     title: string;
     isActive: boolean;
-    isExpanded: boolean;
+    isDragOver: boolean;
     onClick: () => void;
     onDragStart: () => void;
     onDragEnd: () => void;
@@ -409,7 +373,6 @@ function StackedColumnSpine({
             type="button"
             role="tab"
             aria-selected={isActive}
-            aria-expanded={isExpanded}
             onClick={onClick}
             draggable
             onDragStart={(event) => {
@@ -418,15 +381,16 @@ function StackedColumnSpine({
             }}
             onDragEnd={onDragEnd}
             title={title}
-            className="flex h-full items-center justify-center py-2"
+            className="absolute inset-y-0 left-0 z-10 flex items-center justify-center py-3"
             style={{
                 width: SPINE_WIDTH,
-                minWidth: SPINE_WIDTH,
-                flexShrink: 0,
                 cursor: "grab",
                 background: isActive
                     ? "var(--bg-primary)"
                     : "var(--bg-secondary)",
+                borderRight: isDragOver
+                    ? "2px solid var(--accent)"
+                    : "1px solid var(--border)",
                 boxShadow: isActive ? "inset 2px 0 0 var(--accent)" : "none",
                 color: isActive
                     ? "var(--text-primary)"
