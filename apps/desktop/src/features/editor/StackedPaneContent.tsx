@@ -6,13 +6,20 @@ import React, {
     useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { confirm } from "@neverwrite/runtime";
 import {
     useEditorStore,
     selectEditorPaneState,
+    selectEditorWorkspaceTabs,
     selectFocusedPaneId,
     type Tab,
     type TerminalTab,
 } from "../../app/store/editorStore";
+import { useChatStore } from "../ai/store/chatStore";
+import {
+    findActiveSessionsAffectedByClose,
+    getCloseTabsConfirmationMessage,
+} from "./tabClosePolicy";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
@@ -81,6 +88,7 @@ export function StackedPaneContent({
     const pane = useEditorStore((state) => selectEditorPaneState(state, paneId));
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
     const switchTab = useEditorStore((state) => state.switchTab);
+    const closeTab = useEditorStore((state) => state.closeTab);
     const reorderPaneTabs = useEditorStore((state) => state.reorderPaneTabs);
     const moveTabToPane = useEditorStore((state) => state.moveTabToPane);
     const moveTabToPaneDropTarget = useEditorStore(
@@ -251,6 +259,31 @@ export function StackedPaneContent({
         [consumeSuppressedClick, switchTab],
     );
 
+    // Same close flow as the normal tab strip: warn before closing tabs tied to
+    // active chat sessions, then close.
+    const requestCloseTab = useCallback(
+        async (tabId: string) => {
+            const tab = selectEditorWorkspaceTabs(
+                useEditorStore.getState(),
+            ).find((candidate) => candidate.id === tabId);
+            if (!tab) return;
+            const affected = findActiveSessionsAffectedByClose(
+                [tab],
+                useChatStore.getState().sessionsById,
+            );
+            const confirmationMessage =
+                getCloseTabsConfirmationMessage(affected);
+            if (
+                confirmationMessage !== null &&
+                !(await confirm(confirmationMessage))
+            ) {
+                return;
+            }
+            closeTab(tab.id);
+        },
+        [closeTab],
+    );
+
     const dragPreviewTab =
         dragPreviewTabId === null
             ? null
@@ -329,6 +362,7 @@ export function StackedPaneContent({
                         tab={tab}
                         isActive={tab.id === activeTabId}
                         onClick={() => switchTab(tab.id)}
+                        onRequestClose={() => void requestCloseTab(tab.id)}
                     />
                 ))}
             </SpineRail>
@@ -353,6 +387,7 @@ export function StackedPaneContent({
                         isDragging={draggingTabId === tab.id}
                         registerTabNode={registerTabNode}
                         onSpineClick={() => handleSpineClick(tab.id)}
+                        onRequestClose={() => void requestCloseTab(tab.id)}
                         onActivate={() => switchTab(tab.id)}
                         onPointerDown={handlePointerDown}
                         onPointerMove={handlePointerMove}
@@ -369,6 +404,7 @@ export function StackedPaneContent({
                         tab={tab}
                         isActive={tab.id === activeTabId}
                         onClick={() => switchTab(tab.id)}
+                        onRequestClose={() => void requestCloseTab(tab.id)}
                     />
                 ))}
             </SpineRail>
@@ -466,23 +502,92 @@ function SpineRail({
     );
 }
 
-function SpineButton({
-    tab,
-    isActive,
-    onClick,
+// Close affordance shared by both spine kinds — mirrors the normal tab strip's
+// close button (icon, hover/active states). Shown on every spine (not just the
+// active one) so any stacked tab can be closed at a glance.
+function SpineCloseButton({
+    title,
+    onRequestClose,
 }: {
-    tab: Tab;
-    isActive: boolean;
-    onClick: () => void;
+    title: string;
+    onRequestClose: () => void;
 }) {
     return (
         <button
             type="button"
+            title={`Close ${title}`}
+            aria-label={`Close ${title}`}
+            onClick={(event) => {
+                event.stopPropagation();
+                onRequestClose();
+            }}
+            // Don't let a click/drag on the X start a column drag or activate.
+            onPointerDown={(event) => event.stopPropagation()}
+            className="inline-flex shrink-0 items-center justify-center rounded-md opacity-60 transition-[background-color,opacity,transform] duration-150 ease-out hover:bg-gray-500/30 hover:opacity-100 active:bg-gray-500/55 active:scale-90"
+            style={{ width: 20, height: 20, color: "var(--text-secondary)" }}
+        >
+            <svg
+                width={13}
+                height={13}
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.1"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            >
+                <path d="M4 4l8 8M4 12l8-8" />
+            </svg>
+        </button>
+    );
+}
+
+function SpineTitle({ title }: { title: string }) {
+    return (
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+            <span
+                style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    writingMode: "vertical-rl",
+                    transform: "rotate(180deg)",
+                    maxHeight: "100%",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                }}
+            >
+                {title}
+            </span>
+        </div>
+    );
+}
+
+function SpineButton({
+    tab,
+    isActive,
+    onClick,
+    onRequestClose,
+}: {
+    tab: Tab;
+    isActive: boolean;
+    onClick: () => void;
+    onRequestClose: () => void;
+}) {
+    return (
+        <div
             role="tab"
+            tabIndex={0}
             aria-selected={isActive}
             onClick={onClick}
+            onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onClick();
+                }
+            }}
             title={tab.title}
-            className="pointer-events-auto flex h-full items-center justify-center py-3"
+            className="group pointer-events-auto flex h-full flex-col items-center py-2"
             style={{
                 width: SPINE_WIDTH,
                 flexShrink: 0,
@@ -496,17 +601,12 @@ function SpineButton({
                     : "var(--text-secondary)",
             }}
         >
-            <span
-                className="truncate text-[12px] font-medium"
-                style={{
-                    writingMode: "vertical-rl",
-                    transform: "rotate(180deg)",
-                    maxHeight: "100%",
-                }}
-            >
-                {tab.title}
-            </span>
-        </button>
+            <SpineCloseButton
+                title={tab.title}
+                onRequestClose={onRequestClose}
+            />
+            <SpineTitle title={tab.title} />
+        </div>
     );
 }
 
@@ -531,6 +631,7 @@ interface StackedColumnProps {
     isDragging: boolean;
     registerTabNode: (tabId: string, node: HTMLDivElement | null) => void;
     onSpineClick: () => void;
+    onRequestClose: () => void;
     onActivate: () => void;
     onPointerDown: (
         tabId: string,
@@ -559,6 +660,7 @@ function StackedColumn({
     isDragging,
     registerTabNode,
     onSpineClick,
+    onRequestClose,
     onActivate,
     onPointerDown,
     onPointerMove,
@@ -602,6 +704,7 @@ function StackedColumn({
                     isActive={isActive}
                     stickyLeft={leftStackWidth}
                     onClick={onSpineClick}
+                    onRequestClose={onRequestClose}
                     onPointerDown={(event) =>
                         onPointerDown(tabId, index, event)
                     }
@@ -651,6 +754,7 @@ function StackedColumnSpine({
     isActive,
     stickyLeft,
     onClick,
+    onRequestClose,
     onPointerDown,
     onPointerMove,
     onPointerUp,
@@ -660,6 +764,7 @@ function StackedColumnSpine({
     isActive: boolean;
     stickyLeft: number;
     onClick: () => void;
+    onRequestClose: () => void;
     onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
     onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
     onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -683,7 +788,7 @@ function StackedColumnSpine({
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
             onLostPointerCapture={onLostPointerCapture}
-            className="no-drag z-20 flex shrink-0 items-center justify-center py-3 self-stretch"
+            className="no-drag group z-20 flex shrink-0 flex-col items-center py-2 self-stretch"
             style={{
                 position: "sticky",
                 left: stickyLeft,
@@ -699,16 +804,11 @@ function StackedColumnSpine({
                     : "var(--text-secondary)",
             }}
         >
-            <span
-                className="truncate text-[12px] font-medium"
-                style={{
-                    writingMode: "vertical-rl",
-                    transform: "rotate(180deg)",
-                    maxHeight: "100%",
-                }}
-            >
-                {title}
-            </span>
+            <SpineCloseButton
+                title={title}
+                onRequestClose={onRequestClose}
+            />
+            <SpineTitle title={title} />
         </div>
     );
 }
