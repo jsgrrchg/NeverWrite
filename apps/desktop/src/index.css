@@ -409,8 +409,10 @@ textarea,
     display: none;
 }
 
-/* Workspace tab hover — inline styles block CSS hover, so we use !important. */
-[data-pane-tab-id]:not([aria-selected="true"]):hover {
+/* Workspace tab hover — inline styles block CSS hover, so we use !important.
+   Excludes stacked-tab columns, which reuse data-pane-tab-id only for drop
+   hit-testing and must not get the small-tab hover background. */
+[data-pane-tab-id]:not([aria-selected="true"]):not([data-stacked-column-id]):hover {
     background: var(--bg-tertiary) !important;
     color: var(--text-primary) !important;
 }
