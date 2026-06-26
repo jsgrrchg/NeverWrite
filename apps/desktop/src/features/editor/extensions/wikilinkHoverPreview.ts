@@ -1,4 +1,11 @@
-import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
+import {
+    EditorView,
+    hoverTooltip,
+    keymap,
+    showTooltip,
+    type Tooltip,
+} from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
 import { findWikilinkAtPosition } from "./wikilinks";
 import {
     extractSection,
@@ -291,12 +298,64 @@ export function buildWikilinkHoverTooltip(
     };
 }
 
+// --- Keyboard accessibility: preview the link under the caret on demand ---
+
+const setCaretPreviewTooltip = StateEffect.define<Tooltip | null>();
+
+// Holds the on-demand (keyboard-triggered) preview tooltip. It dismisses itself
+// as soon as the user edits or moves the caret, so it never lingers stale.
+const caretPreviewField = StateField.define<Tooltip | null>({
+    create() {
+        return null;
+    },
+    update(value, tr) {
+        let next = value;
+        for (const effect of tr.effects) {
+            if (effect.is(setCaretPreviewTooltip)) next = effect.value;
+        }
+        if (next && next === value && (tr.docChanged || tr.selection)) {
+            return null;
+        }
+        return next;
+    },
+    provide: (field) => showTooltip.from(field),
+});
+
 /**
- * Show a floating preview when hovering over a `[[wikilink]]`.
+ * Open the note preview for the wikilink under the caret. Keyboard-equivalent
+ * of hovering, so the feature is reachable without a mouse. Returns false when
+ * the caret is not inside a wikilink.
+ */
+export function showWikilinkPreviewAtCaret(view: EditorView): boolean {
+    const tooltip = buildWikilinkHoverTooltip(
+        view,
+        view.state.selection.main.head,
+    );
+    if (!tooltip) return false;
+    view.dispatch({ effects: setCaretPreviewTooltip.of(tooltip) });
+    return true;
+}
+
+const caretPreviewKeymap = keymap.of([
+    {
+        key: "Escape",
+        run(view) {
+            if (view.state.field(caretPreviewField, false)) {
+                view.dispatch({ effects: setCaretPreviewTooltip.of(null) });
+                return true;
+            }
+            return false;
+        },
+    },
+]);
+
+/**
+ * Show a floating preview when hovering over a `[[wikilink]]`, plus a
+ * keyboard-triggered preview for the link under the caret.
  */
 export function wikilinkHoverPreviewExtension(
     hoverTime: number = DEFAULT_WIKILINK_HOVER_DELAY_MS,
 ) {
     const tooltip = hoverTooltip(buildWikilinkHoverTooltip, { hoverTime });
-    return [tooltip, hoverTheme];
+    return [tooltip, caretPreviewField, caretPreviewKeymap, hoverTheme];
 }

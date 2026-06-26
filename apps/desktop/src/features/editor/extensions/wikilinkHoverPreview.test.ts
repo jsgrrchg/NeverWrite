@@ -6,6 +6,7 @@ import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     buildWikilinkHoverTooltip,
+    showWikilinkPreviewAtCaret,
     wikilinkHoverPreviewExtension,
 } from "./wikilinkHoverPreview";
 import { getWikilinkHoverPreviewExtension } from "../editorExtensions";
@@ -232,7 +233,7 @@ describe("getWikilinkHoverPreviewExtension", () => {
     it("registers the hover extension when enabled", () => {
         const extension = getWikilinkHoverPreviewExtension(true, 300);
         expect(Array.isArray(extension)).toBe(true);
-        expect(extension).toHaveLength(2);
+        expect(extension).toHaveLength(4);
     });
 
     it("registers nothing when disabled", () => {
@@ -240,6 +241,44 @@ describe("getWikilinkHoverPreviewExtension", () => {
     });
 
     it("builds the extension with a configurable delay", () => {
-        expect(wikilinkHoverPreviewExtension(750)).toHaveLength(2);
+        expect(wikilinkHoverPreviewExtension(750)).toHaveLength(4);
+    });
+});
+
+describe("showWikilinkPreviewAtCaret", () => {
+    function createConfiguredView(doc: string, caret: number) {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+        const view = new EditorView({
+            state: EditorState.create({
+                doc,
+                selection: EditorSelection.cursor(caret),
+                extensions: [wikilinkHoverPreviewExtension()],
+            }),
+            parent,
+        });
+        return { parent, view };
+    }
+
+    it("opens a caret preview when the caret is inside a wikilink", () => {
+        const { parent, view } = createConfiguredView("see [[Ghost]] now", 8);
+        expect(showWikilinkPreviewAtCaret(view)).toBe(true);
+        expect(view.dom.querySelector(".cm-wikilink-hover")).not.toBeNull();
+
+        // Moving the caret dismisses the on-demand preview.
+        view.dispatch({ selection: EditorSelection.cursor(0) });
+        expect(view.dom.querySelector(".cm-wikilink-hover")).toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("does nothing when the caret is not inside a wikilink", () => {
+        const { parent, view } = createConfiguredView("see [[Ghost]] now", 0);
+        expect(showWikilinkPreviewAtCaret(view)).toBe(false);
+        expect(view.dom.querySelector(".cm-wikilink-hover")).toBeNull();
+
+        view.destroy();
+        parent.remove();
     });
 });
