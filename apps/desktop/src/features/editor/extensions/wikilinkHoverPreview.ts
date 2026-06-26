@@ -1,10 +1,15 @@
 import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
 import { findWikilinkAtPosition } from "./wikilinks";
 import {
+    extractSection,
     findPreviewNote,
     getNotePreviewContentState,
+    loadNotePreviewContent,
     renderEmbedPreview,
 } from "./notePreviewSource";
+import { findWikilinkResource } from "../wikilinkResolution";
+import { navigateWikilink } from "../wikilinkNavigation";
+import { useVaultStore } from "../../../app/store/vaultStore";
 
 // Default delay before the hover preview opens. Long enough to avoid firing on
 // every sweep of the mouse across links.
@@ -13,6 +18,50 @@ export const DEFAULT_WIKILINK_HOVER_DELAY_MS = 300;
 // Lines of the target note to show in the floating preview. Bounded so large
 // notes never load or render in full just for a hover.
 const HOVER_MAX_LINES = 8;
+
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)$/i;
+const PDF_FILE_RE = /\.pdf$/i;
+
+/** Split a wikilink target into its note part and optional `#section`. */
+function parseWikilinkTarget(target: string): {
+    base: string;
+    section: string | null;
+} {
+    const hashIndex = target.indexOf("#");
+    if (hashIndex < 0) return { base: target.trim(), section: null };
+    return {
+        base: target.slice(0, hashIndex).trim(),
+        section: target.slice(hashIndex + 1).trim() || null,
+    };
+}
+
+/** Human label + display name for a non-markdown file target. */
+function describeFileTarget(relativePath: string): {
+    type: string;
+    name: string;
+} {
+    const name = relativePath.split("/").pop() || relativePath;
+    if (PDF_FILE_RE.test(relativePath)) return { type: "PDF", name };
+    if (IMAGE_FILE_RE.test(relativePath)) return { type: "Image", name };
+    return { type: "File", name };
+}
+
+/**
+ * Resolve a wikilink target to a non-note file entry in the vault store.
+ * Covers PDFs and images, which the note/text-file resolver does not surface.
+ */
+function findVaultFileEntry(base: string): { relativePath: string } | null {
+    const normalized = base.replace(/\\/g, "/").replace(/^\/+/, "");
+    const entry = useVaultStore
+        .getState()
+        .entries.find(
+            (candidate) =>
+                (candidate.kind === "file" || candidate.kind === "pdf") &&
+                (candidate.relative_path === normalized ||
+                    candidate.file_name === base),
+        );
+    return entry ? { relativePath: entry.relative_path } : null;
+}
 
 const hoverTheme = EditorView.baseTheme({
     ".cm-tooltip:has(.cm-wikilink-hover)": {
@@ -37,6 +86,10 @@ const hoverTheme = EditorView.baseTheme({
     ".cm-wikilink-hover-meta": {
         color: "var(--text-secondary)",
         fontSize: "0.82em",
+    },
+    ".cm-wikilink-hover-action": {
+        cursor: "pointer",
+        color: "var(--accent)",
     },
     ".cm-wikilink-hover-body": {
         fontSize: "0.88em",
@@ -90,7 +143,8 @@ export function buildWikilinkHoverTooltip(
     const match = findWikilinkAtPosition(view, pos);
     if (!match || !match.target) return null;
 
-    const target = match.target;
+    const { base, section } = parseWikilinkTarget(match.target);
+    if (!base) return null;
 
     return {
         pos: match.from,
@@ -101,44 +155,131 @@ export function buildWikilinkHoverTooltip(
             const dom = document.createElement("div");
             dom.className = "cm-wikilink-hover";
 
-            const note = findPreviewNote(target);
-
             const title = document.createElement("div");
             title.className = "cm-wikilink-hover-title";
-            title.textContent = note?.title ?? target;
             dom.appendChild(title);
 
             const body = document.createElement("div");
             body.className = "cm-wikilink-hover-body";
             dom.appendChild(body);
 
-            // Track teardown so an async content load can't repaint a tooltip
+            // Track teardown so an async load can't repaint a tooltip
             // CodeMirror has already closed.
             let active = true;
 
-            const renderPreview = (content: string) => {
-                body.replaceChildren(
-                    renderEmbedPreview(content, HOVER_MAX_LINES),
-                );
+            const setTitle = (name: string) => {
+                title.textContent = section ? `${name} > ${section}` : name;
             };
 
-            const showPlaceholder = (text: string) => {
+            const showMeta = (text: string, onClick?: () => void) => {
                 const meta = document.createElement("div");
                 meta.className = "cm-wikilink-hover-meta";
                 meta.textContent = text;
+                if (onClick) {
+                    meta.classList.add("cm-wikilink-hover-action");
+                    // mousedown (not click) so the action fires before the
+                    // tooltip closes, without stealing editor focus.
+                    meta.addEventListener("mousedown", (event) => {
+                        event.preventDefault();
+                        onClick();
+                    });
+                }
                 body.replaceChildren(meta);
             };
 
-            const { content, load } = getNotePreviewContentState(note, target);
-            if (content !== null) {
-                renderPreview(content);
-            } else if (load) {
-                showPlaceholder("Loading…");
-                void load().then((loaded) => {
-                    if (!active || loaded === null) return;
-                    renderPreview(loaded);
+            // Render note content, narrowing to a `#section` when present.
+            const renderNoteContent = (content: string) => {
+                const text = section
+                    ? extractSection(content, section)
+                    : content;
+                if (text.trim()) {
+                    body.replaceChildren(
+                        renderEmbedPreview(text, HOVER_MAX_LINES),
+                    );
+                    return;
+                }
+                showMeta(section ? "Section not found" : "Empty note");
+            };
+
+            const loadNoteContent = (noteId: string) => {
+                showMeta("Loading…");
+                void loadNotePreviewContent(noteId).then((content) => {
+                    if (!active) return;
+                    if (content === null) {
+                        showMeta("Could not load note");
+                        return;
+                    }
+                    renderNoteContent(content);
                 });
+            };
+
+            // Fast path: target is a markdown note already in the vault store.
+            const note = findPreviewNote(base);
+            if (note) {
+                setTitle(note.title);
+                const { content, load } = getNotePreviewContentState(
+                    note,
+                    base,
+                );
+                if (content !== null) {
+                    renderNoteContent(content);
+                } else if (load) {
+                    showMeta("Loading…");
+                    void load().then((loaded) => {
+                        if (!active) return;
+                        if (loaded === null) {
+                            showMeta("Could not load note");
+                            return;
+                        }
+                        renderNoteContent(loaded);
+                    });
+                }
+                return {
+                    dom,
+                    destroy() {
+                        active = false;
+                    },
+                };
             }
+
+            // Non-note file already known to the vault (PDF, image, etc.).
+            const fileEntry = findVaultFileEntry(base);
+            if (fileEntry) {
+                const { type, name } = describeFileTarget(
+                    fileEntry.relativePath,
+                );
+                title.textContent = name;
+                showMeta(type);
+                return {
+                    dom,
+                    destroy() {
+                        active = false;
+                    },
+                };
+            }
+
+            // Otherwise resolve the target type: note, file, or unresolved.
+            setTitle(base);
+            showMeta("Loading…");
+            void findWikilinkResource(base).then((resource) => {
+                if (!active) return;
+                if (resource?.kind === "note") {
+                    setTitle(resource.title ?? base);
+                    loadNoteContent(resource.id);
+                    return;
+                }
+                if (resource?.kind === "file") {
+                    const { type, name } = describeFileTarget(
+                        resource.relativePath,
+                    );
+                    title.textContent = name;
+                    showMeta(type);
+                    return;
+                }
+                showMeta("No note yet — click to create", () => {
+                    void navigateWikilink(base);
+                });
+            });
 
             return {
                 dom,

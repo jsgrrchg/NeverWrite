@@ -118,6 +118,84 @@ describe("buildWikilinkHoverTooltip", () => {
         parent.remove();
     });
 
+    it("previews a #section from the target heading", async () => {
+        seedNote("Note", "Note");
+        vi.mocked(invoke).mockResolvedValue({
+            content: [
+                "# Intro",
+                "intro body",
+                "## Details",
+                "detail body line",
+            ].join("\n"),
+        });
+
+        const { parent, view } = createView("see [[Note#Details]] now");
+        const mounted = buildWikilinkHoverTooltip(view, 8)?.create?.(view);
+        const body = mounted?.dom.querySelector(".cm-wikilink-hover-body");
+        const titleText = mounted?.dom.querySelector(
+            ".cm-wikilink-hover-title",
+        )?.textContent;
+        expect(titleText).toBe("Note > Details");
+
+        await vi.waitFor(() => {
+            expect(body?.textContent).toContain("detail body line");
+        });
+        // Section preview is scoped: content from before the heading is excluded.
+        expect(body?.textContent).not.toContain("intro body");
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("shows a create action for an unresolved target", async () => {
+        const { parent, view } = createView("see [[Ghost]] now");
+        const mounted = buildWikilinkHoverTooltip(view, 8)?.create?.(view);
+        const body = mounted?.dom.querySelector(".cm-wikilink-hover-body");
+
+        await vi.waitFor(() => {
+            expect(body?.textContent).toBe("No note yet — click to create");
+        });
+        expect(
+            body?.querySelector(".cm-wikilink-hover-action"),
+        ).not.toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("labels a non-markdown file target by name and type", () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            entries: [
+                {
+                    id: "diagram.png",
+                    path: "/vault/diagram.png",
+                    relative_path: "diagram.png",
+                    file_name: "diagram.png",
+                    extension: "png",
+                    kind: "file",
+                    modified_at: 0,
+                    created_at: 0,
+                    size: 0,
+                    mime_type: "image/png",
+                },
+            ],
+        });
+
+        const { parent, view } = createView("see [[diagram.png]] now");
+        const mounted = buildWikilinkHoverTooltip(view, 8)?.create?.(view);
+        expect(
+            mounted?.dom.querySelector(".cm-wikilink-hover-title")?.textContent,
+        ).toBe("diagram.png");
+        expect(
+            mounted?.dom.querySelector(".cm-wikilink-hover-meta")?.textContent,
+        ).toBe("Image");
+
+        useVaultStore.setState({ entries: [] });
+        view.destroy();
+        parent.remove();
+    });
+
     it("does not repaint after the tooltip is destroyed", async () => {
         seedNote("Note", "Note");
         let resolveRead: (value: { content: string }) => void = () => {};
