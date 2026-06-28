@@ -695,6 +695,7 @@ let useBookmarkStore: typeof import("../app/store/bookmarkStore").useBookmarkSto
 let useCommandStore: typeof import("../features/command-palette/store/commandStore").useCommandStore;
 let resetChatStore: typeof import("../features/ai/store/chatStore").resetChatStore;
 let resetChatTabsStore: typeof import("../features/ai/store/chatTabsStore").resetChatTabsStore;
+let clearEditorViewportCache: typeof import("../features/editor/editorViewportCache").clearEditorViewportCache;
 
 Object.defineProperty(globalThis, "__clipboardMock", {
     value: {
@@ -906,6 +907,9 @@ beforeEach(async () => {
     ({ resetChatStore } = await import("../features/ai/store/chatStore"));
     ({ resetChatTabsStore } =
         await import("../features/ai/store/chatTabsStore"));
+    ({ clearEditorViewportCache } = await import(
+        "../features/editor/editorViewportCache"
+    ));
 
     useEditorStore.setState(useEditorStore.getInitialState(), true);
     useLayoutStore.setState(useLayoutStore.getInitialState(), true);
@@ -924,6 +928,7 @@ beforeEach(async () => {
 
     resetChatStore();
     resetChatTabsStore();
+    clearEditorViewportCache();
 });
 
 afterEach(() => {

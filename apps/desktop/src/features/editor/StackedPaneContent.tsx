@@ -2,6 +2,7 @@ import React, {
     useCallback,
     useEffect,
     useLayoutEffect,
+    useMemo,
     useRef,
     useState,
     type ReactNode,
@@ -65,10 +66,19 @@ const SPINE_WIDTH = 32;
 // the pane is very narrow.
 const MIN_PANEL_WIDTH = 280;
 
+// Keep a couple of recently-hidden columns alive so fast horizontal navigation
+// does not destroy editor/PDF scroll state on every spine transition.
+const EXTRA_KEEP_ALIVE_STACKED_COLUMNS = 2;
+
 const SUPPORTS_RESIZE_OBSERVER = typeof ResizeObserver !== "undefined";
 
 function clamp(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), max);
+}
+
+function areStringArraysEqual(left: readonly string[], right: readonly string[]) {
+    if (left.length !== right.length) return false;
+    return left.every((value, index) => value === right[index]);
 }
 
 // Panels never exceed the available width, so a usable content panel always
@@ -106,6 +116,8 @@ export function StackedPaneContent({
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const tabCountRef = useRef(tabCount);
+    const previousBaseMountedTabIdsRef = useRef<string[]>([]);
+    const [warmMountedTabIds, setWarmMountedTabIds] = useState<string[]>([]);
     tabCountRef.current = tabCount;
 
     // How many panels are stacked as spines on each edge. Derived from scroll
@@ -354,17 +366,79 @@ export function StackedPaneContent({
         indicator.style.transform = `translateX(${left - 1}px)`;
     }, [insertionIndicatorIndex]);
 
+    const firstContent = stack.left;
+    const lastContent = tabCount - 1 - stack.right;
+    const leftStackTabs = tabs.slice(0, stack.left);
+    const rightStackTabs = stack.right > 0 ? tabs.slice(lastContent + 1) : [];
+    const tabIds = useMemo(() => tabs.map((tab) => tab.id), [tabs]);
+    const baseMountedTabIds = useMemo(
+        () =>
+            tabs
+                .filter((tab, index) => {
+                    if (tab.id === activeTabId) return true;
+                    return index >= firstContent && index <= lastContent;
+                })
+                .map((tab) => tab.id),
+        [activeTabId, firstContent, lastContent, tabs],
+    );
+    const openTabIdSet = useMemo(() => new Set(tabIds), [tabIds]);
+    const baseMountedTabIdSet = useMemo(
+        () => new Set(baseMountedTabIds),
+        [baseMountedTabIds],
+    );
+    const previousHiddenBaseTabIds = useMemo(
+        () =>
+            previousBaseMountedTabIdsRef.current.filter(
+                (tabId) =>
+                    openTabIdSet.has(tabId) &&
+                    !baseMountedTabIdSet.has(tabId),
+            ),
+        [baseMountedTabIdSet, openTabIdSet],
+    );
+    const keepAliveTabIdSet = useMemo(
+        () =>
+            new Set([
+                ...baseMountedTabIds,
+                ...warmMountedTabIds,
+                ...previousHiddenBaseTabIds,
+            ]),
+        [baseMountedTabIds, previousHiddenBaseTabIds, warmMountedTabIds],
+    );
+
+    useLayoutEffect(() => {
+        const demotedTabIds = previousBaseMountedTabIdsRef.current.filter(
+            (tabId) =>
+                openTabIdSet.has(tabId) && !baseMountedTabIdSet.has(tabId),
+        );
+
+        setWarmMountedTabIds((current) => {
+            const demotedSet = new Set(demotedTabIds);
+            const carriedTabIds = current.filter(
+                (tabId) =>
+                    openTabIdSet.has(tabId) &&
+                    !baseMountedTabIdSet.has(tabId) &&
+                    !demotedSet.has(tabId),
+            );
+            const next = [...demotedTabIds, ...carriedTabIds].slice(
+                0,
+                EXTRA_KEEP_ALIVE_STACKED_COLUMNS,
+            );
+            return areStringArraysEqual(current, next) ? current : next;
+        });
+
+        previousBaseMountedTabIdsRef.current = baseMountedTabIds;
+    }, [
+        baseMountedTabIds,
+        baseMountedTabIdSet,
+        openTabIdSet,
+    ]);
+
     if (tabCount === 0) {
         if (paneId) {
             return <WorkspacePaneEmptyState paneId={paneId} />;
         }
         return null;
     }
-
-    const firstContent = stack.left;
-    const lastContent = tabCount - 1 - stack.right;
-    const leftStackTabs = tabs.slice(0, stack.left);
-    const rightStackTabs = stack.right > 0 ? tabs.slice(lastContent + 1) : [];
 
     return (
         <div
@@ -413,7 +487,7 @@ export function StackedPaneContent({
                         isContent={isContent}
                         leftStackWidth={stack.left * SPINE_WIDTH}
                         panelWidth={stack.panelWidth}
-                        shouldMount={isActive || isContent}
+                        shouldMount={keepAliveTabIdSet.has(tab.id)}
                         emptyStateMessage={emptyStateMessage}
                         isDragging={draggingTabId === tab.id}
                         icon={renderEditorTabLeadingIcon(
@@ -778,6 +852,7 @@ function StackedColumn({
             )}
             <div
                 className="absolute inset-y-0 right-0 overflow-hidden"
+                data-stacked-column-mounted={shouldMount ? "true" : "false"}
                 style={{ left: SPINE_WIDTH }}
                 onMouseDownCapture={() => {
                     if (!isActive) onActivate();
@@ -905,7 +980,7 @@ function StackedColumnBody({
                     paneId={paneId}
                     tabId={tab.id}
                     emptyStateMessage={emptyStateMessage}
-                    isVisible={isActive}
+                    isVisible
                 />
             );
         case "file":
