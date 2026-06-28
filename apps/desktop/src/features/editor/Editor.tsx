@@ -203,6 +203,13 @@ import {
     pruneNoteStateCaches,
     type NoteStateCacheCollection,
 } from "./noteStateCache";
+import {
+    deleteEditorViewportPositions,
+    getEditorViewportCacheMap,
+    getEditorViewportPosition,
+    setEditorViewportPosition,
+    type TabScrollPosition,
+} from "./editorViewportCache";
 
 // Map vim ex-commands (:w, :q, :wq) onto NeverWrite's save/close actions.
 // Idempotent and global to the vim engine, so register once at module load.
@@ -219,12 +226,6 @@ type ReloadedNoteMetadata = {
     opId?: string | null;
     revision?: number;
     contentHash?: string | null;
-};
-type TabScrollPosition = {
-    top: number;
-    left: number;
-    anchorPos: number | null;
-    anchorOffsetTop: number;
 };
 type EditorMode = "source" | "preview";
 interface EditorProps {
@@ -337,6 +338,7 @@ export function Editor({
         null,
     );
     const restoreScrollFrameRef = useRef<number | null>(null);
+    const viewportPersistFrameRef = useRef<number | null>(null);
     const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
     const scrollbarDragCleanupRef = useRef<(() => void) | null>(null);
     const pendingScrollbarReanchorRef = useRef(false);
@@ -352,9 +354,7 @@ export function Editor({
     // Save/restore full EditorState per note (preserves undo history + selection)
     // Keyed by noteId so each note's state is preserved independently, even within the same tab.
     const tabStatesRef = useRef<Map<string, EditorState>>(new Map());
-    const tabScrollPositionsRef = useRef<Map<string, TabScrollPosition>>(
-        new Map(),
-    );
+    const tabScrollPositionsRef = useRef(getEditorViewportCacheMap());
     const livePreviewModeRef = useRef<EditorMode>(
         getEditorMode(useSettingsStore.getState().livePreviewEnabled),
     );
@@ -645,7 +645,9 @@ export function Editor({
 
     const deleteNoteStateForIds = useCallback(
         (noteIds: Iterable<string>) => {
-            deleteNoteStateCacheEntries(noteIds, getNoteStateCaches());
+            const uniqueNoteIds = new Set(noteIds);
+            deleteNoteStateCacheEntries(uniqueNoteIds, getNoteStateCaches());
+            deleteEditorViewportPositions(uniqueNoteIds);
         },
         [getNoteStateCaches],
     );
@@ -1463,6 +1465,12 @@ export function Editor({
                 anchorPos: anchor.pos,
                 anchorOffsetTop: anchor.offsetTop,
             });
+            setEditorViewportPosition(tabId, {
+                top: view.scrollDOM.scrollTop,
+                left: view.scrollDOM.scrollLeft,
+                anchorPos: anchor.pos,
+                anchorOffsetTop: anchor.offsetTop,
+            });
         },
         [captureViewportAnchor],
     );
@@ -1471,7 +1479,9 @@ export function Editor({
         (tabId: string, view: EditorView | null, mode: EditorMode) => {
             if (!view) return;
 
-            const position = tabScrollPositionsRef.current.get(tabId);
+            const position =
+                tabScrollPositionsRef.current.get(tabId) ??
+                getEditorViewportPosition(tabId);
             if (restoreScrollFrameRef.current !== null) {
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
@@ -2751,6 +2761,16 @@ export function Editor({
             }
 
             const handleScrollOrResize = () => {
+                if (viewportPersistFrameRef.current === null) {
+                    viewportPersistFrameRef.current = requestAnimationFrame(
+                        () => {
+                            viewportPersistFrameRef.current = null;
+                            const tab = activeTabRef.current;
+                            if (!tab || viewRef.current !== nextView) return;
+                            saveTabScrollPosition(tab.noteId, nextView);
+                        },
+                    );
+                }
                 if (scrollbarDragCleanupRef.current) {
                     clearEditorDomSelection(nextView);
                     syncSelectionLayerVisibility(nextView);
@@ -2969,6 +2989,10 @@ export function Editor({
             selectionToolbarCleanupRef.current = () => {
                 selectionToolbarMouseSelectionActiveRef.current = false;
                 selectionToolbarMouseSelectionCleanupRef.current?.();
+                if (viewportPersistFrameRef.current !== null) {
+                    cancelAnimationFrame(viewportPersistFrameRef.current);
+                    viewportPersistFrameRef.current = null;
+                }
                 clearScrollbarDragSession(nextView);
                 pendingScrollbarReanchorRef.current = false;
                 suppressNextScrollbarReanchorClickRef.current = false;
@@ -3012,6 +3036,7 @@ export function Editor({
             clearScrollbarDragSession,
             handleEditorContextMenu,
             safePosAtCoords,
+            saveTabScrollPosition,
             updateSelectionToolbar,
             updateWikilinkSuggester,
         ],
@@ -3030,7 +3055,16 @@ export function Editor({
             markTabSaved(initialTab.noteId, rawContent);
         }
 
-        replaceEditorView(createEditorState(body, initialTab?.noteId ?? null));
+        const initialView = replaceEditorView(
+            createEditorState(body, initialTab?.noteId ?? null),
+        );
+        if (initialTab) {
+            restoreTabScrollPosition(
+                initialTab.noteId,
+                initialView,
+                getEditorMode(useSettingsStore.getState().livePreviewEnabled),
+            );
+        }
 
         setActiveFrontmatter(
             initialTab
@@ -3065,6 +3099,10 @@ export function Editor({
             if (restoreScrollFrameRef.current !== null) {
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
+            }
+            if (viewportPersistFrameRef.current !== null) {
+                cancelAnimationFrame(viewportPersistFrameRef.current);
+                viewportPersistFrameRef.current = null;
             }
             selectionToolbarCleanupRef.current?.();
             selectionToolbarCleanupRef.current = null;

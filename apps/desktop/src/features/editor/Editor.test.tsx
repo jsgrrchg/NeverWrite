@@ -646,6 +646,36 @@ describe("Editor", () => {
         expect(view.scrollDOM.scrollLeft).toBe(11);
     });
 
+    it("restores note scroll after the editor unmounts and remounts", async () => {
+        vi.useFakeTimers();
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Line 1\nLine 2\nLine 3",
+            },
+        ]);
+
+        const { unmount } = renderComponent(<Editor />);
+        await flushEditorViewUpdates();
+
+        let view = getEditorView();
+        view.scrollDOM.scrollTop = 260;
+        view.scrollDOM.scrollLeft = 17;
+
+        await act(async () => {
+            unmount();
+        });
+
+        renderComponent(<Editor />);
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        expect(view.scrollDOM.scrollTop).toBe(260);
+        expect(view.scrollDOM.scrollLeft).toBe(17);
+    });
+
     it("does not activate merge view when inline review is disabled", async () => {
         setEditorTabs([
             {
