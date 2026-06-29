@@ -5,7 +5,7 @@ export interface ChatRowUiState {
     singleDiffExpanded?: boolean;
     diffExpandedByPath?: Record<string, boolean>;
     pinnedPlanDismissed?: boolean;
-    userInputSelectedOptions?: Record<string, string>;
+    userInputSelectedOptions?: Record<string, string[]>;
     userInputTextAnswers?: Record<string, string>;
     userInputOtherAnswers?: Record<string, string>;
 }

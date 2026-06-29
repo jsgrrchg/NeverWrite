@@ -18,6 +18,7 @@ import {
     selectPaneCount,
     selectPaneNeighbor,
     selectPaneState,
+    selectPaneTabDisplayMode,
     useEditorStore,
     type MapTab,
     type MapTabInput,
@@ -328,6 +329,40 @@ describe("editorStore pane selector contract", () => {
         ]);
         expect(selectFocusedPaneId(state)).toBe("pane-3");
         expect(selectPaneState(state, "pane-2").id).toBe("pane-2");
+    });
+
+    it("toggles the stacked tab display mode per pane without touching others", () => {
+        const layoutTree = splitPane(
+            createInitialLayout("primary"),
+            "primary",
+            "row",
+            "pane-2",
+        );
+        useEditorStore.setState({
+            panes: [makePane("primary"), makePane("pane-2")],
+            focusedPaneId: "primary",
+            layoutTree,
+        });
+
+        expect(
+            selectPaneTabDisplayMode(useEditorStore.getState(), "primary"),
+        ).toBe("default");
+
+        useEditorStore.getState().togglePaneTabDisplayMode("primary");
+
+        expect(
+            selectPaneTabDisplayMode(useEditorStore.getState(), "primary"),
+        ).toBe("stacked");
+        // Sibling pane is unaffected: the mode is strictly per-pane.
+        expect(
+            selectPaneTabDisplayMode(useEditorStore.getState(), "pane-2"),
+        ).toBe("default");
+
+        useEditorStore.getState().setPaneTabDisplayMode("primary", "default");
+
+        expect(
+            selectPaneTabDisplayMode(useEditorStore.getState(), "primary"),
+        ).toBe("default");
     });
 
     it("derives geometric up and down neighbors from the layout tree", () => {
@@ -3599,6 +3634,93 @@ describe("editorStore tab management", () => {
             "tab-a",
         ]);
         expect(state.activeTabId).toBe("tab-a");
+    });
+
+    it("keeps a target pane's stacked mode when a tab is moved into it", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-b",
+                    tabDisplayMode: "stacked",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().moveTabToPane("tab-a", "secondary");
+
+        const state = useEditorStore.getState();
+        const secondary = state.panes.find((pane) => pane.id === "secondary");
+        expect(secondary?.tabs.map((tab) => tab.id)).toEqual(["tab-b", "tab-a"]);
+        // The target pane stays stacked instead of reverting to default.
+        expect(secondary?.tabDisplayMode).toBe("stacked");
+    });
+
+    it("keeps a stacked source pane stacked after a tab is moved out of it", () => {
+        useEditorStore.getState().hydrateWorkspace(
+            [
+                {
+                    id: "primary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-a",
+                            noteId: "notes/a",
+                            title: "A",
+                            content: "Alpha",
+                        }),
+                        makeTab({
+                            id: "tab-b",
+                            noteId: "notes/b",
+                            title: "B",
+                            content: "Beta",
+                        }),
+                    ],
+                    activeTabId: "tab-a",
+                    tabDisplayMode: "stacked",
+                },
+                {
+                    id: "secondary",
+                    tabs: [
+                        makeTab({
+                            id: "tab-c",
+                            noteId: "notes/c",
+                            title: "C",
+                            content: "Gamma",
+                        }),
+                    ],
+                    activeTabId: "tab-c",
+                },
+            ],
+            "primary",
+        );
+
+        useEditorStore.getState().moveTabToPane("tab-b", "secondary");
+
+        const state = useEditorStore.getState();
+        const primary = state.panes.find((pane) => pane.id === "primary");
+        expect(primary?.tabs.map((tab) => tab.id)).toEqual(["tab-a"]);
+        expect(primary?.tabDisplayMode).toBe("stacked");
     });
 
     it("updates chat tab titles even when the tab lives in a non-focused pane", () => {

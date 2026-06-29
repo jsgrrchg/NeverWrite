@@ -116,8 +116,13 @@ describe("ContextMenu scroll-to-close behaviour", () => {
     it("closes on Escape key", () => {
         const onClose = vi.fn();
         renderMenu(onClose);
-        fireEvent.keyDown(document, { key: "Escape" });
+        const event = new KeyboardEvent("keydown", {
+            key: "Escape",
+            cancelable: true,
+        });
+        document.dispatchEvent(event);
         expect(onClose).toHaveBeenCalled();
+        expect(event.defaultPrevented).toBe(true);
     });
 
     it("closes on mousedown outside the menu", () => {
@@ -183,6 +188,90 @@ describe("ContextMenu scroll-to-close behaviour", () => {
             expect(action).toHaveBeenCalledTimes(1);
         });
         expect(callOrder).toEqual(["close", "action"]);
+    });
+
+    it("keeps the submenu hover bridge attached to the parent item", () => {
+        render(
+            <ContextMenu
+                menu={{ x: 100, y: 100, payload: undefined }}
+                entries={[
+                    {
+                        label: "New Agent",
+                        children: [{ label: "Claude", action: vi.fn() }],
+                    },
+                ]}
+                onClose={vi.fn()}
+            />,
+        );
+
+        fireEvent.mouseEnter(screen.getByRole("button", { name: "New Agent" }));
+
+        const submenuSurface = screen.getByRole("button", {
+            name: "Claude",
+        }).parentElement;
+        const submenuBridge = submenuSurface?.parentElement;
+
+        expect(submenuBridge).not.toBeNull();
+        expect(submenuBridge).toHaveStyle({
+            left: "100%",
+            paddingLeft: "4px",
+        });
+    });
+
+    it("keeps the submenu hover bridge attached when opening to the left", () => {
+        const originalInnerWidth = window.innerWidth;
+        Object.defineProperty(window, "innerWidth", {
+            configurable: true,
+            value: 200,
+        });
+
+        try {
+            render(
+                <ContextMenu
+                    menu={{ x: 100, y: 100, payload: undefined }}
+                    entries={[
+                        {
+                            label: "New Agent",
+                            children: [{ label: "Claude", action: vi.fn() }],
+                        },
+                    ]}
+                    onClose={vi.fn()}
+                />,
+            );
+
+            const parentItem = screen.getByRole("button", {
+                name: "New Agent",
+            }).parentElement;
+            expect(parentItem).not.toBeNull();
+            Object.defineProperty(parentItem, "getBoundingClientRect", {
+                value: () => ({
+                    left: 180,
+                    top: 100,
+                    right: 190,
+                    bottom: 130,
+                    width: 10,
+                    height: 30,
+                }),
+            });
+
+            fireEvent.mouseEnter(parentItem!);
+
+            const submenuSurface = screen.getByRole("button", {
+                name: "Claude",
+            }).parentElement;
+            const submenuBridge = submenuSurface?.parentElement;
+
+            expect(submenuBridge).not.toBeNull();
+            expect(submenuBridge).toHaveStyle({
+                right: "100%",
+                paddingRight: "4px",
+            });
+        } finally {
+            Object.defineProperty(window, "innerWidth", {
+                configurable: true,
+                value: originalInnerWidth,
+            });
+        }
     });
 
     it("resets open submenu state when the menu identity changes", () => {

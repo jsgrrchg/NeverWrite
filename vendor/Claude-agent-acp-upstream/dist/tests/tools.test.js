@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { toAcpNotifications } from "../acp-agent.js";
 import { toolUpdateFromToolResult, createPostToolUseHook, createTaskHook, toolInfoFromToolUse, planEntries, applyTaskCreate, applyTaskUpdate, parseTaskCreateOutput, taskStateToPlanEntries, } from "../tools.js";
 describe("rawOutput in tool call updates", () => {
@@ -350,6 +350,21 @@ describe("Bash terminal output", () => {
                 signal: null,
             });
         });
+        it("should route failed commands through the terminal when supportsTerminalOutput is true", () => {
+            const toolResult = {
+                type: "tool_result",
+                tool_use_id: "toolu_bash",
+                content: "some error output",
+                is_error: true,
+            };
+            const update = toolUpdateFromToolResult(toolResult, bashToolUse, true);
+            expect(update.content).toEqual([{ type: "terminal", terminalId: "toolu_bash" }]);
+            expect(update._meta).toEqual({
+                terminal_info: { terminal_id: "toolu_bash" },
+                terminal_output: { terminal_id: "toolu_bash", data: "some error output" },
+                terminal_exit: { terminal_id: "toolu_bash", exit_code: 1, signal: null },
+            });
+        });
         it("should fall back to stderr when stdout is empty", () => {
             const toolResult = makeBashResult("", "some error output", 1);
             const update = toolUpdateFromToolResult(toolResult, bashToolUse, false);
@@ -440,9 +455,22 @@ describe("Bash terminal output", () => {
                     terminal_exit: { terminal_id: "toolu_bash", exit_code: 0, signal: null },
                 });
             });
-            it("should use error handler when is_error is true (early return before Bash case)", () => {
+            it("should route is_error through the terminal when supportsTerminalOutput is true", () => {
                 const toolResult = makeStringBashResult("command not found: bad_cmd", true);
                 const update = toolUpdateFromToolResult(toolResult, bashToolUse, true);
+                // Failed Bash commands skip the early error return and reach the Bash
+                // case so the client receives terminal output with a non-zero exit code
+                // instead of plain markdown details.
+                expect(update.content).toEqual([{ type: "terminal", terminalId: "toolu_bash" }]);
+                expect(update._meta).toEqual({
+                    terminal_info: { terminal_id: "toolu_bash" },
+                    terminal_output: { terminal_id: "toolu_bash", data: "command not found: bad_cmd" },
+                    terminal_exit: { terminal_id: "toolu_bash", exit_code: 1, signal: null },
+                });
+            });
+            it("should use error handler when is_error is true and terminal output is unsupported", () => {
+                const toolResult = makeStringBashResult("command not found: bad_cmd", true);
+                const update = toolUpdateFromToolResult(toolResult, bashToolUse, false);
                 // is_error with content hits the early error return at the top of
                 // toolUpdateFromToolResult, before reaching the Bash switch case.
                 // So there's no terminal _meta, just error-formatted content.
@@ -493,16 +521,82 @@ describe("Bash terminal output", () => {
                 });
             });
         });
+        describe("with image array tool_result (local Bash image output path)", () => {
+            // The local Bash tool emits image content as
+            // `[{ type: "image", source: { type: "base64", ... } }]` when a
+            // command produces an image (e.g. piping a base64 data URI).
+            const makeImageBashResult = (data, media_type = "image/png") => ({
+                type: "tool_result",
+                tool_use_id: "toolu_bash",
+                content: [
+                    {
+                        type: "image",
+                        source: { type: "base64", media_type, data },
+                    },
+                ],
+            });
+            it("should surface image content as ACP image content (terminal disabled)", () => {
+                const toolResult = makeImageBashResult("iVBORw0KGgo=");
+                const update = toolUpdateFromToolResult(toolResult, bashToolUse, false);
+                expect(update.content).toEqual([
+                    {
+                        type: "content",
+                        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+                    },
+                ]);
+                expect(update._meta).toBeUndefined();
+            });
+            it("should bypass terminal _meta even when supportsTerminalOutput is true", () => {
+                // Binary content cannot be streamed through the terminal-output
+                // _meta channel, so the fix returns ACP content directly and skips
+                // the terminal info/output/exit triple.
+                const toolResult = makeImageBashResult("iVBORw0KGgo=", "image/jpeg");
+                const update = toolUpdateFromToolResult(toolResult, bashToolUse, true);
+                expect(update.content).toEqual([
+                    {
+                        type: "content",
+                        content: { type: "image", data: "iVBORw0KGgo=", mimeType: "image/jpeg" },
+                    },
+                ]);
+                expect(update._meta).toBeUndefined();
+            });
+            it("should still surface multi-block content with text + image mixed", () => {
+                const toolResult = {
+                    type: "tool_result",
+                    tool_use_id: "toolu_bash",
+                    content: [
+                        { type: "text", text: "generated:" },
+                        {
+                            type: "image",
+                            source: { type: "base64", media_type: "image/png", data: "AAAA" },
+                        },
+                    ],
+                };
+                const update = toolUpdateFromToolResult(toolResult, bashToolUse, false);
+                expect(update.content).toEqual([
+                    { type: "content", content: { type: "text", text: "generated:" } },
+                    {
+                        type: "content",
+                        content: { type: "image", data: "AAAA", mimeType: "image/png" },
+                    },
+                ]);
+            });
+        });
     });
     describe("toAcpNotifications with clientCapabilities", () => {
-        const toolUseCache = {
-            toolu_bash: {
-                type: "tool_use",
-                id: "toolu_bash",
-                name: "Bash",
-                input: { command: "ls -la" },
-            },
-        };
+        // Reset before each test: toAcpNotifications prunes the cache entry once it
+        // maps the tool_result, so a shared object would be empty by the 2nd test.
+        let toolUseCache;
+        beforeEach(() => {
+            toolUseCache = {
+                toolu_bash: {
+                    type: "tool_use",
+                    id: "toolu_bash",
+                    name: "Bash",
+                    input: { command: "ls -la" },
+                },
+            };
+        });
         const bashResult = {
             type: "bash_code_execution_result",
             stdout: "file1.txt\nfile2.txt",
@@ -569,7 +663,17 @@ describe("Bash terminal output", () => {
         });
         it("should include formatted content only when terminal_output is not supported", () => {
             const withSupport = toAcpNotifications([toolResult], "assistant", "test-session", toolUseCache, mockClient, mockLogger, { clientCapabilities: { _meta: { terminal_output: true } } });
-            const withoutSupport = toAcpNotifications([toolResult], "assistant", "test-session", toolUseCache, mockClient, mockLogger);
+            // Fresh cache: the withSupport call above already consumed the entry,
+            // since toAcpNotifications prunes the tool_use once it maps the result.
+            const toolUseCacheWithoutSupport = {
+                toolu_bash: {
+                    type: "tool_use",
+                    id: "toolu_bash",
+                    name: "Bash",
+                    input: { command: "ls -la" },
+                },
+            };
+            const withoutSupport = toAcpNotifications([toolResult], "assistant", "test-session", toolUseCacheWithoutSupport, mockClient, mockLogger);
             // With support: output is delivered via terminal_output _meta, content references the terminal widget
             expect(withSupport).toHaveLength(2);
             expect(withSupport[1].update.content).toEqual([
@@ -600,6 +704,28 @@ describe("Bash terminal output", () => {
             const exitMeta = notifications[1].update._meta;
             expect(exitMeta.claudeCode).toEqual({ toolName: "Bash" });
             expect(exitMeta.terminal_exit).toBeDefined();
+        });
+    });
+    describe("toolUseCache pruning", () => {
+        it("retains the tool_use entry until its result, then prunes it", () => {
+            const toolUseCache = {};
+            const toolUse = {
+                type: "tool_use",
+                id: "toolu_read",
+                name: "Read",
+                input: { file_path: "/tmp/x.txt" },
+            };
+            // tool_use is cached and kept (the matching result hasn't arrived yet).
+            toAcpNotifications([toolUse], "assistant", "s", toolUseCache, mockClient, mockLogger);
+            expect(toolUseCache.toolu_read).toBeDefined();
+            // tool_result resolves it, so the entry is pruned to bound memory.
+            const toolResult = {
+                type: "tool_result",
+                tool_use_id: "toolu_read",
+                content: [{ type: "text", text: "hello" }],
+            };
+            toAcpNotifications([toolResult], "assistant", "s", toolUseCache, mockClient, mockLogger);
+            expect(toolUseCache.toolu_read).toBeUndefined();
         });
     });
     describe("post-tool-use hook sends diff content for Edit tool", () => {

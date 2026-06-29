@@ -3,13 +3,14 @@ import { invoke, openPath, revealItemInDir } from "@neverwrite/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import {
     renderComponent,
     setEditorTabs,
     setVaultEntries,
     setVaultNotes,
 } from "../../../test/test-utils";
-import type { AIChatMessage } from "../types";
+import type { AIChatMessage, AIUserInputAction } from "../types";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { AIChatMessageItem } from "./AIChatMessageItem";
 
@@ -29,7 +30,11 @@ function renderMessage(
     options: {
         sessionId?: string | null;
         visibleWorkCycleId?: string | null;
-        recentDiffWorkCycleIds?: string[];
+        onUserInputResponse?: (
+            requestId: string,
+            answers: Record<string, string[]>,
+            action?: AIUserInputAction,
+        ) => void;
         onDismissMessage?: (messageId: string) => void;
     } = {},
 ) {
@@ -39,7 +44,7 @@ function renderMessage(
             sessionId={options.sessionId}
             pillMetrics={pillMetrics}
             visibleWorkCycleId={options.visibleWorkCycleId}
-            recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
+            onUserInputResponse={options.onUserInputResponse}
             onDismissMessage={options.onDismissMessage}
         />,
     );
@@ -69,6 +74,10 @@ beforeEach(() => {
     localStorage.clear();
     resetChatStore();
     useSettingsStore.setState({ lineWrapping: true });
+    useEditorStore.setState({
+        tabs: [],
+        activeTabId: null,
+    });
 });
 
 describe("AIChatMessageItem errors", () => {
@@ -89,6 +98,127 @@ describe("AIChatMessageItem errors", () => {
         fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
 
         expect(onDismissMessage).toHaveBeenCalledWith("error:1");
+    });
+});
+
+describe("AIChatMessageItem user input", () => {
+    it("submits all selected options for multi-select questions", () => {
+        const onUserInputResponse = vi.fn();
+
+        renderMessage(
+            {
+                id: "user-input:input-1",
+                role: "assistant",
+                kind: "user_input_request",
+                title: "Choose targets",
+                content: "Choose the files to include.",
+                timestamp: Date.now(),
+                userInputRequestId: "input-1",
+                userInputQuestions: [
+                    {
+                        id: "targets",
+                        header: "Targets",
+                        question: "Which files should I include?",
+                        is_other: false,
+                        is_secret: false,
+                        allows_multiple: true,
+                        options: [
+                            {
+                                label: "README.md",
+                                value: "readme",
+                                description: "Project overview",
+                                preview: "docs/README.md",
+                            },
+                            {
+                                label: "CHANGELOG.md",
+                                value: "changelog",
+                                description: "Release history",
+                            },
+                        ],
+                    },
+                ],
+                meta: {
+                    status: "pending",
+                },
+            },
+            { sessionId: "session-1", onUserInputResponse },
+        );
+
+        expect(screen.getByText("Project overview")).toBeInTheDocument();
+        expect(screen.queryByText("docs/README.md")).not.toBeInTheDocument();
+
+        const readmeOption = screen.getByRole("button", {
+            name: /README\.md/,
+        });
+        fireEvent.focus(readmeOption);
+        expect(screen.getByText("docs/README.md")).toBeInTheDocument();
+        fireEvent.blur(readmeOption);
+        expect(screen.queryByText("docs/README.md")).not.toBeInTheDocument();
+
+        fireEvent.click(readmeOption);
+        fireEvent.click(screen.getByRole("button", { name: /CHANGELOG\.md/ }));
+        fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+        expect(screen.getByText("docs/README.md")).toBeInTheDocument();
+        expect(onUserInputResponse).toHaveBeenCalledWith(
+            "input-1",
+            {
+                targets: ["readme", "changelog"],
+            },
+            "accept",
+        );
+    });
+
+    it("submits per-question custom answers instead of the selected option", () => {
+        const onUserInputResponse = vi.fn();
+
+        renderMessage(
+            {
+                id: "user-input:input-custom",
+                role: "assistant",
+                kind: "user_input_request",
+                title: "Choose an approach",
+                content: "Pick or type another approach.",
+                timestamp: Date.now(),
+                userInputRequestId: "input-custom",
+                userInputQuestions: [
+                    {
+                        id: "question_0",
+                        custom_answer_id: "question_0_custom",
+                        header: "Approach",
+                        question: "Which approach should I use?",
+                        is_other: true,
+                        is_secret: false,
+                        options: [
+                            {
+                                label: "Safe",
+                                value: "safe",
+                                description: "Use the narrow scope.",
+                            },
+                        ],
+                    },
+                ],
+                meta: {
+                    status: "pending",
+                },
+            },
+            { sessionId: "session-1", onUserInputResponse },
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: /Safe/ }));
+        fireEvent.change(screen.getByLabelText("Other"), {
+            target: { value: "Use my custom approach" },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+        expect(onUserInputResponse).toHaveBeenCalledWith(
+            "input-custom",
+            {
+                question_0: ["safe"],
+                question_0_custom: ["Use my custom approach"],
+            },
+            "accept",
+        );
     });
 });
 
@@ -144,6 +274,121 @@ describe("AIChatMessageItem generated images", () => {
 
         expect(openPath).toHaveBeenCalledWith(imagePath);
         expect(revealItemInDir).toHaveBeenCalledWith(imagePath);
+    });
+});
+
+describe("AIChatMessageItem user image attachments", () => {
+    it("renders image attachments below user text", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const filePath = "/vault/assets/chat/screenshot.png";
+
+        renderMessage({
+            id: "user:with-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:image",
+                    type: "file",
+                    noteId: null,
+                    label: "Screenshot 10:32",
+                    path: null,
+                    filePath,
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        const image = screen.getByRole("img", { name: "Screenshot 10:32" });
+        expect(image.getAttribute("src")).toContain(
+            "neverwrite-file://localhost/vault/",
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Open" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+
+        expect(openPath).not.toHaveBeenCalledWith(filePath);
+        expect(useEditorStore.getState().tabs).toEqual([
+            expect.objectContaining({
+                kind: "file",
+                relativePath: "assets/chat/screenshot.png",
+                title: "screenshot.png",
+                path: filePath,
+                mimeType: "image/png",
+                viewer: "image",
+                content: "",
+            }),
+        ]);
+        expect(revealItemInDir).toHaveBeenCalledWith(filePath);
+    });
+
+    it("does not render attachment thumbnails when user text has no attachments", () => {
+        renderMessage({
+            id: "user:plain",
+            role: "user",
+            kind: "text",
+            content: "No files here",
+            timestamp: Date.now(),
+        });
+
+        expect(screen.queryByRole("img")).not.toBeInTheDocument();
+        expect(screen.queryByText("Image unavailable")).not.toBeInTheDocument();
+    });
+
+    it("does not render non-image attachments as thumbnails", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        renderMessage({
+            id: "user:with-file",
+            role: "user",
+            kind: "text",
+            content: "Read this file",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:file",
+                    type: "file",
+                    noteId: null,
+                    label: "guide.md",
+                    path: null,
+                    filePath: "/vault/docs/guide.md",
+                    mimeType: "text/markdown",
+                },
+            ],
+        });
+
+        expect(screen.queryByRole("img")).not.toBeInTheDocument();
+        expect(screen.queryByText("guide.md")).not.toBeInTheDocument();
+    });
+
+    it("shows a compact unavailable state for image paths outside the active vault", () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        renderMessage({
+            id: "user:external-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:external-image",
+                    type: "file",
+                    noteId: null,
+                    label: "external.png",
+                    path: null,
+                    filePath: "/outside/external.png",
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        expect(screen.getByText("Image unavailable")).toBeInTheDocument();
+        expect(screen.queryByRole("img")).not.toBeInTheDocument();
     });
 });
 
@@ -390,7 +635,7 @@ describe("AIChatMessageItem tool diffs", () => {
         ).toBeInTheDocument();
     });
 
-    it("hides diff review panels for non-visible work cycles", () => {
+    it("keeps historical work cycle diffs on the rich diff card", () => {
         renderMessage(
             {
                 id: "tool:hidden",
@@ -414,20 +659,16 @@ describe("AIChatMessageItem tool diffs", () => {
                     target: "/vault/src/watcher.rs",
                 },
             },
-            { visibleWorkCycleId: "cycle-new", recentDiffWorkCycleIds: [] },
+            { visibleWorkCycleId: "cycle-new" },
         );
 
-        expect(screen.queryByText("Edit 1 file")).not.toBeInTheDocument();
-        expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
-            "Earlier change",
-        );
-        expect(screen.getByText(/watcher\.rs/)).toBeInTheDocument();
-        expect(
-            screen.queryByRole("button", { name: "Open" }),
-        ).not.toBeInTheDocument();
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
     });
 
-    it("keeps recent non-visible work cycles on the rich diff card in read-only mode", () => {
+    it("keeps non-visible work cycles on the rich diff card without a recency badge", () => {
         renderMessage(
             {
                 id: "tool:recent",
@@ -453,18 +694,16 @@ describe("AIChatMessageItem tool diffs", () => {
             },
             {
                 visibleWorkCycleId: "cycle-current",
-                recentDiffWorkCycleIds: ["cycle-recent"],
             },
         );
 
         expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
-        expect(screen.getByTestId("recent-diff-badge")).toHaveTextContent(
-            "Recent change",
-        );
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.queryByText("Recent change")).not.toBeInTheDocument();
         expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
     });
 
-    it("keeps recent permission diffs inspectable without rendering decision actions", () => {
+    it("keeps historical permission diffs inspectable without rendering decision actions", () => {
         renderMessage(
             {
                 id: "permission:recent",
@@ -503,13 +742,12 @@ describe("AIChatMessageItem tool diffs", () => {
             },
             {
                 visibleWorkCycleId: "cycle-current",
-                recentDiffWorkCycleIds: ["cycle-recent"],
             },
         );
 
-        expect(screen.getByTestId("recent-diff-badge")).toHaveTextContent(
-            "Recent change",
-        );
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.getByText("Edited watcher.rs")).toBeInTheDocument();
         expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
         expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
         expect(

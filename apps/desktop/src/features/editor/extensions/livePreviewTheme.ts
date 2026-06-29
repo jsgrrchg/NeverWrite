@@ -350,13 +350,32 @@ export const livePreviewTheme = EditorView.baseTheme({
     ".cm-lp-task-line::selection, .cm-lp-task-line *::selection": {
         backgroundColor: "var(--selection-bg)",
     },
+    // Superscript via the MDN position pattern rather than `vertical-align:
+    // super`: each reference is a replace widget, and `super` resolves against
+    // the surrounding line box, so abutting refs (separated by zero-width hidden
+    // delimiter spans) landed at slightly different heights. A fixed `top`
+    // offset puts every reference — single or in a run — at the same height.
     ".cm-lp-footnote-ref": {
         fontSize: "0.72em",
-        verticalAlign: "super",
+        lineHeight: "0",
+        position: "relative",
+        verticalAlign: "baseline",
+        top: "-0.5em",
         color: "var(--accent)",
         cursor: "pointer",
         fontWeight: "600",
-        marginLeft: "0.08em",
+        marginLeft: "0.1em",
+    },
+    ".cm-lp-footnote-ref:hover": {
+        textDecoration: "underline",
+        textUnderlineOffset: "0.2em",
+    },
+    // Comma between abutting references; muted and never underlined on hover.
+    ".cm-lp-footnote-sep": {
+        color: "var(--text-secondary)",
+        fontWeight: "400",
+        textDecoration: "none",
+        marginRight: "0.15em",
     },
     ".cm-lp-footnote-def": {
         color: "var(--text-secondary)",
@@ -364,6 +383,25 @@ export const livePreviewTheme = EditorView.baseTheme({
         borderLeft:
             "2px solid color-mix(in srgb, var(--accent) 28%, var(--border))",
         marginLeft: "4px",
+    },
+    // Numbered badge that ties a definition back to its `[^n]` references.
+    ".cm-lp-footnote-def[data-footnote-number]::before": {
+        content: "attr(data-footnote-number) '.'",
+        color: "var(--accent)",
+        fontWeight: "600",
+        marginRight: "6px",
+    },
+    // Brief highlight on a line a jump just landed on (footnote def, outline heading).
+    "@keyframes cm-lp-line-flash": {
+        from: {
+            backgroundColor:
+                "color-mix(in srgb, var(--accent) 32%, transparent)",
+        },
+        to: { backgroundColor: "transparent" },
+    },
+    ".cm-lp-line-flash": {
+        animation: "cm-lp-line-flash 1.1s ease-out",
+        borderRadius: "4px",
     },
     ".cm-lp-callout": {
         borderLeft:

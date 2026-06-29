@@ -15,6 +15,7 @@ export type ShortcutActionId =
     | "open_vault"
     | "new_note"
     | "new_agent"
+    | "stop_active_agent"
     | "new_terminal"
     | "new_tab"
     | "close_tab"
@@ -41,6 +42,7 @@ export type ShortcutActionId =
     | "remove_heading"
     | "bold_selection"
     | "highlight_selection"
+    | "preview_link_at_caret"
     | "add_selection_to_chat"
     | "save_note";
 
@@ -122,6 +124,15 @@ const shortcutDefinitions = [
         bindings: {
             macos: [{ key: "n", modifiers: ["meta", "shift"] }],
             windows: [{ key: "n", modifiers: ["ctrl", "shift"] }],
+        },
+    },
+    {
+        id: "stop_active_agent",
+        label: "Stop active agent",
+        category: "AI",
+        bindings: {
+            macos: [{ key: "Escape" }],
+            windows: [{ key: "Escape" }],
         },
     },
     {
@@ -370,6 +381,15 @@ const shortcutDefinitions = [
         },
     },
     {
+        id: "preview_link_at_caret",
+        label: "Preview Link at Caret",
+        category: "Editor",
+        bindings: {
+            macos: [{ key: "p", modifiers: ["meta", "alt"] }],
+            windows: [{ key: "p", modifiers: ["ctrl", "alt"] }],
+        },
+    },
+    {
         id: "add_selection_to_chat",
         label: "Add Selection to Chat",
         category: "AI",
@@ -440,6 +460,7 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "open_vault",
     "new_note",
     "new_agent",
+    "stop_active_agent",
     "new_terminal",
     "new_tab",
     "reopen_closed_tab",
@@ -453,6 +474,7 @@ export const SHORTCUT_SETTINGS_ORDER: ShortcutActionId[] = [
     "remove_heading",
     "bold_selection",
     "highlight_selection",
+    "preview_link_at_caret",
     "toggle_live_preview",
     "save_note",
     "add_selection_to_chat",

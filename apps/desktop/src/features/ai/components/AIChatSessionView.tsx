@@ -9,24 +9,40 @@
  * All session data is read reactively from chatStore, which is the single
  * source of truth regardless of where the UI renders.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 import { open as runtimeOpen } from "@neverwrite/runtime";
 import { useShallow } from "zustand/react/shallow";
 import {
     isChatTab,
     selectEditorPaneActiveTab,
     selectEditorWorkspaceTabs,
+    selectFocusedPaneId,
+    selectPaneTab,
     useEditorStore,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
-import { isTextLikeVaultEntry } from "../../../app/utils/vaultEntries";
+import {
+    isTextLikeVaultEntry,
+    moveVaultEntryToTrash,
+} from "../../../app/utils/vaultEntries";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     type AIComposerPart,
+    type AIChatMessage,
     type AIRuntimeConnectionState,
     type QueuedChatMessage,
 } from "../types";
-import { useChatStore } from "../store/chatStore";
+import {
+    REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
+    useChatStore,
+} from "../store/chatStore";
 import { AIChatMessageList } from "./AIChatMessageList";
 import { AIChatComposer } from "./AIChatComposer";
 import { AIChatContextBar } from "./AIChatContextBar";
@@ -35,18 +51,36 @@ import { AIChatContextUsageBar } from "./AIChatContextUsageBar";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { AIChatRuntimeBanner } from "./AIChatRuntimeBanner";
+import { formatShortcutAction } from "../../../app/shortcuts/format";
+import { getDesktopPlatform } from "../../../app/utils/platform";
 import { AIDiscardedRootsBanner } from "./AIDiscardedRootsBanner";
 import { useInlineRename } from "./useInlineRename";
+import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { useChatFindShortcut } from "./find/useChatFindShortcut";
 import {
     appendFileAttachmentPart,
     appendScreenshotPart,
     createEmptyComposerParts,
 } from "../composerParts";
 import {
+    getNextScreenshotExpiryDelayMs,
+    normalizeScreenshotPartTimestamps,
+    pruneExpiredScreenshotParts,
+} from "../screenshotRetention";
+import {
+    getImageAttachmentExtension,
+    imageAttachmentValidationMessage,
+    validateNewImageAttachment,
+} from "../imageAttachments";
+import {
     findSessionForHistorySelection,
     getSessionTitle,
     getSessionTitleText,
 } from "../sessionPresentation";
+import {
+    ChatPromptOutlineMenu,
+    type ChatPromptOutlineItem,
+} from "./ChatPromptOutlineMenu";
 
 const EMPTY_COMPOSER_PARTS: AIComposerPart[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedChatMessage[] = [];
@@ -54,17 +88,64 @@ const IDLE_CONNECTION: AIRuntimeConnectionState = {
     status: "idle",
     message: null,
 };
+const PROMPT_OUTLINE_LABEL_MAX_LENGTH = 96;
+
+function buildPromptOutlineLabel(message: AIChatMessage) {
+    const source = (message.content || message.title || "").trim();
+    const normalized = source.replace(/\s+/g, " ").trim();
+    const fallback =
+        (message.attachments?.length ?? 0) > 0
+            ? "Prompt with attachments"
+            : "Untitled prompt";
+    const label = normalized || fallback;
+
+    if (label.length <= PROMPT_OUTLINE_LABEL_MAX_LENGTH) {
+        return label;
+    }
+
+    return `${label.slice(0, PROMPT_OUTLINE_LABEL_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
+function ChatContentColumn({
+    children,
+}: {
+    children: ReactNode;
+}) {
+    return (
+        <div
+            className="min-w-0"
+            data-testid="chat-content-column"
+            style={AI_CHAT_CONTENT_COLUMN_STYLE}
+        >
+            {children}
+        </div>
+    );
+}
 
 interface AIChatSessionViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
+export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     const [composerExpanded, setComposerExpanded] = useState(false);
+    const [imageAttachmentNotice, setImageAttachmentNotice] = useState<
+        string | null
+    >(null);
+    const [findOpen, setFindOpen] = useState(false);
+    const [promptOutlineOpen, setPromptOutlineOpen] = useState(false);
+    const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(
+        null,
+    );
+    const rootRef = useRef<HTMLDivElement>(null);
+    const promptOutlineButtonRef = useRef<HTMLButtonElement>(null);
 
-    // Resolve sessionId from the active ChatTab in this pane
+    // Resolve sessionId from this column's ChatTab (stacked) or the pane's
+    // active ChatTab (normal mode, when no explicit tabId is bound).
     const sessionId = useEditorStore((state) => {
-        const tab = selectEditorPaneActiveTab(state, paneId);
+        const tab = tabId
+            ? selectPaneTab(state, paneId, tabId)
+            : selectEditorPaneActiveTab(state, paneId);
         return tab && isChatTab(tab) ? tab.sessionId : null;
     });
 
@@ -81,6 +162,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
         queuedMessageEdit,
         interruptedTurnState,
         tokenUsage,
+        screenshotRetentionSeconds,
     } = useChatStore(
         useShallow((state) => {
             const s = sessionId
@@ -113,6 +195,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                 tokenUsage: sid
                     ? (state.tokenUsageBySessionId[sid] ?? null)
                     : null,
+                screenshotRetentionSeconds: state.screenshotRetentionSeconds,
             };
         }),
     );
@@ -198,10 +281,18 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
 
     const runtimeLabel =
         activeRuntime?.runtime.name.replace(/ ACP$/, "") ?? "Assistant";
+    const isClosedSubagent = Boolean(session?.parentSessionId && session.closedAt);
+    const isRemovedGeminiAcpSession = session?.runtimeId === "gemini-acp";
     const agentControlsDisabled =
         !session ||
+        isClosedSubagent ||
+        isRemovedGeminiAcpSession ||
         isPendingSessionCreation ||
         Boolean(session.isResumingSession);
+    const lockIncompatibleModelSwitches =
+        session?.runtimeId === "grok-acp" &&
+        (session.messages.length > 0 ||
+            (session.persistedMessageCount ?? 0) > 0);
 
     // Handlers
     const handleRemoveAttachment = useCallback(
@@ -272,19 +363,25 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     const handlePasteImage = useCallback(
         async (file: File) => {
             if (!sessionId) return;
-            const MAX_SIZE = 25 * 1024 * 1024;
-            if (file.size > MAX_SIZE) return;
+            const currentParts =
+                useChatStore.getState().composerPartsBySessionId[sessionId] ??
+                createEmptyComposerParts();
+            const runtimeId = session?.runtimeId ?? null;
+            const validation = validateNewImageAttachment(
+                file,
+                currentParts,
+                runtimeId,
+            );
+            if (!validation.ok) {
+                setImageAttachmentNotice(
+                    imageAttachmentValidationMessage(validation.reason, runtimeId),
+                );
+                return;
+            }
             try {
                 const buffer = await file.arrayBuffer();
                 const bytes = Array.from(new Uint8Array(buffer));
-                const ext =
-                    file.type === "image/jpeg"
-                        ? "jpg"
-                        : file.type === "image/gif"
-                          ? "gif"
-                          : file.type === "image/webp"
-                            ? "webp"
-                            : "png";
+                const ext = getImageAttachmentExtension(file.type);
                 const now = new Date();
                 const ts = [
                     now.getFullYear(),
@@ -306,26 +403,116 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     fileName,
                     bytes,
                 });
-                await refreshEntries();
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
-                const currentParts =
+                const latestParts =
                     useChatStore.getState().composerPartsBySessionId[
                         sessionId
                     ] ?? createEmptyComposerParts();
+                const latestValidation = validateNewImageAttachment(
+                    file,
+                    latestParts,
+                    runtimeId,
+                );
+                if (!latestValidation.ok) {
+                    await moveVaultEntryToTrash(saved.relative_path).catch(
+                        (cleanupError) => {
+                            console.error(
+                                "[chat] Failed to remove rejected pasted image:",
+                                cleanupError,
+                            );
+                        },
+                    );
+                    await refreshEntries();
+                    setImageAttachmentNotice(
+                        imageAttachmentValidationMessage(
+                            latestValidation.reason,
+                            runtimeId,
+                        ),
+                    );
+                    return;
+                }
+                await refreshEntries();
                 chatActions.setComposerParts(
-                    appendScreenshotPart(currentParts, {
+                    appendScreenshotPart(latestParts, {
                         filePath: saved.path,
                         mimeType: saved.mime_type ?? file.type,
                         label: timeLabel,
+                        createdAt: now.getTime(),
                     }),
                     sessionId,
                 );
+                setImageAttachmentNotice(null);
             } catch (error) {
                 console.error("[chat] Failed to save pasted image:", error);
+                setImageAttachmentNotice("Image could not be attached");
             }
         },
-        [chatActions, refreshEntries, sessionId],
+        [chatActions, refreshEntries, session?.runtimeId, sessionId],
     );
+
+    useEffect(() => {
+        if (!imageAttachmentNotice) return;
+        const timer = window.setTimeout(() => {
+            setImageAttachmentNotice(null);
+        }, 3500);
+        return () => window.clearTimeout(timer);
+    }, [imageAttachmentNotice]);
+
+    useEffect(() => {
+        if (!sessionId || screenshotRetentionSeconds <= 0) return;
+
+        const now = Date.now();
+        const normalizedParts = normalizeScreenshotPartTimestamps(
+            composerParts,
+            now,
+        );
+        const prunedParts = pruneExpiredScreenshotParts(
+            normalizedParts,
+            screenshotRetentionSeconds,
+            now,
+        );
+
+        if (prunedParts !== composerParts) {
+            chatActions.setComposerParts(prunedParts, sessionId);
+            return;
+        }
+
+        const nextDelay = getNextScreenshotExpiryDelayMs(
+            composerParts,
+            screenshotRetentionSeconds,
+            now,
+        );
+        if (nextDelay == null) return;
+
+        const timer = window.setTimeout(() => {
+            const state = useChatStore.getState();
+            const currentParts =
+                state.composerPartsBySessionId[sessionId] ??
+                createEmptyComposerParts();
+            const currentRetentionSeconds = state.screenshotRetentionSeconds;
+            const currentNow = Date.now();
+            const normalizedCurrentParts = normalizeScreenshotPartTimestamps(
+                currentParts,
+                currentNow,
+            );
+            const nextParts = pruneExpiredScreenshotParts(
+                normalizedCurrentParts,
+                currentRetentionSeconds,
+                currentNow,
+            );
+
+            if (nextParts !== currentParts) {
+                state.setComposerParts(nextParts, sessionId);
+            }
+        }, nextDelay);
+
+        return () => window.clearTimeout(timer);
+    }, [
+        chatActions,
+        composerParts,
+        screenshotRetentionSeconds,
+        sessionId,
+    ]);
 
     // Title sync: keep the editor tab title in sync with session title
     useEffect(() => {
@@ -344,8 +531,74 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
     }, [session, sessionId]);
 
     const sessionTitle = session ? getSessionTitleText(session) : "Chat";
+    // Close the finder when switching to another session.
+    useEffect(() => {
+        setFindOpen(false);
+        setPromptOutlineOpen(false);
+        setScrollToMessageId(null);
+    }, [sessionId]);
+
+    // The message list owns the finder UI and is unmounted while the composer is
+    // expanded, so keep local message-list overlays aligned with that boundary.
+    useEffect(() => {
+        if (composerExpanded) {
+            setFindOpen(false);
+            setPromptOutlineOpen(false);
+        }
+    }, [composerExpanded]);
+
+    const openFind = useCallback(() => {
+        setFindOpen(true);
+    }, []);
+    useChatFindShortcut({
+        rootRef,
+        disabled: composerExpanded,
+        onOpen: openFind,
+    });
+    useEffect(() => {
+        if (!findOpen) return;
+        const handleEscape = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.key !== "Escape") return;
+            if (
+                event.metaKey ||
+                event.ctrlKey ||
+                event.altKey ||
+                event.shiftKey
+            ) {
+                return;
+            }
+            const focusedPaneId = selectFocusedPaneId(useEditorStore.getState());
+            if (paneId && focusedPaneId !== paneId) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            setFindOpen(false);
+            rootRef.current?.focus();
+        };
+
+        window.addEventListener("keydown", handleEscape, true);
+        return () => window.removeEventListener("keydown", handleEscape, true);
+    }, [findOpen, paneId]);
+
     const isSubagent = Boolean(session?.parentSessionId?.trim());
     const parentTitle = parentSession ? getSessionTitle(parentSession) : null;
+    const findDisabled = composerExpanded;
+    const promptOutlineDisabled = composerExpanded;
+    const hasEarlierMessages = (session?.loadedPersistedMessageStart ?? 0) > 0;
+    const promptOutlineItems = useMemo<ChatPromptOutlineItem[]>(
+        () =>
+            (session?.messages ?? [])
+                .filter(
+                    (message) =>
+                        message.role === "user" && message.kind === "text",
+                )
+                .map((message, index) => ({
+                    id: message.id,
+                    label: buildPromptOutlineLabel(message),
+                    ordinal: index + 1,
+                })),
+        [session?.messages],
+    );
 
     const startTitleEdit = useCallback(() => {
         if (!session || !sessionId || isSubagent) return;
@@ -369,7 +622,9 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
 
     return (
         <div
-            className="relative flex h-full min-h-0 flex-col"
+            ref={rootRef}
+            tabIndex={-1}
+            className="relative flex h-full min-h-0 flex-col outline-none"
             style={{ backgroundColor: "var(--bg-secondary)" }}
         >
             {/* Compact local session header for the workspace chat tab */}
@@ -400,6 +655,7 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             if (event.key === "Enter") {
                                 commitTitleEdit();
                             } else if (event.key === "Escape") {
+                                event.preventDefault();
                                 cancelEditing();
                             }
                         }}
@@ -438,6 +694,130 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             : "Subagent"}
                     </span>
                 ) : null}
+                {!isSubagent && editingKey !== sessionId ? (
+                    <button
+                        type="button"
+                        onClick={startTitleEdit}
+                        aria-label="Rename chat"
+                        title="Rename chat"
+                        className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
+                        style={{
+                            color: "var(--text-secondary)",
+                            border: "none",
+                            backgroundColor: "transparent",
+                        }}
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 14 14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M8.5 3 11 5.5" />
+                            <path d="M3 11l.5-2.2 5.3-5.3a1 1 0 0 1 1.4 0l.8.8a1 1 0 0 1 0 1.4l-5.3 5.3L3 11z" />
+                        </svg>
+                    </button>
+                ) : null}
+                <button
+                    ref={promptOutlineButtonRef}
+                    type="button"
+                    onClick={() => {
+                        if (promptOutlineDisabled) return;
+                        setPromptOutlineOpen((value) => !value);
+                    }}
+                    disabled={promptOutlineDisabled}
+                    aria-label="User prompts"
+                    aria-pressed={promptOutlineOpen}
+                    title={
+                        promptOutlineDisabled
+                            ? "User prompts are unavailable while the composer is expanded"
+                            : "User prompts"
+                    }
+                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
+                    style={{
+                        color: promptOutlineOpen
+                            ? "var(--accent)"
+                            : "var(--text-secondary)",
+                        border: "none",
+                        backgroundColor: "transparent",
+                        opacity: promptOutlineDisabled ? 0.45 : 1,
+                    }}
+                >
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <path d="M3 3.5h8" />
+                        <path d="M3 7h8" />
+                        <path d="M3 10.5h8" />
+                        <path d="M1.5 3.5h.01" />
+                        <path d="M1.5 7h.01" />
+                        <path d="M1.5 10.5h.01" />
+                    </svg>
+                </button>
+                <button
+                    type="button"
+                    onClick={() => {
+                        if (findDisabled) return;
+                        setFindOpen((value) => !value);
+                    }}
+                    disabled={findDisabled}
+                    aria-label="Find in chat"
+                    aria-pressed={findOpen}
+                    title={
+                        findDisabled
+                            ? "Find is unavailable while the composer is expanded"
+                            : `Find in chat (${formatShortcutAction(
+                                  "find_in_note",
+                                  getDesktopPlatform(),
+                              )})`
+                    }
+                    className="nw-control-trigger flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md"
+                    style={{
+                        color: findOpen
+                            ? "var(--accent)"
+                            : "var(--text-secondary)",
+                        border: "none",
+                        backgroundColor: "transparent",
+                        opacity: findDisabled ? 0.45 : 1,
+                    }}
+                >
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    >
+                        <circle cx="6" cy="6" r="4" />
+                        <path d="M9 9L12.5 12.5" />
+                    </svg>
+                </button>
+                {promptOutlineOpen ? (
+                    <ChatPromptOutlineMenu
+                        anchorRef={promptOutlineButtonRef}
+                        items={promptOutlineItems}
+                        hasEarlierMessages={hasEarlierMessages}
+                        onSelect={(messageId) => {
+                            setPromptOutlineOpen(false);
+                            setScrollToMessageId(messageId);
+                        }}
+                        onClose={() => setPromptOutlineOpen(false)}
+                    />
+                ) : null}
             </div>
 
             <AIChatRuntimeBanner
@@ -467,6 +847,15 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         session?.isLoadingPersistedMessages ?? false
                     }
                     visibleWorkCycleId={session?.visibleWorkCycleId ?? null}
+                    findOpen={findOpen}
+                    scrollToMessageId={scrollToMessageId}
+                    onScrollToMessageComplete={() => {
+                        setScrollToMessageId(null);
+                    }}
+                    onCloseFind={() => {
+                        setFindOpen(false);
+                        rootRef.current?.focus();
+                    }}
                     chatFontSize={chatFontSize}
                     chatFontFamily={chatFontFamily}
                     onLoadOlderMessages={() => {
@@ -479,17 +868,33 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                             optionId,
                         );
                     }}
-                    onUserInputResponse={(requestId, answers) => {
+                    onUserInputResponse={(requestId, answers, action) => {
                         void chatActions.respondUserInput(
                             requestId,
                             answers,
+                            sessionId,
+                            action,
+                        );
+                    }}
+                    onUrlElicitationOpen={(requestId) => {
+                        void chatActions.openUrlElicitation(
+                            requestId,
+                            sessionId,
+                        );
+                    }}
+                    onUrlElicitationResponse={(requestId, action) => {
+                        void chatActions.respondUrlElicitation(
+                            requestId,
+                            action,
                             sessionId,
                         );
                     }}
                 />
             )}
 
-            <EditedFilesBufferPanel sessionId={sessionId} />
+            <ChatContentColumn>
+                <EditedFilesBufferPanel sessionId={sessionId} />
+            </ChatContentColumn>
 
             <div
                 className={
@@ -498,28 +903,33 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                         : "pt-2"
                 }
             >
-                <QueuedMessagesPanel
-                    items={queuedMessages}
-                    editingItem={queuedMessageEdit?.item ?? null}
-                    onCancel={(messageId) => {
-                        chatActions.removeQueuedMessage(sessionId, messageId);
-                    }}
-                    onClearAll={() => {
-                        chatActions.clearSessionQueue(sessionId);
-                    }}
-                    onEdit={(messageId) => {
-                        chatActions.editQueuedMessage(sessionId, messageId);
-                    }}
-                    onSendNow={(messageId) => {
-                        void chatActions.sendQueuedMessageNow(
-                            sessionId,
-                            messageId,
-                        );
-                    }}
-                    onCancelEdit={() => {
-                        chatActions.cancelQueuedMessageEdit(sessionId);
-                    }}
-                />
+                <ChatContentColumn>
+                    <QueuedMessagesPanel
+                        items={queuedMessages}
+                        editingItem={queuedMessageEdit?.item ?? null}
+                        onCancel={(messageId) => {
+                            chatActions.removeQueuedMessage(
+                                sessionId,
+                                messageId,
+                            );
+                        }}
+                        onClearAll={() => {
+                            chatActions.clearSessionQueue(sessionId);
+                        }}
+                        onEdit={(messageId) => {
+                            chatActions.editQueuedMessage(sessionId, messageId);
+                        }}
+                        onSendNow={(messageId) => {
+                            void chatActions.sendQueuedMessageNow(
+                                sessionId,
+                                messageId,
+                            );
+                        }}
+                        onCancelEdit={() => {
+                            chatActions.cancelQueuedMessageEdit(sessionId);
+                        }}
+                    />
+                </ChatContentColumn>
                 <AIChatComposer
                     key={sessionId}
                     sessionId={sessionId}
@@ -541,16 +951,22 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     onToggleExpanded={() => setComposerExpanded((v) => !v)}
                     disabled={
                         !session ||
+                        isClosedSubagent ||
+                        isRemovedGeminiAcpSession ||
                         isPendingSessionCreation ||
                         activeConnection.status === "loading" ||
                         Boolean(session.isResumingSession)
                     }
                     placeholderText={
-                        isPendingSessionCreation
-                            ? pendingSessionError
-                                ? "Agent unavailable"
-                                : "Loading agent"
-                            : undefined
+                        isClosedSubagent
+                            ? "This subagent was closed by its parent thread."
+                            : isRemovedGeminiAcpSession
+                              ? REMOVED_GEMINI_ACP_COMPOSER_MESSAGE
+                            : isPendingSessionCreation
+                              ? pendingSessionError
+                                  ? "Agent unavailable"
+                                  : "Loading agent"
+                              : undefined
                     }
                     contextBar={
                         <AIChatContextBar
@@ -599,10 +1015,28 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }
                     footer={
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            {imageAttachmentNotice ? (
+                                <div
+                                    role="status"
+                                    aria-live="polite"
+                                    className="rounded-md px-2 py-1 text-xs font-medium"
+                                    style={{
+                                        color: "#f87171",
+                                        backgroundColor:
+                                            "color-mix(in srgb, #ef4444 8%, transparent)",
+                                        border: "1px solid color-mix(in srgb, #ef4444 24%, var(--border))",
+                                    }}
+                                >
+                                    {imageAttachmentNotice}
+                                </div>
+                            ) : null}
                             {!isPendingSessionCreation && (
                                 <AIChatAgentControls
                                     disabled={agentControlsDisabled}
                                     runtimeId={session?.runtimeId}
+                                    lockIncompatibleModelSwitches={
+                                        lockIncompatibleModelSwitches
+                                    }
                                     modelId={session?.modelId ?? ""}
                                     modeId={session?.modeId ?? ""}
                                     effortsByModel={
@@ -639,6 +1073,12 @@ export function AIChatSessionView({ paneId }: AIChatSessionViewProps) {
                     }}
                     onAttachFile={handleAttachFile}
                     onPasteImage={handlePasteImage}
+                    onImageAttachmentValidationFailure={(reason) => {
+                        const runtimeId = session?.runtimeId ?? null;
+                        setImageAttachmentNotice(
+                            imageAttachmentValidationMessage(reason, runtimeId),
+                        );
+                    }}
                     onFocus={() => {
                         if (!sessionId) return;
                         chatActions.markSessionFocused(sessionId);

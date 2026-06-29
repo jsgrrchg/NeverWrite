@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { openUrl } from "@neverwrite/runtime";
 import {
     normalizeEditorFontFamily,
     type EditorFontFamily,
@@ -21,6 +22,7 @@ import {
     aiLoadSessionHistories,
     aiPruneSessionHistories,
     aiRespondPermission,
+    aiRespondUrlElicitation,
     aiRespondUserInput,
     aiRestoreTextFile,
     aiSaveSessionHistory,
@@ -58,6 +60,11 @@ import {
     serializeComposerParts,
     serializeComposerPartsForAI,
 } from "../composerParts";
+import {
+    DEFAULT_SCREENSHOT_RETENTION_SECONDS,
+    normalizeScreenshotPartTimestamps,
+    normalizeScreenshotRetentionSeconds,
+} from "../screenshotRetention";
 import {
     ensureSessionWorkCycle,
     startNewWorkCycle,
@@ -122,6 +129,9 @@ import {
     type AITokenUsage,
     type AITokenUsagePayload,
     type AIToolActivityPayload,
+    type AIUrlElicitationAction,
+    type AIUrlElicitationRequestPayload,
+    type AIUserInputAction,
     type AIUserInputRequestPayload,
     type AIRuntimeConnectionPayload,
     type AIRuntimeConnectionState,
@@ -134,6 +144,7 @@ import {
     type QueuedChatMessage,
     type QueuedChatMessageStatus,
 } from "../types";
+import { isCancellableChatTurnStatus } from "../chatTurnStatus";
 import {
     getLastTranscriptMessage,
     getSessionTranscriptLength,
@@ -162,6 +173,7 @@ import { checkClaudeCodeInstalled } from "../../terminal/claudeCodeTerminal";
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
 type PersistedSessionHistorySummary = Omit<PersistedSessionHistory, "messages">;
+type RuntimeTextMessageRole = Extract<AIChatRole, "user" | "assistant">;
 let _persistedHistoryCacheVaultPath: string | null = null;
 let _persistedHistoryCacheBySessionId = new Map<
     string,
@@ -176,11 +188,17 @@ const SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID =
     "neverwrite:recovery:reconnecting-saved-chat";
 const RUNTIME_CONTEXT_RECOVERY_STATUS_EVENT_ID =
     "neverwrite:recovery:runtime-context";
+const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_EVENT_ID =
+    "neverwrite:subagent:queue-cancelled";
 const SAVED_CHAT_RECONNECTING_STATUS_TITLE = "Reconnecting saved chat...";
 const RUNTIME_CONTEXT_RECOVERY_STATUS_TITLE =
     "The AI runtime lost its connection. Reconnecting with saved context...";
+const CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE =
+    "Queued messages were cancelled because this subagent was closed by its parent thread.";
 const SAVED_CHAT_RECONNECT_FAILED_MESSAGE =
     "Could not reconnect this chat. Start a new session with saved transcript context?";
+export const REMOVED_GEMINI_ACP_COMPOSER_MESSAGE =
+    "Gemini ACP is no longer supported by Google.";
 const _pendingTrackedPersistedReconcileByKey = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -231,7 +249,7 @@ const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     chatFontFamily: "system",
     editDiffZoom: 0.72,
     historyRetentionDays: 0,
-    screenshotRetentionSeconds: 0,
+    screenshotRetentionSeconds: DEFAULT_SCREENSHOT_RETENTION_SECONDS,
 };
 
 interface AIRuntimeCatalogSnapshot {
@@ -239,6 +257,8 @@ interface AIRuntimeCatalogSnapshot {
     modes: AIRuntimeDescriptor["modes"];
     configOptions: AIRuntimeDescriptor["configOptions"];
 }
+
+const GROK_RUNTIME_ID = "grok-acp";
 
 interface QueuedMessageEditState {
     item: QueuedChatMessage;
@@ -369,6 +389,16 @@ function saveAutoContextPreference(
 
 function getNormalizedAiPreferences(): NormalizedAiPreferences {
     const prefs = loadAiPreferences();
+    const screenshotRetentionSeconds = normalizeScreenshotRetentionSeconds(
+        prefs.screenshotRetentionSeconds,
+    );
+    if (
+        prefs.screenshotRetentionSeconds != null &&
+        prefs.screenshotRetentionSeconds !== screenshotRetentionSeconds
+    ) {
+        saveAiPreferences({ screenshotRetentionSeconds });
+    }
+
     return {
         requireCmdEnterToSend: prefs.requireCmdEnterToSend === true,
         contextUsageBarEnabled: prefs.contextUsageBarEnabled !== false,
@@ -378,7 +408,7 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
         historyRetentionDays: prefs.historyRetentionDays ?? 0,
-        screenshotRetentionSeconds: prefs.screenshotRetentionSeconds ?? 0,
+        screenshotRetentionSeconds,
     };
 }
 
@@ -399,11 +429,17 @@ function saveRuntimeCatalogCache(
 ) {
     try {
         const current = loadRuntimeCatalogCache();
+        const sanitized = sanitizeRuntimeCatalogSnapshot(runtimeId, snapshot);
+        if (!hasRuntimeCatalog(sanitized)) {
+            const { [runtimeId]: _removed, ...rest } = current;
+            safeStorageSetItem(AI_RUNTIME_CACHE_KEY, JSON.stringify(rest));
+            return;
+        }
         safeStorageSetItem(
             AI_RUNTIME_CACHE_KEY,
             JSON.stringify({
                 ...current,
-                [runtimeId]: snapshot,
+                [runtimeId]: sanitized,
             }),
         );
     } catch {
@@ -498,6 +534,14 @@ function isLiveRuntimeSession(session: AIChatSession) {
     );
 }
 
+function isClosedSubagentSession(session: AIChatSession) {
+    return Boolean(session.parentSessionId && session.closedAt);
+}
+
+function isRemovedGeminiAcpSession(session: Pick<AIChatSession, "runtimeId">) {
+    return session.runtimeId === "gemini-acp";
+}
+
 function getWorkspaceHistorySessionIdForSession(sessionId: string) {
     const tab = selectEditorWorkspaceTabs(useEditorStore.getState()).find(
         (candidate) => isChatTab(candidate) && candidate.sessionId === sessionId,
@@ -520,6 +564,70 @@ function hasRuntimeCatalog(snapshot: AIRuntimeCatalogSnapshot) {
     );
 }
 
+function runtimeDropsSyntheticAutoModel(runtimeId: string) {
+    return runtimeId === GROK_RUNTIME_ID;
+}
+
+function isSyntheticAutoModel(model: AIRuntimeDescriptor["models"][number]) {
+    return model.id === "auto";
+}
+
+function isSyntheticAutoModelConfigOption(
+    option: AIRuntimeDescriptor["configOptions"][number],
+) {
+    return (
+        option.category === "model" &&
+        option.value === "auto" &&
+        option.options.length <= 1 &&
+        option.options.every((item) => item.value === "auto")
+    );
+}
+
+function sanitizeRuntimeCatalogSnapshot(
+    runtimeId: string,
+    snapshot: AIRuntimeCatalogSnapshot,
+): AIRuntimeCatalogSnapshot {
+    if (!runtimeDropsSyntheticAutoModel(runtimeId)) {
+        return snapshot;
+    }
+
+    const models = snapshot.models.filter(
+        (model) => !isSyntheticAutoModel(model),
+    );
+    const configOptions = snapshot.configOptions
+        .filter((option) => !isSyntheticAutoModelConfigOption(option))
+        .map((option) => {
+            if (option.category !== "model") {
+                return option;
+            }
+
+            const options = option.options.filter(
+                (item) => item.value !== "auto",
+            );
+            if (options.length === option.options.length) {
+                return option;
+            }
+
+            return {
+                ...option,
+                value:
+                    option.value === "auto"
+                        ? (options[0]?.value ?? "")
+                        : option.value,
+                options,
+            };
+        })
+        .filter(
+            (option) => option.category !== "model" || option.options.length > 0,
+        );
+
+    return {
+        models,
+        modes: snapshot.modes,
+        configOptions,
+    };
+}
+
 function getRuntimeCatalogSnapshot(
     session: Pick<AIChatSession, "models" | "modes" | "configOptions">,
 ): AIRuntimeCatalogSnapshot {
@@ -528,6 +636,23 @@ function getRuntimeCatalogSnapshot(
         modes: session.modes,
         configOptions: session.configOptions,
     };
+}
+
+function selectedSessionConfigValue(
+    session: Pick<AIChatSession, "modelId" | "modeId">,
+    option: AIRuntimeDescriptor["configOptions"][number],
+): string {
+    if (option.category === "model") {
+        return session.modelId.trim().length > 0
+            ? session.modelId
+            : option.value;
+    }
+
+    if (option.category === "mode") {
+        return session.modeId;
+    }
+
+    return option.value;
 }
 
 function secretPatchChanged(patch: AISecretPatch) {
@@ -546,6 +671,7 @@ function getPersistedHistoryCatalogSnapshot(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: (history.modes ?? []).map((mode) => ({
             id: mode.id,
@@ -566,6 +692,7 @@ function getPersistedHistoryCatalogSnapshot(
                 value: item.value,
                 label: item.label,
                 description: item.description ?? undefined,
+                agentType: item.agent_type ?? undefined,
             })),
         })),
     };
@@ -575,6 +702,22 @@ function hydrateSessionCatalogFromSnapshot(
     session: AIChatSession,
     snapshot: AIRuntimeCatalogSnapshot,
 ): AIChatSession {
+    const sessionCatalog = sanitizeRuntimeCatalogSnapshot(
+        session.runtimeId,
+        getRuntimeCatalogSnapshot(session),
+    );
+    session = {
+        ...session,
+        modelId:
+            runtimeDropsSyntheticAutoModel(session.runtimeId) &&
+            session.modelId === "auto"
+                ? ""
+                : session.modelId,
+        models: sessionCatalog.models,
+        modes: sessionCatalog.modes,
+        configOptions: sessionCatalog.configOptions,
+    };
+    snapshot = sanitizeRuntimeCatalogSnapshot(session.runtimeId, snapshot);
     if (!hasRuntimeCatalog(snapshot)) {
         return session;
     }
@@ -591,11 +734,7 @@ function hydrateSessionCatalogFromSnapshot(
                   ...option,
                   value:
                       optionValues.get(option.id) ??
-                      (option.category === "model"
-                          ? session.modelId
-                          : option.category === "mode"
-                            ? session.modeId
-                            : option.value),
+                      selectedSessionConfigValue(session, option),
               }));
 
     if (
@@ -623,12 +762,7 @@ function synchronizeSessionConfigSelections(
 
     let changed = false;
     const configOptions = session.configOptions.map((option) => {
-        const nextValue =
-            option.category === "model"
-                ? session.modelId
-                : option.category === "mode"
-                  ? session.modeId
-                  : option.value;
+        const nextValue = selectedSessionConfigValue(session, option);
 
         if (nextValue === option.value) {
             return option;
@@ -886,6 +1020,69 @@ function supportsModelSelection(
     return session.models.some((model) => model.id === modelId);
 }
 
+function getSelectedSessionModelId(
+    session: Pick<AIChatSession, "modelId" | "configOptions">,
+) {
+    return getModelConfigOption(session)?.value ?? session.modelId;
+}
+
+function getSessionModelAgentType(
+    session: Pick<AIChatSession, "models" | "configOptions">,
+    modelId: string,
+) {
+    const modelConfigOption = getModelConfigOption(session);
+    const configOptionAgentType = modelConfigOption?.options.find(
+        (option) => option.value === modelId,
+    )?.agentType;
+    if (configOptionAgentType) {
+        return configOptionAgentType;
+    }
+
+    return session.models.find((model) => model.id === modelId)?.agentType;
+}
+
+function getSessionModelLabel(
+    session: Pick<AIChatSession, "models" | "configOptions">,
+    modelId: string,
+) {
+    const modelConfigOption = getModelConfigOption(session);
+    return (
+        modelConfigOption?.options.find((option) => option.value === modelId)
+            ?.label ??
+        session.models.find((model) => model.id === modelId)?.name ??
+        modelId
+    );
+}
+
+function sessionHasAgentTurns(session: AIChatSession) {
+    return session.messages.length > 0 || (session.persistedMessageCount ?? 0) > 0;
+}
+
+function getBlockedGrokModelSwitchMessage(
+    session: AIChatSession,
+    targetModelId: string,
+) {
+    if (session.runtimeId !== GROK_RUNTIME_ID || !sessionHasAgentTurns(session)) {
+        return null;
+    }
+
+    const currentModelId = getSelectedSessionModelId(session);
+    if (!currentModelId || currentModelId === targetModelId) {
+        return null;
+    }
+
+    const currentAgentType = getSessionModelAgentType(session, currentModelId);
+    const targetAgentType = getSessionModelAgentType(session, targetModelId);
+    if (!currentAgentType || !targetAgentType || currentAgentType === targetAgentType) {
+        return null;
+    }
+
+    return `Start a new Grok chat to switch to ${getSessionModelLabel(
+        session,
+        targetModelId,
+    )}.`;
+}
+
 function applyLocalModelSelection(
     session: AIChatSession,
     modelId: string,
@@ -1109,6 +1306,9 @@ function mergeRuntimeCatalog(
     runtime: AIRuntimeDescriptor,
     snapshot: AIRuntimeCatalogSnapshot | undefined,
 ): AIRuntimeDescriptor {
+    snapshot = snapshot
+        ? sanitizeRuntimeCatalogSnapshot(runtime.runtime.id, snapshot)
+        : undefined;
     if (!snapshot || !hasRuntimeCatalog(snapshot)) {
         return runtime;
     }
@@ -1154,6 +1354,10 @@ interface ChatStore {
     runtimes: AIRuntimeDescriptor[];
     sessionsById: Record<string, AIChatSession>;
     sessionOrder: string[];
+    pendingAvailableCommandsBySessionId: Record<
+        string,
+        AIAvailableCommandsPayload["commands"]
+    >;
     activeSessionId: string | null;
     lastFocusedSessionId: string | null;
     defaultRuntimeId: string | null;
@@ -1199,11 +1403,8 @@ interface ChatStore {
         customBinaryPath?: string;
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
-        geminiApiKey: AISecretPatch;
+        xaiApiKey?: AISecretPatch;
         kiloApiKey?: AISecretPatch;
-        googleApiKey: AISecretPatch;
-        googleCloudProject?: string;
-        googleCloudLocation?: string;
         gatewayBaseUrl?: string;
         gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
@@ -1218,11 +1419,8 @@ interface ChatStore {
         customBinaryPath?: string;
         codexApiKey: AISecretPatch;
         openaiApiKey: AISecretPatch;
-        geminiApiKey: AISecretPatch;
+        xaiApiKey?: AISecretPatch;
         kiloApiKey?: AISecretPatch;
-        googleApiKey: AISecretPatch;
-        googleCloudProject?: string;
-        googleCloudLocation?: string;
         gatewayBaseUrl?: string;
         gatewayHeaders: AISecretPatch;
         anthropicBaseUrl?: string;
@@ -1244,15 +1442,19 @@ interface ChatStore {
     applyMessageStarted: (payload: {
         session_id: string;
         message_id: string;
+        role?: AIChatRole;
     }) => void;
     applyMessageDelta: (payload: {
         session_id: string;
         message_id: string;
         delta: string;
+        role?: AIChatRole;
     }) => void;
     applyMessageCompleted: (payload: {
         session_id: string;
         message_id: string;
+        role?: AIChatRole;
+        turn_complete?: boolean;
     }) => void;
     applyThinkingStarted: (payload: {
         session_id: string;
@@ -1274,6 +1476,9 @@ interface ChatStore {
     applyAvailableCommandsUpdate: (payload: AIAvailableCommandsPayload) => void;
     applyPermissionRequest: (payload: AIPermissionRequestPayload) => void;
     applyUserInputRequest: (payload: AIUserInputRequestPayload) => void;
+    applyUrlElicitationRequest: (
+        payload: AIUrlElicitationRequestPayload,
+    ) => void;
     reconcileTrackedFilesFromVaultChange: (
         change: VaultNoteChange,
     ) => Promise<void>;
@@ -1321,6 +1526,13 @@ interface ChatStore {
     respondUserInput: (
         requestId: string,
         answers: Record<string, string[]>,
+        sessionId?: string,
+        action?: AIUserInputAction,
+    ) => Promise<void>;
+    openUrlElicitation: (requestId: string, sessionId?: string) => Promise<void>;
+    respondUrlElicitation: (
+        requestId: string,
+        action: AIUrlElicitationAction,
         sessionId?: string,
     ) => Promise<void>;
     rejectEditedFile: (sessionId: string, identityKey: string) => Promise<void>;
@@ -1514,7 +1726,11 @@ function isProviderQuotaErrorMessage(message: string) {
 
 function isRuntimeSessionDisconnectedErrorMessage(message: string) {
     const normalized = message.trim().toLowerCase();
-    return normalized.includes("runtime session is not connected");
+    return (
+        normalized.includes("runtime session is not connected") ||
+        normalized.includes("resource_not_found") ||
+        normalized.includes("ai session not found")
+    );
 }
 
 function normalizeAiErrorMessage(message: string, runtimeId?: string | null) {
@@ -1719,6 +1935,28 @@ function appendSessionMessage(session: AIChatSession, message: AIChatMessage) {
     };
 }
 
+function insertSessionMessageAfter(
+    session: AIChatSession,
+    message: AIChatMessage,
+    afterMessageId: string | null,
+) {
+    const normalized = ensurePersistedTranscriptWindowAnchor(
+        normalizeSessionTranscript(session),
+    );
+    const anchorIndex =
+        afterMessageId != null
+            ? normalized.messageIndexById?.[afterMessageId]
+            : null;
+
+    if (anchorIndex == null) {
+        return appendSessionMessage(normalized, message);
+    }
+
+    const nextMessages = normalized.messages.slice();
+    nextMessages.splice(anchorIndex + 1, 0, message);
+    return replaceSessionTranscript(normalized, nextMessages);
+}
+
 function upsertSessionMessage(
     session: AIChatSession,
     message: AIChatMessage,
@@ -1837,6 +2075,21 @@ function markPendingInteractionMessagesIdle(session: AIChatSession) {
                     status: "pending",
                 },
             };
+        } else if (
+            message.kind === "url_elicitation_request" &&
+            (message.meta?.status === "opening" ||
+                message.meta?.status === "responding" ||
+                message.meta?.status === "pending" ||
+                message.meta?.status === "error")
+        ) {
+            nextMessage = {
+                ...message,
+                meta: {
+                    ...message.meta,
+                    status: "cancelled",
+                    action: "cancel",
+                },
+            };
         } else if (message.inProgress) {
             nextMessage = {
                 ...message,
@@ -1862,6 +2115,84 @@ function markPendingInteractionMessagesIdle(session: AIChatSession) {
     };
 }
 
+function isFinalUrlElicitationStatus(status: unknown) {
+    return status === "completed" || status === "cancelled";
+}
+
+function normalizeRestoredMessage(message: AIChatMessage): AIChatMessage {
+    if (message.kind === "user_input_request") {
+        const restoredMessage = {
+            ...message,
+            id: message.id.startsWith("restored:")
+                ? message.id
+                : `restored:${message.id}`,
+            inProgress: false,
+            userInputRequestId: undefined,
+        };
+
+        if (message.meta?.status === "resolved") {
+            return restoredMessage;
+        }
+
+        return {
+            ...restoredMessage,
+            meta: {
+                ...message.meta,
+                status: "resolved",
+                answered: false,
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        };
+    }
+
+    if (message.kind === "url_elicitation_request") {
+        const restoredMessage = {
+            ...message,
+            id: message.id.startsWith("restored:")
+                ? message.id
+                : `restored:${message.id}`,
+            inProgress: false,
+            urlElicitationRequestId: undefined,
+        };
+
+        if (isFinalUrlElicitationStatus(message.meta?.status)) {
+            return restoredMessage;
+        }
+
+        return {
+            ...restoredMessage,
+            meta: {
+                ...message.meta,
+                status: "cancelled",
+                action: "cancel",
+                expiredAfterRestore: true,
+            },
+        };
+    }
+
+    return message;
+}
+
+function safeHttpUrl(rawUrl: string | undefined): string | null {
+    const trimmed = rawUrl?.trim();
+    if (!trimmed || /\s/.test(trimmed)) return null;
+
+    try {
+        const parsed = new URL(trimmed);
+        if (
+            (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+            parsed.hostname
+        ) {
+            return parsed.toString();
+        }
+    } catch {
+        return null;
+    }
+
+    return null;
+}
+
 function markAllMessagesComplete(session: AIChatSession) {
     const normalized = normalizeSessionTranscript(session);
     let changed = false;
@@ -1870,6 +2201,25 @@ function markAllMessagesComplete(session: AIChatSession) {
 
     for (let index = 0; index < nextMessages.length; index += 1) {
         const message = nextMessages[index];
+        if (
+            message.kind === "url_elicitation_request" &&
+            !isFinalUrlElicitationStatus(message.meta?.status)
+        ) {
+            const nextMessage = {
+                ...message,
+                inProgress: false,
+                meta: {
+                    ...message.meta,
+                    status: "cancelled",
+                    action: "cancel",
+                },
+            };
+            nextMessages[index] = nextMessage;
+            nextMessagesById[message.id] = nextMessage;
+            changed = true;
+            continue;
+        }
+
         if (!message.inProgress) continue;
 
         const nextMessage = {
@@ -1941,6 +2291,19 @@ function createRuntimeContextRecoveryStatus(
         kind: "session_recovery",
         status: "in_progress",
         title: RUNTIME_CONTEXT_RECOVERY_STATUS_TITLE,
+        detail: null,
+        emphasis: "warning",
+    });
+}
+
+function createClosedSubagentQueueCancelledStatus(
+    sessionId: string,
+): AIStatusEventPayload {
+    return createLocalStatusPayload(sessionId, {
+        event_id: CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_EVENT_ID,
+        kind: "subagent_lifecycle",
+        status: "cancelled",
+        title: CLOSED_SUBAGENT_QUEUE_CANCELLED_STATUS_TITLE,
         detail: null,
         emphasis: "warning",
     });
@@ -2084,6 +2447,57 @@ function findMostRecentSessionIdForRuntime(
     );
 }
 
+const RESUME_CONTEXT_PROMPT_HEADER =
+    "Use the saved transcript below as prior conversation context for this session.";
+const SAVED_TRANSCRIPT_MARKER = "Saved transcript:";
+const NEW_USER_MESSAGE_MARKER = "New user message:";
+const ATTACHED_SELECTION_OPEN_TAG = "<attached_selection";
+
+function isResumeContextPromptText(text: string) {
+    return (
+        text.includes(RESUME_CONTEXT_PROMPT_HEADER) &&
+        text.includes(SAVED_TRANSCRIPT_MARKER) &&
+        text.includes(NEW_USER_MESSAGE_MARKER)
+    );
+}
+
+function isPotentialResumeContextPromptText(text: string) {
+    const trimmed = text.trimStart();
+    return (
+        trimmed.includes(RESUME_CONTEXT_PROMPT_HEADER) ||
+        isResumeContextPromptText(text)
+    );
+}
+
+function extractResumeContextNewUserMessage(text: string) {
+    const index = text.lastIndexOf(NEW_USER_MESSAGE_MARKER);
+    if (index < 0) return null;
+    return text.slice(index + NEW_USER_MESSAGE_MARKER.length).trim();
+}
+
+function hasAttachedSelectionMarkup(text: string) {
+    return text.includes(ATTACHED_SELECTION_OPEN_TAG);
+}
+
+function isInternalRuntimeUserEchoMessage(message: AIChatMessage) {
+    if (message.role !== "user" || message.kind !== "text") {
+        return false;
+    }
+
+    return (
+        isPotentialResumeContextPromptText(message.content) ||
+        hasAttachedSelectionMarkup(message.content)
+    );
+}
+
+function sanitizePersistedDisplayText(value?: string | null) {
+    if (!value) return null;
+    return isPotentialResumeContextPromptText(value) ||
+        hasAttachedSelectionMarkup(value)
+        ? null
+        : value;
+}
+
 function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
     if (!session.resumeContextPending) {
         return prompt;
@@ -2096,8 +2510,10 @@ function buildPromptWithResumeContext(session: AIChatSession, prompt: string) {
                 message.kind !== "permission" &&
                 message.kind !== "plan" &&
                 message.kind !== "user_input_request" &&
+                message.kind !== "url_elicitation_request" &&
                 message.kind !== "status",
         )
+        .filter((message) => !isInternalRuntimeUserEchoMessage(message))
         .map((message) => {
             const role =
                 message.role === "assistant"
@@ -2138,6 +2554,13 @@ function cloneAttachment(attachment: AIChatAttachment): AIChatAttachment {
     return { ...attachment };
 }
 
+function cloneMessageAttachments(
+    attachments?: AIChatAttachment[] | null,
+): AIChatAttachment[] | undefined {
+    if (!attachments?.length) return undefined;
+    return attachments.map(cloneAttachment);
+}
+
 function cloneComposerPart(part: AIComposerPart): AIComposerPart {
     return { ...part };
 }
@@ -2146,8 +2569,74 @@ function cloneComposerParts(parts: AIComposerPart[]): AIComposerPart[] {
     return parts.map(cloneComposerPart);
 }
 
+type ComposerFileBackedPart = Extract<
+    AIComposerPart,
+    { type: "screenshot" } | { type: "file_attachment" }
+>;
+
+function composerFilePartToAttachment(
+    part: ComposerFileBackedPart,
+): AIChatAttachment {
+    return {
+        id: crypto.randomUUID(),
+        type: "file",
+        noteId: null,
+        label: part.label,
+        path: null,
+        filePath: part.filePath,
+        mimeType: part.mimeType,
+    };
+}
+
 function normalizeComparablePath(path: string) {
     return normalizeVaultPath(path).replace(/\/+$/, "");
+}
+
+function isComposerOwnedQueuedAttachment(
+    attachment: AIChatAttachment,
+    composerParts: AIComposerPart[],
+) {
+    if (attachment.type === "selection") {
+        if (!attachment.path) return false;
+        const attachmentPath = normalizeComparablePath(attachment.path);
+        return composerParts.some(
+            (part) =>
+                part.type === "selection_mention" &&
+                normalizeComparablePath(part.path) === attachmentPath &&
+                part.startLine === attachment.startLine &&
+                part.endLine === attachment.endLine,
+        );
+    }
+
+    if (attachment.type !== "file" || attachment.path || !attachment.filePath) {
+        return false;
+    }
+
+    const attachmentPath = normalizeComparablePath(attachment.filePath);
+    return composerParts.some(
+        (part) =>
+            (part.type === "screenshot" ||
+                part.type === "file_attachment") &&
+            normalizeComparablePath(part.filePath) === attachmentPath &&
+            (!attachment.mimeType || part.mimeType === attachment.mimeType),
+    );
+}
+
+function getQueuedMessageContextAttachments(
+    queuedItem: QueuedChatMessage,
+): AIChatAttachment[] {
+    // Queue items store the final send payload. When reopening one for editing,
+    // keep only session-level context here; composer-owned attachments are
+    // reconstructed from composerParts on save.
+    return queuedItem.attachments
+        .filter(
+            (attachment) =>
+                !isComposerOwnedQueuedAttachment(
+                    attachment,
+                    queuedItem.composerParts,
+                ),
+        )
+        .map(cloneAttachment);
 }
 
 function isPathInsideRoot(path: string, root: string) {
@@ -2427,9 +2916,6 @@ function buildQueuedMessage(
     const prompt = serializeComposerPartsForAI(composerPartsSnapshot, {
         vaultPath: useVaultStore.getState().vaultPath,
     }).trim();
-    if (!content || !prompt) {
-        return null;
-    }
 
     const selectionAttachments: AIChatAttachment[] = composerPartsSnapshot
         .filter(
@@ -2452,30 +2938,14 @@ function buildQueuedMessage(
             (p): p is Extract<AIComposerPart, { type: "screenshot" }> =>
                 p.type === "screenshot",
         )
-        .map((p) => ({
-            id: crypto.randomUUID(),
-            type: "file" as const,
-            noteId: null,
-            label: p.label,
-            path: null,
-            filePath: p.filePath,
-            mimeType: p.mimeType,
-        }));
+        .map(composerFilePartToAttachment);
 
     const fileAttachments: AIChatAttachment[] = composerPartsSnapshot
         .filter(
             (p): p is Extract<AIComposerPart, { type: "file_attachment" }> =>
                 p.type === "file_attachment",
         )
-        .map((p) => ({
-            id: crypto.randomUUID(),
-            type: "file" as const,
-            noteId: null,
-            label: p.label,
-            path: null,
-            filePath: p.filePath,
-            mimeType: p.mimeType,
-        }));
+        .map(composerFilePartToAttachment);
 
     const attachments = [
         ...session.attachments,
@@ -2483,6 +2953,10 @@ function buildQueuedMessage(
         ...screenshotAttachments,
         ...fileAttachments,
     ].map(cloneAttachment);
+
+    if (!content || (!prompt && attachments.length === 0)) {
+        return null;
+    }
 
     return {
         id: crypto.randomUUID(),
@@ -2735,11 +3209,7 @@ async function replaceEmptySessionForAdditionalRoots(
 }
 
 function isSessionBusy(session: AIChatSession) {
-    return (
-        session.status === "streaming" ||
-        session.status === "waiting_permission" ||
-        session.status === "waiting_user_input"
-    );
+    return isCancellableChatTurnStatus(session.status);
 }
 
 function cleanupQueuedMessagesBySessionId(
@@ -2918,6 +3388,78 @@ function reconcileIdleQueuedState(
                   null,
               )
             : state.activeQueuedMessageBySessionId,
+        };
+}
+
+function clearClosedSubagentQueueState(
+    state: Pick<
+        ChatStore,
+        | "queuedMessagesBySessionId"
+        | "activeQueuedMessageBySessionId"
+        | "queuedMessageEditBySessionId"
+        | "pausedQueueBySessionId"
+        | "composerPartsBySessionId"
+    >,
+    sessionId: string,
+    session: AIChatSession,
+) {
+    const queue = state.queuedMessagesBySessionId[sessionId] ?? [];
+    const activeQueuedMessage =
+        state.activeQueuedMessageBySessionId[sessionId] ?? null;
+    const editState = state.queuedMessageEditBySessionId[sessionId] ?? null;
+    const pausedQueue = state.pausedQueueBySessionId[sessionId] ?? null;
+    const hasQueuedState =
+        queue.length > 0 ||
+        activeQueuedMessage != null ||
+        editState != null ||
+        pausedQueue != null;
+
+    if (!hasQueuedState) {
+        return null;
+    }
+
+    const nextQueuedMessageEditBySessionId = {
+        ...state.queuedMessageEditBySessionId,
+    };
+    delete nextQueuedMessageEditBySessionId[sessionId];
+
+    _queueDrainLocks.delete(sessionId);
+
+    return {
+        session: upsertSessionStatusMessage(
+            editState
+                ? {
+                      ...session,
+                      attachments:
+                          editState.previousAttachments.map(cloneAttachment),
+                  }
+                : session,
+            createClosedSubagentQueueCancelledStatus(sessionId),
+        ),
+        composerPartsBySessionId: editState
+            ? {
+                  ...state.composerPartsBySessionId,
+                  [sessionId]: cloneComposerParts(
+                      editState.previousComposerParts,
+                  ),
+              }
+            : state.composerPartsBySessionId,
+        queuedMessagesBySessionId: cleanupQueuedMessagesBySessionId(
+            state.queuedMessagesBySessionId,
+            sessionId,
+            [],
+        ),
+        activeQueuedMessageBySessionId: cleanupDeferredQueuedMessagesBySessionId(
+            state.activeQueuedMessageBySessionId,
+            sessionId,
+            null,
+        ),
+        queuedMessageEditBySessionId: nextQueuedMessageEditBySessionId,
+        pausedQueueBySessionId: cleanupPausedQueueBySessionId(
+            state.pausedQueueBySessionId,
+            sessionId,
+            null,
+        ),
     };
 }
 
@@ -3086,6 +3628,21 @@ function updateUserInputMessageState(
     patch: Record<string, string | number | boolean | null>,
 ) {
     const messageId = `user-input:${requestId}`;
+    return replaceSessionMessage(session, messageId, (message) => ({
+        ...message,
+        meta: {
+            ...message.meta,
+            ...patch,
+        },
+    }));
+}
+
+function updateUrlElicitationMessageState(
+    session: AIChatSession,
+    requestId: string,
+    patch: Record<string, string | number | boolean | null>,
+) {
+    const messageId = `url-elicitation:${requestId}`;
     return replaceSessionMessage(session, messageId, (message) => ({
         ...message,
         meta: {
@@ -4789,13 +5346,14 @@ function applyPersistedHistoryMetadata(
                 history.parent_session_id ??
                 nextSession.parentSessionId ??
                 null,
+            closedAt: history.closed_at ?? nextSession.closedAt ?? null,
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
-            persistedTitle: history.title ?? null,
-            customTitle: history.custom_title ?? null,
+            persistedTitle: sanitizePersistedDisplayText(history.title),
+            customTitle: sanitizePersistedDisplayText(history.custom_title),
             additionalRoots:
                 history.additional_roots ?? nextSession.additionalRoots ?? [],
-            persistedPreview: history.preview ?? null,
+            persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart,
         },
@@ -4819,6 +5377,7 @@ function applyPersistedHistoryPage(
         version: 1,
         session_id: page.session_id,
         parent_session_id: session.parentSessionId ?? undefined,
+        closed_at: session.closedAt ?? undefined,
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
@@ -4901,6 +5460,7 @@ function createPersistedSession(
             sessionId: `persisted:${history.session_id}`,
             historySessionId: history.session_id,
             parentSessionId: history.parent_session_id ?? null,
+            closedAt: history.closed_at ?? null,
             runtimeSessionId: null,
             vaultPath,
             runtimeId,
@@ -4928,9 +5488,9 @@ function createPersistedSession(
             runtimeState: "persisted_only",
             persistedCreatedAt: history.created_at,
             persistedUpdatedAt: history.updated_at,
-            persistedTitle: history.title ?? null,
-            customTitle: history.custom_title ?? null,
-            persistedPreview: history.preview ?? null,
+            persistedTitle: sanitizePersistedDisplayText(history.title),
+            customTitle: sanitizePersistedDisplayText(history.custom_title),
+            persistedPreview: sanitizePersistedDisplayText(history.preview),
             persistedMessageCount,
             loadedPersistedMessageStart:
                 persistedMessageCount === 0
@@ -5086,6 +5646,10 @@ function mergeSession(
     existing: AIChatSession | undefined,
     incoming: AIChatSession,
 ): AIChatSession {
+    const incomingHasClosedAt = Object.prototype.hasOwnProperty.call(
+        incoming,
+        "closedAt",
+    );
     const canAcceptBackendStreaming =
         incoming.status === "streaming" &&
         incoming.parentSessionId != null &&
@@ -5121,6 +5685,7 @@ function mergeSession(
                     customTitle: incoming.customTitle ?? null,
                     persistedPreview: incoming.persistedPreview ?? null,
                     parentSessionId: incoming.parentSessionId ?? null,
+                    closedAt: incoming.closedAt ?? null,
                     persistedMessageCount:
                         incoming.persistedMessageCount ??
                         incoming.messages.length,
@@ -5181,6 +5746,9 @@ function mergeSession(
             incoming.parentSessionId ??
             normalizedExisting.parentSessionId ??
             null,
+        closedAt: incomingHasClosedAt
+            ? (incoming.closedAt ?? null)
+            : (normalizedExisting.closedAt ?? null),
         vaultPath: incoming.vaultPath ?? normalizedExisting.vaultPath ?? null,
         isPersistedSession:
             incoming.isPersistedSession ??
@@ -5460,6 +6028,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
     const messages = getSessionTranscriptMessages(session)
         .filter((m) => !m.inProgress)
         .filter((m) => !isTransientRecoveryStatusMessage(m))
+        .filter((m) => !isInternalRuntimeUserEchoMessage(m))
         .filter((m) => m.kind !== "permission")
         .map((m) => ({
             id: m.id,
@@ -5467,6 +6036,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             kind: m.kind,
             content: m.content,
             timestamp: m.timestamp,
+            attachments: cloneMessageAttachments(m.attachments),
             title: m.title,
             meta: m.meta,
             permission_request_id: m.permissionRequestId,
@@ -5475,6 +6045,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
             review_diffs: m.reviewDiffs,
             user_input_request_id: m.userInputRequestId,
             user_input_questions: m.userInputQuestions,
+            url_elicitation_request_id: m.urlElicitationRequestId,
+            url_elicitation_id: m.urlElicitationId,
+            url_elicitation_url: m.urlElicitationUrl,
             plan_entries: m.planEntries,
             plan_detail: m.planDetail,
             tool_action: m.toolAction,
@@ -5495,6 +6068,7 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
         version: 1,
         session_id: session.historySessionId || session.sessionId,
         parent_session_id: session.parentSessionId ?? undefined,
+        closed_at: session.closedAt ?? undefined,
         runtime_id: session.runtimeId,
         model_id: session.modelId,
         mode_id: session.modeId,
@@ -5505,6 +6079,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                   runtime_id: model.runtimeId,
                   name: model.name,
                   description: model.description,
+                  ...(model.agentType
+                      ? { agent_type: model.agentType }
+                      : {}),
               }))
             : undefined,
         modes: hasCatalog
@@ -5529,6 +6106,9 @@ function toPersistedHistory(session: AIChatSession): PersistedSessionHistory {
                       value: item.value,
                       label: item.label,
                       description: item.description ?? null,
+                      ...(item.agentType
+                          ? { agent_type: item.agentType }
+                          : {}),
                   })),
               }))
             : undefined,
@@ -5652,9 +6232,26 @@ function planUpdateKeepsSessionStreaming(payload: AIPlanUpdatePayload) {
 // Delta buffering: accumulate rapid deltas and flush to Zustand on rAF
 // ---------------------------------------------------------------------------
 interface DeltaBuffer {
-    messageDelta: Map<string, { message_id: string; text: string }>;
+    messageDelta: Map<
+        string,
+        {
+            session_id: string;
+            message_id: string;
+            role: RuntimeTextMessageRole;
+            text: string;
+        }
+    >;
     thinkingDelta: Map<string, Map<string, string>>;
     flushTimeoutId: number | null;
+}
+
+interface SuppressedRuntimeUserEcho {
+    session_id: string;
+    message_id: string;
+    text: string;
+    local_message_id: string;
+    insert_after_message_id: string | null;
+    drop_on_completion?: boolean;
 }
 
 const _deltaBuffer: DeltaBuffer = {
@@ -5662,6 +6259,286 @@ const _deltaBuffer: DeltaBuffer = {
     thinkingDelta: new Map(),
     flushTimeoutId: null,
 };
+const _suppressedRuntimeUserEchoByKey = new Map<
+    string,
+    SuppressedRuntimeUserEcho
+>();
+
+function normalizeRuntimeTextMessageRole(
+    role?: AIChatRole | null,
+): RuntimeTextMessageRole {
+    return role === "user" ? "user" : "assistant";
+}
+
+function runtimeTextMessageTitle(role: RuntimeTextMessageRole) {
+    return role === "user" ? "User" : "Assistant";
+}
+
+function messageDeltaBufferKey(
+    sessionId: string,
+    role: RuntimeTextMessageRole,
+    messageId: string,
+) {
+    return `${sessionId}:${role}:${messageId}`;
+}
+
+function normalizeRuntimeEchoText(text: string) {
+    return text.replace(/\s+/g, " ").trim();
+}
+
+function isLocalUserEchoText(localText: string, runtimeText: string) {
+    const local = normalizeRuntimeEchoText(localText);
+    const runtime = normalizeRuntimeEchoText(runtimeText);
+    if (!local || !runtime) {
+        return false;
+    }
+
+    return (
+        local === runtime ||
+        local.startsWith(runtime) ||
+        local.endsWith(runtime) ||
+        local.includes(runtime)
+    );
+}
+
+// Callers pass an already-normalized session so the transcript is not
+// re-normalized on every runtime user delta.
+function latestLocalUserEchoCandidate(
+    normalizedSession: AIChatSession,
+    text: string,
+): AIChatMessage | null {
+    const messages = normalizedSession.messages ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (message.role === "user" && message.kind === "text") {
+            if (message.title === runtimeTextMessageTitle("user")) {
+                return null;
+            }
+            return isLocalUserEchoText(message.content, text) ? message : null;
+        }
+    }
+    return null;
+}
+
+// Expects an already-normalized session (see latestLocalUserEchoCandidate).
+function createRuntimeUserEchoMessage(
+    normalizedSession: AIChatSession,
+    payload: {
+        message_id: string;
+        text: string;
+        insert_after_message_id?: string | null;
+    },
+) {
+    const existingMessage =
+        normalizedSession.messagesById?.[payload.message_id] ?? null;
+    const workCycleId =
+        normalizedSession.activeWorkCycleId ??
+        normalizedSession.visibleWorkCycleId ??
+        null;
+
+    const message: AIChatMessage = {
+        id: existingMessage
+            ? `${payload.message_id}:${Date.now()}`
+            : payload.message_id,
+        role: "user",
+        kind: "text",
+        content: payload.text,
+        workCycleId,
+        title: runtimeTextMessageTitle("user"),
+        timestamp: Date.now(),
+        inProgress: true,
+    };
+
+    if (payload.insert_after_message_id !== undefined) {
+        return insertSessionMessageAfter(
+            normalizedSession,
+            message,
+            payload.insert_after_message_id,
+        );
+    }
+
+    return appendSessionMessage(normalizedSession, message);
+}
+
+function resolveSuppressedRuntimeUserEcho(
+    session: AIChatSession,
+    messageId: string,
+) {
+    const normalizedSession = normalizeSessionTranscript(session);
+    const key = messageDeltaBufferKey(
+        normalizedSession.sessionId,
+        "user",
+        messageId,
+    );
+    const suppressed = _suppressedRuntimeUserEchoByKey.get(key);
+    if (!suppressed) {
+        return normalizedSession;
+    }
+
+    _suppressedRuntimeUserEchoByKey.delete(key);
+    if (
+        suppressed.drop_on_completion ||
+        isPotentialResumeContextPromptText(suppressed.text)
+    ) {
+        return normalizedSession;
+    }
+
+    const localEcho = latestLocalUserEchoCandidate(
+        normalizedSession,
+        suppressed.text,
+    );
+    if (
+        localEcho?.id === suppressed.local_message_id &&
+        isLocalUserEchoText(localEcho.content, suppressed.text)
+    ) {
+        return normalizedSession;
+    }
+
+    return createRuntimeUserEchoMessage(normalizedSession, {
+        message_id: messageId,
+        text: suppressed.text,
+        insert_after_message_id: suppressed.insert_after_message_id,
+    });
+}
+
+function appendRuntimeTextDelta(
+    session: AIChatSession,
+    payload: {
+        message_id: string;
+        role: RuntimeTextMessageRole;
+        text: string;
+    },
+) {
+    const normalizedSession = normalizeSessionTranscript(session);
+    const workCycleId =
+        normalizedSession.activeWorkCycleId ??
+        normalizedSession.visibleWorkCycleId ??
+        null;
+    const title = runtimeTextMessageTitle(payload.role);
+    const existingMessage =
+        normalizedSession.messagesById?.[payload.message_id] ?? null;
+    const bufferKey = messageDeltaBufferKey(
+        normalizedSession.sessionId,
+        payload.role,
+        payload.message_id,
+    );
+
+    if (
+        existingMessage &&
+        existingMessage.role === payload.role &&
+        existingMessage.kind === "text"
+    ) {
+        _suppressedRuntimeUserEchoByKey.delete(bufferKey);
+        const nextText = existingMessage.content + payload.text;
+        if (
+            payload.role === "user" &&
+            isPotentialResumeContextPromptText(nextText)
+        ) {
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: nextText,
+                local_message_id: "",
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+                drop_on_completion: true,
+            });
+            return removeSessionMessage(normalizedSession, payload.message_id);
+        }
+
+        return replaceSessionMessage(
+            normalizedSession,
+            payload.message_id,
+            (message) => ({
+                ...message,
+                content: nextText,
+                title: message.title ?? title,
+                inProgress: true,
+            }),
+        );
+    }
+
+    if (payload.role === "user") {
+        const suppressed = _suppressedRuntimeUserEchoByKey.get(bufferKey);
+        const accumulatedText = `${suppressed?.text ?? ""}${payload.text}`;
+        if (isPotentialResumeContextPromptText(accumulatedText)) {
+            const newUserMessage =
+                extractResumeContextNewUserMessage(accumulatedText);
+            const localEcho = newUserMessage
+                ? latestLocalUserEchoCandidate(
+                      normalizedSession,
+                      newUserMessage,
+                  )
+                : null;
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: accumulatedText,
+                local_message_id: localEcho?.id ?? "",
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+                drop_on_completion: true,
+            });
+            return normalizedSession;
+        }
+
+        const localEcho = latestLocalUserEchoCandidate(
+            normalizedSession,
+            accumulatedText,
+        );
+        if (localEcho) {
+            _suppressedRuntimeUserEchoByKey.set(bufferKey, {
+                session_id: normalizedSession.sessionId,
+                message_id: payload.message_id,
+                text: accumulatedText,
+                local_message_id: localEcho.id,
+                insert_after_message_id:
+                    normalizedSession.messageOrder?.at(-1) ?? null,
+            });
+            return normalizedSession;
+        }
+
+        if (suppressed) {
+            _suppressedRuntimeUserEchoByKey.delete(bufferKey);
+            return createRuntimeUserEchoMessage(normalizedSession, {
+                message_id: payload.message_id,
+                text: accumulatedText,
+                insert_after_message_id: suppressed.insert_after_message_id,
+            });
+        }
+    }
+
+    const lastMessageId = normalizedSession.messageOrder?.at(-1) ?? null;
+    const lastMsg = lastMessageId
+        ? normalizedSession.messagesById?.[lastMessageId]
+        : null;
+
+    if (
+        lastMsg &&
+        lastMsg.id === payload.message_id &&
+        lastMsg.role === payload.role &&
+        lastMsg.kind === "text" &&
+        lastMsg.inProgress
+    ) {
+        return appendToMessageContent(
+            normalizedSession,
+            lastMsg.id,
+            payload.text,
+        );
+    }
+
+    const idTaken = existingMessage != null;
+    return appendSessionMessage(normalizedSession, {
+        id: idTaken ? `${payload.message_id}:${Date.now()}` : payload.message_id,
+        role: payload.role,
+        kind: "text",
+        content: payload.text,
+        workCycleId,
+        title,
+        timestamp: Date.now(),
+        inProgress: true,
+    });
+}
 
 function flushDeltas() {
     _deltaBuffer.flushTimeoutId = null;
@@ -5679,50 +6556,20 @@ function flushDeltas() {
         let changed = false;
 
         // Apply message deltas
-        for (const [sessionId, { message_id, text }] of msgEntries) {
-            const session = sessionsById[sessionId];
+        for (const { session_id, message_id, role, text } of msgEntries.values()) {
+            const session = sessionsById[session_id];
             if (!session) continue;
-            const normalizedSession = normalizeSessionTranscript(session);
-            const workCycleId =
-                normalizedSession.activeWorkCycleId ??
-                normalizedSession.visibleWorkCycleId ??
-                null;
-            const lastMessageId =
-                normalizedSession.messageOrder?.at(-1) ?? null;
-            const lastMsg = lastMessageId
-                ? normalizedSession.messagesById?.[lastMessageId]
-                : null;
+            const nextSession = appendRuntimeTextDelta(session, {
+                message_id,
+                role,
+                text,
+            });
 
-            let nextSession: AIChatSession;
-            if (
-                lastMsg &&
-                lastMsg.role === "assistant" &&
-                lastMsg.kind === "text" &&
-                lastMsg.inProgress
-            ) {
-                nextSession = appendToMessageContent(
-                    normalizedSession,
-                    lastMsg.id,
-                    text,
-                );
-            } else {
-                const idTaken =
-                    normalizedSession.messagesById?.[message_id] != null;
-                nextSession = appendSessionMessage(normalizedSession, {
-                    id: idTaken ? `${message_id}:${Date.now()}` : message_id,
-                    role: "assistant" as const,
-                    kind: "text" as const,
-                    content: text,
-                    workCycleId,
-                    title: "Assistant",
-                    timestamp: Date.now(),
-                    inProgress: true,
-                });
-            }
+            if (nextSession === session) continue;
 
             sessionsById = {
                 ...sessionsById,
-                [sessionId]: nextSession,
+                [session_id]: nextSession,
             };
             changed = true;
         }
@@ -5773,12 +6620,19 @@ function bufferMessageDelta(
     session_id: string,
     message_id: string,
     delta: string,
+    role: RuntimeTextMessageRole,
 ) {
-    const existing = _deltaBuffer.messageDelta.get(session_id);
+    const key = messageDeltaBufferKey(session_id, role, message_id);
+    const existing = _deltaBuffer.messageDelta.get(key);
     if (existing) {
         existing.text += delta;
     } else {
-        _deltaBuffer.messageDelta.set(session_id, { message_id, text: delta });
+        _deltaBuffer.messageDelta.set(key, {
+            session_id,
+            message_id,
+            role,
+            text: delta,
+        });
     }
     scheduleDeltaFlush();
 }
@@ -5806,8 +6660,23 @@ function flushDeltasSync() {
     flushDeltas();
 }
 
+function flushDeltasBeforeTimelineInsert() {
+    // Text/thinking deltas are buffered, while tool/status/plan-like events are
+    // inserted synchronously. Flush first so messageOrder follows runtime order.
+    flushDeltasSync();
+}
+
 function clearBufferedDeltasForSession(sessionId: string) {
-    _deltaBuffer.messageDelta.delete(sessionId);
+    for (const [key, value] of _deltaBuffer.messageDelta.entries()) {
+        if (value.session_id === sessionId) {
+            _deltaBuffer.messageDelta.delete(key);
+        }
+    }
+    for (const [key, value] of _suppressedRuntimeUserEchoByKey.entries()) {
+        if (value.session_id === sessionId) {
+            _suppressedRuntimeUserEchoByKey.delete(key);
+        }
+    }
     _deltaBuffer.thinkingDelta.delete(sessionId);
 
     if (
@@ -5851,24 +6720,32 @@ async function waitForPersistedTranscriptIdle(sessionId: string) {
 function restoreMessagesFromHistory(
     history: PersistedSessionHistory,
 ): AIChatMessage[] {
-    return history.messages.map((m) => ({
-        id: m.id,
-        role: m.role as AIChatRole,
-        kind: m.kind as AIChatMessageKind,
-        content: m.content,
-        timestamp: m.timestamp,
-        title: m.title,
-        meta: m.meta,
-        permissionRequestId: m.permission_request_id,
-        permissionOptions: m.permission_options,
-        diffs: m.diffs,
-        reviewDiffs: m.review_diffs,
-        userInputRequestId: m.user_input_request_id,
-        userInputQuestions: m.user_input_questions,
-        planEntries: m.plan_entries,
-        planDetail: m.plan_detail,
-        toolAction: m.tool_action,
-    }));
+    return history.messages
+        .map((m) =>
+            normalizeRestoredMessage({
+                id: m.id,
+                role: m.role as AIChatRole,
+                kind: m.kind as AIChatMessageKind,
+                content: m.content,
+                timestamp: m.timestamp,
+                attachments: cloneMessageAttachments(m.attachments),
+                title: m.title,
+                meta: m.meta,
+                permissionRequestId: m.permission_request_id,
+                permissionOptions: m.permission_options,
+                diffs: m.diffs,
+                reviewDiffs: m.review_diffs,
+                userInputRequestId: m.user_input_request_id,
+                userInputQuestions: m.user_input_questions,
+                urlElicitationRequestId: m.url_elicitation_request_id,
+                urlElicitationId: m.url_elicitation_id,
+                urlElicitationUrl: m.url_elicitation_url,
+                planEntries: m.plan_entries,
+                planDetail: m.plan_detail,
+                toolAction: m.tool_action,
+            }),
+        )
+        .filter((message) => !isInternalRuntimeUserEchoMessage(message));
 }
 
 export const useChatStore = create<ChatStore>((set, get) => {
@@ -6438,6 +7315,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         }
 
+        if (isClosedSubagentSession(session)) {
+            if (source === "queue") {
+                patchQueuedMessage(activeSessionId, currentItem.id, {
+                    status: "failed",
+                });
+            }
+            return;
+        }
+
         if (source === "queue") {
             const activatedQueuedMessage = activateQueuedMessage(
                 activeSessionId,
@@ -6511,6 +7397,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     ...createTextMessage("user", currentItem.content),
                     id: userMessageId,
                     workCycleId: nextSession.activeWorkCycleId,
+                    attachments: cloneMessageAttachments(currentItem.attachments),
                 };
 
                 return {
@@ -6640,6 +7527,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         runtimes: [],
         sessionsById: {},
         sessionOrder: [],
+        pendingAvailableCommandsBySessionId: {},
         activeSessionId: null,
         lastFocusedSessionId: null,
         defaultRuntimeId: null,
@@ -7320,13 +8208,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     input.customBinaryPath ||
                     secretPatchChanged(input.codexApiKey) ||
                     secretPatchChanged(input.openaiApiKey) ||
-                    secretPatchChanged(input.geminiApiKey) ||
+                    secretPatchChanged(
+                        input.xaiApiKey ?? { action: "unchanged" },
+                    ) ||
                     secretPatchChanged(
                         input.kiloApiKey ?? { action: "unchanged" },
                     ) ||
-                    secretPatchChanged(input.googleApiKey) ||
-                    input.googleCloudProject ||
-                    input.googleCloudLocation ||
                     input.gatewayBaseUrl ||
                     secretPatchChanged(input.gatewayHeaders) ||
                     input.anthropicBaseUrl ||
@@ -7342,11 +8229,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         customBinaryPath: input.customBinaryPath,
                         codexApiKey: input.codexApiKey,
                         openaiApiKey: input.openaiApiKey,
-                        geminiApiKey: input.geminiApiKey,
+                        xaiApiKey: input.xaiApiKey,
                         kiloApiKey: input.kiloApiKey,
-                        googleApiKey: input.googleApiKey,
-                        googleCloudProject: input.googleCloudProject,
-                        googleCloudLocation: input.googleCloudLocation,
                         gatewayBaseUrl: input.gatewayBaseUrl,
                         gatewayHeaders: input.gatewayHeaders,
                         anthropicBaseUrl: input.anthropicBaseUrl,
@@ -7493,7 +8377,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     : hydrateRuntimesFromSessions(state.runtimes, [
                           scopedSession,
                       ]);
-                const nextSession = mergeSession(existing, scopedSession);
+                let nextSession = mergeSession(existing, scopedSession);
+                const closedQueueState =
+                    existing &&
+                    !isClosedSubagentSession(existing) &&
+                    isClosedSubagentSession(nextSession)
+                        ? clearClosedSubagentQueueState(
+                              state,
+                              scopedSession.sessionId,
+                              nextSession,
+                          )
+                        : null;
+                if (closedQueueState) {
+                    nextSession = closedQueueState.session;
+                }
+                const pendingAvailableCommands =
+                    state.pendingAvailableCommandsBySessionId[
+                        scopedSession.sessionId
+                    ];
+                if (pendingAvailableCommands) {
+                    nextSession = {
+                        ...nextSession,
+                        availableCommands: pendingAvailableCommands,
+                    };
+                }
                 const nextTokenUsageBySessionId =
                     existing && existing.modelId !== nextSession.modelId
                         ? removeSessionMapEntry(
@@ -7504,7 +8411,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const reconciledQueueState =
                     existing &&
                     nextSession.status === "idle" &&
-                    !nextSession.isResumingSession
+                    !nextSession.isResumingSession &&
+                    !isClosedSubagentSession(nextSession)
                         ? reconcileIdleQueuedState(
                               state,
                               scopedSession.sessionId,
@@ -7514,7 +8422,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     nextSession.status === "idle" &&
                     (existing?.status !== "idle" ||
                         Boolean(reconciledQueueState)) &&
-                    !nextSession.isResumingSession;
+                    !nextSession.isResumingSession &&
+                    !isClosedSubagentSession(nextSession);
                 sessionToPersist = nextSession;
 
                 return {
@@ -7523,6 +8432,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         ...state.sessionsById,
                         [scopedSession.sessionId]: nextSession,
                     },
+                    pendingAvailableCommandsBySessionId:
+                        pendingAvailableCommands
+                            ? removeSessionMapEntry(
+                                  state.pendingAvailableCommandsBySessionId,
+                                  scopedSession.sessionId,
+                              )
+                            : state.pendingAvailableCommandsBySessionId,
                     sessionOrder: activate
                         ? touchSessionOrder(
                               state.sessionOrder,
@@ -7544,17 +8460,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         activate || !state.activeSessionId
                             ? nextSession.runtimeId
                             : state.selectedRuntimeId,
-                    composerPartsBySessionId: state.composerPartsBySessionId[
-                        scopedSession.sessionId
-                    ]
-                        ? state.composerPartsBySessionId
-                        : {
-                              ...state.composerPartsBySessionId,
-                              [scopedSession.sessionId]:
-                                  createEmptyComposerParts(),
-                          },
+                    composerPartsBySessionId:
+                        closedQueueState?.composerPartsBySessionId ??
+                        (state.composerPartsBySessionId[scopedSession.sessionId]
+                            ? state.composerPartsBySessionId
+                            : {
+                                  ...state.composerPartsBySessionId,
+                                  [scopedSession.sessionId]:
+                                      createEmptyComposerParts(),
+                              }),
                     tokenUsageBySessionId: nextTokenUsageBySessionId,
                     ...(reconciledQueueState ?? {}),
+                    ...(closedQueueState
+                        ? {
+                              queuedMessagesBySessionId:
+                                  closedQueueState.queuedMessagesBySessionId,
+                              activeQueuedMessageBySessionId:
+                                  closedQueueState.activeQueuedMessageBySessionId,
+                              queuedMessageEditBySessionId:
+                                  closedQueueState.queuedMessageEditBySessionId,
+                              pausedQueueBySessionId:
+                                  closedQueueState.pausedQueueBySessionId,
+                          }
+                        : {}),
                 };
             });
 
@@ -7767,6 +8695,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         applySessionError: ({ session_id, message: rawMessage }) => {
             if (session_id) clearStaleStreamingCheck(session_id);
+            // The error message is appended to the timeline synchronously, so
+            // flush buffered text/thinking deltas first to keep messageOrder in
+            // runtime order (matches the other timeline-inserting handlers).
+            flushDeltasBeforeTimelineInsert();
             set((state) => {
                 const sessionRuntimeId = session_id
                     ? state.sessionsById[session_id]?.runtimeId
@@ -7933,10 +8865,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
             });
         },
 
-        applyMessageDelta: ({ session_id, message_id, delta }) => {
+        applyMessageDelta: ({ session_id, message_id, delta, role }) => {
             if (shouldIgnoreLateActivityForSession(get(), session_id)) {
                 return;
             }
+            const messageRole = normalizeRuntimeTextMessageRole(role);
             scheduleStaleStreamingCheck(session_id);
             set((state) => {
                 const session = state.sessionsById[session_id];
@@ -7950,12 +8883,46 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     },
                 };
             });
-            bufferMessageDelta(session_id, message_id, delta);
+            bufferMessageDelta(session_id, message_id, delta, messageRole);
         },
 
-        applyMessageCompleted: ({ session_id }) => {
-            clearStaleStreamingCheck(session_id);
+        applyMessageCompleted: ({
+            session_id,
+            message_id,
+            role,
+            turn_complete,
+        }) => {
             flushDeltasSync();
+            const messageRole = normalizeRuntimeTextMessageRole(role);
+            if (messageRole === "user" || turn_complete === false) {
+                set((state) => {
+                    const session = state.sessionsById[session_id];
+                    if (!session) return state;
+                    const baseSession =
+                        messageRole === "user"
+                            ? resolveSuppressedRuntimeUserEcho(
+                                  session,
+                                  message_id,
+                              )
+                            : session;
+                    const nextSession = setMessageInProgressState(
+                        baseSession,
+                        message_id,
+                        false,
+                    );
+                    if (nextSession === session) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [session_id]: nextSession,
+                        },
+                    };
+                });
+                persistCurrentSession(session_id);
+                return;
+            }
+
+            clearStaleStreamingCheck(session_id);
             const completedAt = Date.now();
             set((state) => {
                 const session = state.sessionsById[session_id];
@@ -8103,6 +9070,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
@@ -8244,6 +9212,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8270,6 +9239,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8310,6 +9280,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             scheduleStaleStreamingCheck(payload.session_id);
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8348,7 +9319,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
         applyAvailableCommandsUpdate: (payload) => {
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
-                if (!session) return state;
+                if (!session) {
+                    // ACP runtimes may publish commands during startup, before
+                    // the frontend has accepted the corresponding session.
+                    return {
+                        pendingAvailableCommandsBySessionId: {
+                            ...state.pendingAvailableCommandsBySessionId,
+                            [payload.session_id]: payload.commands,
+                        },
+                    };
+                }
 
                 return {
                     sessionsById: {
@@ -8366,6 +9346,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
             const eventTimestamp = Date.now();
             let workCycleId: string | null | undefined = null;
 
@@ -8454,6 +9435,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
                 return;
             }
+            flushDeltasBeforeTimelineInsert();
 
             set((state) => {
                 const session = state.sessionsById[payload.session_id];
@@ -8476,6 +9458,89 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     userInputQuestions: payload.questions,
                     meta: {
                         status: "pending",
+                    },
+                };
+
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [payload.session_id]: upsertSessionMessage(
+                            {
+                                ...nextSession,
+                                status: "waiting_user_input",
+                            },
+                            nextMessage,
+                            {
+                                preserveWorkCycleId: true,
+                            },
+                        ),
+                    },
+                    sessionOrder: touchSessionOrder(
+                        state.sessionOrder,
+                        payload.session_id,
+                    ),
+                };
+            });
+            persistCurrentSession(payload.session_id);
+        },
+
+        applyUrlElicitationRequest: (payload) => {
+            if (shouldIgnoreLateActivityForSession(get(), payload.session_id)) {
+                return;
+            }
+            flushDeltasBeforeTimelineInsert();
+
+            set((state) => {
+                const session = state.sessionsById[payload.session_id];
+                if (!session) return state;
+                const nextSession = ensureSessionWorkCycle(session);
+                const messageId = `url-elicitation:${payload.request_id}`;
+                const status = payload.status ?? "pending";
+
+                if (status === "completed") {
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [payload.session_id]:
+                                updateUrlElicitationMessageState(
+                                    {
+                                        ...nextSession,
+                                        status:
+                                            nextSession.status ===
+                                            "waiting_user_input"
+                                                ? "streaming"
+                                                : nextSession.status,
+                                    },
+                                    payload.request_id,
+                                    {
+                                        status: "completed",
+                                        completedByRuntime: true,
+                                    },
+                                ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            payload.session_id,
+                        ),
+                    };
+                }
+
+                const nextMessage: AIChatMessage = {
+                    id: messageId,
+                    role: "assistant",
+                    kind: "url_elicitation_request",
+                    title: payload.title || "Open URL",
+                    content: payload.url,
+                    timestamp: Date.now(),
+                    workCycleId: nextSession.activeWorkCycleId,
+                    urlElicitationRequestId: payload.request_id,
+                    urlElicitationId: payload.elicitation_id,
+                    urlElicitationUrl: payload.url,
+                    meta: {
+                        status,
+                        scope: payload.scope ?? "session",
+                        runtimeSessionId: payload.runtime_session_id ?? null,
+                        toolCallId: payload.tool_call_id ?? null,
                     },
                 };
 
@@ -8640,6 +9705,31 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const state = get();
             const session = state.sessionsById[sessionId];
             if (!session) return null;
+            // The claude-code-terminal pseudo-runtime has no ACP backend, so it
+            // can't be resumed — attempting it errors ("AI session not found")
+            // and flips the entry into a bogus reconnecting state.
+            if (isClaudeTerminalRuntimeId(session.runtimeId)) return sessionId;
+            if (isRemovedGeminiAcpSession(session)) {
+                set((currentState) => {
+                    const currentSession = currentState.sessionsById[sessionId];
+                    if (!currentSession) return currentState;
+                    return {
+                        sessionsById: {
+                            ...currentState.sessionsById,
+                            [sessionId]: {
+                                ...currentSession,
+                                isResumingSession: false,
+                                resumeReconnectFailed: true,
+                            },
+                        },
+                    };
+                });
+                get().applySessionError({
+                    session_id: sessionId,
+                    message: REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
+                });
+                return null;
+            }
             if (session.isPendingSessionCreation) return sessionId;
             if (isLiveRuntimeSession(session)) return sessionId;
             if (session.isResumingSession) return sessionId;
@@ -9115,6 +10205,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 applyLocal: (session) =>
                     applyLocalModelSelection(session, modelId),
                 applyRemote: async (session) => {
+                    const blockedMessage = getBlockedGrokModelSwitchMessage(
+                        session,
+                        modelId,
+                    );
+                    if (blockedMessage) {
+                        throw new Error(blockedMessage);
+                    }
+
                     const modelConfig = getModelConfigOption(session);
                     return modelConfig &&
                         modelConfig.options.some(
@@ -9150,8 +10248,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 change: { kind: "config", optionId, value },
                 applyLocal: (session) =>
                     applyLocalConfigOptionSelection(session, optionId, value),
-                applyRemote: (session) =>
-                    aiSetConfigOption(session.sessionId, optionId, value),
+                applyRemote: (session) => {
+                    const blockedMessage =
+                        optionId === "model"
+                            ? getBlockedGrokModelSwitchMessage(session, value)
+                            : null;
+                    if (blockedMessage) {
+                        throw new Error(blockedMessage);
+                    }
+
+                    return aiSetConfigOption(session.sessionId, optionId, value);
+                },
                 persistPreference: () =>
                     persistConfigOptionSelectionPreference(optionId, value),
                 errorMessage: "Failed to update the session option.",
@@ -9162,9 +10269,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             set((state) => {
+                const normalizedParts = normalizeScreenshotPartTimestamps(parts);
                 const session = state.sessionsById[resolvedSessionId];
                 const mentionIds = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9176,7 +10284,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         .map((p) => p.noteId),
                 );
                 const folderPaths = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9188,7 +10296,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         .map((p) => p.folderPath),
                 );
                 const fileMentionPaths = new Set(
-                    parts
+                    normalizedParts
                         .filter(
                             (
                                 p,
@@ -9215,7 +10323,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 return {
                     composerPartsBySessionId: {
                         ...state.composerPartsBySessionId,
-                        [resolvedSessionId]: parts,
+                        [resolvedSessionId]: normalizedParts,
                     },
                     ...(session &&
                     prunedAttachments.length !== session.attachments.length
@@ -9360,7 +10468,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         [sessionId]: {
                             ...session,
                             attachments:
-                                queuedItem.attachments.map(cloneAttachment),
+                                getQueuedMessageContextAttachments(queuedItem),
                         },
                     },
                     composerPartsBySessionId: {
@@ -9434,6 +10542,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let { sessionsById, composerPartsBySessionId } = get();
             let session = sessionsById[resolvedSessionId];
             if (!session || session.isResumingSession) {
+                return;
+            }
+
+            if (isClosedSubagentSession(session)) {
                 return;
             }
 
@@ -9640,7 +10752,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (
                 !currentSession ||
                 !queuedItem ||
-                queuedItem.status === "sending"
+                queuedItem.status === "sending" ||
+                isClosedSubagentSession(currentSession)
             ) {
                 return;
             }
@@ -9687,6 +10800,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 !session ||
                 session.status !== "idle" ||
                 session.isResumingSession ||
+                isClosedSubagentSession(session) ||
                 Boolean(get().queuedMessageEditBySessionId[sessionId]) ||
                 Boolean(get().pausedQueueBySessionId[sessionId])
             ) {
@@ -9772,7 +10886,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const stoppedAt = Date.now();
                 set((state) => {
                     const sess = state.sessionsById[resolvedSessionId];
-                    if (!sess || sess.status === "idle") return state;
+                    if (!sess) return state;
                     return {
                         sessionsById: {
                             ...state.sessionsById,
@@ -9788,6 +10902,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     };
                 });
                 finalizeSessionStopping(resolvedSessionId);
+                persistCurrentSession(resolvedSessionId);
                 await flushPendingInterruptedSend(resolvedSessionId, {
                     waitForStop: false,
                 });
@@ -9912,11 +11027,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
             }
         },
 
-        respondUserInput: async (requestId, answers, sessionId) => {
+        respondUserInput: async (
+            requestId,
+            answers,
+            sessionId,
+            action = "accept",
+        ) => {
             const resolvedSessionId = sessionId ?? get().activeSessionId;
             if (!resolvedSessionId) return;
             const session = get().sessionsById[resolvedSessionId];
             if (!session) return;
+            const answered = action === "accept";
 
             if (
                 !runtimeSupportsCapability(
@@ -9933,7 +11054,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionsById: {
                             ...state.sessionsById,
                             [resolvedSessionId]: appendSessionError(
-                                currentSession,
+                                updateUserInputMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        answered: false,
+                                        action,
+                                    },
+                                ),
                                 "This runtime does not support interactive user input requests in this build.",
                             ),
                         },
@@ -9957,7 +11086,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             requestId,
                             {
                                 status: "responding",
-                                answered: true,
+                                answered,
+                                action,
                             },
                         ),
                     },
@@ -9969,6 +11099,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     resolvedSessionId,
                     requestId,
                     answers,
+                    action,
                 );
                 get().upsertSession(session);
                 set((state) => {
@@ -9979,11 +11110,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         sessionsById: {
                             ...state.sessionsById,
                             [resolvedSessionId]: updateUserInputMessageState(
-                                currentSession,
+                                {
+                                    ...currentSession,
+                                    status:
+                                        currentSession.status ===
+                                        "waiting_user_input"
+                                            ? "streaming"
+                                            : currentSession.status,
+                                },
                                 requestId,
                                 {
                                     status: "resolved",
-                                    answered: true,
+                                    answered,
+                                    action,
                                 },
                             ),
                         },
@@ -10008,8 +11147,362 @@ export const useChatStore = create<ChatStore>((set, get) => {
                                 },
                                 requestId,
                                 {
-                                    status: "pending",
+                                    status: "error",
                                     answered: false,
+                                    action,
+                                },
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                currentSession,
+                                message,
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+            }
+        },
+
+        openUrlElicitation: async (requestId, sessionId) => {
+            const resolvedSessionId = sessionId ?? get().activeSessionId;
+            if (!resolvedSessionId) return;
+            const session = get().sessionsById[resolvedSessionId];
+            const message = session?.messages.find(
+                (candidate) =>
+                    candidate.urlElicitationRequestId === requestId,
+            );
+            if (!session || !message) return;
+            const url = safeHttpUrl(message?.urlElicitationUrl);
+            if (isFinalUrlElicitationStatus(message.meta?.status)) return;
+            if (!url) {
+                const errorMessage =
+                    "Only http and https URLs can be opened from AI URL requests.";
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        opened: false,
+                                    },
+                                ),
+                                errorMessage,
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+                return;
+            }
+
+            set((state) => {
+                const currentSession = state.sessionsById[resolvedSessionId];
+                if (!currentSession) return state;
+                const currentMessage = currentSession.messages.find(
+                    (candidate) =>
+                        candidate.urlElicitationRequestId === requestId,
+                );
+                if (isFinalUrlElicitationStatus(currentMessage?.meta?.status)) {
+                    return state;
+                }
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [resolvedSessionId]: updateUrlElicitationMessageState(
+                            currentSession,
+                            requestId,
+                            {
+                                status: "opening",
+                                opened: true,
+                            },
+                        ),
+                    },
+                };
+            });
+
+            try {
+                await openUrl(url);
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    const currentMessage = currentSession.messages.find(
+                        (candidate) =>
+                            candidate.urlElicitationRequestId === requestId,
+                    );
+                    if (
+                        isFinalUrlElicitationStatus(
+                            currentMessage?.meta?.status,
+                        )
+                    ) {
+                        return state;
+                    }
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]:
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "pending",
+                                        opened: true,
+                                    },
+                                ),
+                        },
+                    };
+                });
+            } catch (error) {
+                const message = getAiErrorMessage(error, "Failed to open URL.");
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    const currentMessage = currentSession.messages.find(
+                        (candidate) =>
+                            candidate.urlElicitationRequestId === requestId,
+                    );
+                    if (
+                        isFinalUrlElicitationStatus(
+                            currentMessage?.meta?.status,
+                        )
+                    ) {
+                        return state;
+                    }
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        opened: false,
+                                    },
+                                ),
+                                message,
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+            }
+        },
+
+        respondUrlElicitation: async (requestId, action, sessionId) => {
+            const resolvedSessionId = sessionId ?? get().activeSessionId;
+            if (!resolvedSessionId) return;
+            const session = get().sessionsById[resolvedSessionId];
+            if (!session) return;
+            const existingMessage = session.messages.find(
+                (message) => message.urlElicitationRequestId === requestId,
+            );
+            if (isFinalUrlElicitationStatus(existingMessage?.meta?.status)) {
+                return;
+            }
+
+            if (
+                !runtimeSupportsCapability(
+                    get().runtimes,
+                    session.runtimeId,
+                    "user_input",
+                )
+            ) {
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: appendSessionError(
+                                updateUrlElicitationMessageState(
+                                    currentSession,
+                                    requestId,
+                                    {
+                                        status: "error",
+                                        action,
+                                    },
+                                ),
+                                "This runtime does not support interactive URL requests in this build.",
+                            ),
+                        },
+                        sessionOrder: touchSessionOrder(
+                            state.sessionOrder,
+                            resolvedSessionId,
+                        ),
+                    };
+                });
+                return;
+            }
+
+            set((state) => {
+                const currentSession = state.sessionsById[resolvedSessionId];
+                if (!currentSession) return state;
+                return {
+                    sessionsById: {
+                        ...state.sessionsById,
+                        [resolvedSessionId]: updateUrlElicitationMessageState(
+                            { ...currentSession, status: "streaming" },
+                            requestId,
+                            {
+                                status: "responding",
+                                action,
+                            },
+                        ),
+                    },
+                };
+            });
+
+            try {
+                const nextSession = await aiRespondUrlElicitation(
+                    resolvedSessionId,
+                    requestId,
+                    action,
+                );
+                get().upsertSession(nextSession);
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]:
+                                updateUrlElicitationMessageState(
+                                    {
+                                        ...currentSession,
+                                        status:
+                                            currentSession.status ===
+                                            "waiting_user_input"
+                                                ? "streaming"
+                                                : currentSession.status,
+                                    },
+                                    requestId,
+                                    {
+                                        status:
+                                            action === "cancel"
+                                                ? "cancelled"
+                                                : "completed",
+                                        action,
+                                    },
+                                ),
+                        },
+                    };
+                });
+                persistCurrentSession(resolvedSessionId);
+            } catch (error) {
+                const latestSession = get().sessionsById[resolvedSessionId];
+                const latestMessage = latestSession?.messages.find(
+                    (message) => message.urlElicitationRequestId === requestId,
+                );
+                if (isFinalUrlElicitationStatus(latestMessage?.meta?.status)) {
+                    persistCurrentSession(resolvedSessionId);
+                    return;
+                }
+                const errorMessage = getAiErrorMessage(
+                    error,
+                    "Failed to respond to the URL request.",
+                );
+                if (
+                    errorMessage
+                        .toLowerCase()
+                        .includes(
+                            "url elicitation request already completed by runtime",
+                        )
+                ) {
+                    set((state) => {
+                        const currentSession =
+                            state.sessionsById[resolvedSessionId];
+                        if (!currentSession) return state;
+                        const currentMessage = currentSession.messages.find(
+                            (message) =>
+                                message.urlElicitationRequestId === requestId,
+                        );
+                        if (
+                            isFinalUrlElicitationStatus(
+                                currentMessage?.meta?.status,
+                            )
+                        ) {
+                            return state;
+                        }
+                        return {
+                            sessionsById: {
+                                ...state.sessionsById,
+                                [resolvedSessionId]:
+                                    updateUrlElicitationMessageState(
+                                        {
+                                            ...currentSession,
+                                            status:
+                                                currentSession.status ===
+                                                "waiting_user_input"
+                                                    ? "streaming"
+                                                    : currentSession.status,
+                                        },
+                                        requestId,
+                                        {
+                                            status: "completed",
+                                            action,
+                                            completedByRuntime: true,
+                                        },
+                                    ),
+                            },
+                        };
+                    });
+                    persistCurrentSession(resolvedSessionId);
+                    return;
+                }
+                const message = getAiErrorMessage(
+                    error,
+                    "Failed to respond to the URL request.",
+                );
+                set((state) => {
+                    const currentSession =
+                        state.sessionsById[resolvedSessionId];
+                    if (!currentSession) return state;
+                    return {
+                        sessionsById: {
+                            ...state.sessionsById,
+                            [resolvedSessionId]: updateUrlElicitationMessageState(
+                                {
+                                    ...currentSession,
+                                    status: "waiting_user_input",
+                                },
+                                requestId,
+                                {
+                                    status: "error",
+                                    action,
                                 },
                             ),
                         },
@@ -10861,6 +12354,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deleteSession: async (sessionId) => {
             const vaultPath = useVaultStore.getState().vaultPath;
             const targetSession = get().sessionsById[sessionId];
+            const shouldCreateReplacementSession =
+                !targetSession ||
+                !isClaudeTerminalRuntimeId(targetSession.runtimeId);
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
             clearStaleStreamingCheck(sessionId);
@@ -10936,6 +12432,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set({
                 sessionsById: nextSessionsById,
                 sessionOrder: remainingIds,
+                pendingAvailableCommandsBySessionId: removeSessionMapEntry(
+                    state.pendingAvailableCommandsBySessionId,
+                    sessionId,
+                ),
                 activeSessionId: nextActiveId,
                 lastFocusedSessionId: nextLastFocusedSessionId,
                 selectedRuntimeId: nextSelectedRuntimeId,
@@ -10953,10 +12453,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 interruptedTurnStateBySessionId:
                     nextInterruptedTurnStateBySessionId,
             });
-            if (nextActiveId && !nextSessionsById[nextActiveId]) {
-                await get().newSession();
-            } else if (Object.keys(nextSessionsById).length === 0) {
-                await get().newSession();
+            if (shouldCreateReplacementSession) {
+                if (nextActiveId && !nextSessionsById[nextActiveId]) {
+                    await get().newSession();
+                } else if (Object.keys(nextSessionsById).length === 0) {
+                    await get().newSession();
+                }
             }
         },
 
@@ -11002,6 +12504,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set({
                 sessionsById: {},
                 sessionOrder: [],
+                pendingAvailableCommandsBySessionId: {},
                 activeSessionId: null,
                 lastFocusedSessionId: null,
                 selectedRuntimeId: defaultRuntimeId,
@@ -11370,7 +12873,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         setScreenshotRetentionSeconds: (seconds) => {
-            const next = Math.max(0, Math.round(seconds));
+            const next = normalizeScreenshotRetentionSeconds(seconds);
             set({ screenshotRetentionSeconds: next });
             saveAiPreferences({ screenshotRetentionSeconds: next });
         },
@@ -11550,6 +13053,13 @@ export function resetChatStore() {
     _queueDrainLocks.clear();
     _pendingStopBySessionId.clear();
     _pendingSessionPersistence.clear();
+    _deltaBuffer.messageDelta.clear();
+    _deltaBuffer.thinkingDelta.clear();
+    _suppressedRuntimeUserEchoByKey.clear();
+    if (_deltaBuffer.flushTimeoutId !== null) {
+        window.clearTimeout(_deltaBuffer.flushTimeoutId);
+        _deltaBuffer.flushTimeoutId = null;
+    }
     clearTrackedPersistedReconciliationTimers();
     _sessionPersistenceFlushScheduled = false;
     _sessionPersistenceEpoch += 1;
@@ -11561,6 +13071,7 @@ export function resetChatStore() {
         runtimes: [],
         sessionsById: {},
         sessionOrder: [],
+        pendingAvailableCommandsBySessionId: {},
         activeSessionId: null,
         lastFocusedSessionId: null,
         defaultRuntimeId: null,

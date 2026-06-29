@@ -10,7 +10,8 @@ const mockQuery = vi.hoisted(() => vi.fn(() => ({
     setPermissionMode: vi.fn(),
     supportedCommands: vi.fn().mockResolvedValue([]),
 })));
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+vi.mock("@anthropic-ai/claude-agent-sdk", async () => ({
+    ...(await vi.importActual("@anthropic-ai/claude-agent-sdk")),
     query: mockQuery,
 }));
 describe("authorization", () => {
@@ -71,7 +72,7 @@ describe("authorization", () => {
             _meta: { gateway: { baseUrl: "https://gateway.example", headers: { "x-api-key": "test" } } },
         });
         await agent.newSession({
-            cwd: "testRoot",
+            cwd: process.cwd(),
             mcpServers: [],
             _meta: {
                 claudeCode: {
@@ -109,7 +110,7 @@ describe("authorization", () => {
             },
         });
         await agent.newSession({
-            cwd: "testRoot",
+            cwd: process.cwd(),
             mcpServers: [],
         });
         expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({

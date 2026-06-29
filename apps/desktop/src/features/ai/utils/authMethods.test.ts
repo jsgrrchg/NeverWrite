@@ -9,12 +9,9 @@ describe("authMethods", () => {
         expect(
             isIntegratedTerminalAuthMethod("claude-acp", "claude-login"),
         ).toBe(true);
-        expect(
-            isIntegratedTerminalAuthMethod(
-                "gemini-acp",
-                "login_with_google",
-            ),
-        ).toBe(true);
+        expect(isIntegratedTerminalAuthMethod("grok-acp", "grok-login")).toBe(
+            true,
+        );
         expect(isIntegratedTerminalAuthMethod("kilo-acp", "kilo-login")).toBe(
             true,
         );
@@ -25,10 +22,10 @@ describe("authMethods", () => {
 
     it("rejects terminal auth methods for the wrong runtime", () => {
         expect(
-            isIntegratedTerminalAuthMethod("kilo-acp", "login_with_google"),
+            isIntegratedTerminalAuthMethod("kilo-acp", "grok-login"),
         ).toBe(false);
         expect(
-            isIntegratedTerminalAuthMethod("gemini-acp", "kilo-login"),
+            isIntegratedTerminalAuthMethod("grok-acp", "xai-api-key"),
         ).toBe(false);
         expect(
             isIntegratedTerminalAuthMethod("codex-acp", "kilo-login"),
@@ -40,9 +37,7 @@ describe("authMethods", () => {
 
     it("recognizes supported terminal auth method ids", () => {
         expect(isIntegratedTerminalAuthMethodId("claude-ai-login")).toBe(true);
-        expect(isIntegratedTerminalAuthMethodId("login_with_google")).toBe(
-            true,
-        );
+        expect(isIntegratedTerminalAuthMethodId("grok-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("kilo-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("opencode-login")).toBe(true);
         expect(isIntegratedTerminalAuthMethodId("openai-api-key")).toBe(false);

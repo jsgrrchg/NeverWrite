@@ -35,13 +35,16 @@ function getManagedSettingsPath() {
  * `filterEscalatingDefaultMode`, matching the CLI's trust policy.
  */
 export class SettingsManager {
+    cwd;
+    effective = {};
+    watchers = [];
+    onChange;
+    logger;
+    initialized = false;
+    disposed = false;
+    debounceTimer = null;
+    initPromise = null;
     constructor(cwd, options) {
-        this.effective = {};
-        this.watchers = [];
-        this.initialized = false;
-        this.disposed = false;
-        this.debounceTimer = null;
-        this.initPromise = null;
         this.cwd = cwd;
         this.onChange = options?.onChange;
         this.logger = options?.logger ?? console;

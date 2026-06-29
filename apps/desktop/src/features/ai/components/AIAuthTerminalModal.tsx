@@ -62,14 +62,7 @@ function getRunningStatusLabel(runtimeName: string) {
 }
 
 function authTerminalOutputIndicatesSuccess(runtimeId: string, output: string) {
-    if (runtimeId === "gemini-acp") {
-        return (
-            output.includes("Authentication succeeded") ||
-            output.includes("successfully signed in with Google")
-        );
-    }
-
-    if (runtimeId === "opencode-acp") {
+    if (runtimeId === "grok-acp" || runtimeId === "opencode-acp") {
         const normalized = output.toLowerCase();
         return (
             normalized.includes("authentication successful") ||

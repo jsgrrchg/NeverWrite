@@ -1,13 +1,11 @@
-import { act, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import type { AIChatSession } from "../types";
+import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
+import { resetChatMessageListViewState } from "./chatMessageListViewState";
 import { HistoryTranscriptViewer } from "./HistoryTranscriptViewer";
-
-vi.mock("./AIChatMessageList", () => ({
-    AIChatMessageList: () => <div data-testid="history-message-list" />,
-}));
 
 function createEmptyPersistedSession(
     sessionId: string,
@@ -40,6 +38,7 @@ function createEmptyPersistedSession(
 describe("HistoryTranscriptViewer", () => {
     beforeEach(() => {
         resetChatStore();
+        resetChatMessageListViewState();
     });
 
     it("does not reload an empty history session when only the session object identity changes", async () => {
@@ -81,5 +80,45 @@ describe("HistoryTranscriptViewer", () => {
         });
 
         expect(ensureSessionTranscriptLoaded).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders the history transcript through the shared capped message column", () => {
+        const session = createEmptyPersistedSession("history-column", {
+            messages: [
+                {
+                    id: "history-column-message",
+                    role: "assistant",
+                    kind: "text",
+                    content: "Persisted transcript content",
+                    timestamp: 10,
+                },
+            ],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            runtimes: [],
+            ensureSessionTranscriptLoaded: vi.fn().mockResolvedValue(true),
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+        }));
+
+        const view = renderComponent(
+            <HistoryTranscriptViewer historySessionId={session.sessionId} />,
+        );
+        const messageColumn = view.container.querySelector(
+            '[data-selectable="true"]',
+        );
+
+        expect(
+            screen.getByText("Persisted transcript content"),
+        ).toBeInTheDocument();
+        expect(messageColumn).not.toBeNull();
+        expect(messageColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
+        });
     });
 });

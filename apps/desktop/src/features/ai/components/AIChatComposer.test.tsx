@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { invoke } from "@neverwrite/runtime";
+import { getCurrentWebview, invoke } from "@neverwrite/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
@@ -13,7 +13,12 @@ import {
 } from "../../../test/test-utils";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../dragEvents";
 import type { AIAvailableCommand, AIComposerPart } from "../types";
+import {
+    MAX_IMAGE_ATTACHMENTS_PER_MESSAGE,
+    MAX_IMAGE_ATTACHMENT_BYTES,
+} from "../imageAttachments";
 import { AIChatComposer } from "./AIChatComposer";
+import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import { getComposerPillLayoutStyle } from "./chatPillLayout";
 import { getChatPillMetrics } from "./chatPillMetrics";
 
@@ -42,8 +47,11 @@ function renderComposer({
     availableCommands = [],
     isStopping = false,
     hasPendingSubmitAfterStop = false,
+    expanded = false,
     onMentionAttach = vi.fn(),
     onFolderAttach = vi.fn(),
+    onToggleExpanded = vi.fn(),
+    onImageAttachmentValidationFailure = vi.fn(),
     onSubmit = () => {},
     onStop = () => {},
 }: {
@@ -57,12 +65,15 @@ function renderComposer({
     availableCommands?: AIAvailableCommand[];
     isStopping?: boolean;
     hasPendingSubmitAfterStop?: boolean;
+    expanded?: boolean;
     onMentionAttach?: (note: {
         id: string;
         title: string;
         path: string;
     }) => void;
     onFolderAttach?: (folderPath: string, name: string) => void;
+    onToggleExpanded?: () => void;
+    onImageAttachmentValidationFailure?: (reason: string) => void;
     onSubmit?: () => void;
     onStop?: () => void;
 } = {}) {
@@ -88,9 +99,14 @@ function renderComposer({
             availableCommands={availableCommands}
             isStopping={isStopping}
             hasPendingSubmitAfterStop={hasPendingSubmitAfterStop}
+            expanded={expanded}
+            onToggleExpanded={onToggleExpanded}
             onChange={onChange}
             onMentionAttach={onMentionAttach}
             onFolderAttach={onFolderAttach}
+            onImageAttachmentValidationFailure={
+                onImageAttachmentValidationFailure
+            }
             onSubmit={onSubmit}
             onStop={onStop}
         />,
@@ -99,7 +115,15 @@ function renderComposer({
     const composer = screen.getByRole("textbox", {
         name: "Message NeverWrite",
     });
-    return { composer, onChange, onFolderAttach, onMentionAttach, onSubmit, onStop };
+    return {
+        composer,
+        onChange,
+        onFolderAttach,
+        onMentionAttach,
+        onImageAttachmentValidationFailure,
+        onSubmit,
+        onStop,
+    };
 }
 
 function setCaret(node: Node, offset: number) {
@@ -112,6 +136,40 @@ function setCaret(node: Node, offset: number) {
 }
 
 describe("AIChatComposer mention picker", () => {
+    it("keeps the composer shell full-width while capping the inner content", () => {
+        renderComposer();
+
+        const shell = screen.getByTestId("chat-composer-shell");
+        const contentColumn = screen.getByTestId(
+            "chat-composer-content-column",
+        );
+
+        expect(shell).toContainElement(contentColumn);
+        expect(shell).not.toHaveStyle({
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+        });
+        expect(contentColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
+        });
+    });
+
+    it("keeps the capped composer content flexible while expanded", () => {
+        renderComposer({ expanded: true });
+
+        const contentColumn = screen.getByTestId(
+            "chat-composer-content-column",
+        );
+
+        expect(contentColumn).toHaveClass("flex-1");
+        expect(contentColumn).toHaveStyle({
+            width: "100%",
+            maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+            marginInline: "auto",
+        });
+    });
+
     it("lets regular composer pills show their full label", () => {
         expect(getComposerPillLayoutStyle(getChatPillMetrics(14))).toMatchObject(
             {
@@ -287,6 +345,201 @@ describe("AIChatComposer mention picker", () => {
             "research",
         );
         expect(onMentionAttach).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects unsupported image files from file-tree attach", async () => {
+        const { onChange, onImageAttachmentValidationFailure } = renderComposer();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "attach",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: "/vault/assets/vector.svg",
+                                fileName: "vector.svg",
+                                mimeType: "image/svg+xml",
+                            },
+                        ],
+                    },
+                }),
+            );
+        });
+
+        await waitFor(() => {
+            expect(onImageAttachmentValidationFailure).toHaveBeenCalledWith(
+                "unsupported_type",
+            );
+        });
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("rejects oversized image files from file-tree attach when size metadata is available", async () => {
+        const { onChange, onImageAttachmentValidationFailure } = renderComposer();
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "attach",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: "/vault/assets/huge.png",
+                                fileName: "huge.png",
+                                mimeType: "image/png",
+                                sizeBytes: MAX_IMAGE_ATTACHMENT_BYTES + 1,
+                            },
+                        ],
+                    },
+                }),
+            );
+        });
+
+        await waitFor(() => {
+            expect(onImageAttachmentValidationFailure).toHaveBeenCalledWith(
+                "too_large",
+            );
+        });
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("rejects file-tree image attachments above the per-message count", async () => {
+        const parts = Array.from(
+            { length: MAX_IMAGE_ATTACHMENTS_PER_MESSAGE },
+            (_, index): AIComposerPart => ({
+                id: `shot-${index}`,
+                type: "screenshot",
+                filePath: `/vault/assets/chat/shot-${index}.png`,
+                mimeType: "image/png",
+                label: `Screenshot ${index}`,
+            }),
+        );
+        const { onChange, onImageAttachmentValidationFailure } = renderComposer({
+            parts,
+        });
+
+        act(() => {
+            window.dispatchEvent(
+                new CustomEvent(FILE_TREE_NOTE_DRAG_EVENT, {
+                    detail: {
+                        phase: "attach",
+                        x: 0,
+                        y: 0,
+                        notes: [],
+                        files: [
+                            {
+                                filePath: "/vault/assets/extra.png",
+                                fileName: "extra.png",
+                                mimeType: "image/png",
+                            },
+                        ],
+                    },
+                }),
+            );
+        });
+
+        await waitFor(() => {
+            expect(onImageAttachmentValidationFailure).toHaveBeenCalledWith(
+                "too_many",
+            );
+        });
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("rejects unsupported image files from native file drop", async () => {
+        let dragHandler:
+            | ((event: {
+                  payload: {
+                      type: string;
+                      position?: { x: number; y: number };
+                      paths?: string[];
+                  };
+              }) => void)
+            | null = null;
+        vi.mocked(getCurrentWebview().onDragDropEvent).mockImplementation(
+            async (handler) => {
+                dragHandler = handler as typeof dragHandler;
+                return () => {};
+            },
+        );
+
+        const { onChange, onImageAttachmentValidationFailure } = renderComposer();
+
+        await waitFor(() => {
+            expect(dragHandler).not.toBeNull();
+        });
+
+        act(() => {
+            dragHandler?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 0, y: 0 },
+                    paths: ["/vault/assets/vector.svg"],
+                },
+            });
+        });
+
+        await waitFor(() => {
+            expect(onImageAttachmentValidationFailure).toHaveBeenCalledWith(
+                "unsupported_type",
+            );
+        });
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("rejects oversized native file drops when the vault entry size is known", async () => {
+        setVaultEntries([
+            buildVaultFileEntry("assets/huge.png", {
+                mimeType: "image/png",
+                size: MAX_IMAGE_ATTACHMENT_BYTES + 1,
+                isImageLike: true,
+            }),
+        ]);
+        let dragHandler:
+            | ((event: {
+                  payload: {
+                      type: string;
+                      position?: { x: number; y: number };
+                      paths?: string[];
+                  };
+              }) => void)
+            | null = null;
+        vi.mocked(getCurrentWebview().onDragDropEvent).mockImplementation(
+            async (handler) => {
+                dragHandler = handler as typeof dragHandler;
+                return () => {};
+            },
+        );
+
+        const { onChange, onImageAttachmentValidationFailure } = renderComposer();
+
+        await waitFor(() => {
+            expect(dragHandler).not.toBeNull();
+        });
+
+        act(() => {
+            dragHandler?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 0, y: 0 },
+                    paths: ["/vault/assets/huge.png"],
+                },
+            });
+        });
+
+        await waitFor(() => {
+            expect(onImageAttachmentValidationFailure).toHaveBeenCalledWith(
+                "too_large",
+            );
+        });
+        expect(onChange).not.toHaveBeenCalled();
     });
 
     it("opens the @ picker when the caret is inside a text node", async () => {
@@ -600,7 +853,16 @@ describe("AIChatComposer mention picker", () => {
     });
 
     it("opens the slash picker when the caret is on the root element", async () => {
-        const { composer } = renderComposer();
+        const { composer } = renderComposer({
+            availableCommands: [
+                {
+                    id: "plan",
+                    label: "/plan",
+                    description: "step-by-step plan",
+                    insert_text: "/plan ",
+                },
+            ],
+        });
         composer.textContent = "/pl";
 
         setCaret(composer, 1);
@@ -611,9 +873,63 @@ describe("AIChatComposer mention picker", () => {
         });
     });
 
-    it("uses runtime-aware slash fallbacks for Claude sessions", async () => {
+    it("keeps slash command labels visible when descriptions are long", async () => {
+        const { composer } = renderComposer({
+            availableCommands: [
+                {
+                    id: "compact",
+                    label: "/compact",
+                    description:
+                        "Compress conversation history to save context window space",
+                    insert_text: "/compact",
+                },
+            ],
+        });
+        composer.textContent = "/co";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        const label = await screen.findByText("/compact");
+        const description = screen.getByText(
+            "Compress conversation history to save context window space",
+        );
+
+        expect(label).toHaveStyle({ flex: "0 0 auto" });
+        expect(description).toHaveStyle({
+            flex: "1 1 0",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+        });
+    });
+
+    it("shows Codex builtin slash commands while ACP commands are still loading", async () => {
+        const { composer } = renderComposer({
+            runtimeId: "codex-acp",
+            availableCommands: [],
+        });
+        composer.textContent = "/co";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("/compact")).toBeInTheDocument();
+            expect(screen.queryByText("No commands found")).not.toBeInTheDocument();
+        });
+    });
+
+    it("uses only ACP-provided slash commands for Claude sessions", async () => {
         const { composer } = renderComposer({
             runtimeId: "claude-acp",
+            availableCommands: [
+                {
+                    id: "compact",
+                    label: "/compact",
+                    description: "compact thread",
+                    insert_text: "/compact",
+                },
+            ],
         });
         composer.textContent = "/co";
 
@@ -623,6 +939,37 @@ describe("AIChatComposer mention picker", () => {
         await waitFor(() => {
             expect(screen.getByText("/compact")).toBeInTheDocument();
             expect(screen.queryByText("/undo")).not.toBeInTheDocument();
+        });
+    });
+
+    it("uses only ACP-provided slash commands for Grok sessions", async () => {
+        const { composer } = renderComposer({
+            runtimeId: "grok-acp",
+            availableCommands: [
+                {
+                    id: "workspace-search",
+                    label: "/workspace-search",
+                    description: "search workspace",
+                    insert_text: "/workspace-search ",
+                },
+            ],
+        });
+        composer.textContent = "/pl";
+
+        setCaret(composer.firstChild as Text, 3);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.queryByText("/plan")).not.toBeInTheDocument();
+            expect(screen.getByText("No commands found")).toBeInTheDocument();
+        });
+
+        composer.textContent = "/work";
+        setCaret(composer.firstChild as Text, 5);
+        fireEvent.input(composer);
+
+        await waitFor(() => {
+            expect(screen.getByText("/workspace-search")).toBeInTheDocument();
         });
     });
 
@@ -786,6 +1133,52 @@ describe("AIChatComposer mention picker", () => {
             kind: "file",
             path: "/vault/src/watcher.rs",
         });
+    });
+
+    it("resyncs screenshot metadata when the visible label is unchanged", () => {
+        const label = "Screenshot 10:42 hrs";
+        const baseProps = {
+            notes: [],
+            status: "idle" as const,
+            runtimeName: "Assistant",
+            composerFontFamily: "system" as const,
+            availableCommands: [],
+            onChange: vi.fn(),
+            onMentionAttach: vi.fn(),
+            onFolderAttach: vi.fn(),
+            onSubmit: vi.fn(),
+            onStop: vi.fn(),
+        };
+        const legacyScreenshot: Extract<
+            AIComposerPart,
+            { type: "screenshot" }
+        > = {
+            id: "shot-1",
+            type: "screenshot",
+            filePath: "/vault/assets/chat/shot.png",
+            mimeType: "image/png",
+            label,
+        };
+        const legacyParts: AIComposerPart[] = [legacyScreenshot];
+        const timestampedParts: AIComposerPart[] = [
+            {
+                ...legacyScreenshot,
+                createdAt: 5_000,
+            },
+        ];
+
+        const { rerender } = renderComponent(
+            <AIChatComposer {...baseProps} parts={legacyParts} />,
+        );
+
+        expect(screen.getByText(label)).not.toHaveAttribute("data-created-at");
+
+        rerender(<AIChatComposer {...baseProps} parts={timestampedParts} />);
+
+        expect(screen.getByText(label)).toHaveAttribute(
+            "data-created-at",
+            "5000",
+        );
     });
 
     it("applies the selected composer font family to the textbox", () => {

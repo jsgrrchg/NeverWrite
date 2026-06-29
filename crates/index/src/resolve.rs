@@ -4,6 +4,10 @@ use neverwrite_types::NoteId;
 
 use crate::VaultIndex;
 
+type LocalGraphNodes = Vec<(NoteId, u32)>;
+type LocalGraphLinks = Vec<(NoteId, NoteId)>;
+type LocalGraph = (LocalGraphNodes, LocalGraphLinks);
+
 impl VaultIndex {
     /// Resolves a wikilink to a NoteId.
     /// `link_text`: the wikilink target (for example, "My Note" or "folder/note").
@@ -39,11 +43,7 @@ impl VaultIndex {
 
     /// BFS from `root` up to `max_depth` hops, using forward_links + backlinks.
     /// Returns (visited nodes with their distance, internal links within the subgraph).
-    pub fn get_local_graph(
-        &self,
-        root: &NoteId,
-        max_depth: u32,
-    ) -> (Vec<(NoteId, u32)>, Vec<(NoteId, NoteId)>) {
+    pub fn get_local_graph(&self, root: &NoteId, max_depth: u32) -> LocalGraph {
         let mut visited: HashSet<NoteId> = HashSet::new();
         let mut queue: VecDeque<(NoteId, u32)> = VecDeque::new();
         let mut nodes: Vec<(NoteId, u32)> = Vec::new();

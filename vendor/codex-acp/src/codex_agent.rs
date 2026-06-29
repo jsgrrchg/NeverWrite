@@ -6,19 +6,18 @@ use acp::schema::{
     LoadSessionRequest, LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse,
     McpCapabilities, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
     NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, ProtocolVersion,
-    SessionCapabilities, SessionCloseCapabilities, SessionId, SessionInfo, SessionListCapabilities,
+    ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionCloseCapabilities,
+    SessionId, SessionInfo, SessionListCapabilities, SessionResumeCapabilities,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
-    SetSessionModeResponse, SetSessionModelRequest, SetSessionModelResponse,
+    SetSessionModeResponse,
 };
 use acp::{Agent, Client, ConnectTo, ConnectionTo, Error};
 use agent_client_protocol as acp;
-use codex_config::{McpServerConfig, McpServerTransportConfig};
+use codex_config::{DEFAULT_MCP_SERVER_ENVIRONMENT_ID, McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    NewThread, RolloutRecorder, SortDirection, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
-    ThreadSortKey,
+    NewThread, RolloutRecorder, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
     config::{Config, PermissionProfileSnapshot},
-    find_thread_path_by_id_str, init_state_db, parse_cursor, resolve_installation_id,
-    thread_store_from_config,
+    find_thread_path_by_id_str, init_state_db, resolve_installation_id, thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
 use codex_extension_api::empty_extension_registry;
@@ -29,6 +28,10 @@ use codex_login::{
 use codex_protocol::{
     ThreadId,
     protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
+};
+use codex_thread_store::{
+    ListThreadsParams, SortDirection as StoreSortDirection, ThreadSortKey as StoreThreadSortKey,
+    ThreadStore,
 };
 use std::{
     collections::HashMap,
@@ -57,6 +60,8 @@ pub struct CodexAgent {
     config: Config,
     /// Thread manager for handling sessions
     thread_manager: Arc<ThreadManager>,
+    /// Store for listing and updating persisted thread metadata
+    thread_store: Arc<dyn ThreadStore>,
     /// SQLite-backed Codex state index, when initialization succeeds
     state_db: Option<StateDbHandle>,
     /// Active sessions mapped by `SessionId`
@@ -103,7 +108,7 @@ impl CodexAgent {
             environment_manager,
             empty_extension_registry(),
             None,
-            thread_store,
+            thread_store.clone(),
             state_db.clone(),
             installation_id,
             None,
@@ -113,6 +118,7 @@ impl CodexAgent {
             client_capabilities,
             config,
             thread_manager,
+            thread_store,
             state_db,
             sessions: Arc::default(),
             session_roots,
@@ -200,6 +206,24 @@ impl CodexAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
+                    async move |request: ResumeSessionRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        let session_cx = cx.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(
+                                agent.resume_session(request, session_cx).await,
+                            )
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
                     async move |request: ListSessionsRequest,
                                 responder,
                                 cx: ConnectionTo<Client>| {
@@ -274,21 +298,6 @@ impl CodexAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
-                    async move |request: SetSessionModelRequest,
-                                responder,
-                                cx: ConnectionTo<Client>| {
-                        let agent = agent.clone();
-                        cx.spawn(async move {
-                            responder.respond_with_result(agent.set_session_model(request).await)
-                        })?;
-                        Ok(())
-                    }
-                },
-                acp::on_receive_request!(),
-            )
-            .on_receive_request(
-                {
-                    let agent = agent.clone();
                     async move |request: SetSessionConfigOptionRequest,
                                 responder,
                                 cx: ConnectionTo<Client>| {
@@ -332,7 +341,12 @@ impl CodexAgent {
     }
 
     fn ensure_subagent_watcher(&self, cx: ConnectionTo<Client>) -> acp::Result<()> {
-        if self.subagent_watcher_started.swap(true, Ordering::SeqCst) {
+        let mut thread_created_rx = self.thread_manager.subscribe_thread_created();
+        if self
+            .subagent_watcher_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Ok(());
         }
 
@@ -345,9 +359,7 @@ impl CodexAgent {
         let base_config = self.config.clone();
 
         let task_cx = cx.clone();
-        cx.spawn(async move {
-            let mut thread_created_rx = thread_manager.subscribe_thread_created();
-
+        if let Err(error) = cx.spawn(async move {
             loop {
                 match thread_created_rx.recv().await {
                     Ok(thread_id) => {
@@ -364,20 +376,21 @@ impl CodexAgent {
                         )
                         .await
                         {
-                            warn!(
-                                "Failed to register spawned Codex subagent thread {thread_id}: {error:?}"
-                            );
+                            warn!("Failed to register spawned child thread {thread_id}: {error:?}");
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!("Skipped {skipped} Codex subagent thread creation notifications");
+                        warn!("Skipped {skipped} child thread creation notifications");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
 
             Ok(())
-        })?;
+        }) {
+            self.subagent_watcher_started.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
 
         Ok(())
     }
@@ -428,7 +441,7 @@ impl CodexAgent {
                             oauth: None,
                             oauth_resource: None,
                             tools: Default::default(),
-                            experimental_environment: None,
+                            environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                             supports_parallel_tool_calls: false,
                             default_tools_approval_mode: None,
                         },
@@ -468,7 +481,7 @@ impl CodexAgent {
                             oauth: None,
                             oauth_resource: None,
                             tools: Default::default(),
-                            experimental_environment: None,
+                            environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                             supports_parallel_tool_calls: false,
                             default_tools_approval_mode: None,
                         },
@@ -573,6 +586,13 @@ async fn register_subagent_thread(
     }
 
     CodexAgent::sync_config_with_thread_snapshot(&mut config, &snapshot)?;
+    let session_root = session_roots
+        .lock()
+        .unwrap()
+        .get(&registration.parent_session_id)
+        .cloned()
+        .unwrap_or_else(|| config.cwd.to_path_buf());
+
     let thread = Arc::new(Thread::new(
         registration.child_session_id.clone(),
         child_thread,
@@ -591,12 +611,6 @@ async fn register_subagent_thread(
         sessions.insert(registration.child_session_id.clone(), thread);
     }
 
-    let session_root = session_roots
-        .lock()
-        .unwrap()
-        .get(&registration.parent_session_id)
-        .cloned()
-        .unwrap_or_else(|| config.cwd.to_path_buf());
     session_roots
         .lock()
         .unwrap()
@@ -631,7 +645,8 @@ impl CodexAgent {
 
         agent_capabilities.session_capabilities = SessionCapabilities::new()
             .close(SessionCloseCapabilities::new())
-            .list(SessionListCapabilities::new());
+            .list(SessionListCapabilities::new())
+            .resume(SessionResumeCapabilities::new());
 
         let mut auth_methods = vec![
             CodexAuthMethod::ChatGpt.into(),
@@ -776,7 +791,6 @@ impl CodexAgent {
 
         Ok(NewSessionResponse::new(session_id)
             .modes(load.modes)
-            .models(load.models)
             .config_options(load.config_options))
     }
 
@@ -796,6 +810,43 @@ impl CodexAgent {
             ..
         } = request;
 
+        self.restore_session(session_id, cwd, mcp_servers, cx, true)
+            .await
+    }
+
+    async fn resume_session(
+        &self,
+        request: ResumeSessionRequest,
+        cx: ConnectionTo<Client>,
+    ) -> Result<ResumeSessionResponse, Error> {
+        info!("Resuming session: {}", request.session_id);
+        // Check before sending if authentication was successful or not
+        self.check_auth().await?;
+
+        let ResumeSessionRequest {
+            session_id,
+            cwd,
+            mcp_servers,
+            ..
+        } = request;
+
+        let load = self
+            .restore_session(session_id, cwd, mcp_servers, cx, false)
+            .await?;
+
+        Ok(ResumeSessionResponse::new()
+            .modes(load.modes)
+            .config_options(load.config_options))
+    }
+
+    async fn restore_session(
+        &self,
+        session_id: SessionId,
+        cwd: PathBuf,
+        mcp_servers: Vec<McpServer>,
+        cx: ConnectionTo<Client>,
+        replay_history: bool,
+    ) -> Result<LoadSessionResponse, Error> {
         let rollout_path = find_thread_path_by_id_str(
             &self.config.codex_home,
             session_id.0.as_ref(),
@@ -805,14 +856,18 @@ impl CodexAgent {
         .map_err(|e| Error::internal_error().data(e.to_string()))?
         .ok_or_else(|| Error::resource_not_found(None))?;
 
-        let history = RolloutRecorder::get_rollout_history(&rollout_path)
-            .await
-            .map_err(|e| Error::internal_error().data(e.to_string()))?;
+        let rollout_items = if replay_history {
+            let history = RolloutRecorder::get_rollout_history(&rollout_path)
+                .await
+                .map_err(|e| Error::internal_error().data(e.to_string()))?;
 
-        let rollout_items = match &history {
-            InitialHistory::Resumed(resumed) => resumed.history.clone(),
-            InitialHistory::Forked(items) => items.clone(),
-            InitialHistory::Cleared | InitialHistory::New => Vec::new(),
+            match &history {
+                InitialHistory::Resumed(resumed) => resumed.history.clone(),
+                InitialHistory::Forked(items) => items.clone(),
+                InitialHistory::Cleared | InitialHistory::New => Vec::new(),
+            }
+        } else {
+            Vec::new()
         };
 
         let mut config = self.build_session_config(&cwd, mcp_servers)?;
@@ -842,7 +897,9 @@ impl CodexAgent {
             cx,
         ));
 
-        thread.replay_history(rollout_items).await?;
+        if replay_history {
+            thread.replay_history(rollout_items).await?;
+        }
 
         let load = thread.load().await?;
 
@@ -854,7 +911,6 @@ impl CodexAgent {
 
         Ok(LoadSessionResponse::new()
             .modes(load.modes)
-            .models(load.models)
             .config_options(load.config_options))
     }
 
@@ -865,62 +921,52 @@ impl CodexAgent {
         self.check_auth().await?;
 
         let ListSessionsRequest { cwd, cursor, .. } = request;
-        let cursor_obj = cursor.as_deref().and_then(parse_cursor);
+        let allowed_sources = [
+            SessionSource::Cli,
+            SessionSource::VSCode,
+            SessionSource::Unknown,
+        ];
+        let cwd_filter = cwd.clone();
 
-        let page = RolloutRecorder::list_threads(
-            self.state_db.clone(),
-            &self.config,
-            SESSION_LIST_PAGE_SIZE,
-            cursor_obj.as_ref(),
-            ThreadSortKey::UpdatedAt,
-            SortDirection::Desc,
-            &[
-                SessionSource::Cli,
-                SessionSource::VSCode,
-                SessionSource::Unknown,
-            ],
-            None,
-            None,
-            self.config.model_provider_id.as_str(),
-            None,
-        )
-        .await
-        .map_err(|err| Error::internal_error().data(format!("failed to list sessions: {err}")))?;
+        let page = self
+            .thread_store
+            .list_threads(ListThreadsParams {
+                page_size: SESSION_LIST_PAGE_SIZE,
+                cursor,
+                sort_key: StoreThreadSortKey::UpdatedAt,
+                sort_direction: StoreSortDirection::Desc,
+                allowed_sources: allowed_sources.to_vec(),
+                model_providers: None,
+                cwd_filters: cwd.map(|cwd| vec![cwd]),
+                archived: false,
+                search_term: None,
+                use_state_db_only: false,
+            })
+            .await
+            .map_err(|err| {
+                Error::internal_error().data(format!("failed to list sessions: {err}"))
+            })?;
 
         let sessions = page
             .items
             .into_iter()
-            .filter_map(|item| {
-                let thread_id = item.thread_id?;
-                let item_cwd = item.cwd?;
+            .filter(|item| {
+                allowed_sources.contains(&item.source)
+                    && cwd_filter
+                        .as_ref()
+                        .is_none_or(|filter_cwd| item.cwd.as_path() == filter_cwd.as_path())
+            })
+            .map(|item| {
+                let title = stored_session_title(item.name.as_deref(), &item.preview);
+                let updated_at = item.updated_at.to_rfc3339();
 
-                if let Some(filter_cwd) = cwd.as_ref()
-                    && item_cwd != *filter_cwd
-                {
-                    return None;
-                }
-
-                let title = item
-                    .first_user_message
-                    .as_deref()
-                    .and_then(format_session_title);
-                let updated_at = item.updated_at.or(item.created_at);
-
-                Some(
-                    SessionInfo::new(SessionId::new(thread_id.to_string()), item_cwd)
-                        .title(title)
-                        .updated_at(updated_at),
-                )
+                SessionInfo::new(SessionId::new(item.thread_id.to_string()), item.cwd)
+                    .title(title)
+                    .updated_at(updated_at)
             })
             .collect::<Vec<_>>();
 
-        let next_cursor = page
-            .next_cursor
-            .as_ref()
-            .and_then(|next_cursor| serde_json::to_value(next_cursor).ok())
-            .and_then(|value| value.as_str().map(str::to_owned));
-
-        Ok(ListSessionsResponse::new(sessions).next_cursor(next_cursor))
+        Ok(ListSessionsResponse::new(sessions).next_cursor(page.next_cursor))
     }
 
     async fn close_session(
@@ -939,9 +985,9 @@ impl CodexAgent {
             .lock()
             .unwrap()
             .remove(&request.session_id);
+
         Ok(CloseSessionResponse::new())
     }
-
     async fn prompt(&self, request: PromptRequest) -> Result<PromptResponse, Error> {
         info!("Processing prompt for session: {}", request.session_id);
         // Check before sending if authentication was successful or not
@@ -969,19 +1015,6 @@ impl CodexAgent {
             .set_mode(args.mode_id)
             .await?;
         Ok(SetSessionModeResponse::default())
-    }
-
-    async fn set_session_model(
-        &self,
-        args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
-        info!("Setting session model for session: {}", args.session_id);
-
-        self.get_thread(&args.session_id)?
-            .set_model(args.model_id)
-            .await?;
-
-        Ok(SetSessionModelResponse::default())
     }
 
     async fn set_session_config_option(
@@ -1093,5 +1126,37 @@ fn format_session_title(message: &str) -> Option<String> {
         None
     } else {
         Some(truncate_graphemes(trimmed, SESSION_TITLE_MAX_GRAPHEMES))
+    }
+}
+
+fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
+    [name, Some(preview)]
+        .into_iter()
+        .flatten()
+        .find_map(format_session_title)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_session_title_prefers_thread_name() {
+        assert_eq!(
+            stored_session_title(Some("renamed"), "preview"),
+            Some("renamed".to_string())
+        );
+    }
+
+    #[test]
+    fn stored_session_title_falls_back_to_preview() {
+        assert_eq!(
+            stored_session_title(None, "preview"),
+            Some("preview".to_string())
+        );
+        assert_eq!(
+            stored_session_title(Some("  "), "preview"),
+            Some("preview".to_string())
+        );
     }
 }

@@ -164,10 +164,11 @@ export function serializeComposerPartsForAI(
                 return normalizePathForAI(part.path, options);
             if (part.type === "selection_mention")
                 return `${normalizePathForAI(part.path, options)}:${part.startLine}-${part.endLine}`;
-            if (part.type === "screenshot")
+            if (part.type === "screenshot") return "";
+            if (part.type === "file_attachment") {
+                if (part.mimeType.startsWith("image/")) return "";
                 return normalizePathForAI(part.filePath, options);
-            if (part.type === "file_attachment")
-                return normalizePathForAI(part.filePath, options);
+            }
             return "";
         })
         .join("");
@@ -297,7 +298,12 @@ export function appendSelectionMentionPart(
 
 export function appendScreenshotPart(
     parts: AIComposerPart[],
-    screenshot: { filePath: string; mimeType: string; label: string },
+    screenshot: {
+        filePath: string;
+        mimeType: string;
+        label: string;
+        createdAt?: number;
+    },
 ): AIComposerPart[] {
     const next = [...parts];
 
@@ -315,6 +321,7 @@ export function appendScreenshotPart(
         id: crypto.randomUUID(),
         type: "screenshot",
         ...screenshot,
+        createdAt: screenshot.createdAt ?? Date.now(),
     });
     next.push({ id: crypto.randomUUID(), type: "text", text: " " });
 

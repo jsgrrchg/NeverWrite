@@ -638,6 +638,7 @@ mod tests {
                 agent_nickname: Some("Galileo".to_string()),
                 agent_role: Some("explorer".to_string()),
             }),
+            parent_thread_id: Some(parent_thread_id),
             thread_source: None,
         }
     }

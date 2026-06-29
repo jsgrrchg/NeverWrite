@@ -53,9 +53,9 @@ pub fn extract_tags(text: &str) -> Vec<String> {
 }
 
 fn strip_frontmatter(text: &str) -> &str {
-    if text.starts_with("---") {
-        if let Some(end) = text[3..].find("\n---") {
-            return &text[end + 7..]; // 3 (primer ---) + end + 4 (\n---)
+    if let Some(stripped) = text.strip_prefix("---") {
+        if let Some(end) = stripped.find("\n---") {
+            return &stripped[end + 4..];
         }
     }
     text

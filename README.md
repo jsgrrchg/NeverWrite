@@ -4,14 +4,10 @@
 <img width="2693" height="1211" alt="Captura de pantalla 2026-04-30 a las 5 03 43" src="https://github.com/user-attachments/assets/83968dc3-cfb9-41b5-ad99-bfea4305447b" />
 
 [Important note about Claude subscription usage in NeverWrite starting June 15, 2026](https://github.com/jsgrrchg/NeverWrite/discussions/83)
+  - Update: Claude delayed their decision, you can continue to use claude native integration inside NeverWrite. More info in the linked discussion.
 
-Note: Thank you all for the support and contributions. NeverWrite is expanding toward broader ACP provider compatibility, and local LLM support is part of the roadmap before 1.0 is reached. If you use an ACP-compliant provider that is not supported yet, please open an issue so it can be prioritized. If you have experience with local LLM architecture, I would love your help designing how NeverWrite’s review layer should work for local models.
-
-AI tooling is moving quickly, and I have to be honest with myself, maintaining this app properly takes real time, testing, and provider subscriptions, something that can only be possible having a full time maintainer and proper funding. If NeverWrite is useful to you, GitHub Sponsors is now available and directly helps fund continued development and broader ACP compatibility work.
-
-You can also help by opening issues, sending PRs, testing edge cases, and especially sharing the project. I spend most of my time behind the editor fixing bugs, building new features, and thinking about how to improve and optimize it even more, so I need the kind of power only a community can give: feedback, testing, ideas, and word of mouth.
-
-The mission of NeverWrite is to become the number one alternative for a knowledge workspace prepared to endure this new agentic era that has just begun. Come along for the ride, we’re only getting started.
+**Gemini ACP support has been removed from NeverWrite.** Google redirected Gemini CLI subscription usage toward Antigravity, which is closed source and does not expose ACP support for third-party apps. You can still use Antigravity manually from a terminal, but NeverWrite no longer registers a Gemini ACP runtime. If you have a Gemini API key, you can still use Gemini models through Kilo or OpenCode.
+For more information, please read this discussion: [https://github.com/jsgrrchg/NeverWrite/discussions/241]
 
 ----
 
@@ -22,7 +18,7 @@ Today the repository combines:
 - An Electron desktop app with a Rust sidecar that opens a local vault and keeps working state on disk.
 - A Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking.
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view.
-- An ACP-based AI layer with Codex, Claude, Gemini, and Kilo runtimes.
+- An ACP-based AI layer with Codex, Claude, Grok, Kilo, and OpenCode runtimes.
 - An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
 - A separate browser web clipper that can save directly into the desktop app through a local API, with deep-link fallback. Compatible with both Firefox and Chromium.
 
@@ -31,8 +27,8 @@ Today the repository combines:
 The current product already includes:
 
 - Local vault opening with progress reporting, persisted snapshots, filesystem watching, and incremental re-sync
-- A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and a developer terminal
-- Native-feeling editing for Markdown notes, CSV files, PDFs, images, and generic text/code files
+- A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and first-class terminal tabs
+- Native-feeling editing for Markdown notes, CSV files, PDFs, images, HTML previews, and generic text/code files
 - Embedded Excalidraw-based concept maps stored as `.excalidraw` files in the vault. The map format is visible and editable by agents.
 - A graph view with global, local, and overview modes plus 2D and 3D rendering
 - AI chat sessions with attachments from the vault, slash commands, transcript persistence, and runtime-specific capabilities
@@ -56,9 +52,11 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - Open, index, and watch a local vault.
 - Recent vaults, pinned vaults, reopen-last-vault behavior
 - File tree with drag and drop, multi-selection, sorting, and context actions
+- File tree modes for curated writing/media files, all vault files, or an explicit extension allowlist
 - Persistent bookmarks per vault
 - Persistent tabs and window session restore
 - Detached note windows and separate vault windows
+- First-class terminal tabs with themed xterm rendering, persistent workspace state, search, and Claude Code integration in the Agents sidebar
 
 ### Editing and reading
 
@@ -69,6 +67,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - Frontmatter/properties editing
 - CSV editing with table and raw fallback views
 - Editable text/code files with syntax highlighting and autosave
+- Sandboxed in-app HTML viewing for `.html` and `.htm` files
 - PDF viewing with visual filters
 - Internal image viewing with fit and zoom
 - App-owned Hunspell-based spellcheck with bundled `en-US` and `es-ES`
@@ -84,7 +83,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 
 ### AI and change control
 
-- ACP runtime integration for Codex, Claude, Gemini, and Kilo
+- ACP runtime integration for Codex, Claude, Grok, Kilo, and OpenCode
 - Attachment flows for notes, folders, files, PDFs, audio, images, and screenshots
 - Session history, transcript viewing, session export, fork, resume, and rename flows
 - Crash recovery for saved chats through `Chat History` and local `.neverwrite/sessions/` transcripts
@@ -133,10 +132,10 @@ crates/
 ### Requirements
 
 - Rust and Cargo
-- Node.js 22+ and npm for `apps/desktop` and JavaScript tooling
-- pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
+- Node.js 22.12.0+ and npm for `apps/desktop`
+- Node.js 22+ and pnpm for `apps/web-clipper` (`packageManager` is pinned to `pnpm@10.33.0`)
 
-CI and release workflows are pinned to Node.js 22, so local development should use Node 22 or newer.
+CI and release workflows are pinned to Node.js 22. Use Node 22.12.0 or newer for desktop work so Electron's install tooling matches the declared engine.
 
 ### Desktop app
 
@@ -207,26 +206,29 @@ The repository already contains broad Vitest coverage in the desktop app and web
 
 ## AI Runtime Notes
 
-NeverWrite currently wires four ACP runtimes:
+NeverWrite currently wires five ACP runtimes:
 
 - `codex-acp`
 - `claude-acp`
-- `gemini-acp`
+- `grok-acp`
 - `kilo-acp`
+- `opencode-acp`
 
 Current packaging status:
 
 - Codex is intended to be bundled as a sidecar binary in desktop release builds.
 - Claude is intended to be bundled through an embedded Node runtime plus vendored runtime files.
-- Gemini is integrated in the app, but not bundled by default today.
+- Grok is integrated in the app, but not bundled by default today.
 - Kilo is integrated in the app, but not bundled by default today.
+- OpenCode is integrated in the app, but not bundled by default today.
 
 Useful runtime overrides during development:
 
 - `NEVERWRITE_CODEX_ACP_BIN`
 - `NEVERWRITE_CLAUDE_ACP_BIN`
-- `NEVERWRITE_GEMINI_ACP_BIN`
+- `NEVERWRITE_GROK_ACP_BIN`
 - `NEVERWRITE_KILO_ACP_BIN`
+- `NEVERWRITE_OPENCODE_ACP_BIN`
 
 For release builds, see `apps/desktop/scripts/stage-electron-sidecar.mjs` and `release/appcast/README.md`.
 

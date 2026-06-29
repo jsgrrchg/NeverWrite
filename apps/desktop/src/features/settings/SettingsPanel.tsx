@@ -51,6 +51,7 @@ import {
 } from "../../app/utils/appZoom";
 import { MarkdownContent } from "../ai/components/MarkdownContent";
 import { getChatPillMetrics } from "../ai/components/chatPillMetrics";
+import { SCREENSHOT_RETENTION_OPTIONS } from "../ai/screenshotRetention";
 import { PROVIDER_CATALOG } from "../ai/utils/runtimeMetadata";
 import { AIProvidersSettings } from "./AIProvidersSettings";
 import { ExtensionFilterInput } from "./ExtensionFilterInput";
@@ -177,6 +178,10 @@ type SelectFieldOption<T extends string | number | null> = {
     group?: string;
 };
 
+const SCREENSHOT_RETENTION_KEYWORDS = SCREENSHOT_RETENTION_OPTIONS.map(
+    (option) => option.label,
+);
+
 function SelectField<T extends string | number | null>({
     value,
     options,
@@ -238,7 +243,10 @@ function SelectField<T extends string | number | null>({
             setOpen(false);
         };
         const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setOpen(false);
+            if (e.key === "Escape") {
+                e.preventDefault();
+                setOpen(false);
+            }
         };
         const handleResize = () => setOpen(false);
         document.addEventListener("mousedown", handleDown);
@@ -458,6 +466,7 @@ function NumberStepper({
                         inputRef.current?.blur();
                     }
                     if (e.key === "Escape") {
+                        e.preventDefault();
                         setLocal(String(value));
                         setIsEditing(false);
                         inputRef.current?.blur();
@@ -1093,8 +1102,11 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         editorAutosaveDelayMs,
         editorContentWidth,
         lineWrapping,
+        editorActiveLineHighlight,
         justifyText,
         tabSize,
+        hoverPreviewEnabled,
+        hoverPreviewDelayMs,
         vimModeEnabled,
         vimRelativeLineNumbers,
         setSetting,
@@ -1126,10 +1138,33 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         [
             ["Line wrapping", "Wrap long lines to fit the editor width."],
             [
+                "Highlight active line",
+                "Highlight the line containing the cursor.",
+                "current line",
+                "cursor line",
+            ],
+            [
                 "Justify text",
                 "Distribute wrapped lines evenly across the editor width.",
             ],
             ["Tab size", "Number of spaces inserted when pressing Tab.", 2, 4],
+        ],
+    );
+    const showPreview = sectionHasSettingsSearchMatches(
+        searchQuery,
+        "Preview",
+        [
+            [
+                "Note preview on hover",
+                "Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference applies to all vaults.",
+                "wikilink",
+                "popover",
+                "tooltip",
+            ],
+            [
+                "Hover delay",
+                "Time the pointer must rest on a wikilink before the preview opens, in milliseconds.",
+            ],
         ],
     );
     const showVim = sectionHasSettingsSearchMatches(searchQuery, "Vim", [
@@ -1147,7 +1182,13 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         ["Text width", "Maximum width of the editor content, in pixels."],
     ]);
 
-    if (!showTypography && !showFormatting && !showVim && !showLayout) {
+    if (
+        !showTypography &&
+        !showFormatting &&
+        !showPreview &&
+        !showVim &&
+        !showLayout
+    ) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -1240,6 +1281,21 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Formatting"
+                label="Highlight active line"
+                description="Highlight the line containing the cursor."
+                keywords={["current line", "cursor line"]}
+                control={
+                    <Toggle
+                        value={editorActiveLineHighlight}
+                        onChange={(v) =>
+                            setSetting("editorActiveLineHighlight", v)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Formatting"
                 label="Justify text"
                 description="Distribute wrapped lines evenly across the editor width."
                 control={
@@ -1263,6 +1319,39 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                             { value: 4, label: "4" },
                         ]}
                         onChange={(v) => setSetting("tabSize", v as 2 | 4)}
+                    />
+                }
+            />
+
+            {showPreview ? <SectionLabel>Preview</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Preview"
+                label="Note preview on hover"
+                description="Show a floating preview of the linked note when hovering over a [[wikilink]]. This preference applies to all vaults."
+                keywords={["wikilink", "popover", "tooltip"]}
+                control={
+                    <Toggle
+                        value={hoverPreviewEnabled}
+                        onChange={(v) => setSetting("hoverPreviewEnabled", v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Preview"
+                label="Hover delay"
+                description="Time the pointer must rest on a wikilink before the preview opens, in milliseconds."
+                control={
+                    <SliderField
+                        value={hoverPreviewDelayMs}
+                        min={100}
+                        max={1500}
+                        step={50}
+                        onChange={(v) =>
+                            setSetting("hoverPreviewDelayMs", v)
+                        }
+                        formatValue={(value) => `${value}ms`}
                     />
                 }
             />
@@ -3335,7 +3424,6 @@ function TerminalSettings({
         claudeCodeSkipPermissions,
         claudeCodeModel,
         claudeCodeContinueSession,
-        claudeCodeMaxTurns,
         setSetting,
     } = useSettingsStore();
 
@@ -3381,10 +3469,6 @@ function TerminalSettings({
             [
                 "Continue last session",
                 "Passes --continue. Resumes your most recent Claude Code conversation instead of starting fresh.",
-            ],
-            [
-                "Max turns",
-                "Passes --max-turns. Stops an agentic session after this many turns. Set to 0 for no limit.",
             ],
         ]);
 
@@ -3530,25 +3614,6 @@ function TerminalSettings({
                             value={claudeCodeContinueSession}
                             onChange={(v) =>
                                 setSetting("claudeCodeContinueSession", v)
-                            }
-                        />
-                    }
-                />
-            )}
-            {showClaudeCode && (
-                <SearchableRow
-                    searchQuery={searchQuery}
-                    section="Claude Code"
-                    label="Max turns"
-                    description="Passes --max-turns N. Stops an agentic run after this many turns to prevent runaway sessions. Set to 0 for no limit."
-                    keywords={["max turns", "limit", "agentic", "turns"]}
-                    control={
-                        <NumberStepper
-                            value={claudeCodeMaxTurns}
-                            min={0}
-                            max={200}
-                            onChange={(v) =>
-                                setSetting("claudeCodeMaxTurns", v)
                             }
                         />
                     }
@@ -3846,12 +3911,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             [
                 "Screenshot retention",
                 "How long pasted screenshots stay in the AI composer before they are removed automatically.",
-                "Forever",
-                "30 seconds",
-                "1 minute",
-                "5 minutes",
-                "15 minutes",
-                "30 minutes",
+                ...SCREENSHOT_RETENTION_KEYWORDS,
             ],
             [
                 "Composer font family",
@@ -3973,25 +4033,11 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 section="Composer"
                 label="Screenshot retention"
                 description="How long pasted screenshots stay in the AI composer before they are removed automatically."
-                keywords={[
-                    "Forever",
-                    "30 seconds",
-                    "1 minute",
-                    "5 minutes",
-                    "15 minutes",
-                    "30 minutes",
-                ]}
+                keywords={SCREENSHOT_RETENTION_KEYWORDS}
                 control={
                     <SelectField
                         value={screenshotRetentionSeconds}
-                        options={[
-                            { value: 0, label: "Forever" },
-                            { value: 30, label: "30 seconds" },
-                            { value: 60, label: "1 minute" },
-                            { value: 300, label: "5 minutes" },
-                            { value: 900, label: "15 minutes" },
-                            { value: 1800, label: "30 minutes" },
-                        ]}
+                        options={[...SCREENSHOT_RETENTION_OPTIONS]}
                         onChange={(value) =>
                             setScreenshotRetentionSeconds(Number(value))
                         }
@@ -4366,6 +4412,9 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Line wrapping",
         "Justify text",
         "Tab size",
+        "Preview",
+        "Note preview on hover",
+        "Hover delay",
         "Layout",
         "Text width",
     ],
@@ -4441,8 +4490,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "haiku",
         "Continue last session",
         "resume",
-        "Max turns",
-        "agentic",
         "shell",
         "monospace",
     ],
@@ -4476,11 +4523,9 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "API keys",
         "Codex",
         "Claude",
-        "Gemini",
         "Kilo",
         "OpenAI",
         "Anthropic",
-        "Google",
         "Gateway",
         "Diagnostics",
         "PATH",
@@ -4703,7 +4748,10 @@ export function SettingsPanel({
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") handleClose();
+            if (e.key === "Escape") {
+                e.preventDefault();
+                handleClose();
+            }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);

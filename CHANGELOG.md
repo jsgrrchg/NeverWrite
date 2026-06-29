@@ -34,6 +34,159 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.0] - 2026-06-26
+
+### Added
+
+- Added per-pane stacked tabs for editor panes, with an Obsidian-style sliding pane layout, persistent per-pane mode, horizontal spine rails, tab type icons, close buttons on every spine, and adaptive sizing for narrow panes.
+- Added full drag-and-drop support for stacked tabs, including reordering within a stacked pane, moving stacked columns between panes, splitting them out, and preserving stacked mode when tabs are inserted, moved, or panes are merged.
+- Added lazy mounting for stacked tab content so off-screen editor, PDF, CSV, file, chat, review, and history columns stay lightweight until they are revealed.
+- Added hover previews for wikilinks, including previews for full notes, heading sections, unresolved notes, PDFs, images, and relative assets.
+- Added a global "Note preview on hover" editor setting with a configurable hover delay, plus a keyboard shortcut for previewing the link at the caret.
+- Added chat transcript search to active agent tabs and chat history, with Cmd/Ctrl+F support, CSS-highlighted matches, match counts, previous/next navigation, Unicode-safe matching, and pane-scoped highlights.
+- Added a prompt outline menu for AI chats so long conversations can be navigated by user prompts.
+- Added a visible rename button to the chat title bar, making the existing inline rename flow discoverable without relying on double-click.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.51.0`.
+- Updated the desktop runtime to Electron `42.4`.
+- Improved AI user-input option buttons with a pressed state.
+
+### Fixed
+
+- Fixed a live preview crash that could corrupt editor layout or break mode switching after dragging a selection across rendered Markdown tables.
+- Fixed chat search behavior while the composer is expanded, when Escape is pressed, and when matches span separate message blocks.
+- Fixed wikilink hover preview flicker by prefetching note content before the tooltip opens and keeping the popover width stable.
+- Fixed wikilink previews for relative assets.
+- Fixed stacked tab scrolling so activating an already visible column no longer unexpectedly shifts neighboring columns.
+- Fixed stacked tab hover styling so stacked columns no longer receive the normal tab-strip hover background.
+- Hardened stacked tabs against narrow panes and overlay z-index conflicts.
+
+### Security
+
+- Updated Undici from `6.25.0` to `6.27.0`.
+
+## [0.3.6] - 2026-06-19
+
+### Added
+
+- Added an Escape shortcut for stopping the focused agent, with shortcut settings coverage and safeguards so Escape still works correctly in dialogs, menus, and editable controls.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.47.0`.
+- Improved Claude ACP user-input prompts with option values, descriptions, previews, custom "Other" answers, and cleaner response handling.
+- Delayed the floating selection toolbar until mouse selection finishes so it no longer appears while dragging across editor text.
+- Hid the editor active-line highlight when the editor is not focused.
+
+### Fixed
+
+- Fixed drag-selection visibility in the editor.
+- Fixed context-menu submenus so moving across the hover gap keeps nested menus open, including left-opening submenus.
+
+### Removed
+
+- Removed the Gemini ACP provider integration after upstream Gemini CLI subscription changes redirected users toward Antigravity, which does not expose ACP support for third-party apps.
+
+### Security
+
+- Updated DOMPurify dependency resolutions in the desktop app and Web Clipper.
+
+## [0.3.5] - 2026-06-17
+
+### Added
+
+- Added native image attachments to the AI composer, including paste/drop support, provider-aware limits, validation feedback, ACP image prompt blocks for capable providers, timeline rendering, chat history/export persistence, and opening sent images in app tabs.
+- Added a Settings toggle for editor active line highlighting.
+
+### Changed
+
+- Polished Markdown live preview footnotes so named references render as sequential superscript numbers with matching definition badges while keeping raw labels editable.
+- Centered outline and footnote jump destinations in the editor and added a brief landing flash so navigation targets are easier to locate.
+- Flattened pane header action buttons with a simpler divider treatment.
+
+### Fixed
+
+- Fixed live preview footnote navigation so clicking a footnote reference scrolls to off-screen definitions reliably without moving the caret unless the number itself is clicked.
+- Fixed adjacent live preview footnote references so they keep a stable superscript baseline and remain legible when citations are abutting.
+- Fixed live preview block refreshes after parser updates so embedded preview blocks stay in sync with Markdown edits.
+- Fixed window dragging from the docked sidebar header band after sidebar collapse and expand transitions.
+- Fixed queued AI image edits so pasted image attachments are not duplicated.
+
+## [0.3.4] - 2026-06-16
+
+### Added
+
+- Added support for ACP form and URL elicitations so agents can request structured input, multi-select answers, skip/cancel decisions, and browser follow-up actions from the chat flow.
+- Added mixed ACP runtime compatibility so Claude can use the newer ACP stack while Gemini and Grok continue to run through legacy ACP sessions.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.44.0` and the vendored ACP bridge baseline to `0.16.0`.
+- Improved Grok model controls by preventing incompatible in-session model switches and explaining when a new Grok chat is required.
+- Reduced Gemini transcript noise by hiding topic-update activity from chat history.
+- Documented mixed ACP runtime compatibility, Claude ACP packaging checks, and related troubleshooting guidance.
+
+### Fixed
+
+- Fixed Gemini legacy sessions inheriting the wrong API-key authentication type.
+- Hardened ACP user-input and review-interaction handling so accept, decline, skip, cancel, retry, and multi-answer flows stay consistent.
+
+### Security
+
+- Updated desktop and Web Clipper dependency resolutions, including `vite`, `dompurify`, `form-data`, `js-yaml`, `tar`, and `tmp`.
+- Patched desktop Babel tooling and Web Clipper build tooling dependencies.
+
+## [0.3.3] - 2026-06-07
+
+### Added
+
+- Added a native Grok ACP provider, including automatic detection for the official Grok CLI install path.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.42.0`.
+- Removed the Claude Code max-turns setting now that Claude Code manages turn limits internally.
+- Constrained the AI chat transcript, composer, and action panels to a shared readable width.
+- Top-aligned newly streamed chat messages so incoming responses stay easier to scan.
+
+### Fixed
+
+- Fixed dropped Excalidraw files so they open as maps instead of plain files.
+- Fixed AI chat links so raw URLs are clickable and external links open in the system browser.
+- Fixed runtime message timeline ordering so user messages, errors, and subagent activity stay in the correct transcript order.
+- Fixed hook dependency warnings in the AI review UI.
+- Fixed APT release asset publishing for Debian packages.
+
+## [0.3.2] - 2026-06-01
+
+### Added
+
+- Added opt-in Vim mode for the editor, including Settings controls, relative line numbers, a Vim status bar, and Vim command handling. Thanks to @Abdulkader-Safi.
+- Added a terminal dictation overlay for composing terminal input before sending it. Thanks to @spamsch.
+- Added Claude Code terminal sessions to the Agents sidebar, with live transcript-derived titles and previews plus focus and close actions. Thanks to @spamsch.
+- Added screenshot retention controls for AI chat screenshots, including automatic cleanup for expired screenshots and a `Forever` option.
+
+### Changed
+
+- Reworked terminal output rendering so PTY output streams directly into xterm, improving reliability and responsiveness under heavy Claude Code output. Thanks to @spamsch.
+- Updated the embedded Claude ACP runtime to `0.39.0`.
+- Clarified recent feature documentation and settings scope docs, including which settings are global and which are vault-scoped.
+- Changed Debian release publishing so updater feeds are published before APT validation.
+
+### Fixed
+
+- Fixed historical AI chat diff cards so older diffs remain inspectable after later file edits.
+- Fixed Pending Changes edited-files tray overflow so large review lists remain usable.
+- Fixed closed subagent sessions so closed child-agent conversations stay closed across store rebuilds and resume paths.
+- Fixed primary-vault window session restoration when the stored vault value is narrowed to a path.
+- Fixed Debian APT repository publication and validation for release assets hosted on GitHub Releases.
+
+### Security
+
+- Updated the Web Clipper workspace dependency metadata to address the transitive `tmp` advisory.
+
 ## [0.3.1] - 2026-05-28
 
 ### Changed

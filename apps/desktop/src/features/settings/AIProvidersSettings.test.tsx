@@ -7,6 +7,7 @@ import type {
     AIRuntimeSetupStatus,
 } from "../ai/types";
 import { AIProvidersSettings } from "./AIProvidersSettings";
+import { createSettingsSearchQuery } from "./settingsSearch";
 
 const apiMocks = vi.hoisted(() => ({
     aiGetEnvironmentDiagnostics: vi.fn(),
@@ -165,6 +166,30 @@ function addOpenCodeProvider(
     });
 }
 
+function addGrokProvider(
+    providers: ReturnType<typeof createDefaultProviders>,
+    statusOverrides: Partial<AIRuntimeSetupStatus> = {},
+) {
+    providers.descriptors.push(createRuntimeDescriptor("grok-acp", "Grok ACP"));
+    providers.statuses["grok-acp"] = createSetupStatus({
+        runtimeId: "grok-acp",
+        binarySource: "env",
+        authMethods: [
+            {
+                id: "grok-login",
+                name: "Grok login",
+                description: "Open a terminal-based Grok login flow.",
+            },
+            {
+                id: "xai-api-key",
+                name: "xAI API key",
+                description: "Use an xAI API key stored only for NeverWrite.",
+            },
+        ],
+        ...statusOverrides,
+    });
+}
+
 function mockProviders({
     descriptors,
     statuses,
@@ -274,6 +299,14 @@ describe("AIProvidersSettings", () => {
         ).not.toBeInTheDocument();
 
         deferredRuntimes.resolve(createDefaultProviders().descriptors);
+    });
+
+    it("does not show Gemini when the backend runtime catalog omits it", async () => {
+        renderComponent(<AIProvidersSettings />);
+
+        expect(await screen.findByText("Codex")).toBeInTheDocument();
+        expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
+        expect(screen.queryByText("Gemini")).not.toBeInTheDocument();
     });
 
     it("validates Claude gateway URLs before saving provider authentication", async () => {
@@ -439,62 +472,6 @@ describe("AIProvidersSettings", () => {
         );
     });
 
-    it("submits Gemini API keys through provider settings", async () => {
-        const providers = createDefaultProviders();
-        providers.descriptors.push(
-            createRuntimeDescriptor("gemini-acp", "Gemini ACP"),
-        );
-        providers.statuses["gemini-acp"] = createSetupStatus({
-            runtimeId: "gemini-acp",
-            binarySource: "env",
-            authMethods: [
-                {
-                    id: "login_with_google",
-                    name: "Log in with Google",
-                    description:
-                        "Open a Gemini sign-in terminal for Google account authentication.",
-                },
-                {
-                    id: "use_gemini",
-                    name: "Gemini API key",
-                    description:
-                        "Use a Gemini Developer API key stored only for NeverWrite.",
-                },
-            ],
-        });
-        mockProviders(providers);
-
-        renderComponent(<AIProvidersSettings />);
-
-        await openProvider("Gemini");
-        fireEvent.click(getButtonFromText("Gemini API key"));
-        fireEvent.change(screen.getByPlaceholderText("Gemini API key"), {
-            target: { value: "gemini-secret" },
-        });
-        fireEvent.click(
-            screen.getByRole("button", { name: "Save and connect" }),
-        );
-
-        await waitFor(() => {
-            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    runtimeId: "gemini-acp",
-                    geminiApiKey: {
-                        action: "set",
-                        value: "gemini-secret",
-                    },
-                    anthropicBaseUrl: undefined,
-                    anthropicCustomHeaders: { action: "unchanged" },
-                    anthropicAuthToken: { action: "unchanged" },
-                }),
-            );
-        });
-        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
-            { methodId: "use_gemini", runtimeId: "gemini-acp" },
-            null,
-        );
-    });
-
     it("submits Kilo API keys without opening terminal auth", async () => {
         const providers = createDefaultProviders();
         providers.descriptors.push(
@@ -542,6 +519,40 @@ describe("AIProvidersSettings", () => {
         });
         expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
             { methodId: "kilo-api-key", runtimeId: "kilo-acp" },
+            null,
+        );
+        expect(apiMocks.aiStartAuthTerminalSession).not.toHaveBeenCalled();
+    });
+
+    it("submits Grok xAI API keys without opening terminal auth", async () => {
+        const providers = createDefaultProviders();
+        addGrokProvider(providers);
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Grok");
+        fireEvent.click(getButtonFromText("xAI API key"));
+        fireEvent.change(screen.getByPlaceholderText("xAI API key"), {
+            target: { value: "xai-secret" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Save and connect" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "grok-acp",
+                    xaiApiKey: {
+                        action: "set",
+                        value: "xai-secret",
+                    },
+                }),
+            );
+        });
+        expect(apiMocks.aiStartAuth).toHaveBeenCalledWith(
+            { methodId: "xai-api-key", runtimeId: "grok-acp" },
             null,
         );
         expect(apiMocks.aiStartAuthTerminalSession).not.toHaveBeenCalled();
@@ -603,6 +614,83 @@ describe("AIProvidersSettings", () => {
                 customBinaryPath: undefined,
             });
         });
+    });
+
+    it("opens integrated terminal auth for Grok providers", async () => {
+        const providers = createDefaultProviders();
+        addGrokProvider(providers);
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Grok");
+        fireEvent.click(
+            screen.getByRole("button", { name: "Open sign-in terminal" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledWith({
+                runtimeId: "grok-acp",
+                methodId: "grok-login",
+                vaultPath: null,
+                customBinaryPath: undefined,
+            });
+        });
+    });
+
+    it("preflights a Grok custom binary path before opening terminal auth", async () => {
+        const providers = createDefaultProviders();
+        addGrokProvider(providers);
+        mockProviders(providers);
+
+        renderComponent(<AIProvidersSettings />);
+
+        await openProvider("Grok");
+        fireEvent.change(screen.getByLabelText("Runtime binary"), {
+            target: { value: "/Users/jfg/.grok/bin/grok" },
+        });
+        fireEvent.click(
+            screen.getByRole("button", { name: "Open sign-in terminal" }),
+        );
+
+        await waitFor(() => {
+            expect(apiMocks.aiUpdateSetup).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    runtimeId: "grok-acp",
+                    customBinaryPath: "/Users/jfg/.grok/bin/grok",
+                    xaiApiKey: { action: "unchanged" },
+                    kiloApiKey: { action: "unchanged" },
+                    anthropicApiKey: { action: "unchanged" },
+                }),
+            );
+            expect(apiMocks.aiStartAuthTerminalSession).toHaveBeenCalledWith({
+                runtimeId: "grok-acp",
+                methodId: "grok-login",
+                vaultPath: null,
+                customBinaryPath: "/Users/jfg/.grok/bin/grok",
+            });
+        });
+
+        expect(
+            apiMocks.aiUpdateSetup.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+            apiMocks.aiStartAuthTerminalSession.mock.invocationCallOrder[0],
+        );
+    });
+
+    it("finds Grok providers by xAI runtime setup search values", async () => {
+        mockProviders(createDefaultProviders());
+
+        renderComponent(
+            <AIProvidersSettings
+                searchQuery={createSettingsSearchQuery(
+                    "NEVERWRITE_GROK_ACP_BIN",
+                )}
+            />,
+        );
+
+        expect((await screen.findAllByText("Grok")).length).toBeGreaterThan(0);
+        expect(screen.queryByText("OpenCode")).not.toBeInTheDocument();
     });
 
     it("lists OpenCode in the provider catalog before it is installed", async () => {
@@ -670,7 +758,6 @@ describe("AIProvidersSettings", () => {
                     customBinaryPath: "/usr/local/bin/opencode",
                     codexApiKey: { action: "unchanged" },
                     openaiApiKey: { action: "unchanged" },
-                    geminiApiKey: { action: "unchanged" },
                     kiloApiKey: { action: "unchanged" },
                     anthropicApiKey: { action: "unchanged" },
                 }),

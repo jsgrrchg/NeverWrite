@@ -632,7 +632,9 @@ fn build_claude_structured_patch_hunks_by_content_index(
 
         used_candidate_indexes.insert(candidate_index);
         let candidate = &candidates[candidate_index];
-        if let Some(hunks) = claude_structured_patch_to_ai_diff_hunks(&[candidate.hunk.clone()]) {
+        if let Some(hunks) =
+            claude_structured_patch_to_ai_diff_hunks(std::slice::from_ref(&candidate.hunk))
+        {
             anchored_hunks_by_content_index.insert(content_index, hunks);
         }
     }
@@ -1147,6 +1149,45 @@ mod tests {
         assert_eq!(diffs[2].new_text, None);
         assert_eq!(diffs[3].kind, "move");
         assert_eq!(diffs[3].previous_path.as_deref(), Some("/tmp/old.md"));
+    }
+
+    #[test]
+    fn grok_like_acp_content_diffs_remain_text_and_reversible_for_review() {
+        let call = ToolCall::new(ToolCallId::from("grok-tool-1"), "Edit Grok files")
+            .kind(ToolKind::Edit)
+            .status(ToolCallStatus::Completed)
+            .content(vec![
+                ToolCallContent::Diff(Diff::new("notes/existing.md", "new").old_text("old")),
+                ToolCallContent::Diff(Diff::new("notes/new.md", "created")),
+                ToolCallContent::Diff(Diff::new("notes/removed.md", "").old_text("removed")),
+                ToolCallContent::Diff(Diff::new("notes/renamed.md", "body").old_text("body").meta(
+                    Meta::from_iter([(
+                        ACP_DIFF_PREVIOUS_PATH_KEY.to_string(),
+                        serde_json::json!("notes/original.md"),
+                    )]),
+                )),
+            ]);
+
+        let diffs = collect_tool_call_diffs(&call, None);
+
+        assert_eq!(diffs.len(), 4);
+        for diff in &diffs {
+            assert!(
+                diff.is_text,
+                "Grok ACP review diffs must remain text-trackable: {diff:?}"
+            );
+            assert!(
+                diff.reversible,
+                "Grok ACP review diffs must remain reversible: {diff:?}"
+            );
+        }
+        assert_eq!(
+            diffs
+                .iter()
+                .map(|diff| diff.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["update", "add", "delete", "move"]
+        );
     }
 
     #[test]

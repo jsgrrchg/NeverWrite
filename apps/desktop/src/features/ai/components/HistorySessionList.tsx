@@ -145,6 +145,7 @@ export function HistorySessionList({
                 void runContentSearch(search);
             }
             if (e.key === "Escape") {
+                e.preventDefault();
                 clearSearch();
             }
         },

@@ -13,10 +13,13 @@ import {
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
 import type {
+    AIChatAttachment,
     AIChatMessage,
     AIChatSession,
     AIFileDiff,
     AIPermissionOption,
+    AIUrlElicitationAction,
+    AIUserInputAction,
 } from "../types";
 import { ChatInlinePill } from "./ChatInlinePill";
 import { MarkdownContent } from "./MarkdownContent";
@@ -45,9 +48,14 @@ import {
     openAiEditedFileByAbsolutePath,
 } from "../chatFileNavigation";
 import { openChatSessionInWorkspace } from "../chatPaneMovement";
+import { useEditorStore } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
-import { buildCodexGeneratedImagePreviewUrl } from "../../../app/utils/filePreviewUrl";
+import { toVaultRelativePath } from "../../../app/utils/vaultPaths";
+import {
+    buildCodexGeneratedImagePreviewUrl,
+    buildVaultPreviewUrlFromAbsolutePath,
+} from "../../../app/utils/filePreviewUrl";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 
 interface UserMentionContextMenuPayload {
@@ -58,6 +66,170 @@ interface UserMentionContextMenuPayload {
 
 interface ToolTargetContextMenuPayload {
     target: string;
+}
+
+function isImageFileAttachment(attachment: AIChatAttachment) {
+    return (
+        attachment.type === "file" &&
+        Boolean(attachment.filePath) &&
+        attachment.mimeType?.startsWith("image/") === true
+    );
+}
+
+function fileNameFromPath(path: string) {
+    return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+function UserMessageAttachmentThumbnail({
+    attachment,
+    vaultPath,
+}: {
+    attachment: AIChatAttachment;
+    vaultPath: string | null;
+}) {
+    const [loadFailed, setLoadFailed] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const filePath = attachment.filePath;
+    if (!filePath) return null;
+
+    const previewUrl = buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath);
+    const unavailable = !previewUrl || loadFailed;
+    const label = attachment.label || fileNameFromPath(filePath);
+    const fileName = fileNameFromPath(filePath);
+
+    const copyPath = () => {
+        void navigator.clipboard?.writeText(filePath).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+        });
+    };
+
+    const openInApp = () => {
+        const relativePath = toVaultRelativePath(filePath, vaultPath);
+        if (!relativePath) return;
+        useEditorStore.getState().openFile(
+            relativePath,
+            fileName,
+            filePath,
+            "",
+            attachment.mimeType ?? "image/*",
+            "image",
+            { contentTruncated: false },
+        );
+    };
+
+    return (
+        <div
+            className="flex min-w-0 items-stretch overflow-hidden rounded-md"
+            style={{
+                border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
+                backgroundColor:
+                    "color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-tertiary))",
+            }}
+        >
+            <div
+                className="flex h-20 w-28 shrink-0 items-center justify-center overflow-hidden"
+                style={{
+                    backgroundColor: "var(--bg-primary)",
+                    borderRight: "1px solid var(--border)",
+                }}
+            >
+                {unavailable ? (
+                    <div
+                        className="px-2 text-center font-medium"
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.74em",
+                            lineHeight: 1.2,
+                        }}
+                    >
+                        Image unavailable
+                    </div>
+                ) : (
+                    <img
+                        src={previewUrl}
+                        alt={label}
+                        title={filePath}
+                        className="block h-full w-full"
+                        draggable={false}
+                        loading="lazy"
+                        decoding="async"
+                        onError={() => setLoadFailed(true)}
+                        style={{ objectFit: "cover" }}
+                    />
+                )}
+            </div>
+
+            <div className="flex min-w-0 flex-1 flex-col justify-between gap-2 px-2.5 py-2">
+                <div className="min-w-0">
+                    <div
+                        className="truncate font-medium"
+                        title={filePath}
+                        style={{
+                            color: "var(--text-primary)",
+                            fontSize: "0.82em",
+                        }}
+                    >
+                        {label}
+                    </div>
+                    <div
+                        className="truncate"
+                        title={attachment.mimeType ?? undefined}
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.72em",
+                            opacity: 0.82,
+                        }}
+                    >
+                        {attachment.mimeType ?? "image"}
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                    <ImageActionButton
+                        icon="open"
+                        onClick={openInApp}
+                    >
+                        Open
+                    </ImageActionButton>
+                    <ImageActionButton
+                        icon="reveal"
+                        onClick={() => void revealItemInDir(filePath)}
+                    >
+                        Reveal in Finder
+                    </ImageActionButton>
+                    <ImageActionButton
+                        icon={copied ? "check" : "copy"}
+                        onClick={copyPath}
+                    >
+                        {copied ? "Copied" : "Copy Path"}
+                    </ImageActionButton>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function UserMessageAttachments({
+    attachments,
+}: {
+    attachments?: AIChatAttachment[];
+}) {
+    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const imageAttachments = (attachments ?? []).filter(isImageFileAttachment);
+    if (imageAttachments.length === 0) return null;
+
+    return (
+        <div className="mt-2 flex max-w-full flex-col gap-1.5">
+            {imageAttachments.map((attachment) => (
+                <UserMessageAttachmentThumbnail
+                    key={attachment.id}
+                    attachment={attachment}
+                    vaultPath={vaultPath}
+                />
+            ))}
+        </div>
+    );
 }
 
 /** Parse @mentions and @fetch in serialized user messages into styled pills. */
@@ -277,6 +449,7 @@ function UserTextMessage({
                     });
                 },
             )}
+            <UserMessageAttachments attachments={message.attachments} />
             {contextMenu ? (
                 <ContextMenu
                     menu={contextMenu}
@@ -336,11 +509,16 @@ interface AIChatMessageItemProps {
     pillMetrics: ChatPillMetrics;
     chatFontSize?: number;
     visibleWorkCycleId?: string | null;
-    recentDiffWorkCycleIds?: string[];
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
+        action?: AIUserInputAction,
+    ) => void;
+    onUrlElicitationOpen?: (requestId: string) => void;
+    onUrlElicitationResponse?: (
+        requestId: string,
+        action: AIUrlElicitationAction,
     ) => void;
     onDismissMessage?: (messageId: string) => void;
 }
@@ -494,12 +672,11 @@ function useStoredRowExpanded(
     return [expanded, setExpanded] as const;
 }
 
-type DiffPresentationMode = "active" | "recent" | "historical" | "none";
+type DiffPresentationMode = "active" | "historical" | "none";
 
 function getDiffPresentationMode(
     message: AIChatMessage,
     visibleWorkCycleId?: string | null,
-    recentDiffWorkCycleIds: string[] = [],
 ) {
     if (!message.diffs?.length) {
         return "none";
@@ -511,10 +688,6 @@ function getDiffPresentationMode(
 
     if (message.workCycleId === visibleWorkCycleId) {
         return "active";
-    }
-
-    if (recentDiffWorkCycleIds.includes(message.workCycleId)) {
-        return "recent";
     }
 
     return "historical";
@@ -929,20 +1102,12 @@ function ToolMessage({
     const label = shortTarget ?? title;
     const status = String(message.meta?.status ?? "");
     const isCompleted = status === "completed";
-    if (shouldRenderHistoricalDiffSummary(message, diffPresentationMode)) {
-        return <HistoricalDiffSummaryMessage message={message} />;
-    }
-
-    if (
-        diffPresentationMode !== "historical" &&
-        message.diffs &&
-        message.diffs.length > 0
-    ) {
+    if (diffPresentationMode !== "none" && message.diffs?.length) {
         return (
             <ChangeReviewPanel
                 message={message}
                 sessionId={sessionId}
-                readOnly={diffPresentationMode === "recent"}
+                readOnly={diffPresentationMode === "historical"}
             />
         );
     }
@@ -1319,28 +1484,36 @@ function ImageActionButton({
     icon: ImageActionIcon;
 }) {
     const [hovered, setHovered] = useState(false);
+    const [pressed, setPressed] = useState(false);
     return (
         <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 rounded-md px-2 py-1 font-medium leading-none transition-[background-color,border-color,color,transform] duration-150 ease-out active:scale-95"
             onClick={onClick}
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => setHovered(false)}
+            onPointerDown={() => setPressed(true)}
+            onPointerUp={() => setPressed(false)}
+            onPointerLeave={() => setPressed(false)}
+            onPointerCancel={() => setPressed(false)}
+            onBlur={() => setPressed(false)}
             style={{
-                color: hovered
+                color: hovered || pressed
                     ? "var(--text-primary)"
                     : "var(--text-secondary)",
                 border: `1px solid color-mix(in srgb, var(--border) ${
-                    hovered ? "100%" : "70%"
+                    hovered || pressed ? "100%" : "70%"
                 }, transparent)`,
-                backgroundColor: hovered
-                    ? "color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary))"
-                    : "transparent",
+                backgroundColor: pressed
+                    ? "color-mix(in srgb, var(--text-primary) 10%, var(--bg-secondary))"
+                    : hovered
+                      ? "color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary))"
+                      : "transparent",
                 fontSize: "0.74em",
             }}
         >
             <ImageActionGlyph icon={icon} />
-            {children}
+            <span className="leading-none">{children}</span>
         </button>
     );
 }
@@ -2035,101 +2208,6 @@ function getDiffPanelToolLabel(toolKind: string) {
     }
 }
 
-function shouldRenderHistoricalDiffSummary(
-    message: AIChatMessage,
-    diffPresentationMode: DiffPresentationMode,
-) {
-    if (diffPresentationMode !== "historical" || !message.diffs?.length) {
-        return false;
-    }
-
-    const status = String(message.meta?.status ?? "");
-    if (message.kind === "tool") {
-        return status === "completed";
-    }
-
-    if (message.kind === "permission") {
-        return status === "resolved";
-    }
-
-    return false;
-}
-
-function HistoricalDiffSummaryMessage({ message }: { message: AIChatMessage }) {
-    const diffs = message.diffs ?? [];
-    const stats = computeDiffStats(diffs);
-    const toolKind = String(message.meta?.tool ?? "");
-    const isToolMessage = message.kind === "tool";
-    const accent = isToolMessage
-        ? toolKind === "delete"
-            ? "#ef4444"
-            : "#6b7280"
-        : "#d97706";
-    const singleDiff = diffs.length === 1 ? diffs[0] : null;
-    const actionLabel = isToolMessage
-        ? getDiffPanelToolLabel(toolKind)
-        : "Change";
-    const summaryTitle = singleDiff
-        ? isToolMessage
-            ? `${actionLabel}${actionLabel.endsWith("e") ? "d" : "ed"} ${getFileNameFromPath(singleDiff.path)}`
-            : getFileNameFromPath(singleDiff.path)
-        : `${actionLabel} ${diffs.length} ${diffs.length === 1 ? "file" : "files"}`;
-
-    return (
-        <div
-            className="min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2"
-            style={{
-                border: `1px solid color-mix(in srgb, ${accent} 18%, var(--border))`,
-                backgroundColor: `color-mix(in srgb, ${accent} 3%, var(--bg-secondary))`,
-                opacity: 0.72,
-            }}
-            data-testid="historical-diff-summary"
-        >
-            <div className="flex min-w-0 items-center gap-2">
-                <span
-                    className="min-w-0 flex-1 truncate"
-                    style={{
-                        color: "var(--text-primary)",
-                        fontSize: "0.81em",
-                        fontWeight: 500,
-                    }}
-                >
-                    {summaryTitle}
-                </span>
-                <span
-                    className="shrink-0 whitespace-nowrap"
-                    style={{
-                        color: "var(--text-secondary)",
-                        fontSize: "0.72em",
-                        opacity: 0.7,
-                    }}
-                >
-                    Earlier change
-                </span>
-            </div>
-            {(stats.additions > 0 || stats.deletions > 0) && (
-                <div
-                    className="mt-1 flex items-center gap-2"
-                    style={{ fontSize: "0.75em" }}
-                >
-                    {stats.additions > 0 && (
-                        <span style={{ color: "#16a34a", fontWeight: 500 }}>
-                            +
-                            {formatDiffStat(stats.additions, stats.approximate)}
-                        </span>
-                    )}
-                    {stats.deletions > 0 && (
-                        <span style={{ color: "#dc2626", fontWeight: 500 }}>
-                            -
-                            {formatDiffStat(stats.deletions, stats.approximate)}
-                        </span>
-                    )}
-                </div>
-            )}
-        </div>
-    );
-}
-
 function PermissionDecisionButton({
     option,
     accent,
@@ -2281,7 +2359,6 @@ function ChangeReviewPanel({
     onPermissionResponse?: (requestId: string, optionId?: string) => void;
     readOnly?: boolean;
 }) {
-    const messageDiffs = message.diffs ?? [];
     const messageReviewDiffs = message.reviewDiffs;
     const vaultPath = useVaultStore((state) => state.vaultPath);
     const trackedFiles = useChatStore((state) =>
@@ -2290,8 +2367,12 @@ function ChangeReviewPanel({
     const diffs = useMemo(
         () =>
             messageReviewDiffs ??
-            deriveChatChangeReviewDiffs(messageDiffs, trackedFiles, vaultPath),
-        [messageDiffs, messageReviewDiffs, trackedFiles, vaultPath],
+            deriveChatChangeReviewDiffs(
+                message.diffs ?? [],
+                trackedFiles,
+                vaultPath,
+            ),
+        [message.diffs, messageReviewDiffs, trackedFiles, vaultPath],
     );
     const editDiffZoom = useChatStore((state) => state.editDiffZoom);
     const setEditDiffZoom = useChatStore((state) => state.setEditDiffZoom);
@@ -2581,21 +2662,6 @@ function ChangeReviewPanel({
                         zoom={editDiffZoom}
                         onZoomChange={setEditDiffZoom}
                     />
-                    {readOnly ? (
-                        <span
-                            className="ml-1 rounded-full px-2 py-0.5 whitespace-nowrap"
-                            data-testid="recent-diff-badge"
-                            style={{
-                                fontSize: "0.68em",
-                                fontWeight: 500,
-                                letterSpacing: "0.02em",
-                                color: accent,
-                                backgroundColor: `color-mix(in srgb, ${accent} 10%, transparent)`,
-                            }}
-                        >
-                            Recent change
-                        </span>
-                    ) : null}
                     {canOpenFile && openFilePath ? (
                         <DiffOpenButton
                             accent={accent}
@@ -2831,21 +2897,13 @@ function PermissionMessage({
         !canExpand,
     );
 
-    if (shouldRenderHistoricalDiffSummary(message, diffPresentationMode)) {
-        return <HistoricalDiffSummaryMessage message={message} />;
-    }
-
-    if (
-        diffPresentationMode !== "historical" &&
-        message.diffs &&
-        message.diffs.length > 0
-    ) {
+    if (diffPresentationMode !== "none" && message.diffs?.length) {
         return (
             <ChangeReviewPanel
                 message={message}
                 sessionId={sessionId}
                 onPermissionResponse={onPermissionResponse}
-                readOnly={diffPresentationMode === "recent"}
+                readOnly={diffPresentationMode === "historical"}
             />
         );
     }
@@ -3072,6 +3130,20 @@ function PermissionMessage({
     );
 }
 
+function nextUserInputSelection(
+    currentSelected: string[],
+    optionLabel: string,
+    allowsMultiple: boolean,
+) {
+    if (!allowsMultiple) {
+        return [optionLabel];
+    }
+
+    return currentSelected.includes(optionLabel)
+        ? currentSelected.filter((value) => value !== optionLabel)
+        : [...currentSelected, optionLabel];
+}
+
 function UserInputRequestMessage({
     message,
     sessionId,
@@ -3082,35 +3154,49 @@ function UserInputRequestMessage({
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
+        action?: AIUserInputAction,
     ) => void;
 }) {
     const status = String(message.meta?.status ?? "pending");
     const questions = message.userInputQuestions ?? [];
-    const isPending = status === "pending";
+    const isPending = status === "pending" || status === "error";
     const isResponding = status === "responding";
     const isResolved = status === "resolved";
+    const isError = status === "error";
+    const answered = message.meta?.answered !== false;
     const { rowState, updateRow } = useChatRowUiEntry(sessionId, message.id);
     const selectedOptions = rowState?.userInputSelectedOptions ?? {};
     const textAnswers = rowState?.userInputTextAnswers ?? {};
     const otherAnswers = rowState?.userInputOtherAnswers ?? {};
+    const [focusedOptionKey, setFocusedOptionKey] = useState<string | null>(
+        null,
+    );
+
+    const selectedValuesForQuestion = (questionId: string) =>
+        selectedOptions[questionId] ?? [];
 
     const submitAnswers = (cancelled = false) => {
         if (!message.userInputRequestId) return;
         if (cancelled) {
-            onUserInputResponse?.(message.userInputRequestId, {});
+            onUserInputResponse?.(message.userInputRequestId, {}, "cancel");
             return;
         }
 
         const answers = questions.reduce<Record<string, string[]>>(
             (accumulator, question) => {
                 const values: string[] = [];
-                const selected = selectedOptions[question.id]?.trim();
+                const selected = selectedValuesForQuestion(question.id)
+                    .map((value) => value.trim())
+                    .filter(Boolean);
                 const text = textAnswers[question.id]?.trim();
                 const other = otherAnswers[question.id]?.trim();
+                const customAnswerId = question.custom_answer_id?.trim();
 
-                if (selected) values.push(selected);
+                values.push(...selected);
                 if (text) values.push(text);
-                if (other) values.push(`user_note: ${other}`);
+                if (other && customAnswerId) {
+                    accumulator[customAnswerId] = [other];
+                } else if (other) values.push(`user_note: ${other}`);
 
                 if (values.length > 0) {
                     accumulator[question.id] = values;
@@ -3120,7 +3206,7 @@ function UserInputRequestMessage({
             {},
         );
 
-        onUserInputResponse?.(message.userInputRequestId, answers);
+        onUserInputResponse?.(message.userInputRequestId, answers, "accept");
     };
 
     return (
@@ -3169,9 +3255,13 @@ function UserInputRequestMessage({
             <div className="flex flex-col gap-3 px-3 py-3">
                 {questions.map((question) => {
                     const options = question.options ?? [];
-                    const selected = selectedOptions[question.id] ?? "";
+                    const allowsMultiple = question.allows_multiple === true;
+                    const selected = selectedValuesForQuestion(question.id);
                     const textValue = textAnswers[question.id] ?? "";
                     const otherValue = otherAnswers[question.id] ?? "";
+                    const showsOtherInput =
+                        question.is_other || Boolean(question.custom_answer_id);
+                    const otherInputId = `${message.id}-${question.id}-other`;
 
                     return (
                         <div key={question.id} className="min-w-0">
@@ -3200,25 +3290,70 @@ function UserInputRequestMessage({
                             {options.length > 0 ? (
                                 <div className="flex flex-wrap gap-2">
                                     {options.map((option) => {
+                                        const optionValue =
+                                            option.value ?? option.label;
+                                        const optionKey = `${question.id}:${option.label}:${optionValue}`;
+                                        const optionTitle = [
+                                            option.description,
+                                            option.preview,
+                                        ]
+                                            .filter(Boolean)
+                                            .join("\n\n");
                                         const isSelected =
-                                            selected === option.label;
+                                            selected.includes(optionValue);
+                                        const showPreview = Boolean(
+                                            option.preview &&
+                                                (isSelected ||
+                                                    focusedOptionKey ===
+                                                        optionKey),
+                                        );
                                         return (
                                             <button
-                                                key={option.label}
+                                                key={optionKey}
                                                 type="button"
                                                 disabled={!isPending}
-                                                onClick={() =>
-                                                    updateRow((current) => ({
-                                                        userInputSelectedOptions:
-                                                            {
-                                                                ...(current.userInputSelectedOptions ??
-                                                                    {}),
-                                                                [question.id]:
-                                                                    option.label,
-                                                            },
-                                                    }))
+                                                aria-pressed={isSelected}
+                                                onFocus={() =>
+                                                    setFocusedOptionKey(
+                                                        optionKey,
+                                                    )
                                                 }
-                                                className="rounded-md px-2.5 py-1 text-left transition-colors"
+                                                onBlur={() => {
+                                                    setFocusedOptionKey(
+                                                        (current) =>
+                                                            current ===
+                                                            optionKey
+                                                                ? null
+                                                                : current,
+                                                    );
+                                                }}
+                                                onClick={() => {
+                                                    updateRow((current) => {
+                                                        const currentOptions =
+                                                            current.userInputSelectedOptions ??
+                                                            {};
+                                                        const currentSelected =
+                                                            currentOptions[
+                                                                question.id
+                                                            ] ?? [];
+                                                        const nextSelected =
+                                                            nextUserInputSelection(
+                                                                currentSelected,
+                                                                optionValue,
+                                                                allowsMultiple,
+                                                            );
+
+                                                        return {
+                                                            userInputSelectedOptions:
+                                                                {
+                                                                    ...currentOptions,
+                                                                    [question.id]:
+                                                                        nextSelected,
+                                                                },
+                                                        };
+                                                    });
+                                                }}
+                                                className="rounded-md px-2.5 py-1.5 text-left transition-[background-color,border-color,color,box-shadow,transform] duration-100 ease-out active:translate-y-px active:scale-[0.99] active:shadow-inner"
                                                 style={{
                                                     fontSize: "0.78em",
                                                     color: isSelected
@@ -3235,9 +3370,58 @@ function UserInputRequestMessage({
                                                         ? "pointer"
                                                         : "default",
                                                 }}
-                                                title={option.description}
+                                                title={optionTitle || undefined}
                                             >
-                                                {option.label}
+                                                <span
+                                                    className="block font-medium"
+                                                    style={{
+                                                        lineHeight: 1.25,
+                                                    }}
+                                                >
+                                                    {option.label}
+                                                </span>
+                                                {option.description ? (
+                                                    <span
+                                                        className="mt-0.5 block"
+                                                        style={{
+                                                            color: isSelected
+                                                                ? "rgba(255,255,255,0.82)"
+                                                                : "var(--text-secondary)",
+                                                            fontSize: "0.92em",
+                                                            lineHeight: 1.25,
+                                                            overflowWrap:
+                                                                "anywhere",
+                                                            wordBreak:
+                                                                "break-word",
+                                                        }}
+                                                    >
+                                                        {option.description}
+                                                    </span>
+                                                ) : null}
+                                                {showPreview ? (
+                                                    <span
+                                                        className="mt-1 block whitespace-pre-wrap rounded px-1.5 py-1"
+                                                        style={{
+                                                            backgroundColor:
+                                                                isSelected
+                                                                    ? "rgba(255,255,255,0.14)"
+                                                                    : "color-mix(in srgb, var(--bg-primary) 72%, transparent)",
+                                                            color: isSelected
+                                                                ? "rgba(255,255,255,0.88)"
+                                                                : "var(--text-secondary)",
+                                                            fontFamily:
+                                                                "var(--font-mono)",
+                                                            fontSize: "0.88em",
+                                                            lineHeight: 1.25,
+                                                            overflowWrap:
+                                                                "anywhere",
+                                                            wordBreak:
+                                                                "break-word",
+                                                        }}
+                                                    >
+                                                        {option.preview}
+                                                    </span>
+                                                ) : null}
                                             </button>
                                         );
                                     })}
@@ -3271,30 +3455,51 @@ function UserInputRequestMessage({
                                 />
                             )}
 
-                            {question.is_other && (
-                                <textarea
-                                    value={otherValue}
-                                    disabled={!isPending}
-                                    onChange={(event) =>
-                                        updateRow((current) => ({
-                                            userInputOtherAnswers: {
-                                                ...(current.userInputOtherAnswers ??
-                                                    {}),
-                                                [question.id]:
-                                                    event.target.value,
-                                            },
-                                        }))
-                                    }
-                                    placeholder="Additional note"
-                                    rows={2}
-                                    className="mt-2 w-full resize-y rounded-md px-2.5 py-2"
-                                    style={{
-                                        backgroundColor: "var(--bg-tertiary)",
-                                        border: "1px solid var(--border)",
-                                        color: "var(--text-primary)",
-                                        fontSize: "0.8em",
-                                    }}
-                                />
+                            {showsOtherInput && (
+                                <div className="mt-2">
+                                    {question.custom_answer_id ? (
+                                        <label
+                                            htmlFor={otherInputId}
+                                            className="mb-1 block"
+                                            style={{
+                                                color: "var(--text-primary)",
+                                                fontSize: "0.76em",
+                                                fontWeight: 600,
+                                            }}
+                                        >
+                                            Other
+                                        </label>
+                                    ) : null}
+                                    <textarea
+                                        id={otherInputId}
+                                        value={otherValue}
+                                        disabled={!isPending}
+                                        onChange={(event) =>
+                                            updateRow((current) => ({
+                                                userInputOtherAnswers: {
+                                                    ...(current.userInputOtherAnswers ??
+                                                        {}),
+                                                    [question.id]:
+                                                        event.target.value,
+                                                },
+                                            }))
+                                        }
+                                        placeholder={
+                                            question.custom_answer_id
+                                                ? "Other"
+                                                : "Additional note"
+                                        }
+                                        rows={2}
+                                        className="w-full resize-y rounded-md px-2.5 py-2"
+                                        style={{
+                                            backgroundColor:
+                                                "var(--bg-tertiary)",
+                                            border: "1px solid var(--border)",
+                                            color: "var(--text-primary)",
+                                            fontSize: "0.8em",
+                                        }}
+                                    />
+                                </div>
                             )}
                         </div>
                     );
@@ -3313,7 +3518,7 @@ function UserInputRequestMessage({
                         type="button"
                         disabled={!isPending}
                         onClick={() => submitAnswers(true)}
-                        className="rounded-md px-3 py-1 font-medium"
+                        className="rounded-md px-3 py-1 font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-100 ease-out active:translate-y-px active:scale-[0.97] active:shadow-inner"
                         style={{
                             fontSize: "0.79em",
                             color: "var(--text-secondary)",
@@ -3330,7 +3535,7 @@ function UserInputRequestMessage({
                         type="button"
                         disabled={!isPending}
                         onClick={() => submitAnswers(false)}
-                        className="rounded-md px-3 py-1 font-medium"
+                        className="rounded-md px-3 py-1 font-medium transition-[background-color,border-color,color,box-shadow,transform] duration-100 ease-out active:translate-y-px active:scale-[0.97] active:shadow-inner"
                         style={{
                             fontSize: "0.79em",
                             color: "#fff",
@@ -3345,7 +3550,7 @@ function UserInputRequestMessage({
                 </div>
             ) : null}
 
-            {(isResponding || isResolved) && (
+            {(isResponding || isResolved || isError) && (
                 <div
                     className="px-3 py-1.5"
                     style={{
@@ -3356,9 +3561,201 @@ function UserInputRequestMessage({
                         fontSize: "0.79em",
                     }}
                 >
-                    {isResponding ? "Sending input..." : "Input sent."}
+                    {isResponding
+                        ? "Sending input..."
+                        : isError
+                          ? "Input failed. Try again."
+                          : answered
+                            ? "Input sent."
+                            : "Input skipped."}
                 </div>
             )}
+        </div>
+    );
+}
+
+function UrlElicitationRequestMessage({
+    message,
+    onOpen,
+    onRespond,
+}: {
+    message: AIChatMessage;
+    onOpen?: (requestId: string) => void;
+    onRespond?: (requestId: string, action: AIUrlElicitationAction) => void;
+}) {
+    const status = String(message.meta?.status ?? "pending");
+    const isOpening = status === "opening";
+    const isResponding = status === "responding";
+    const isCompleted = status === "completed";
+    const isCancelled = status === "cancelled";
+    const isError = status === "error";
+    const isActionable =
+        status === "pending" || status === "error" || status === "opening";
+    const isDisabled = isOpening || isResponding || isCompleted || isCancelled;
+    const requestId = message.urlElicitationRequestId;
+    const url = message.urlElicitationUrl ?? message.content;
+    const hasOpened = Boolean(message.meta?.opened);
+
+    const footerText = isOpening
+        ? "Opening URL..."
+        : isResponding
+          ? "Sending confirmation..."
+          : isCompleted
+            ? "Completed."
+            : isCancelled
+              ? "Cancelled."
+              : isError
+                ? "Failed. Try again."
+                : "Waiting for confirmation...";
+
+    return (
+        <div
+            className="min-w-0 max-w-full overflow-hidden rounded-lg"
+            style={{
+                border: "1px solid color-mix(in srgb, #2563eb 22%, var(--border))",
+                backgroundColor:
+                    "color-mix(in srgb, #2563eb 4%, var(--bg-secondary))",
+            }}
+        >
+            <div
+                className="flex items-center gap-2 px-3 py-2"
+                style={{
+                    borderBottom:
+                        "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                }}
+            >
+                <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    stroke="#2563eb"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="shrink-0"
+                    aria-hidden="true"
+                >
+                    <path d="M5.25 8.75L8.75 5.25" />
+                    <path d="M6 3.5l.8-.8a2.3 2.3 0 013.25 3.25l-.8.8" />
+                    <path d="M8 10.5l-.8.8a2.3 2.3 0 01-3.25-3.25l.8-.8" />
+                </svg>
+                <span
+                    className="min-w-0 flex-1 font-medium"
+                    style={{
+                        color: "var(--text-primary)",
+                        fontSize: "0.85em",
+                    }}
+                >
+                    {message.title ?? "Open URL"}
+                </span>
+            </div>
+
+            <div className="flex flex-col gap-2 px-3 py-3">
+                <div
+                    title={url}
+                    className="min-w-0 truncate rounded-md px-2.5 py-2"
+                    style={{
+                        color: "var(--text-primary)",
+                        backgroundColor:
+                            "color-mix(in srgb, #2563eb 6%, var(--bg-tertiary))",
+                        border: "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                        fontSize: "0.79em",
+                    }}
+                >
+                    {url}
+                </div>
+                {hasOpened && !isCompleted && !isCancelled ? (
+                    <div
+                        style={{
+                            color: "var(--text-secondary)",
+                            fontSize: "0.76em",
+                        }}
+                    >
+                        URL opened.
+                    </div>
+                ) : null}
+            </div>
+
+            {requestId ? (
+                <div
+                    className="flex flex-wrap gap-2 px-3 py-2"
+                    style={{
+                        borderTop:
+                            "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                    }}
+                >
+                    <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => onOpen?.(requestId)}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "var(--text-primary)",
+                            backgroundColor:
+                                "color-mix(in srgb, #2563eb 8%, var(--bg-tertiary))",
+                            border: "1px solid color-mix(in srgb, #2563eb 20%, var(--border))",
+                            opacity: isDisabled ? 0.5 : 1,
+                            cursor: isDisabled ? "default" : "pointer",
+                        }}
+                    >
+                        Open
+                    </button>
+                    <button
+                        type="button"
+                        disabled={!isActionable || isDisabled}
+                        onClick={() => onRespond?.(requestId, "cancel")}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "var(--text-secondary)",
+                            backgroundColor:
+                                "color-mix(in srgb, var(--text-secondary) 10%, transparent)",
+                            border: "1px solid color-mix(in srgb, var(--text-secondary) 18%, transparent)",
+                            opacity: !isActionable || isDisabled ? 0.5 : 1,
+                            cursor:
+                                !isActionable || isDisabled
+                                    ? "default"
+                                    : "pointer",
+                        }}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        disabled={!isActionable || isDisabled}
+                        onClick={() => onRespond?.(requestId, "complete")}
+                        className="rounded-md px-3 py-1 font-medium"
+                        style={{
+                            fontSize: "0.79em",
+                            color: "#fff",
+                            backgroundColor: "#2563eb",
+                            border: "1px solid color-mix(in srgb, #2563eb 35%, transparent)",
+                            opacity: !isActionable || isDisabled ? 0.5 : 1,
+                            cursor:
+                                !isActionable || isDisabled
+                                    ? "default"
+                                    : "pointer",
+                        }}
+                    >
+                        Done
+                    </button>
+                </div>
+            ) : null}
+
+            <div
+                className="px-3 py-1.5"
+                style={{
+                    color: "var(--text-secondary)",
+                    borderTop:
+                        "1px solid color-mix(in srgb, #2563eb 14%, var(--border))",
+                    opacity: 0.72,
+                    fontSize: "0.79em",
+                }}
+            >
+                {footerText}
+            </div>
         </div>
     );
 }
@@ -3370,18 +3767,17 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     pillMetrics,
     chatFontSize = 14,
     visibleWorkCycleId = null,
-    recentDiffWorkCycleIds = [],
     onPermissionResponse,
     onUserInputResponse,
+    onUrlElicitationOpen,
+    onUrlElicitationResponse,
     onDismissMessage,
 }: AIChatMessageItemProps) {
     const diffPresentationMode = readOnly
-        ? ("recent" as DiffPresentationMode)
-        : getDiffPresentationMode(
-              message,
-              visibleWorkCycleId,
-              recentDiffWorkCycleIds,
-          );
+        ? message.diffs?.length
+            ? "historical"
+            : "none"
+        : getDiffPresentationMode(message, visibleWorkCycleId);
 
     // User text — full width, subtle box (Zed style)
     if (message.kind === "text" && message.role === "user") {
@@ -3458,6 +3854,16 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
                 message={message}
                 sessionId={sessionId}
                 onUserInputResponse={onUserInputResponse}
+            />
+        );
+    }
+
+    if (message.kind === "url_elicitation_request") {
+        return (
+            <UrlElicitationRequestMessage
+                message={message}
+                onOpen={onUrlElicitationOpen}
+                onRespond={onUrlElicitationResponse}
             />
         );
     }

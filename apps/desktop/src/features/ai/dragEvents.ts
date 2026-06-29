@@ -16,6 +16,7 @@ export interface FileTreeDraggedFile {
     filePath: string;
     fileName: string;
     mimeType: string;
+    sizeBytes?: number | null;
 }
 
 export interface FileTreeDraggedFolder {

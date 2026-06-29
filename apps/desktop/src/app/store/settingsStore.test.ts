@@ -37,7 +37,6 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().claudeCodeContinueSession).toBe(
             false,
         );
-        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(0);
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
@@ -79,6 +78,36 @@ describe("settingsStore", () => {
 
         expect(useSettingsStore.getState().vimModeEnabled).toBe(true);
         expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(true);
+    });
+
+    it("persists hover preview settings globally across vaults", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/hover-one" });
+
+        useSettingsStore.getState().setSetting("hoverPreviewEnabled", false);
+        useSettingsStore.getState().setSetting("hoverPreviewDelayMs", 500);
+
+        expect(useSettingsStore.getState().hoverPreviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().hoverPreviewDelayMs).toBe(500);
+        expect(
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? ""),
+        ).toMatchObject({
+            state: {
+                hoverPreviewEnabled: false,
+                hoverPreviewDelayMs: 500,
+            },
+        });
+        expect(
+            JSON.parse(
+                localStorage.getItem(
+                    "neverwrite:settings:/vaults/hover-one",
+                ) ?? "",
+            ).state,
+        ).not.toHaveProperty("hoverPreviewEnabled");
+
+        useVaultStore.setState({ vaultPath: "/vaults/hover-two" });
+
+        expect(useSettingsStore.getState().hoverPreviewEnabled).toBe(false);
+        expect(useSettingsStore.getState().hoverPreviewDelayMs).toBe(500);
     });
 
     it("persists settings per vault", () => {
@@ -155,7 +184,6 @@ describe("settingsStore", () => {
         useSettingsStore
             .getState()
             .setSetting("claudeCodeContinueSession", true);
-        useSettingsStore.getState().setSetting("claudeCodeMaxTurns", 12);
 
         expect(
             JSON.parse(
@@ -170,9 +198,14 @@ describe("settingsStore", () => {
                 claudeCodeSkipPermissions: true,
                 claudeCodeModel: "claude-sonnet-4-6",
                 claudeCodeContinueSession: true,
-                claudeCodeMaxTurns: 12,
             },
         });
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/terminal") ??
+                    "",
+            ).state,
+        ).not.toHaveProperty("claudeCodeMaxTurns");
     });
 
     it("normalizes persisted terminal numeric settings", () => {
@@ -181,7 +214,6 @@ describe("settingsStore", () => {
             JSON.stringify({
                 state: {
                     terminalFontSize: 99,
-                    claudeCodeMaxTurns: -3,
                 },
             }),
         );
@@ -190,7 +222,30 @@ describe("settingsStore", () => {
         initializeSettingsStore();
 
         expect(useSettingsStore.getState().terminalFontSize).toBe(24);
-        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(0);
+    });
+
+    it("ignores legacy Claude Code max-turns settings", () => {
+        localStorage.setItem(
+            "neverwrite:settings",
+            JSON.stringify({
+                state: {
+                    terminalFontSize: 16,
+                    claudeCodeMaxTurns: 12,
+                },
+            }),
+        );
+
+        disposeSettingsStoreRuntime();
+        initializeSettingsStore();
+
+        expect(useSettingsStore.getState().terminalFontSize).toBe(16);
+        expect(useSettingsStore.getState()).not.toHaveProperty(
+            "claudeCodeMaxTurns",
+        );
+        useSettingsStore.getState().setSetting("terminalFontSize", 17);
+        expect(
+            JSON.parse(localStorage.getItem("neverwrite:settings") ?? "").state,
+        ).not.toHaveProperty("claudeCodeMaxTurns");
     });
 
     it("persists custom spellcheck language tags as plain strings", () => {

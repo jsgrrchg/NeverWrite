@@ -866,6 +866,7 @@ impl NativeBackend {
             "ai_cancel_turn" => self.ai.cancel_turn(&args),
             "ai_respond_permission" => self.ai.respond_permission(&args),
             "ai_respond_user_input" => self.ai.respond_user_input(&args),
+            "ai_respond_url_elicitation" => self.ai.respond_url_elicitation(&args),
             "ai_delete_runtime_session" => self.ai.delete_runtime_session(&args),
             "ai_delete_runtime_sessions_for_vault" => {
                 let vault_root = self.optional_open_vault_root(&args)?;
@@ -895,7 +896,8 @@ impl NativeBackend {
             | "devtools_restart_terminal_session"
             | "devtools_close_terminal_session"
             | "devtools_get_terminal_session_snapshot"
-            | "devtools_check_binary" => self.devtools.invoke(command, args),
+            | "devtools_check_binary"
+            | "devtools_read_claude_transcript" => self.devtools.invoke(command, args),
             "spellcheck_list_languages"
             | "spellcheck_list_catalog"
             | "spellcheck_check_text"

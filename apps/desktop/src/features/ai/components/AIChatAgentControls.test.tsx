@@ -182,6 +182,61 @@ describe("AIChatAgentControls", () => {
         );
     });
 
+    it("disables Grok models that require a different agent after the chat starts", () => {
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="grok-acp"
+                lockIncompatibleModelSwitches
+                modelId=""
+                modeId="yolo"
+                effortsByModel={{}}
+                models={[]}
+                modes={[]}
+                configOptions={[
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "grok-build",
+                        options: [
+                            {
+                                value: "grok-composer-2.5-fast",
+                                label: "Composer 2.5",
+                                agentType: "cursor",
+                            },
+                            {
+                                value: "grok-build",
+                                label: "Grok Build",
+                                agentType: "grok-build-plan",
+                            },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={onConfigOptionChange}
+            />,
+        );
+
+        fireEvent.click(screen.getByTitle("Model"));
+
+        const composer = screen.getByRole("button", {
+            name: "Composer 2.5",
+        });
+        expect(composer).toBeDisabled();
+        expect(composer).toHaveAttribute(
+            "title",
+            "Start a new Grok chat to switch to this model.",
+        );
+
+        fireEvent.click(composer);
+        expect(onConfigOptionChange).not.toHaveBeenCalled();
+    });
+
     it("shows a model search field for Kilo and filters results", () => {
         const onConfigOptionChange = vi.fn();
 
@@ -331,6 +386,125 @@ describe("AIChatAgentControls", () => {
             "model",
             "opencode/zen/claude-opus-4.7",
         );
+    });
+
+    it("shows Grok ACP models without a model search field", () => {
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="grok-acp"
+                modelId="grok-build"
+                modeId=""
+                effortsByModel={{}}
+                models={[]}
+                modes={[]}
+                configOptions={[
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "grok-build",
+                        options: [
+                            {
+                                value: "grok-composer-2.5-fast",
+                                label: "Composer 2.5",
+                                description: "Cursor's latest coding model",
+                            },
+                            {
+                                value: "grok-build",
+                                label: "Grok Build",
+                                description: "Best for advanced coding tasks",
+                            },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={onConfigOptionChange}
+            />,
+        );
+
+        expect(screen.queryByTitle("Approval Preset")).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByTitle("Model"));
+
+        expect(screen.queryByLabelText("Model search")).not.toBeInTheDocument();
+        expect(screen.getByText("Composer 2.5")).toBeInTheDocument();
+        expect(screen.getAllByText("Grok Build").length).toBeGreaterThan(0);
+
+        const grokBuildOption = screen
+            .getAllByRole("button", { name: "Grok Build" })
+            .at(-1);
+        expect(grokBuildOption).toBeDefined();
+        fireEvent.click(grokBuildOption!);
+
+        expect(onConfigOptionChange).toHaveBeenCalledWith(
+            "model",
+            "grok-build",
+        );
+    });
+
+    it("shows the model label when model options exist but no value is selected", () => {
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="grok-acp"
+                modelId=""
+                modeId=""
+                effortsByModel={{}}
+                models={[]}
+                modes={[]}
+                configOptions={[
+                    {
+                        id: "model",
+                        runtimeId: "grok-acp",
+                        category: "model",
+                        label: "Model",
+                        type: "select",
+                        value: "",
+                        options: [
+                            { value: "composer-2.5", label: "Composer 2.5" },
+                            { value: "grok-build", label: "Grok Build" },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        expect(screen.getByTitle("Model")).toHaveTextContent("Model");
+    });
+
+    it("hides the model selector when there are no real model options", () => {
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="grok-acp"
+                modelId=""
+                modeId="yolo"
+                effortsByModel={{}}
+                models={[]}
+                modes={[
+                    {
+                        id: "yolo",
+                        runtimeId: "grok-acp",
+                        name: "YOLO",
+                        description: "",
+                        disabled: false,
+                    },
+                ]}
+                configOptions={[]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={() => {}}
+            />,
+        );
+
+        expect(screen.queryByTitle("Model")).not.toBeInTheDocument();
+        expect(screen.getByTitle("Approval Preset")).toBeInTheDocument();
     });
 
     it("does not show the model search field for non-searchable runtimes", () => {

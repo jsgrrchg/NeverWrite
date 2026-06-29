@@ -1,6 +1,10 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveRendererDevUrl, resolveWindowIconPath } from "./window";
+import {
+    resolveRendererDevUrl,
+    resolveWindowIconPath,
+    shouldOpenInSystemBrowser,
+} from "./window";
 
 describe("resolveRendererDevUrl", () => {
     it("returns the dev URL for unpackaged builds", () => {
@@ -63,5 +67,23 @@ describe("resolveWindowIconPath", () => {
                 appPath: "/repo/apps/desktop",
             }),
         ).toBeUndefined();
+    });
+});
+
+describe("shouldOpenInSystemBrowser", () => {
+    it("allows website and email links", () => {
+        expect(shouldOpenInSystemBrowser("https://example.com/docs")).toBe(
+            true,
+        );
+        expect(shouldOpenInSystemBrowser("http://localhost:3000")).toBe(true);
+        expect(shouldOpenInSystemBrowser("mailto:team@example.com")).toBe(true);
+    });
+
+    it("blocks app, file, and malformed URLs", () => {
+        expect(shouldOpenInSystemBrowser("neverwrite://clip")).toBe(false);
+        expect(shouldOpenInSystemBrowser("file:///Users/test/note.md")).toBe(
+            false,
+        );
+        expect(shouldOpenInSystemBrowser("not a url")).toBe(false);
     });
 });

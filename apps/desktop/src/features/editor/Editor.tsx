@@ -63,6 +63,7 @@ import {
 // Re-export for existing importers (e.g. UnifiedBar).
 export { REQUEST_CLOSE_ACTIVE_TAB_EVENT };
 import { wikilinkExtension } from "./extensions/wikilinks";
+import { showWikilinkPreviewAtCaret } from "./extensions/wikilinkHoverPreview";
 import { urlLinksExtension } from "./extensions/urlLinks";
 import { imagePasteDropExtension } from "./extensions/imagePasteDrop";
 import {
@@ -106,8 +107,10 @@ import {
     baseTheme,
     syntaxCompartment,
     livePreviewCompartment,
+    hoverPreviewCompartment,
     alignmentCompartment,
     wrappingCompartment,
+    activeLineCompartment,
     tabSizeCompartment,
     spellcheckCompartment,
     spellcheckDecorationsCompartment,
@@ -116,14 +119,17 @@ import {
     lineNumberCompartment,
     getSyntaxExtension,
     getLivePreviewExtension,
+    getWikilinkHoverPreviewExtension,
     getAlignmentExtension,
     getWrappingExtension,
+    getActiveLineExtension,
     getSpellcheckExtension,
     getVimExtension,
     getLineNumberExtension,
     getEditorFontFamily,
     getEditorHorizontalInset,
 } from "./editorExtensions";
+import { flashLine } from "./extensions/livePreviewHelpers";
 import { registerVimExCommands } from "./extensions/vimCommands";
 import { mergeViewCompartment } from "./extensions/mergeViewDiff";
 import { syncMergeViewForPaths } from "./mergeViewSync";
@@ -197,6 +203,13 @@ import {
     pruneNoteStateCaches,
     type NoteStateCacheCollection,
 } from "./noteStateCache";
+import {
+    deleteEditorViewportPositions,
+    getEditorViewportCacheMap,
+    getEditorViewportPosition,
+    setEditorViewportPosition,
+    type TabScrollPosition,
+} from "./editorViewportCache";
 
 // Map vim ex-commands (:w, :q, :wq) onto NeverWrite's save/close actions.
 // Idempotent and global to the vim engine, so register once at module load.
@@ -214,17 +227,18 @@ type ReloadedNoteMetadata = {
     revision?: number;
     contentHash?: string | null;
 };
-type TabScrollPosition = {
-    top: number;
-    left: number;
-    anchorPos: number | null;
-    anchorOffsetTop: number;
-};
 type EditorMode = "source" | "preview";
 interface EditorProps {
     paneId?: string;
     emptyStateMessage?: string;
     isVisible?: boolean;
+    /**
+     * When set, this Editor instance binds to a specific tab instead of the
+     * pane's active tab. Used by stacked-tabs columns, where several note
+     * editors are mounted side-by-side in the same pane. When undefined the
+     * behavior is identical to before (renders the pane's active tab).
+     */
+    tabId?: string;
 }
 
 const MERGE_SYNC_FOCUS_DEBOUNCE_MS = 120;
@@ -306,6 +320,7 @@ export function Editor({
     paneId,
     emptyStateMessage = "Open a note from the left panel",
     isVisible = true,
+    tabId: boundTabId,
 }: EditorProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -323,6 +338,7 @@ export function Editor({
         null,
     );
     const restoreScrollFrameRef = useRef<number | null>(null);
+    const viewportPersistFrameRef = useRef<number | null>(null);
     const selectionToolbarCleanupRef = useRef<(() => void) | null>(null);
     const scrollbarDragCleanupRef = useRef<(() => void) | null>(null);
     const pendingScrollbarReanchorRef = useRef(false);
@@ -338,9 +354,7 @@ export function Editor({
     // Save/restore full EditorState per note (preserves undo history + selection)
     // Keyed by noteId so each note's state is preserved independently, even within the same tab.
     const tabStatesRef = useRef<Map<string, EditorState>>(new Map());
-    const tabScrollPositionsRef = useRef<Map<string, TabScrollPosition>>(
-        new Map(),
-    );
+    const tabScrollPositionsRef = useRef(getEditorViewportCacheMap());
     const livePreviewModeRef = useRef<EditorMode>(
         getEditorMode(useSettingsStore.getState().livePreviewEnabled),
     );
@@ -382,6 +396,10 @@ export function Editor({
     const scrollHeaderRef = useRef<HTMLDivElement | null>(null);
     const spellcheckRequestIdRef = useRef(0);
     const didLogCoordinateLookupErrorRef = useRef(false);
+    const selectionToolbarMouseSelectionActiveRef = useRef(false);
+    const selectionToolbarMouseSelectionCleanupRef = useRef<(() => void) | null>(
+        null,
+    );
     const [, setEditorView] = useState<EditorView | null>(null);
     const lastLiveNoteCacheKeyRef = useRef<string | null>(null);
 
@@ -446,12 +464,20 @@ export function Editor({
     const paneState = useEditorStore(
         useShallow((state) => selectEditorPaneState(state, paneId)),
     );
-    const activeTabId = paneState.activeTabId;
+    // The tab this instance renders: an explicit bound tab (stacked columns)
+    // or the pane's active tab (classic single-editor pane).
+    const activeTabId = boundTabId ?? paneState.activeTabId;
     const paneTabs = paneState.tabs;
+    // Whether this instance owns the pane's active tab. In default mode this is
+    // always true; in stacked mode only the active column owns pane-level
+    // concerns (keyboard, save/close-active commands, reveal targeting).
+    const isPaneActiveInstance =
+        boundTabId === undefined || boundTabId === paneState.activeTabId;
     const isPaneFocused = useEditorStore((state) =>
         paneId ? selectFocusedPaneId(state) === paneId : true,
     );
-    const isInteractionActive = isPaneFocused && isVisible;
+    const isInteractionActive =
+        isPaneFocused && isVisible && isPaneActiveInstance;
     const pendingReveal = useEditorStore((s) => s.pendingReveal);
     const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
     const pendingSelectionReveal = useEditorStore(
@@ -475,9 +501,18 @@ export function Editor({
     );
     const editorContentWidth = useSettingsStore((s) => s.editorContentWidth);
     const lineWrapping = useSettingsStore((s) => s.lineWrapping);
+    const editorActiveLineHighlight = useSettingsStore(
+        (s) => s.editorActiveLineHighlight,
+    );
     const justifyText = useSettingsStore((s) => s.justifyText);
     const livePreviewEnabled = useSettingsStore((s) => s.livePreviewEnabled);
     const inlineReviewEnabled = useSettingsStore((s) => s.inlineReviewEnabled);
+    const hoverPreviewEnabled = useSettingsStore(
+        (s) => s.hoverPreviewEnabled,
+    );
+    const hoverPreviewDelayMs = useSettingsStore(
+        (s) => s.hoverPreviewDelayMs,
+    );
     const tabSize = useSettingsStore((s) => s.tabSize);
     const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled);
     const vimRelativeLineNumbers = useSettingsStore(
@@ -508,9 +543,10 @@ export function Editor({
     const activeTabInfo = useEditorStore(
         useShallow((state) => {
             const pane = selectEditorPaneState(state, paneId);
+            const resolvedTabId = boundTabId ?? pane.activeTabId;
             const tab =
                 pane.tabs.find(
-                    (candidate) => candidate.id === pane.activeTabId,
+                    (candidate) => candidate.id === resolvedTabId,
                 ) ?? null;
             if (!tab || !isEditableNoteTab(tab)) return null;
             return {
@@ -609,7 +645,9 @@ export function Editor({
 
     const deleteNoteStateForIds = useCallback(
         (noteIds: Iterable<string>) => {
-            deleteNoteStateCacheEntries(noteIds, getNoteStateCaches());
+            const uniqueNoteIds = new Set(noteIds);
+            deleteNoteStateCacheEntries(uniqueNoteIds, getNoteStateCaches());
+            deleteEditorViewportPositions(uniqueNoteIds);
         },
         [getNoteStateCaches],
     );
@@ -1427,6 +1465,12 @@ export function Editor({
                 anchorPos: anchor.pos,
                 anchorOffsetTop: anchor.offsetTop,
             });
+            setEditorViewportPosition(tabId, {
+                top: view.scrollDOM.scrollTop,
+                left: view.scrollDOM.scrollLeft,
+                anchorPos: anchor.pos,
+                anchorOffsetTop: anchor.offsetTop,
+            });
         },
         [captureViewportAnchor],
     );
@@ -1435,7 +1479,9 @@ export function Editor({
         (tabId: string, view: EditorView | null, mode: EditorMode) => {
             if (!view) return;
 
-            const position = tabScrollPositionsRef.current.get(tabId);
+            const position =
+                tabScrollPositionsRef.current.get(tabId) ??
+                getEditorViewportPosition(tabId);
             if (restoreScrollFrameRef.current !== null) {
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
@@ -1514,6 +1560,15 @@ export function Editor({
 
     const updateSelectionToolbar = useCallback(
         (view: EditorView | null) => {
+            if (selectionToolbarMouseSelectionActiveRef.current) {
+                if (useEditorStore.getState().currentSelection !== null) {
+                    useEditorStore.getState().clearCurrentSelection();
+                }
+                syncSelectionLayerVisibility(view);
+                setSelectionToolbar((prev) => (prev === null ? prev : null));
+                return;
+            }
+
             const hasActiveSelection =
                 view &&
                 activeTabRef.current &&
@@ -2327,6 +2382,12 @@ export function Editor({
                             useSettingsStore.getState().lineWrapping,
                         ),
                     ),
+                    activeLineCompartment.of(
+                        getActiveLineExtension(
+                            useSettingsStore.getState()
+                                .editorActiveLineHighlight,
+                        ),
+                    ),
                     drawSelection(),
                     alignmentCompartment.of(
                         getAlignmentExtension(
@@ -2558,6 +2619,13 @@ export function Editor({
                                 return true;
                             },
                         },
+                        {
+                            key:
+                                getCodeMirrorShortcut(
+                                    "preview_link_at_caret",
+                                ) ?? "Mod-Alt-p",
+                            run: showWikilinkPreviewAtCaret,
+                        },
                         ...defaultKeymap,
                         ...historyKeymap,
                         ...searchKeymap,
@@ -2566,6 +2634,12 @@ export function Editor({
                         resolveWikilinksBatch,
                         () => activeTabRef.current?.noteId ?? null,
                         navigateWikilink,
+                    ),
+                    hoverPreviewCompartment.of(
+                        getWikilinkHoverPreviewExtension(
+                            useSettingsStore.getState().hoverPreviewEnabled,
+                            useSettingsStore.getState().hoverPreviewDelayMs,
+                        ),
                     ),
                     urlLinksExtension,
                     imagePasteDropExtension(),
@@ -2687,6 +2761,16 @@ export function Editor({
             }
 
             const handleScrollOrResize = () => {
+                if (viewportPersistFrameRef.current === null) {
+                    viewportPersistFrameRef.current = requestAnimationFrame(
+                        () => {
+                            viewportPersistFrameRef.current = null;
+                            const tab = activeTabRef.current;
+                            if (!tab || viewRef.current !== nextView) return;
+                            saveTabScrollPosition(tab.noteId, nextView);
+                        },
+                    );
+                }
                 if (scrollbarDragCleanupRef.current) {
                     clearEditorDomSelection(nextView);
                     syncSelectionLayerVisibility(nextView);
@@ -2747,6 +2831,61 @@ export function Editor({
                 });
                 updateSelectionToolbar(nextView);
                 updateWikilinkSuggester(nextView);
+            };
+            const handleEditorSelectionMouseDown = (event: MouseEvent) => {
+                if (event.defaultPrevented) return;
+                if (event.button !== 0) return;
+                if (isNativeScrollbarMouseDown(nextView, event)) return;
+
+                const target = getEventTargetElement(event.target);
+                if (!target || !nextView.contentDOM.contains(target)) return;
+                if (
+                    target.closest(EDITOR_INTERACTIVE_PREVIEW_SELECTOR) ||
+                    target.closest("[data-source-from][data-source-to]")
+                ) {
+                    return;
+                }
+
+                selectionToolbarMouseSelectionCleanupRef.current?.();
+                selectionToolbarMouseSelectionActiveRef.current = true;
+                if (useEditorStore.getState().currentSelection !== null) {
+                    useEditorStore.getState().clearCurrentSelection();
+                }
+                setSelectionToolbar((prev) => (prev === null ? prev : null));
+
+                const ownerDocument = nextView.dom.ownerDocument;
+                const finishMouseSelection = () => {
+                    selectionToolbarMouseSelectionActiveRef.current = false;
+                    selectionToolbarMouseSelectionCleanupRef.current?.();
+                    queueMicrotask(() => {
+                        if (viewRef.current !== nextView) return;
+                        updateSelectionToolbar(nextView);
+                        updateWikilinkSuggester(nextView);
+                    });
+                };
+
+                selectionToolbarMouseSelectionCleanupRef.current = () => {
+                    ownerDocument.removeEventListener(
+                        "mouseup",
+                        finishMouseSelection,
+                        true,
+                    );
+                    ownerDocument.defaultView?.removeEventListener(
+                        "blur",
+                        finishMouseSelection,
+                    );
+                    selectionToolbarMouseSelectionCleanupRef.current = null;
+                };
+
+                ownerDocument.addEventListener("mouseup", finishMouseSelection, {
+                    capture: true,
+                    once: true,
+                });
+                ownerDocument.defaultView?.addEventListener(
+                    "blur",
+                    finishMouseSelection,
+                    { once: true },
+                );
             };
             const handleScrollbarMouseDown = (event: MouseEvent) => {
                 if (!isNativeScrollbarMouseDown(nextView, event)) return;
@@ -2838,11 +2977,22 @@ export function Editor({
                 handlePostScrollbarReanchorMouseDown,
                 true,
             );
+            nextView.dom.addEventListener(
+                "mousedown",
+                handleEditorSelectionMouseDown,
+                true,
+            );
             nextView.scrollDOM.addEventListener(
                 "mousedown",
                 handleScrollbarMouseDown,
             );
             selectionToolbarCleanupRef.current = () => {
+                selectionToolbarMouseSelectionActiveRef.current = false;
+                selectionToolbarMouseSelectionCleanupRef.current?.();
+                if (viewportPersistFrameRef.current !== null) {
+                    cancelAnimationFrame(viewportPersistFrameRef.current);
+                    viewportPersistFrameRef.current = null;
+                }
                 clearScrollbarDragSession(nextView);
                 pendingScrollbarReanchorRef.current = false;
                 suppressNextScrollbarReanchorClickRef.current = false;
@@ -2858,6 +3008,11 @@ export function Editor({
                 nextView.dom.removeEventListener(
                     "mousedown",
                     handlePostScrollbarReanchorMouseDown,
+                    true,
+                );
+                nextView.dom.removeEventListener(
+                    "mousedown",
+                    handleEditorSelectionMouseDown,
                     true,
                 );
                 nextView.scrollDOM.removeEventListener(
@@ -2881,6 +3036,7 @@ export function Editor({
             clearScrollbarDragSession,
             handleEditorContextMenu,
             safePosAtCoords,
+            saveTabScrollPosition,
             updateSelectionToolbar,
             updateWikilinkSuggester,
         ],
@@ -2899,7 +3055,16 @@ export function Editor({
             markTabSaved(initialTab.noteId, rawContent);
         }
 
-        replaceEditorView(createEditorState(body, initialTab?.noteId ?? null));
+        const initialView = replaceEditorView(
+            createEditorState(body, initialTab?.noteId ?? null),
+        );
+        if (initialTab) {
+            restoreTabScrollPosition(
+                initialTab.noteId,
+                initialView,
+                getEditorMode(useSettingsStore.getState().livePreviewEnabled),
+            );
+        }
 
         setActiveFrontmatter(
             initialTab
@@ -2934,6 +3099,10 @@ export function Editor({
             if (restoreScrollFrameRef.current !== null) {
                 cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
+            }
+            if (viewportPersistFrameRef.current !== null) {
+                cancelAnimationFrame(viewportPersistFrameRef.current);
+                viewportPersistFrameRef.current = null;
             }
             selectionToolbarCleanupRef.current?.();
             selectionToolbarCleanupRef.current = null;
@@ -3054,6 +3223,11 @@ export function Editor({
                         getLineNumberExtension(
                             settings.livePreviewEnabled,
                             settings.vimRelativeLineNumbers,
+                        ),
+                    ),
+                    activeLineCompartment.reconfigure(
+                        getActiveLineExtension(
+                            settings.editorActiveLineHighlight,
                         ),
                     ),
                 ],
@@ -3282,6 +3456,18 @@ export function Editor({
         vaultPath,
     ]);
 
+    // Reconfigure the wikilink hover preview when its toggle or delay changes.
+    useEffect(() => {
+        viewRef.current?.dispatch({
+            effects: hoverPreviewCompartment.reconfigure(
+                getWikilinkHoverPreviewExtension(
+                    hoverPreviewEnabled,
+                    hoverPreviewDelayMs,
+                ),
+            ),
+        });
+    }, [hoverPreviewEnabled, hoverPreviewDelayMs]);
+
     useEffect(() => {
         runMergeViewSync();
         const unsub = useChatStore.subscribe((state) => {
@@ -3353,7 +3539,7 @@ export function Editor({
             if (!view) return;
             const pane = selectEditorPaneState(state, paneId);
             const previousPane = selectEditorPaneState(prev, paneId);
-            const tabId = pane.activeTabId;
+            const tabId = boundTabId ?? pane.activeTabId;
             if (!tabId) return;
 
             const tab = pane.tabs.find((candidate) => candidate.id === tabId);
@@ -3589,6 +3775,7 @@ export function Editor({
         });
         return unsub;
     }, [
+        boundTabId,
         clearPendingLocalOpIfCurrent,
         createEditorState,
         getPaneSnapshot,
@@ -3611,6 +3798,9 @@ export function Editor({
                 wrappingCompartment.reconfigure(
                     getWrappingExtension(lineWrapping),
                 ),
+                activeLineCompartment.reconfigure(
+                    getActiveLineExtension(editorActiveLineHighlight),
+                ),
                 tabSizeCompartment.reconfigure([
                     EditorState.tabSize.of(tabSize),
                     indentUnit.of(" ".repeat(tabSize)),
@@ -3627,6 +3817,7 @@ export function Editor({
     }, [
         justifyText,
         lineWrapping,
+        editorActiveLineHighlight,
         tabSize,
         vimModeEnabled,
         vimRelativeLineNumbers,
@@ -3677,10 +3868,16 @@ export function Editor({
             0,
             Math.min(pendingSelectionReveal.head, docLen),
         );
+        // Center the heading in the viewport instead of nudging it to the
+        // nearest edge (the default `scrollIntoView: true`), so the selected
+        // outline entry lands in the middle of the screen. Near the end of the
+        // document CodeMirror scrolls as far as it can ("as centered as
+        // possible"). A brief line flash marks where the jump landed.
         view.dispatch({
             selection: { anchor: clampedAnchor, head: clampedHead },
-            scrollIntoView: true,
+            effects: EditorView.scrollIntoView(clampedAnchor, { y: "center" }),
         });
+        flashLine(view, clampedAnchor);
         view.focus();
         clearPendingSelectionReveal();
     }, [activeTab, pendingSelectionReveal, clearPendingSelectionReveal]);

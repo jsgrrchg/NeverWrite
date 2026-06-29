@@ -11,12 +11,13 @@ polish and hardening.
 - [Contributing](../CONTRIBUTING.md): contributor workflow, code style, testing expectations, versioning, and release preparation.
 - [Project Architecture](project-architecture.md): high-level map of the monorepo, Electron runtime, IPC boundaries, Rust sidecar, shared crates, web clipper, ACP runtimes, and major data flows.
 - [Testing and Validation](testing.md): the command matrix for Rust, desktop, Electron smoke tests, web clipper checks, CI parity, and area-specific validation.
+- [Settings Scope](settings-scope.md): inventory of global, per-vault, and mixed-scope settings, preferences, local UI state, migrations, and storage keys.
 
 ## AI And Change Control
 
 - [AI Change Control](ai-change-control.md): the ActionLog model, tracked files, pending review, keep/reject flows, inline review, conflicts, persistence, and known limits.
 - [Review Hardening Checklist](review-hardening-checklist.md): manual QA checklist for inline review, Review tab, Edits surface, keep/reject, lifecycle cases, multi-session, reload/recovery, conflicts, performance, and release sign-off.
-- [AI Runtime Setup](ai-runtime-setup.md): ACP providers, runtime discovery, authentication methods, `NEVERWRITE_*` overrides, release bundling, and troubleshooting for Codex, Claude, Gemini, and Kilo.
+- [AI Runtime Setup](ai-runtime-setup.md): ACP providers, runtime discovery, authentication methods, `NEVERWRITE_*` overrides, release bundling, and troubleshooting for Codex, Claude, Grok, Kilo, and OpenCode.
 - [AI Session History And Crash Recovery](ai-session-history.md): where chat transcripts are stored, how restore/fork/reconnect works, and what to check after a crash.
 
 Read these before changing AI editing behavior, provider setup, session
@@ -26,10 +27,12 @@ remain reviewable.
 ## Editor And Workspace
 
 - [Editor Architecture](editor-architecture.md): CodeMirror, live preview, wikilinks, frontmatter/properties, autosave, dirty tabs, merge view, inline review overlays, and power-user invariants.
+- [Terminal Architecture](terminal-integration.md): PTY sidecar boundary, xterm rendering, terminal persistence, Claude Code integration, and validation notes.
 - [Subagents Working State Map](concept-maps/codex-subagents-working-state-map.excalidraw): visual working map for subagent state and coordination.
 
 Use these when touching the editor surface, tab model, pane/workspace behavior,
-selection/cursor handling, live preview, or inline review rendering.
+selection/cursor handling, live preview, inline review rendering, or terminal
+tabs.
 
 ## Data, Privacy, And Diagnostics
 
@@ -49,4 +52,4 @@ tokens, provider credentials, or personally sensitive paths.
 These currently live next to their implementation/release artifacts because
 they are tightly coupled to package-specific workflows.
 
-Last updated: May 11, 2026.
+Last updated: June 2, 2026.

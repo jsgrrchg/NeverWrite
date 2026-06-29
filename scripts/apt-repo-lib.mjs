@@ -4,24 +4,32 @@ import path from "node:path";
 
 import {
     CANONICAL_RELEASE_PAGES_BASE_URL,
+    CANONICAL_RELEASE_REPO_SLUG,
     PUBLIC_PRODUCT_NAME,
     buildDebianPackageAssetName,
+    parseGitHubRepoSlug,
     normalizeReleaseVersion,
 } from "./appcast-lib.mjs";
 
 export const APT_REPOSITORY_RELATIVE_ROOT = "apt";
+export const APT_RELEASE_REPOSITORY_RELATIVE_ROOT = "apt-release";
 export const APT_PACKAGE_NAME = "neverwrite";
 export const APT_ORIGIN = PUBLIC_PRODUCT_NAME;
 export const APT_LABEL = PUBLIC_PRODUCT_NAME;
 export const APT_DESCRIPTION =
     "NeverWrite desktop Debian package repository";
 export const APT_DEFAULT_SUITE = "stable";
+export const APT_EXACT_PATH_SUITE = "./";
 export const APT_DEFAULT_CODENAME = "neverwrite-stable";
 export const APT_DEFAULT_COMPONENT = "main";
 export const APT_SUPPORTED_ARCHITECTURES = ["amd64", "arm64"];
 export const APT_DEFAULT_BASE_URL = `${CANONICAL_RELEASE_PAGES_BASE_URL}/apt`;
+export const APT_RELEASE_DOWNLOAD_BASE_URL = `https://github.com/${CANONICAL_RELEASE_REPO_SLUG}/releases/latest/download`;
 export const APT_PUBLIC_KEY_FILE_NAME = "neverwrite-archive-keyring.asc";
 export const APT_SOURCES_EXAMPLE_FILE_NAME = "neverwrite.sources.example";
+export const APT_LAYOUT_CLASSIC = "classic";
+export const APT_LAYOUT_FLAT_RELEASE = "flat-release";
+export const APT_LAYOUTS = [APT_LAYOUT_CLASSIC, APT_LAYOUT_FLAT_RELEASE];
 
 export const APT_RELEASE_CHECKSUMS = [
     { fieldName: "MD5Sum", algorithm: "md5" },
@@ -79,6 +87,16 @@ export function normalizeAptComponent(value) {
     return normalized;
 }
 
+export function normalizeAptLayout(value) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!APT_LAYOUTS.includes(normalized)) {
+        throw new Error(
+            `Unsupported APT layout "${value}". Supported layouts: ${APT_LAYOUTS.join(", ")}.`,
+        );
+    }
+    return normalized;
+}
+
 export function normalizeDebianArchitecture(value) {
     const normalized = String(value ?? "").trim().toLowerCase();
     if (!APT_SUPPORTED_ARCHITECTURES.includes(normalized)) {
@@ -95,6 +113,20 @@ export function buildDebianReleaseAssetName(version, debianArchitecture) {
         normalizeReleaseVersion(version),
         BUILD_TARGET_BY_DEBIAN_ARCHITECTURE[arch],
     );
+}
+
+export function parseDebianReleaseAssetName(fileName) {
+    const normalizedName = String(fileName ?? "");
+    const match = new RegExp(
+        `^${PUBLIC_PRODUCT_NAME}-(\\d+\\.\\d+\\.\\d+)-(amd64|arm64)\\.deb$`,
+    ).exec(normalizedName);
+    if (!match) {
+        return null;
+    }
+    return {
+        version: match[1],
+        architecture: normalizeDebianArchitecture(match[2]),
+    };
 }
 
 export function buildAptPoolPackageName(version, debianArchitecture) {
@@ -135,6 +167,13 @@ export function getAptRepositoryRoot(pagesDir) {
     return path.join(pagesDir, APT_REPOSITORY_RELATIVE_ROOT);
 }
 
+export function getAptReleaseRepositoryRoot(rootDir) {
+    if (typeof rootDir !== "string" || !rootDir.trim()) {
+        throw new Error("rootDir must be a non-empty string.");
+    }
+    return path.join(rootDir, APT_RELEASE_REPOSITORY_RELATIVE_ROOT);
+}
+
 export function normalizeAptBaseUrl(baseUrl) {
     const normalized = String(baseUrl ?? "").trim().replace(/\/+$/, "");
     if (!normalized) {
@@ -148,18 +187,42 @@ export function normalizeAptBaseUrl(baseUrl) {
     return normalized;
 }
 
+export function buildGitHubReleaseDownloadBaseUrl(repoSlug, tag = "latest") {
+    parseGitHubRepoSlug(repoSlug);
+    const normalizedTag = String(tag ?? "").trim();
+    if (normalizedTag === "latest") {
+        return `https://github.com/${repoSlug}/releases/latest/download`;
+    }
+    const releaseTag = normalizedTag.startsWith("v")
+        ? normalizedTag
+        : `v${normalizeReleaseVersion(normalizedTag)}`;
+    return `https://github.com/${repoSlug}/releases/download/${releaseTag}`;
+}
+
 export function buildNeverWriteSourcesExample(
     baseUrl = APT_DEFAULT_BASE_URL,
+    {
+        suite = APT_DEFAULT_SUITE,
+        component = APT_DEFAULT_COMPONENT,
+    } = {},
 ) {
-    return [
+    const lines = [
         "Types: deb",
         `URIs: ${normalizeAptBaseUrl(baseUrl)}`,
-        `Suites: ${APT_DEFAULT_SUITE}`,
-        `Components: ${APT_DEFAULT_COMPONENT}`,
+        `Suites: ${suite}`,
+    ];
+
+    if (component) {
+        lines.push(`Components: ${component}`);
+    }
+
+    lines.push(
         `Architectures: ${APT_SUPPORTED_ARCHITECTURES.join(" ")}`,
         `Signed-By: /etc/apt/keyrings/${APT_PACKAGE_NAME}.asc`,
         "",
-    ].join("\n");
+    );
+
+    return lines.join("\n");
 }
 
 export function parseDebianControlStanza(input) {
@@ -299,7 +362,9 @@ export function buildAptReleaseContent({
     generatedAt = new Date(),
 }) {
     const normalizedSuite = normalizeAptSuite(suite);
-    const normalizedComponent = normalizeAptComponent(component);
+    const normalizedComponent = component
+        ? normalizeAptComponent(component)
+        : null;
     const normalizedArchitectures = architectures.map((arch) =>
         normalizeDebianArchitecture(arch),
     );
@@ -313,9 +378,12 @@ export function buildAptReleaseContent({
         `Codename: ${codename}`,
         `Date: ${generatedAt.toUTCString()}`,
         `Architectures: ${normalizedArchitectures.join(" ")}`,
-        `Components: ${normalizedComponent}`,
         `Description: ${APT_DESCRIPTION}`,
     ];
+
+    if (normalizedComponent) {
+        lines.splice(7, 0, `Components: ${normalizedComponent}`);
+    }
 
     for (const { fieldName } of APT_RELEASE_CHECKSUMS) {
         lines.push(`${fieldName}:`);

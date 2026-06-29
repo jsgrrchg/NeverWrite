@@ -2,6 +2,7 @@ import {
     memo,
     useCallback,
     useEffect,
+    useId,
     useLayoutEffect,
     useMemo,
     useRef,
@@ -13,7 +14,12 @@ import {
     type ContextMenuState,
 } from "../../../components/context-menu/ContextMenu";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
-import type { AIChatMessage, AIChatSessionStatus } from "../types";
+import type {
+    AIChatMessage,
+    AIChatSessionStatus,
+    AIUrlElicitationAction,
+    AIUserInputAction,
+} from "../types";
 import { getChatPillMetrics } from "./chatPillMetrics";
 import { getEditorFontFamily } from "../../editor/editorExtensions";
 import {
@@ -30,17 +36,22 @@ import {
     useChatRowUiStore,
 } from "../store/chatRowUiStore";
 import { useChatStore } from "../store/chatStore";
+import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import { ChatFindBar } from "./find/ChatFindBar";
+import { useChatFind } from "./find/useChatFind";
 
 interface AIChatMessageListProps {
     sessionId?: string | null;
     messages: AIChatMessage[];
     status: AIChatSessionStatus;
     readOnly?: boolean;
-    highlightedMessageIds?: string[];
-    activeHighlightedMessageId?: string | null;
     hasOlderMessages?: boolean;
     isLoadingOlderMessages?: boolean;
     visibleWorkCycleId?: string | null;
+    findOpen?: boolean;
+    scrollToMessageId?: string | null;
+    onScrollToMessageComplete?: () => void;
+    onCloseFind?: () => void;
     chatFontSize?: number;
     chatFontFamily?: EditorFontFamily;
     onLoadOlderMessages?: () => void;
@@ -48,6 +59,12 @@ interface AIChatMessageListProps {
     onUserInputResponse?: (
         requestId: string,
         answers: Record<string, string[]>,
+        action?: AIUserInputAction,
+    ) => void;
+    onUrlElicitationOpen?: (requestId: string) => void;
+    onUrlElicitationResponse?: (
+        requestId: string,
+        action: AIUrlElicitationAction,
     ) => void;
 }
 
@@ -67,7 +84,6 @@ type TimelineRow =
 const NEAR_BOTTOM_THRESHOLD = 80;
 const LOAD_OLDER_THRESHOLD = 120;
 const DETACHED_TIMELINE_SCOPE = "__detached_timeline__";
-const RECENT_HISTORICAL_DIFF_WORK_CYCLE_LIMIT = 2;
 
 function isNearBottom(el: HTMLElement) {
     return (
@@ -97,36 +113,6 @@ function scopeTimelineRowKey(
     rowKey: string,
 ) {
     return `${sessionId ?? DETACHED_TIMELINE_SCOPE}:${rowKey}`;
-}
-
-function deriveRecentHistoricalDiffWorkCycleIds(
-    messages: AIChatMessage[],
-    visibleWorkCycleId: string | null | undefined,
-) {
-    if (!visibleWorkCycleId) {
-        return [];
-    }
-
-    const recentWorkCycleIds: string[] = [];
-    const seen = new Set<string>([visibleWorkCycleId]);
-
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const message = messages[i];
-        const workCycleId = message.workCycleId;
-        if (!workCycleId || !message.diffs?.length || seen.has(workCycleId)) {
-            continue;
-        }
-
-        seen.add(workCycleId);
-        recentWorkCycleIds.push(workCycleId);
-        if (
-            recentWorkCycleIds.length >= RECENT_HISTORICAL_DIFF_WORK_CYCLE_LIMIT
-        ) {
-            break;
-        }
-    }
-
-    return recentWorkCycleIds;
 }
 
 function StreamingRunIndicator({
@@ -270,11 +256,16 @@ function renderTimelineRow(
         pillMetrics: ReturnType<typeof getChatPillMetrics>;
         chatFontSize: number;
         visibleWorkCycleId?: string | null;
-        recentDiffWorkCycleIds?: string[];
         onPermissionResponse?: (requestId: string, optionId?: string) => void;
         onUserInputResponse?: (
             requestId: string,
             answers: Record<string, string[]>,
+            action?: AIUserInputAction,
+        ) => void;
+        onUrlElicitationOpen?: (requestId: string) => void;
+        onUrlElicitationResponse?: (
+            requestId: string,
+            action: AIUrlElicitationAction,
         ) => void;
         onDismissMessage?: (messageId: string) => void;
     },
@@ -297,12 +288,19 @@ function renderTimelineRow(
             pillMetrics={options.pillMetrics}
             chatFontSize={options.chatFontSize}
             visibleWorkCycleId={options.visibleWorkCycleId}
-            recentDiffWorkCycleIds={options.recentDiffWorkCycleIds}
             onPermissionResponse={
                 options.readOnly ? undefined : options.onPermissionResponse
             }
             onUserInputResponse={
                 options.readOnly ? undefined : options.onUserInputResponse
+            }
+            onUrlElicitationOpen={
+                options.readOnly ? undefined : options.onUrlElicitationOpen
+            }
+            onUrlElicitationResponse={
+                options.readOnly
+                    ? undefined
+                    : options.onUrlElicitationResponse
             }
             onDismissMessage={
                 options.readOnly ? undefined : options.onDismissMessage
@@ -316,24 +314,45 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     messages,
     status,
     readOnly = false,
-    highlightedMessageIds = [],
-    activeHighlightedMessageId = null,
     hasOlderMessages = false,
     isLoadingOlderMessages = false,
     visibleWorkCycleId = null,
+    findOpen = false,
+    scrollToMessageId = null,
+    onScrollToMessageComplete,
+    onCloseFind,
     chatFontSize = 14,
     chatFontFamily = "system",
     onLoadOlderMessages,
     onPermissionResponse,
     onUserInputResponse,
+    onUrlElicitationOpen,
+    onUrlElicitationResponse,
 }: AIChatMessageListProps) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const findHighlightOwnerId = useId();
+    const [findQuery, setFindQuery] = useState("");
+    const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+    const {
+        total: findTotal,
+        activeIndex: findActiveIndex,
+        goNext: findGoNext,
+        goPrev: findGoPrev,
+    } = useChatFind({
+        ownerId: findHighlightOwnerId,
+        containerRef,
+        query: findQuery,
+        caseSensitive: findCaseSensitive,
+        enabled: findOpen,
+    });
     const wasNearBottomRef = useRef(true);
     const pendingPrependAdjustmentRef = useRef<{
         previousScrollHeight: number;
         previousScrollTop: number;
     } | null>(null);
     const [showScrollButton, setShowScrollButton] = useState(false);
+    const [outlineHighlightedMessageId, setOutlineHighlightedMessageId] =
+        useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState<{
         hasSelection: boolean;
     }> | null>(null);
@@ -436,14 +455,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
     );
     const dismissPinnedPlan = useChatRowUiStore((state) => state.patchRow);
     const visiblePinnedPlan = pinnedPlanDismissed ? null : pinnedPlan;
-    const recentDiffWorkCycleIds = useMemo(
-        () =>
-            deriveRecentHistoricalDiffWorkCycleIds(
-                messages,
-                visibleWorkCycleId,
-            ),
-        [messages, visibleWorkCycleId],
-    );
     const timelineRows = useMemo(() => {
         const rows: TimelineRow[] = [];
 
@@ -482,8 +493,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         status,
         visiblePinnedPlan?.id,
     ]);
-    const bottomAlignTranscript = !hasOlderMessages && !isLoadingOlderMessages;
-
     const rowRenderOptions = useMemo(
         () => ({
             sessionId,
@@ -491,9 +500,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             pillMetrics,
             chatFontSize,
             visibleWorkCycleId,
-            recentDiffWorkCycleIds,
             onPermissionResponse,
             onUserInputResponse,
+            onUrlElicitationOpen,
+            onUrlElicitationResponse,
             onDismissMessage: handleDismissMessage,
         }),
         [
@@ -501,18 +511,14 @@ export const AIChatMessageList = memo(function AIChatMessageList({
             handleDismissMessage,
             onPermissionResponse,
             onUserInputResponse,
+            onUrlElicitationOpen,
+            onUrlElicitationResponse,
             pillMetrics,
             readOnly,
-            recentDiffWorkCycleIds,
             sessionId,
             visibleWorkCycleId,
         ],
     );
-    const highlightedMessageIdSet = useMemo(
-        () => new Set(highlightedMessageIds),
-        [highlightedMessageIds],
-    );
-
     useLayoutEffect(() => {
         if (restoredScopeRef.current === viewStateScope) {
             return;
@@ -622,19 +628,6 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         }
     }, [isLoadingOlderMessages, messages.length]);
 
-    useEffect(() => {
-        if (!activeHighlightedMessageId) {
-            return;
-        }
-        const container = containerRef.current;
-        if (!container) return;
-        const target = container.querySelector(
-            `[data-chat-message-id="${CSS.escape(activeHighlightedMessageId)}"]`,
-        ) as HTMLElement | null;
-        if (!target) return;
-        target.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, [activeHighlightedMessageId]);
-
     // Anchor scroll position when container width changes (e.g. sidebar resize).
     // Tracks the topmost visible chat row and its viewport offset on every scroll,
     // then corrects scrollTop after text reflow so content stays visually stable.
@@ -690,8 +683,58 @@ export const AIChatMessageList = memo(function AIChatMessageList({
         };
     }, []);
 
+    useLayoutEffect(() => {
+        if (!scrollToMessageId) return;
+
+        const container = containerRef.current;
+        if (!container) {
+            onScrollToMessageComplete?.();
+            return;
+        }
+
+        const target = Array.from(
+            container.querySelectorAll<HTMLElement>("[data-chat-message-id]"),
+        ).find(
+            (node) => node.dataset.chatMessageId === scrollToMessageId,
+        );
+
+        if (!target) {
+            onScrollToMessageComplete?.();
+            return;
+        }
+
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        setOutlineHighlightedMessageId(scrollToMessageId);
+        onScrollToMessageComplete?.();
+    }, [onScrollToMessageComplete, scrollToMessageId, timelineRows]);
+
+    useEffect(() => {
+        if (!outlineHighlightedMessageId) return;
+
+        const timeoutId = window.setTimeout(() => {
+            setOutlineHighlightedMessageId(null);
+        }, 1200);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [outlineHighlightedMessageId]);
+
     return (
         <div className="relative min-h-0 min-w-0 flex-1 flex flex-col">
+            {findOpen && (
+                <ChatFindBar
+                    query={findQuery}
+                    caseSensitive={findCaseSensitive}
+                    total={findTotal}
+                    activeIndex={findActiveIndex}
+                    onQueryChange={setFindQuery}
+                    onToggleCaseSensitive={() =>
+                        setFindCaseSensitive((value) => !value)
+                    }
+                    onNext={findGoNext}
+                    onPrev={findGoPrev}
+                    onClose={() => onCloseFind?.()}
+                />
+            )}
             {visiblePinnedPlan && (
                 <div
                     className="shrink-0 px-3 pt-2 pb-1"
@@ -700,20 +743,26 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                             "1px solid color-mix(in srgb, var(--border) 60%, transparent)",
                     }}
                 >
-                    <PlanMessage
-                        sessionId={sessionId}
-                        message={visiblePinnedPlan}
-                        pillMetrics={pillMetrics}
-                        onDismiss={() =>
-                            dismissPinnedPlan(
-                                rowUiSessionId,
-                                visiblePinnedPlan.id,
-                                {
-                                    pinnedPlanDismissed: true,
-                                },
-                            )
-                        }
-                    />
+                    <div
+                        className="min-w-0"
+                        data-testid="chat-pinned-plan-column"
+                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                    >
+                        <PlanMessage
+                            sessionId={sessionId}
+                            message={visiblePinnedPlan}
+                            pillMetrics={pillMetrics}
+                            onDismiss={() =>
+                                dismissPinnedPlan(
+                                    rowUiSessionId,
+                                    visiblePinnedPlan.id,
+                                    {
+                                        pinnedPlanDismissed: true,
+                                    },
+                                )
+                            }
+                        />
+                    </div>
                 </div>
             )}
             <div
@@ -724,9 +773,10 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                 data-scrollbar-active="true"
             >
                 <div
-                    className={`min-w-0 ${bottomAlignTranscript ? "mt-auto" : ""}`}
+                    className="min-w-0"
                     data-selectable="true"
                     style={{
+                        ...AI_CHAT_CONTENT_COLUMN_STYLE,
                         fontSize: chatFontSize,
                         fontFamily: getEditorFontFamily(chatFontFamily),
                     }}
@@ -755,28 +805,25 @@ export const AIChatMessageList = memo(function AIChatMessageList({
                                         ? row.message.id
                                         : undefined
                                 }
-                                className={
+                                data-chat-outline-active={
                                     row.kind === "message" &&
-                                    highlightedMessageIdSet.has(row.message.id)
-                                        ? "rounded-md"
+                                    row.message.id ===
+                                        outlineHighlightedMessageId
+                                        ? "true"
                                         : undefined
                                 }
                                 style={
                                     row.kind === "message" &&
-                                    highlightedMessageIdSet.has(row.message.id)
+                                    row.message.id ===
+                                        outlineHighlightedMessageId
                                         ? {
-                                              backgroundColor:
-                                                  row.message.id ===
-                                                  activeHighlightedMessageId
-                                                      ? "color-mix(in srgb, var(--accent) 14%, transparent)"
-                                                      : "color-mix(in srgb, var(--accent) 7%, transparent)",
-                                              boxShadow:
-                                                  row.message.id ===
-                                                  activeHighlightedMessageId
-                                                      ? "0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent)"
-                                                      : "0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent)",
-                                              scrollMarginTop: 72,
-                                              scrollMarginBottom: 72,
+                                              borderRadius: 8,
+                                              outline:
+                                                  "1px solid color-mix(in srgb, var(--accent) 20%, transparent)",
+                                              background:
+                                                  "color-mix(in srgb, var(--accent) 8%, transparent)",
+                                              transition:
+                                                  "background 160ms ease, outline-color 160ms ease",
                                           }
                                         : undefined
                                 }

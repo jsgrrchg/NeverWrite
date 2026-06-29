@@ -9,6 +9,7 @@ import {
     DNF_REPO_EXAMPLE_FILE_NAME,
     DNF_SUPPORTED_ARCHITECTURES,
     DNF_PACKAGE_NAME,
+    buildRpmReleaseAssetName,
 } from "./dnf-repo-lib.mjs";
 import { normalizeReleaseVersion } from "./appcast-lib.mjs";
 
@@ -28,6 +29,41 @@ function parseArgs(argv) {
 
 function assertFileExists(filePath, label) {
     if (!fs.existsSync(filePath)) throw new Error(`Missing ${label}: ${filePath}`);
+}
+
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function listFilesRecursively(rootDir) {
+    const files = [];
+    const queue = [rootDir];
+
+    while (queue.length > 0) {
+        const current = queue.pop();
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+            const absolutePath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                queue.push(absolutePath);
+            } else if (entry.isFile()) {
+                files.push(absolutePath);
+            }
+        }
+    }
+
+    return files.sort();
+}
+
+function validateNoPackageBinaries(dnfDir) {
+    const packageBinary = listFilesRecursively(dnfDir).find((filePath) =>
+        filePath.endsWith(".rpm") || filePath.endsWith(".deb"),
+    );
+
+    if (packageBinary) {
+        throw new Error(
+            `DNF repository must keep package binaries on GitHub Releases, not in repository metadata: ${packageBinary}`,
+        );
+    }
 }
 
 function validateRepomd(dnfDir) {
@@ -96,24 +132,43 @@ function validatePrimaryXml(dnfDir, version) {
         throw new Error("primary.xml missing RPM header range metadata");
     }
 
-    const archMatch = content.match(/<arch>([^<]+)<\/arch>/);
-    if (!archMatch || !DNF_SUPPORTED_ARCHITECTURES.includes(archMatch[1])) {
-        throw new Error(`primary.xml has unsupported architecture: ${archMatch ? archMatch[1] : "missing"}`);
+    const packageCount = (content.match(/<package type="rpm">/g) ?? []).length;
+    if (packageCount !== DNF_SUPPORTED_ARCHITECTURES.length) {
+        throw new Error(
+            `primary.xml must contain exactly ${DNF_SUPPORTED_ARCHITECTURES.length} RPM packages, found ${packageCount}.`,
+        );
     }
 
-    const locationMatch = content.match(/<location href="(https?:\/\/[^"]+)"/);
-    if (!locationMatch) {
-        throw new Error("primary.xml missing location href");
-    }
-    try {
-        new URL(locationMatch[1]);
-    } catch {
-        throw new Error(`primary.xml has invalid location URL: ${locationMatch[1]}`);
-    }
-
-    if (version) {
-        if (!content.includes(`<version epoch="0" ver="${version}"`)) {
+    for (const arch of DNF_SUPPORTED_ARCHITECTURES) {
+        if (!content.includes(`<arch>${arch}</arch>`)) {
+            throw new Error(`primary.xml missing ${arch} package metadata`);
+        }
+        if (version && !content.includes(`<version epoch="0" ver="${version}"`)) {
             throw new Error(`primary.xml missing version ${version}`);
+        }
+
+        const expectedAssetName = version
+            ? buildRpmReleaseAssetName(version, arch)
+            : null;
+        const assetPattern = expectedAssetName
+            ? escapeRegExp(expectedAssetName)
+            : "[^/]+\\.rpm";
+        const locationMatch = content.match(
+            new RegExp(
+                `<location href="(https?:\\/\\/[^"]*\\/releases\\/download\\/[^"]*\\/${assetPattern})"`,
+            ),
+        );
+        if (!locationMatch) {
+            throw new Error(
+                expectedAssetName
+                    ? `primary.xml missing GitHub Release location for ${expectedAssetName}`
+                    : "primary.xml missing GitHub Release location href",
+            );
+        }
+        try {
+            new URL(locationMatch[1]);
+        } catch {
+            throw new Error(`primary.xml has invalid location URL: ${locationMatch[1]}`);
         }
     }
 }
@@ -149,6 +204,7 @@ function main() {
     assertFileExists(path.join(args.dnfDir, "repodata", "repomd.xml"), "repomd.xml");
     assertFileExists(path.join(args.dnfDir, "repodata", "repomd.xml.asc"), "repomd.xml.asc");
 
+    validateNoPackageBinaries(args.dnfDir);
     validateRepoExample(args.dnfDir);
     validateRepomd(args.dnfDir);
     validatePrimaryXml(args.dnfDir, args.version);

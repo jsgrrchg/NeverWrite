@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const CODEX_RUNTIME_ID: &str = "codex-acp";
 pub const CLAUDE_RUNTIME_ID: &str = "claude-acp";
-pub const GEMINI_RUNTIME_ID: &str = "gemini-acp";
+pub const GROK_RUNTIME_ID: &str = "grok-acp";
 pub const KILO_RUNTIME_ID: &str = "kilo-acp";
 pub const OPENCODE_RUNTIME_ID: &str = "opencode-acp";
 
@@ -42,6 +42,8 @@ pub struct AiModelOption {
     pub runtime_id: String,
     pub name: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub struct AiConfigSelectOption {
     pub value: String,
     pub label: String,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +99,8 @@ pub struct AiSession {
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub runtime_id: String,

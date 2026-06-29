@@ -11,16 +11,16 @@ use agent_client_protocol::{
     schema::{
         AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate, ClientCapabilities,
         ConfigOptionUpdate, Content, ContentBlock, ContentChunk, Diff, EmbeddedResource,
-        EmbeddedResourceResource, LoadSessionResponse, Meta, ModelId, ModelInfo, PermissionOption,
+        EmbeddedResourceResource, LoadSessionResponse, Meta, PermissionOption,
         PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptRequest,
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
         ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
         SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
         SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
-        SessionModeState, SessionModelState, SessionNotification, SessionUpdate, StopReason,
-        Terminal, TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId,
-        ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-        UnstructuredCommandInput, UsageUpdate,
+        SessionModeState, SessionNotification, SessionUpdate, StopReason, Terminal, TextContent,
+        TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
+        ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+        UsageUpdate,
     },
 };
 use codex_apply_patch::parse_patch;
@@ -316,10 +316,6 @@ enum ThreadMessage {
         mode: SessionModeId,
         response_tx: oneshot::Sender<Result<(), Error>>,
     },
-    SetModel {
-        model: ModelId,
-        response_tx: oneshot::Sender<Result<(), Error>>,
-    },
     SetConfigOption {
         config_id: SessionConfigId,
         value: SessionConfigOptionValue,
@@ -426,17 +422,6 @@ impl Thread {
         let (response_tx, response_rx) = oneshot::channel();
 
         let message = ThreadMessage::SetMode { mode, response_tx };
-        drop(self.message_tx.send(message));
-
-        response_rx
-            .await
-            .map_err(|e| Error::internal_error().data(e.to_string()))?
-    }
-
-    pub async fn set_model(&self, model: ModelId) -> Result<(), Error> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        let message = ThreadMessage::SetModel { model, response_tx };
         drop(self.message_tx.send(message));
 
         response_rx
@@ -3861,11 +3846,6 @@ impl<A: Auth> ThreadActor<A> {
                 drop(response_tx.send(result));
                 self.maybe_emit_config_options_update().await;
             }
-            ThreadMessage::SetModel { model, response_tx } => {
-                let result = self.handle_set_model(model).await;
-                drop(response_tx.send(result));
-                self.maybe_emit_config_options_update().await;
-            }
             ThreadMessage::SetConfigOption {
                 config_id,
                 value,
@@ -3999,37 +3979,6 @@ impl<A: Auth> ThreadActor<A> {
                 })
                 .collect(),
         ))
-    }
-
-    async fn find_current_model(&self) -> Option<ModelId> {
-        let model_presets = self.models_manager.list_models().await;
-        let config_model = self.get_current_model().await;
-        let preset = model_presets
-            .iter()
-            .find(|preset| preset.model == config_model)?;
-
-        let effort = self
-            .config
-            .model_reasoning_effort
-            .and_then(|effort| {
-                preset
-                    .supported_reasoning_efforts
-                    .iter()
-                    .find_map(|e| (e.effort == effort).then_some(effort))
-            })
-            .unwrap_or(preset.default_reasoning_effort);
-
-        Some(Self::model_id(&preset.id, effort))
-    }
-
-    fn model_id(id: &str, effort: ReasoningEffort) -> ModelId {
-        ModelId::new(format!("{id}/{effort}"))
-    }
-
-    fn parse_model_id(id: &ModelId) -> Option<(String, ReasoningEffort)> {
-        let (model, reasoning) = id.0.split_once('/')?;
-        let reasoning = serde_json::from_value(reasoning.into()).ok()?;
-        Some((model.to_owned(), reasoning))
     }
 
     fn current_service_tier(&self) -> Option<ServiceTier> {
@@ -4330,42 +4279,8 @@ impl<A: Auth> ThreadActor<A> {
         Ok(())
     }
 
-    async fn models(&self) -> Result<SessionModelState, Error> {
-        let mut available_models = Vec::new();
-        let config_model = self.get_current_model().await;
-
-        let current_model_id = if let Some(model_id) = self.find_current_model().await {
-            model_id
-        } else {
-            // If no preset found, return the current model string as-is
-            let model_id = ModelId::new(self.get_current_model().await);
-            available_models.push(ModelInfo::new(model_id.clone(), model_id.to_string()));
-            model_id
-        };
-
-        available_models.extend(
-            self.models_manager
-                .list_models()
-                .await
-                .iter()
-                .filter(|model| model.show_in_picker || model.model == config_model)
-                .flat_map(|preset| {
-                    preset.supported_reasoning_efforts.iter().map(|effort| {
-                        ModelInfo::new(
-                            Self::model_id(&preset.id, effort.effort),
-                            format!("{} ({})", preset.display_name, effort.effort),
-                        )
-                        .description(format!("{} {}", preset.description, effort.description))
-                    })
-                }),
-        );
-
-        Ok(SessionModelState::new(current_model_id, available_models))
-    }
-
     async fn handle_load(&mut self) -> Result<LoadSessionResponse, Error> {
         Ok(LoadSessionResponse::new()
-            .models(self.models().await?)
             .modes(self.modes())
             .config_options(self.config_options().await?))
     }
@@ -4401,6 +4316,7 @@ impl<A: Auth> ThreadActor<A> {
                         }],
                         final_output_json_schema: None,
                         responsesapi_client_metadata: None,
+                        additional_context: Default::default(),
                         thread_settings: Default::default(),
                     }
                 }
@@ -4529,6 +4445,7 @@ impl<A: Auth> ThreadActor<A> {
                             }],
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
+                            additional_context: Default::default(),
                             thread_settings: Default::default(),
                         }
                     } else {
@@ -4537,6 +4454,7 @@ impl<A: Auth> ThreadActor<A> {
                             items,
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
+                            additional_context: Default::default(),
                             thread_settings: Default::default(),
                         }
                     }
@@ -4548,6 +4466,7 @@ impl<A: Auth> ThreadActor<A> {
                 items,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                additional_context: Default::default(),
                 thread_settings: Default::default(),
             }
         }
@@ -4622,41 +4541,6 @@ impl<A: Auth> ThreadActor<A> {
         self.models_manager.get_model(&self.config.model).await
     }
 
-    async fn handle_set_model(&mut self, model: ModelId) -> Result<(), Error> {
-        // Try parsing as preset format, otherwise use as-is, fallback to config
-        let (model_to_use, effort_to_use) = if let Some((m, e)) = Self::parse_model_id(&model) {
-            (m, Some(e))
-        } else {
-            let model_str = model.0.to_string();
-            let fallback = if !model_str.is_empty() {
-                model_str
-            } else {
-                self.get_current_model().await
-            };
-            (fallback, self.config.model_reasoning_effort)
-        };
-
-        if model_to_use.is_empty() {
-            return Err(Error::invalid_params().data("No model parsed or configured"));
-        }
-
-        self.thread
-            .submit(Op::ThreadSettings {
-                thread_settings: ThreadSettingsOverrides {
-                    model: Some(model_to_use.clone()),
-                    effort: Some(effort_to_use),
-                    ..Default::default()
-                },
-            })
-            .await
-            .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
-
-        self.config.model = Some(model_to_use);
-        self.config.model_reasoning_effort = effort_to_use;
-
-        Ok(())
-    }
-
     async fn handle_cancel(&mut self) -> Result<(), Error> {
         self.detach_pending_interactions();
         self.thread
@@ -4723,6 +4607,11 @@ impl<A: Auth> ThreadActor<A> {
             }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
                 self.client.send_agent_thought(text.clone()).await;
+            }
+            EventMsg::ThreadGoalUpdated(event) => {
+                self.client
+                    .send_agent_text(format_thread_goal_update(event))
+                    .await;
             }
             EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
                 call_id,
@@ -5840,7 +5729,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prompt() -> anyhow::Result<()> {
-        let (session_id, client, _, message_tx, local_set) = setup(vec![]).await?;
+        let (session_id, client, thread, message_tx, local_set) = setup(vec![]).await?;
         let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
 
         message_tx.send(ThreadMessage::Prompt {
@@ -5875,6 +5764,23 @@ mod tests {
             })
             .count();
         assert_eq!(agent_messages, 1, "notifications={notifications:?}");
+
+        let ops = thread.ops.lock().unwrap();
+        assert_eq!(
+            ops.as_slice(),
+            &[Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "Hi".to_string(),
+                    text_elements: vec![]
+                }],
+                environments: None,
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            }],
+            "ops don't match {ops:?}"
+        );
 
         Ok(())
     }
@@ -5917,6 +5823,46 @@ mod tests {
         );
         let ops = thread.ops.lock().unwrap();
         assert_eq!(ops.as_slice(), &[Op::Compact]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_load_uses_config_options_without_legacy_models() -> anyhow::Result<()> {
+        let (_session_id, _client, _thread, message_tx, local_set) = setup(vec![]).await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Load { response_tx })?;
+
+        let load_response = tokio::try_join!(
+            async {
+                let load_response = response_rx.await??;
+                drop(message_tx);
+                anyhow::Ok(load_response)
+            },
+            async {
+                drop(local_set.await);
+                anyhow::Ok(())
+            }
+        )?
+        .0;
+        let load_json = serde_json::to_value(&load_response)?;
+
+        assert!(
+            load_json.get("models").is_none(),
+            "ACP 0.16 load response must not include legacy models state: {load_json:?}"
+        );
+        let config_options = load_json
+            .get("configOptions")
+            .or_else(|| load_json.get("config_options"))
+            .and_then(|value| value.as_array())
+            .expect("load response should include config options");
+        assert!(
+            config_options
+                .iter()
+                .any(|option| option.get("id").and_then(|id| id.as_str()) == Some("model")),
+            "model selection should be exposed through config options: {load_json:?}"
+        );
 
         Ok(())
     }
@@ -6220,6 +6166,7 @@ mod tests {
                 environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                additional_context: Default::default(),
                 thread_settings: Default::default(),
             }],
             "ops don't match {ops:?}"
@@ -6509,6 +6456,7 @@ mod tests {
                 environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                additional_context: Default::default(),
                 thread_settings: Default::default(),
             }],
             "ops don't match {ops:?}"
@@ -6708,6 +6656,7 @@ mod tests {
                     model_context_window: None,
                     collaboration_mode_kind: ModeKind::default(),
                     turn_id: "turn-1".to_string(),
+                    trace_id: None,
                     started_at: None,
                 }),
             )
@@ -7157,6 +7106,42 @@ mod tests {
                 .and_then(|value| value.as_str())
                 .is_some()
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_goal_update_replay_is_sent_as_agent_message() -> anyhow::Result<()> {
+        let (actor, client, _conversation) = setup_actor(|_| {}).await?;
+        let thread_id = codex_protocol::ThreadId::new();
+
+        actor
+            .replay_event_msg(&EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
+                thread_id,
+                turn_id: Some("turn-1".to_string()),
+                goal: codex_protocol::protocol::ThreadGoal {
+                    thread_id,
+                    objective: "Ship the goal update".to_string(),
+                    status: ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 10,
+                    time_used_seconds: 2,
+                    created_at: 1,
+                    updated_at: 2,
+                },
+            }))
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(notifications.iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "Goal updated (active): Ship the goal update"
+            )
+        }));
 
         Ok(())
     }
@@ -7626,6 +7611,7 @@ mod tests {
                                     model_context_window: None,
                                     collaboration_mode_kind: ModeKind::default(),
                                     turn_id: id.to_string(),
+                                    trace_id: None,
                                     started_at: None,
                                 }),
                             })

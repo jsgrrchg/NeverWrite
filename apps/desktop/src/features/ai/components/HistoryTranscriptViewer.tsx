@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EditorFontFamily } from "../../../app/store/settingsStore";
 import { useChatStore } from "../store/chatStore";
 import {
@@ -9,6 +9,7 @@ import {
 } from "../sessionPresentation";
 import type { AIChatSession } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
+import { useChatFindShortcut } from "./find/useChatFindShortcut";
 
 interface HistoryTranscriptViewerProps {
     historySessionId: string;
@@ -18,30 +19,18 @@ interface HistoryTranscriptViewerProps {
     onRestore?: () => void;
 }
 
-function matchesMessageSearch(
-    message: AIChatSession["messages"][number],
-    query: string,
-) {
-    const lower = query.trim().toLowerCase();
-    if (!lower) return false;
-    return (
-        message.content.toLowerCase().includes(lower) ||
-        (message.title?.toLowerCase().includes(lower) ?? false)
-    );
-}
-
 function TranscriptHeader({
     session,
     onExport,
     onRestore,
-    searchOpen,
-    onToggleSearch,
+    findOpen,
+    onToggleFind,
 }: {
     session: AIChatSession;
     onExport?: () => void;
     onRestore?: () => void;
-    searchOpen: boolean;
-    onToggleSearch: () => void;
+    findOpen: boolean;
+    onToggleFind: () => void;
 }) {
     const runtimes = useChatStore((s) => s.runtimes);
     const forkSession = useChatStore((s) => s.forkSession);
@@ -152,20 +141,21 @@ function TranscriptHeader({
             )}
             <button
                 type="button"
-                onClick={onToggleSearch}
+                onClick={onToggleFind}
+                aria-pressed={findOpen}
                 className="flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[10px] font-medium"
                 style={{
-                    background: searchOpen
+                    background: findOpen
                         ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                         : "none",
-                    border: searchOpen
+                    border: findOpen
                         ? "1px solid color-mix(in srgb, var(--accent) 35%, var(--border))"
                         : "1px solid var(--border)",
-                    color: searchOpen
+                    color: findOpen
                         ? "var(--text-primary)"
                         : "var(--text-secondary)",
                 }}
-                title="Search in this chat"
+                title="Find in this chat"
             >
                 <svg
                     width="12"
@@ -180,7 +170,7 @@ function TranscriptHeader({
                     <circle cx="5.25" cy="5.25" r="3.25" />
                     <path d="M7.75 7.75 10 10" />
                 </svg>
-                Search
+                Find
             </button>
             <button
                 type="button"
@@ -247,50 +237,23 @@ export function HistoryTranscriptViewer({
     const storeFontFamily = useChatStore((s) => s.chatFontFamily);
     const effectiveFontSize = chatFontSize ?? storeFontSize;
     const effectiveFontFamily = chatFontFamily ?? storeFontFamily;
-    const [searchOpen, setSearchOpen] = useState(false);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [activeMatchState, setActiveMatchState] = useState<{
-        key: string;
-        index: number;
-    }>({ key: "", index: 0 });
-    const searchInputRef = useRef<HTMLInputElement>(null);
-
-    const matchedMessages = useMemo(() => {
-        const query = searchQuery.trim();
-        if (!query) return [];
-        return (
-            session?.messages.filter((message) =>
-                matchesMessageSearch(message, query),
-            ) ?? []
-        );
-    }, [searchQuery, session]);
-    const activeMatchKey = `${historySessionId ?? ""}\u0000${searchQuery}`;
-    const effectiveActiveMatchIndex =
-        activeMatchState.key === activeMatchKey ? activeMatchState.index : 0;
-    const activeMatch =
-        matchedMessages.length > 0
-            ? matchedMessages[
-                  Math.min(
-                      effectiveActiveMatchIndex,
-                      matchedMessages.length - 1,
-                  )
-              ]
-            : null;
-    const highlightedMessageIds = useMemo(
-        () => matchedMessages.map((message) => message.id),
-        [matchedMessages],
-    );
+    const [findOpen, setFindOpen] = useState(false);
+    const rootRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (!sessionId) return;
         void ensureTranscriptLoaded(sessionId, "full");
     }, [ensureTranscriptLoaded, sessionId]);
 
+    // Close the finder when switching to another transcript.
     useEffect(() => {
-        if (!searchOpen) return;
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-    }, [searchOpen]);
+        setFindOpen(false);
+    }, [historySessionId]);
+
+    const openFind = useCallback(() => {
+        setFindOpen(true);
+    }, []);
+    useChatFindShortcut({ rootRef, onOpen: openFind });
 
     if (!session) {
         return (
@@ -306,202 +269,28 @@ export function HistoryTranscriptViewer({
     const hasOlderMessages = (session.loadedPersistedMessageStart ?? 0) > 0;
 
     return (
-        <div className="flex h-full min-h-0 flex-col">
+        <div
+            ref={rootRef}
+            tabIndex={-1}
+            className="flex h-full min-h-0 flex-col outline-none"
+        >
             <TranscriptHeader
                 session={session}
                 onExport={onExport}
                 onRestore={onRestore}
-                searchOpen={searchOpen}
-                onToggleSearch={() => {
-                    setSearchOpen((open) => !open);
-                    if (searchOpen) {
-                        setSearchQuery("");
-                    }
-                }}
+                findOpen={findOpen}
+                onToggleFind={() => setFindOpen((open) => !open)}
             />
-            {searchOpen && (
-                <div
-                    className="flex shrink-0 items-center gap-2 px-3 py-1.5"
-                    style={{
-                        borderBottom: "1px solid var(--border)",
-                        background:
-                            "color-mix(in srgb, var(--bg-tertiary) 35%, transparent)",
-                    }}
-                >
-                    <div
-                        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2"
-                        style={{
-                            background: "var(--bg-primary)",
-                            border: "1px solid var(--border)",
-                        }}
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            style={{
-                                color: "var(--text-secondary)",
-                                opacity: 0.6,
-                                flexShrink: 0,
-                            }}
-                        >
-                            <circle cx="7" cy="7" r="5" />
-                            <path d="M11 11l3.5 3.5" />
-                        </svg>
-                        <input
-                            ref={searchInputRef}
-                            type="text"
-                            placeholder="Find in this chat…"
-                            value={searchQuery}
-                            onChange={(event) =>
-                                setSearchQuery(event.target.value)
-                            }
-                            onKeyDown={(event) => {
-                                if (event.key === "Escape") {
-                                    setSearchQuery("");
-                                    setSearchOpen(false);
-                                } else if (
-                                    event.key === "Enter" &&
-                                    matchedMessages.length > 0
-                                ) {
-                                    event.preventDefault();
-                                    setActiveMatchState((state) => {
-                                        const index =
-                                            state.key === activeMatchKey
-                                                ? state.index
-                                                : 0;
-                                        return {
-                                            key: activeMatchKey,
-                                            index: event.shiftKey
-                                                ? (index -
-                                                      1 +
-                                                      matchedMessages.length) %
-                                                  matchedMessages.length
-                                                : (index + 1) %
-                                                  matchedMessages.length,
-                                        };
-                                    });
-                                }
-                            }}
-                            className="min-w-0 flex-1 text-[11px] leading-none outline-none"
-                            style={{
-                                background: "transparent",
-                                color: "var(--text-primary)",
-                                border: "none",
-                            }}
-                        />
-                    </div>
-                    <span
-                        className="shrink-0 text-[10px]"
-                        style={{
-                            color: "var(--text-secondary)",
-                            opacity: 0.75,
-                        }}
-                    >
-                        {searchQuery.trim()
-                            ? matchedMessages.length > 0
-                                ? `${effectiveActiveMatchIndex + 1} of ${matchedMessages.length}`
-                                : "0 results"
-                            : "Type to search"}
-                    </span>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setActiveMatchState((state) => {
-                                const index =
-                                    state.key === activeMatchKey
-                                        ? state.index
-                                        : 0;
-                                return {
-                                    key: activeMatchKey,
-                                    index:
-                                        matchedMessages.length > 0
-                                            ? (index -
-                                                  1 +
-                                                  matchedMessages.length) %
-                                              matchedMessages.length
-                                            : 0,
-                                };
-                            });
-                        }}
-                        disabled={matchedMessages.length === 0}
-                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-                        style={{
-                            background: "none",
-                            border: "1px solid var(--border)",
-                            color: "var(--text-secondary)",
-                            opacity: matchedMessages.length > 0 ? 1 : 0.4,
-                        }}
-                        title="Previous result"
-                    >
-                        <svg
-                            width="10"
-                            height="10"
-                            viewBox="0 0 10 10"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="M6.5 2 3.5 5l3 3" />
-                        </svg>
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setActiveMatchState((state) => {
-                                const index =
-                                    state.key === activeMatchKey
-                                        ? state.index
-                                        : 0;
-                                return {
-                                    key: activeMatchKey,
-                                    index:
-                                        matchedMessages.length > 0
-                                            ? (index + 1) %
-                                              matchedMessages.length
-                                            : 0,
-                                };
-                            });
-                        }}
-                        disabled={matchedMessages.length === 0}
-                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-                        style={{
-                            background: "none",
-                            border: "1px solid var(--border)",
-                            color: "var(--text-secondary)",
-                            opacity: matchedMessages.length > 0 ? 1 : 0.4,
-                        }}
-                        title="Next result"
-                    >
-                        <svg
-                            width="10"
-                            height="10"
-                            viewBox="0 0 10 10"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            <path d="m3.5 2 3 3-3 3" />
-                        </svg>
-                    </button>
-                </div>
-            )}
             <AIChatMessageList
                 sessionId={session.sessionId}
                 messages={session.messages}
                 status="idle"
                 readOnly
-                highlightedMessageIds={highlightedMessageIds}
-                activeHighlightedMessageId={activeMatch?.id ?? null}
+                findOpen={findOpen}
+                onCloseFind={() => {
+                    setFindOpen(false);
+                    rootRef.current?.focus();
+                }}
                 hasOlderMessages={hasOlderMessages}
                 isLoadingOlderMessages={
                     session.isLoadingPersistedMessages ?? false

@@ -18,9 +18,12 @@ export interface Settings {
     editorAutosaveDelayMs: number; // 50–5000
     editorContentWidth: number; // 600–1200
     lineWrapping: boolean;
+    editorActiveLineHighlight: boolean;
     justifyText: boolean;
     livePreviewEnabled: boolean;
     inlineReviewEnabled: boolean;
+    hoverPreviewEnabled: boolean;
+    hoverPreviewDelayMs: number; // 0–2000
     pdfFilter: PdfFilterMode;
     tabSize: 2 | 4;
     editorSpellcheck: boolean;
@@ -44,7 +47,6 @@ export interface Settings {
     claudeCodeSkipPermissions: boolean;
     claudeCodeModel: string; // "" = Claude Code default
     claudeCodeContinueSession: boolean;
-    claudeCodeMaxTurns: number; // 0 = unlimited
 
     // Developers
     fileTreeContentMode: "notes_only" | "all_files";
@@ -63,6 +65,8 @@ const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const GLOBAL_SETTING_KEYS = [
     "vimModeEnabled",
     "vimRelativeLineNumbers",
+    "hoverPreviewEnabled",
+    "hoverPreviewDelayMs",
 ] as const;
 
 type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -176,9 +180,12 @@ const defaults: Settings = {
     editorAutosaveDelayMs: 300,
     editorContentWidth: 940,
     lineWrapping: true,
+    editorActiveLineHighlight: true,
     justifyText: false,
     livePreviewEnabled: true,
     inlineReviewEnabled: true,
+    hoverPreviewEnabled: true,
+    hoverPreviewDelayMs: 300,
     pdfFilter: "none",
     tabSize: 2,
     editorSpellcheck: false,
@@ -198,7 +205,6 @@ const defaults: Settings = {
     claudeCodeSkipPermissions: false,
     claudeCodeModel: "",
     claudeCodeContinueSession: false,
-    claudeCodeMaxTurns: 0,
     fileTreeContentMode: "notes_only",
     fileTreeShowExtensions: false,
     fileTreeExtensionFilter: [],
@@ -365,7 +371,7 @@ function hasVaultScopedSettings(raw: string | null) {
     );
 }
 
-function hasStoredVimSettings(raw: string | null) {
+function hasStoredGlobalSettings(raw: string | null) {
     const state = extractPersistedState(raw);
     if (!state) return false;
 
@@ -422,12 +428,24 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 1200,
             ),
             lineWrapping: parsed.state.lineWrapping ?? defaults.lineWrapping,
+            editorActiveLineHighlight:
+                parsed.state.editorActiveLineHighlight ??
+                defaults.editorActiveLineHighlight,
             justifyText: parsed.state.justifyText ?? defaults.justifyText,
             livePreviewEnabled:
                 parsed.state.livePreviewEnabled ?? defaults.livePreviewEnabled,
             inlineReviewEnabled:
                 parsed.state.inlineReviewEnabled ??
                 defaults.inlineReviewEnabled,
+            hoverPreviewEnabled:
+                parsed.state.hoverPreviewEnabled ??
+                defaults.hoverPreviewEnabled,
+            hoverPreviewDelayMs: normalizeIntInRange(
+                parsed.state.hoverPreviewDelayMs,
+                defaults.hoverPreviewDelayMs,
+                0,
+                2000,
+            ),
             pdfFilter: normalizePdfFilterMode(parsed.state.pdfFilter),
             tabSize: normalizeTabSize(parsed.state.tabSize),
             editorSpellcheck:
@@ -488,12 +506,6 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             claudeCodeContinueSession:
                 parsed.state.claudeCodeContinueSession ??
                 defaults.claudeCodeContinueSession,
-            claudeCodeMaxTurns: normalizeIntInRange(
-                parsed.state.claudeCodeMaxTurns,
-                defaults.claudeCodeMaxTurns,
-                0,
-                1000,
-            ),
             fileTreeContentMode: normalizeFileTreeContentMode(
                 parsed.state.fileTreeContentMode,
             ),
@@ -551,9 +563,12 @@ function pickSettings(state: SettingsStore): Settings {
         editorAutosaveDelayMs: state.editorAutosaveDelayMs,
         editorContentWidth: state.editorContentWidth,
         lineWrapping: state.lineWrapping,
+        editorActiveLineHighlight: state.editorActiveLineHighlight,
         justifyText: state.justifyText,
         livePreviewEnabled: state.livePreviewEnabled,
         inlineReviewEnabled: state.inlineReviewEnabled,
+        hoverPreviewEnabled: state.hoverPreviewEnabled,
+        hoverPreviewDelayMs: state.hoverPreviewDelayMs,
         pdfFilter: state.pdfFilter,
         tabSize: state.tabSize,
         editorSpellcheck: state.editorSpellcheck,
@@ -573,7 +588,6 @@ function pickSettings(state: SettingsStore): Settings {
         claudeCodeSkipPermissions: state.claudeCodeSkipPermissions,
         claudeCodeModel: state.claudeCodeModel,
         claudeCodeContinueSession: state.claudeCodeContinueSession,
-        claudeCodeMaxTurns: state.claudeCodeMaxTurns,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
         fileTreeExtensionFilter: state.fileTreeExtensionFilter,
@@ -594,6 +608,8 @@ function pickGlobalSettings(
     return {
         vimModeEnabled: settings.vimModeEnabled,
         vimRelativeLineNumbers: settings.vimRelativeLineNumbers,
+        hoverPreviewEnabled: settings.hoverPreviewEnabled,
+        hoverPreviewDelayMs: settings.hoverPreviewDelayMs,
     };
 }
 
@@ -669,12 +685,14 @@ function migrateGlobalSpellcheckToVault(vaultPath: string) {
     }
 }
 
-function migrateVaultVimSettingsToGlobal(vaultRaw: string | null) {
+function migrateVaultGlobalSettingsToGlobal(vaultRaw: string | null) {
     try {
-        if (hasStoredVimSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))) {
+        if (
+            hasStoredGlobalSettings(safeStorageGetItem(SETTINGS_KEY_FALLBACK))
+        ) {
             return;
         }
-        if (!hasStoredVimSettings(vaultRaw)) return;
+        if (!hasStoredGlobalSettings(vaultRaw)) return;
 
         const vaultSettings = extractSettingsFromStorage(vaultRaw);
         if (!vaultSettings) return;
@@ -692,7 +710,7 @@ function loadSettings(vaultPath: string | null): Settings {
         }
         const raw = safeStorageGetItem(getStorageKey(vaultPath));
         if (vaultPath) {
-            migrateVaultVimSettingsToGlobal(raw);
+            migrateVaultGlobalSettingsToGlobal(raw);
         }
         const settings = extractSettingsFromStorage(raw) ?? defaults;
         return vaultPath ? mergeGlobalSettings(settings) : settings;

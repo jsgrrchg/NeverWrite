@@ -14,6 +14,14 @@ const outputRoot =
     path.join(appRoot, "dist-electron");
 const distArch =
     process.env.NEVERWRITE_ELECTRON_DIST_ARCH?.trim() || process.arch;
+const DEFAULT_SMOKE_TIMEOUT_MS = 15000;
+const configuredSmokeTimeoutMs = Number(
+    process.env.NEVERWRITE_PACKAGED_SIDECAR_SMOKE_TIMEOUT_MS,
+);
+const smokeTimeoutMs =
+    Number.isFinite(configuredSmokeTimeoutMs) && configuredSmokeTimeoutMs > 0
+        ? configuredSmokeTimeoutMs
+        : DEFAULT_SMOKE_TIMEOUT_MS;
 
 function defaultPackagedSidecarCandidates() {
     if (process.platform === "darwin") {
@@ -120,7 +128,7 @@ async function smokePing(sidecarPath) {
                     )}`,
                 ),
             );
-        }, 5000);
+        }, smokeTimeoutMs);
 
         function cleanup() {
             settled = true;

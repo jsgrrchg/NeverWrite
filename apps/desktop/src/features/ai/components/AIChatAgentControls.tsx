@@ -4,6 +4,7 @@ import type { AIConfigOption, AIModeOption, AIModelOption } from "../types";
 interface AIChatAgentControlsProps {
     disabled?: boolean;
     runtimeId?: string;
+    lockIncompatibleModelSwitches?: boolean;
     modelId: string;
     modeId: string;
     effortsByModel?: Record<string, string[]>;
@@ -19,6 +20,7 @@ interface DropdownOption {
     value: string;
     label: string;
     description?: string;
+    agentType?: string;
     disabled?: boolean;
 }
 
@@ -33,7 +35,11 @@ interface DropdownFieldProps {
     onChange: (value: string) => void;
 }
 
-const SEARCHABLE_MODEL_RUNTIME_IDS = new Set(["kilo-acp", "opencode-acp"]);
+const SEARCHABLE_MODEL_RUNTIME_IDS = new Set([
+    "kilo-acp",
+    "opencode-acp",
+]);
+const GROK_RUNTIME_ID = "grok-acp";
 
 function shouldUseSearchableModelMenu(runtimeId?: string) {
     return (
@@ -76,6 +82,8 @@ function DropdownField({
     const searchInputRef = useRef<HTMLInputElement>(null);
     const lastFocusedElementRef = useRef<HTMLElement | null>(null);
     const selected = options.find((option) => option.value === value);
+    const displayValue =
+        selected?.label ?? (value.trim() ? formatFallbackLabel(value) : label);
     const isDisabled = disabled || options.length === 0;
     const rememberFocusedElement = () => {
         const activeElement = document.activeElement;
@@ -163,7 +171,7 @@ function DropdownField({
                 title={label}
                 disabled={isDisabled}
             >
-                <span className="truncate">{selected?.label ?? value}</span>
+                <span className="truncate">{displayValue}</span>
                 <svg
                     width="10"
                     height="10"
@@ -248,6 +256,7 @@ function DropdownField({
                                     key={option.value}
                                     type="button"
                                     disabled={option.disabled}
+                                    title={option.description}
                                     onMouseDown={(event) => {
                                         if (option.disabled) {
                                             return;
@@ -301,7 +310,48 @@ function mapConfigOption(option: AIConfigOption): DropdownOption[] {
         value: item.value,
         label: item.label,
         description: item.description,
+        agentType: item.agentType,
     }));
+}
+
+function applyGrokModelSwitchLock(
+    runtimeId: string | undefined,
+    selectedModelId: string,
+    options: DropdownOption[],
+    lockIncompatibleModelSwitches: boolean,
+): DropdownOption[] {
+    if (
+        runtimeId !== GROK_RUNTIME_ID ||
+        !lockIncompatibleModelSwitches ||
+        !selectedModelId
+    ) {
+        return options;
+    }
+
+    const selectedAgentType = options.find(
+        (option) => option.value === selectedModelId,
+    )?.agentType;
+    if (!selectedAgentType) {
+        return options;
+    }
+
+    return options.map((option) => {
+        if (
+            option.value === selectedModelId ||
+            !option.agentType ||
+            option.agentType === selectedAgentType
+        ) {
+            return option;
+        }
+
+        return {
+            ...option,
+            disabled: true,
+            description: option.description
+                ? `${option.description} Start a new Grok chat to switch to this model.`
+                : "Start a new Grok chat to switch to this model.",
+        };
+    });
 }
 
 function filterConfigOptions(
@@ -333,6 +383,7 @@ function filterConfigOptions(
 export function AIChatAgentControls({
     disabled = false,
     runtimeId,
+    lockIncompatibleModelSwitches = false,
     modelId,
     modeId,
     effortsByModel,
@@ -347,7 +398,34 @@ export function AIChatAgentControls({
         () => configOptions.find((option) => option.category === "model"),
         [configOptions],
     );
+    const modelOptions = useMemo(
+        () =>
+            modelConfig
+                ? mapConfigOption(modelConfig)
+                : models.map((model) => ({
+                  value: model.id,
+                  label: formatFallbackLabel(model.name),
+                  description: model.description,
+                  agentType: model.agentType,
+              })),
+        [modelConfig, models],
+    );
     const selectedModelId = modelConfig?.value ?? modelId;
+    const lockedModelOptions = useMemo(
+        () =>
+            applyGrokModelSwitchLock(
+                runtimeId,
+                selectedModelId,
+                modelOptions,
+                lockIncompatibleModelSwitches,
+            ),
+        [
+            lockIncompatibleModelSwitches,
+            modelOptions,
+            runtimeId,
+            selectedModelId,
+        ],
+    );
     const extraConfigs = useMemo(
         () =>
             [...configOptions]
@@ -380,40 +458,36 @@ export function AIChatAgentControls({
 
     return (
         <div className="flex min-w-0 flex-wrap items-center gap-1">
-            <DropdownField
-                disabled={disabled}
-                label="Approval Preset"
-                value={modeId}
-                options={modes.map((mode) => ({
-                    value: mode.id,
-                    label: formatFallbackLabel(mode.name),
-                    description: mode.description,
-                    disabled: mode.disabled,
-                }))}
-                onChange={onModeChange}
-            />
-            <DropdownField
-                disabled={disabled}
-                label="Model"
-                value={selectedModelId}
-                searchable={shouldUseSearchableModelMenu(runtimeId)}
-                searchPlaceholder="Search models..."
-                emptySearchMessage="No models match that search."
-                options={
-                    modelConfig
-                        ? mapConfigOption(modelConfig)
-                        : models.map((model) => ({
-                              value: model.id,
-                              label: formatFallbackLabel(model.name),
-                              description: model.description,
-                          }))
-                }
-                onChange={(value) =>
-                    modelConfig
-                        ? onConfigOptionChange(modelConfig.id, value)
-                        : onModelChange(value)
-                }
-            />
+            {modes.length > 0 ? (
+                <DropdownField
+                    disabled={disabled}
+                    label="Approval Preset"
+                    value={modeId}
+                    options={modes.map((mode) => ({
+                        value: mode.id,
+                        label: formatFallbackLabel(mode.name),
+                        description: mode.description,
+                        disabled: mode.disabled,
+                    }))}
+                    onChange={onModeChange}
+                />
+            ) : null}
+            {lockedModelOptions.length > 0 ? (
+                <DropdownField
+                    disabled={disabled}
+                    label="Model"
+                    value={selectedModelId}
+                    searchable={shouldUseSearchableModelMenu(runtimeId)}
+                    searchPlaceholder="Search models..."
+                    emptySearchMessage="No models match that search."
+                    options={lockedModelOptions}
+                    onChange={(value) =>
+                        modelConfig
+                            ? onConfigOptionChange(modelConfig.id, value)
+                            : onModelChange(value)
+                    }
+                />
+            ) : null}
             {visibleExtraConfigs.map(({ option, options }) => (
                 <DropdownField
                     key={option.id}

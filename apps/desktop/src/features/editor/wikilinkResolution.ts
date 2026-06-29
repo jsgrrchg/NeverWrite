@@ -4,7 +4,6 @@ import {
     selectFocusedEditorTab,
 } from "../../app/store/editorStore";
 import { useVaultStore } from "../../app/store/vaultStore";
-import { isTextLikeVaultEntry } from "../../app/utils/vaultEntries";
 import {
     perfCount,
     perfMeasure,
@@ -109,7 +108,7 @@ function resolveRelativeTargetPath(
     baseNoteId: string | null,
     target: string,
 ): string {
-    const cleanedTarget = target.replace(/\\/g, "/");
+    const cleanedTarget = target.trim().split(/[?#^]/, 1)[0].replace(/\\/g, "/");
     const segments = cleanedTarget.startsWith("/")
         ? []
         : (baseNoteId?.split("/").slice(0, -1) ?? []);
@@ -126,6 +125,10 @@ function resolveRelativeTargetPath(
     return segments.join("/");
 }
 
+function isWikilinkFileEntry(entry: { kind: string }) {
+    return entry.kind === "file" || entry.kind === "pdf";
+}
+
 function findFileByWikilinkTarget(target: string, noteId: string | null) {
     const normalizedDirectTarget = normalizeFileTarget(target);
     const normalizedRelativeTarget = resolveRelativeTargetPath(noteId, target);
@@ -138,8 +141,7 @@ function findFileByWikilinkTarget(target: string, noteId: string | null) {
             .getState()
             .entries.find(
                 (entry) =>
-                    entry.kind === "file" &&
-                    isTextLikeVaultEntry(entry) &&
+                    isWikilinkFileEntry(entry) &&
                     candidateTargets.has(entry.relative_path),
             ) ?? null
     );

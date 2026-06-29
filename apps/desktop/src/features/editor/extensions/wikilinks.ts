@@ -34,7 +34,7 @@ type IdleDeadlineLike = {
 
 type IdleCallbackHandle = number;
 
-interface WikilinkMatch {
+export interface WikilinkMatch {
     from: number;
     to: number;
     target: string;
@@ -86,7 +86,7 @@ function findVisibleWikilinks(view: EditorView): WikilinkMatch[] {
     return matches;
 }
 
-function findWikilinkAtPosition(
+export function findWikilinkAtPosition(
     view: EditorView,
     pos: number,
 ): WikilinkMatch | null {

@@ -5,6 +5,10 @@ import {
 } from "../../app/store/editorStore";
 import { createChatTab } from "../../app/store/editorTabs";
 import type { WorkspaceDropTarget } from "../../app/store/workspaceContracts";
+import {
+    focusClaudeTerminalAgentSession,
+    isClaudeTerminalAgentSession,
+} from "./claudeTerminalAgentSession";
 import { getSessionTitle } from "./sessionPresentation";
 import { useChatStore } from "./store/chatStore";
 import { useChatTabsStore } from "./store/chatTabsStore";
@@ -276,6 +280,13 @@ export function openChatSessionInWorkspace(
     sessionId: string,
     options?: OpenChatInWorkspaceOptions,
 ) {
+    // A claude-code-terminal agent has no ACP session — opening it as a chat
+    // would resume a nonexistent backend session. Focus its terminal instead.
+    const session = useChatStore.getState().sessionsById[sessionId];
+    if (session && isClaudeTerminalAgentSession(session)) {
+        focusClaudeTerminalAgentSession(session);
+        return sessionId;
+    }
     const { title, historySessionId } = prepareChatSessionForWorkspace(sessionId);
     useEditorStore.getState().openChat(sessionId, {
         title,
@@ -296,6 +307,17 @@ export function openOrMoveChatSessionAtDropTarget(
     sessionId: string,
     target: ChatWorkspaceDropTarget,
 ) {
+    // Dragging a claude-code-terminal agent into the workspace focuses its
+    // terminal tab rather than opening a (nonexistent) ACP chat session.
+    const terminalAgentSession =
+        useChatStore.getState().sessionsById[sessionId];
+    if (
+        terminalAgentSession &&
+        isClaudeTerminalAgentSession(terminalAgentSession)
+    ) {
+        focusClaudeTerminalAgentSession(terminalAgentSession);
+        return sessionId;
+    }
     const { title, historySessionId } = prepareChatSessionForWorkspace(sessionId);
     const existing = findWorkspaceChatTab(sessionId, historySessionId);
     const editor = useEditorStore.getState();

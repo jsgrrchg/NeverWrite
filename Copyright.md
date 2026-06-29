@@ -36,6 +36,7 @@ governing our direct and transitive dependencies, grouped by license type.
 | SIL OFL-1.1              | Bundled Fliege Mono font                            |
 | CC0-1.0                  | notify                                              |
 | Unlicense OR MIT         | aho-corasick, memchr, walkdir, byteorder            |
+| Anthropic SDK terms      | @anthropic-ai/claude-agent-sdk vendored runtime SDK |
 
 No GPL-only runtime code dependencies are used in this project. Spellcheck
 dictionaries are tracked separately because some packs use disjunctive
@@ -119,6 +120,24 @@ dictionary licenses.
 | @testing-library/react              | MIT         |
 | @testing-library/jest-dom           | MIT         |
 | @testing-library/user-event         | MIT         |
+
+### Embedded Claude ACP Runtime
+
+| Package                                 | Version | License / Terms                 |
+| --------------------------------------- | ------- | ------------------------------- |
+| @agentclientprotocol/claude-agent-acp   | 0.47.0  | Apache-2.0                      |
+| @agentclientprotocol/sdk                | 0.26.0  | Apache-2.0                      |
+| @anthropic-ai/claude-agent-sdk          | 0.3.179 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.179 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 0.104.2 | MIT                             |
+| @modelcontextprotocol/sdk               | 1.29.0  | MIT                             |
+| zod                                     | 4.4.3   | MIT                             |
+
+The packaged desktop app stages the Claude ACP adapter as vendored JavaScript
+under `native-backend/embedded/claude-agent-acp/` with production dependencies
+installed from the vendored lockfile. Platform-specific
+`@anthropic-ai/claude-agent-sdk-*` packages are included only for the target
+being packaged.
 
 ---
 
@@ -243,7 +262,7 @@ The bundled dictionary metadata lives in
 | -------------------------------- | ----------- | --------------------------------------- |
 | codex-acp                        | Apache-2.0  | github.com/zed-industries/codex         |
 | Claude-agent-acp-upstream        | Apache-2.0  | Anthropic                               |
-| @anthropic-ai/claude-agent-sdk   | Apache-2.0  | Anthropic                               |
+| @anthropic-ai/claude-agent-sdk   | Anthropic SDK terms | Anthropic                       |
 | @agentclientprotocol/sdk         | Apache-2.0  | Agent Client Protocol                   |
 
 ---
@@ -266,9 +285,8 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.37.0` (`36822c2b75b6e1cd5406a5ab40fe603fc380ee10`) with vendored `dist/` runtime files |
-| `package.json`, `package-lock.json` | Updated `@anthropic-ai/claude-agent-sdk` to `0.3.154` to embed Claude Code `2.1.154` |
-| `src/acp-agent.ts`, `dist/acp-agent.js` | Added no-op handling for the SDK `thinking_tokens` system event introduced by the newer runtime |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.47.0` (`794aa846844a2fe8a8574c2539e2c4107e9182d1`) with generated `dist/` runtime files required by desktop packaging |
+| `.gitignore`          | Keeps generated `dist/` files visible to Git so new runtime outputs are tracked for packaging |
 
 > All original copyright notices and license headers have been preserved.
 > The full text of the Apache-2.0 license is available at

@@ -29,6 +29,8 @@ pub struct PersistedMessage {
     pub kind: String,
     pub content: String,
     pub timestamp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +48,12 @@ pub struct PersistedMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_input_questions: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_elicitation_request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_elicitation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_elicitation_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_entries: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_detail: Option<String>,
@@ -59,6 +67,8 @@ pub struct PersistedSessionHistory {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
     pub model_id: String,
@@ -117,6 +127,8 @@ struct PersistedSessionMetadata {
     session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_id: Option<String>,
     model_id: String,
@@ -267,6 +279,7 @@ fn derive_preview(messages: &[PersistedMessage]) -> Option<String> {
             "plan" => format!("Plan: {content}"),
             "permission" => format!("Permission: {content}"),
             "user_input_request" => format!("Input: {content}"),
+            "url_elicitation_request" => format!("URL request: {content}"),
             "error" => format!("Error: {content}"),
             _ => content,
         };
@@ -388,6 +401,7 @@ fn metadata_from_history(
         version: history.version,
         session_id: history.session_id.clone(),
         parent_session_id: history.parent_session_id.clone(),
+        closed_at: history.closed_at.clone(),
         runtime_id: history.runtime_id.clone(),
         model_id: history.model_id.clone(),
         mode_id: history.mode_id.clone(),
@@ -419,6 +433,7 @@ fn history_from_metadata(
         version: metadata.version,
         session_id: metadata.session_id,
         parent_session_id: metadata.parent_session_id,
+        closed_at: metadata.closed_at,
         runtime_id: metadata.runtime_id,
         model_id: metadata.model_id,
         mode_id: metadata.mode_id,
@@ -438,11 +453,12 @@ fn history_from_metadata(
 }
 
 fn load_legacy_history_file(path: &Path) -> Result<PersistedSessionHistory, String> {
-    let history = read_json_file::<PersistedSessionHistory>(&path)?;
+    let history = read_json_file::<PersistedSessionHistory>(path)?;
     Ok(PersistedSessionHistory {
         version: history.version,
         session_id: history.session_id,
         parent_session_id: history.parent_session_id,
+        closed_at: history.closed_at,
         runtime_id: history.runtime_id,
         model_id: history.model_id,
         mode_id: history.mode_id,
@@ -1340,6 +1356,7 @@ pub fn load_all_session_histories(
                     version: history.version,
                     session_id: history.session_id,
                     parent_session_id: history.parent_session_id,
+                    closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
@@ -1369,6 +1386,7 @@ pub fn load_all_session_histories(
                     version: history.version,
                     session_id: history.session_id,
                     parent_session_id: history.parent_session_id,
+                    closed_at: history.closed_at,
                     runtime_id: history.runtime_id,
                     model_id: history.model_id,
                     mode_id: history.mode_id,
@@ -1395,7 +1413,7 @@ pub fn load_all_session_histories(
         .into_values()
         .map(|(_, history)| history)
         .collect::<Vec<_>>();
-    histories.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    histories.sort_by_key(|history| std::cmp::Reverse(history.updated_at));
     Ok(histories)
 }
 
@@ -1464,7 +1482,7 @@ pub fn search_session_content(
         }
     }
 
-    results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    results.sort_by_key(|result| std::cmp::Reverse(result.updated_at));
     Ok(results)
 }
 
@@ -1587,6 +1605,7 @@ pub fn fork_session_history(vault_root: &Path, source_session_id: &str) -> Resul
         version: source_meta.version,
         session_id: new_session_id.clone(),
         parent_session_id: None,
+        closed_at: None,
         runtime_id: source_meta.runtime_id,
         model_id: source_meta.model_id,
         mode_id: source_meta.mode_id,
@@ -1665,6 +1684,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -1686,6 +1706,17 @@ mod tests {
                     kind: "text".to_string(),
                     content: "Hello".to_string(),
                     timestamp: 10,
+                    attachments: Some(serde_json::json!([
+                        {
+                            "id": "attachment:image",
+                            "type": "file",
+                            "noteId": null,
+                            "label": "Screenshot 10:32",
+                            "path": null,
+                            "filePath": "/vault/assets/chat/screenshot.png",
+                            "mimeType": "image/png"
+                        }
+                    ])),
                     title: None,
                     meta: None,
                     permission_request_id: None,
@@ -1694,6 +1725,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
@@ -1704,6 +1738,7 @@ mod tests {
                     kind: "text".to_string(),
                     content: "Assistant reply".to_string(),
                     timestamp: 20,
+                    attachments: None,
                     title: None,
                     meta: None,
                     permission_request_id: None,
@@ -1712,6 +1747,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
@@ -1735,6 +1773,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -1982,10 +2021,29 @@ mod tests {
     }
 
     #[test]
+    fn preserves_message_attachments_in_lazy_transcript() {
+        let dir = make_temp_dir();
+        let history = sample_history();
+        let expected_attachments = history.messages[0].attachments.clone();
+
+        save_session_history(&dir, &history).expect("history should persist");
+
+        let page =
+            load_session_history_page(&dir, "session-1", 0, 1).expect("history page should load");
+        assert_eq!(page.messages[0].attachments, expected_attachments);
+
+        let histories = load_all_session_histories(&dir, true).expect("full history should load");
+        assert_eq!(histories[0].messages[0].attachments, expected_attachments);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn preserves_parent_session_id_in_lazy_metadata() {
         let dir = make_temp_dir();
         let mut history = sample_history_with_session_id("child-session");
         history.parent_session_id = Some("parent-session".to_string());
+        history.closed_at = Some("123".to_string());
 
         save_session_history(&dir, &history).expect("child history should persist");
 
@@ -1995,6 +2053,7 @@ mod tests {
             metadata.parent_session_id.as_deref(),
             Some("parent-session")
         );
+        assert_eq!(metadata.closed_at.as_deref(), Some("123"));
 
         let summaries =
             load_all_session_histories(&dir, false).expect("history summaries should load");
@@ -2003,9 +2062,11 @@ mod tests {
             summaries[0].parent_session_id.as_deref(),
             Some("parent-session")
         );
+        assert_eq!(summaries[0].closed_at.as_deref(), Some("123"));
 
         let full = load_all_session_histories(&dir, true).expect("full history should load");
         assert_eq!(full[0].parent_session_id.as_deref(), Some("parent-session"));
+        assert_eq!(full[0].closed_at.as_deref(), Some("123"));
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2134,6 +2195,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),
@@ -2155,6 +2217,7 @@ mod tests {
                     kind: "text".to_string(),
                     content: "Assistant reply (edited)".to_string(),
                     timestamp: 20,
+                    attachments: None,
                     title: None,
                     meta: None,
                     permission_request_id: None,
@@ -2163,6 +2226,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: None,
                     tool_action: None,
@@ -2173,6 +2239,7 @@ mod tests {
                     kind: "plan".to_string(),
                     content: "Next step".to_string(),
                     timestamp: 30,
+                    attachments: None,
                     title: Some("Plan".to_string()),
                     meta: None,
                     permission_request_id: None,
@@ -2181,6 +2248,9 @@ mod tests {
                     review_diffs: None,
                     user_input_request_id: None,
                     user_input_questions: None,
+                    url_elicitation_request_id: None,
+                    url_elicitation_id: None,
+                    url_elicitation_url: None,
                     plan_entries: None,
                     plan_detail: Some("Do the thing".to_string()),
                     tool_action: None,
@@ -2378,6 +2448,7 @@ mod tests {
             kind: "text".to_string(),
             content: "Assistant reply (edited)".to_string(),
             timestamp: 20,
+            attachments: None,
             title: Some("Reply".to_string()),
             meta: Some(serde_json::json!({
                 "status": "completed",
@@ -2388,6 +2459,9 @@ mod tests {
             review_diffs: None,
             user_input_request_id: None,
             user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
@@ -2398,6 +2472,7 @@ mod tests {
             kind: "permission".to_string(),
             content: "Edit watcher.rs".to_string(),
             timestamp: 30,
+            attachments: None,
             title: Some("Permission request".to_string()),
             meta: Some(serde_json::json!({
                 "status": "pending",
@@ -2434,6 +2509,9 @@ mod tests {
             ])),
             user_input_request_id: None,
             user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
@@ -2444,6 +2522,7 @@ mod tests {
             kind: "user_input_request".to_string(),
             content: "Need confirmation".to_string(),
             timestamp: 40,
+            attachments: None,
             title: Some("Input requested".to_string()),
             meta: Some(serde_json::json!({
                 "status": "pending",
@@ -2462,6 +2541,9 @@ mod tests {
                     "is_secret": false
                 }
             ])),
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: None,
             plan_detail: None,
             tool_action: None,
@@ -2472,6 +2554,7 @@ mod tests {
             kind: "plan".to_string(),
             content: "Confirm restore".to_string(),
             timestamp: 50,
+            attachments: None,
             title: Some("Plan".to_string()),
             meta: None,
             permission_request_id: None,
@@ -2480,6 +2563,9 @@ mod tests {
             review_diffs: None,
             user_input_request_id: None,
             user_input_questions: None,
+            url_elicitation_request_id: None,
+            url_elicitation_id: None,
+            url_elicitation_url: None,
             plan_entries: Some(serde_json::json!([
                 {
                     "content": "Confirm restore",
@@ -2506,6 +2592,7 @@ mod tests {
             version: 1,
             session_id: "session-1".to_string(),
             parent_session_id: None,
+            closed_at: None,
             runtime_id: Some("codex-acp".to_string()),
             model_id: "test-model".to_string(),
             mode_id: "default".to_string(),

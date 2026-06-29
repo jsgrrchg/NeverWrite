@@ -34,6 +34,13 @@ export function getNeutralButtonStyle(): React.CSSProperties {
     };
 }
 
+export const COMPACT_REVIEW_ROW_HEIGHT_PX = 30;
+// Eight rows keeps large edit batches reviewable without pushing the composer
+// out of reach; additional files scroll inside the tray.
+export const COMPACT_REVIEW_MAX_VISIBLE_ROWS = 8;
+export const COMPACT_REVIEW_MAX_LIST_HEIGHT_PX =
+    COMPACT_REVIEW_ROW_HEIGHT_PX * COMPACT_REVIEW_MAX_VISIBLE_ROWS;
+
 /* ---------- Shared review-view visual tokens ---------- */
 
 /** Stat chip used in the review header for files / additions / deletions / conflicts */

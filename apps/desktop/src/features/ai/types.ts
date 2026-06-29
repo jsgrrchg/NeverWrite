@@ -146,6 +146,7 @@ export interface AIModelOption {
     runtimeId: string;
     name: string;
     description: string;
+    agentType?: string;
 }
 
 export interface AIModeOption {
@@ -160,6 +161,7 @@ export interface AIConfigSelectOption {
     value: string;
     label: string;
     description?: string;
+    agentType?: string;
 }
 
 export interface AIConfigOption {
@@ -238,20 +240,25 @@ export type AIChatMessageKind =
     | "status"
     | "permission"
     | "user_input_request"
+    | "url_elicitation_request"
     | "image"
     | "error";
 
 export interface AIUserInputQuestionOption {
     label: string;
-    description: string;
+    value: string;
+    description?: string;
+    preview?: string;
 }
 
 export interface AIUserInputQuestion {
     id: string;
+    custom_answer_id?: string;
     header: string;
     question: string;
     is_other: boolean;
     is_secret: boolean;
+    allows_multiple?: boolean;
     options?: AIUserInputQuestionOption[];
 }
 
@@ -260,6 +267,27 @@ export interface AIUserInputRequestPayload {
     request_id: string;
     title: string;
     questions: AIUserInputQuestion[];
+}
+
+export type AIUserInputAction = "accept" | "decline" | "skip" | "cancel";
+export type AIUrlElicitationAction = "complete" | "cancel";
+export type AIUrlElicitationStatus =
+    | "pending"
+    | "opening"
+    | "completed"
+    | "cancelled"
+    | "error";
+
+export interface AIUrlElicitationRequestPayload {
+    session_id: string;
+    request_id: string;
+    elicitation_id: string;
+    title: string;
+    url: string;
+    status?: AIUrlElicitationStatus;
+    scope?: string;
+    runtime_session_id?: string | null;
+    tool_call_id?: string | null;
 }
 
 export interface AIPlanEntry {
@@ -313,6 +341,11 @@ export type AIBufferedSessionTimelineEvent =
           type: "user_input_request";
           payload: AIUserInputRequestPayload;
           timestamp: number;
+      }
+    | {
+          type: "url_elicitation_request";
+          payload: AIUrlElicitationRequestPayload;
+          timestamp: number;
       };
 
 export interface AIChatMessage {
@@ -322,6 +355,7 @@ export interface AIChatMessage {
     content: string;
     timestamp: number;
     workCycleId?: string | null;
+    attachments?: AIChatAttachment[];
     title?: string;
     inProgress?: boolean;
     meta?: Record<string, string | number | boolean | null>;
@@ -331,6 +365,9 @@ export interface AIChatMessage {
     reviewDiffs?: AIFileDiff[];
     userInputRequestId?: string;
     userInputQuestions?: AIUserInputQuestion[];
+    urlElicitationRequestId?: string;
+    urlElicitationId?: string;
+    urlElicitationUrl?: string;
     planEntries?: AIPlanEntry[];
     planDetail?: string;
     toolAction?: AIToolActivityAction | null;
@@ -341,6 +378,13 @@ export interface AIChatSession {
     historySessionId: string;
     parentSessionId?: string | null;
     runtimeSessionId?: string | null;
+    closedAt?: string | null;
+    /**
+     * For the "claude-code-terminal" pseudo-runtime: the terminal runtime this
+     * agent entry stands in for. Clicking the entry focuses that terminal tab
+     * instead of opening an ACP chat pane. Unset for real ACP sessions.
+     */
+    terminalId?: string | null;
     vaultPath?: string | null;
     status: AIChatSessionStatus;
     activeWorkCycleId?: string | null;
@@ -405,6 +449,7 @@ export interface AIBackendSessionPayload {
     session_id: string;
     parent_session_id?: string | null;
     runtime_session_id?: string | null;
+    closed_at?: string | null;
     title?: string | null;
     runtime_id: string;
     model_id: string;
@@ -427,6 +472,7 @@ export interface AIBackendSessionPayload {
             value: string;
             label: string;
             description?: string | null;
+            agent_type?: string | null;
         }>;
     }>;
 }
@@ -443,6 +489,7 @@ export interface AIBackendRuntimeDescriptorPayload {
         runtime_id: string;
         name: string;
         description: string;
+        agent_type?: string | null;
     }>;
     modes: Array<{
         id: string;
@@ -477,17 +524,21 @@ export interface AISessionErrorPayload {
 export interface AIMessageStartedPayload {
     session_id: string;
     message_id: string;
+    role?: AIChatRole;
 }
 
 export interface AIMessageDeltaPayload {
     session_id: string;
     message_id: string;
     delta: string;
+    role?: AIChatRole;
 }
 
 export interface AIMessageCompletedPayload {
     session_id: string;
     message_id: string;
+    role?: AIChatRole;
+    turn_complete?: boolean;
 }
 
 export interface AIToolActivityPayload {
@@ -637,6 +688,7 @@ export type AIComposerPart =
           filePath: string;
           mimeType: string;
           label: string;
+          createdAt?: number;
       }
     | {
           id: string;
@@ -659,6 +711,7 @@ export interface PersistedMessage {
     kind: string;
     content: string;
     timestamp: number;
+    attachments?: AIChatAttachment[];
     title?: string;
     meta?: Record<string, string | number | boolean | null>;
     permission_request_id?: string;
@@ -667,6 +720,9 @@ export interface PersistedMessage {
     review_diffs?: AIFileDiff[];
     user_input_request_id?: string;
     user_input_questions?: AIUserInputQuestion[];
+    url_elicitation_request_id?: string;
+    url_elicitation_id?: string;
+    url_elicitation_url?: string;
     plan_entries?: AIPlanEntry[];
     plan_detail?: string;
     tool_action?: AIToolActivityAction | null;
@@ -676,6 +732,7 @@ export interface PersistedSessionHistory {
     version: number;
     session_id: string;
     parent_session_id?: string | null;
+    closed_at?: string | null;
     runtime_id?: string;
     model_id: string;
     mode_id: string;

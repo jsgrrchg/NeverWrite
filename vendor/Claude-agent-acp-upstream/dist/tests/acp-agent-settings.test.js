@@ -168,7 +168,7 @@ describe("ClaudeAcpAgent settings", () => {
         // No setModel call is needed because no override was applied — the SDK is
         // already on its own default.
         expect(setModelSpy).not.toHaveBeenCalled();
-        expect(response.models.currentModelId).toBe("claude-sonnet-4-6");
+        expect(response.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("claude-sonnet-4-6");
     });
     describe("auto mode availability per model", () => {
         function mockQueryWithModels(models) {
@@ -436,9 +436,9 @@ describe("ClaudeAcpAgent settings", () => {
                 _meta: { disableBuiltInTools: true },
             });
             expect(setModelSpy).toHaveBeenCalledWith("claude-haiku-4-5");
-            expect(response.models.currentModelId).toBe("claude-haiku-4-5");
+            expect(response.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("claude-haiku-4-5");
         });
-        it("does not inherit display info across mismatched model family versions", async () => {
+        it("does not inherit display info across mismatched model versions", async () => {
             // https://github.com/agentclientprotocol/claude-agent-acp/issues/639:
             // when the SDK's `opus` alias resolves to Opus 4.7, an allowlist entry
             // of `claude-opus-4-6` (or `claude-opus-4-6[1m]`) used to substring-match
@@ -489,6 +489,148 @@ describe("ClaudeAcpAgent settings", () => {
             expect(byValue["claude-opus-4-7"].name).toBe("Opus 4.7");
             expect(byValue["claude-opus-4-7[1m]"].name).toMatch(/Opus 4\.7/);
         });
+        it("does not inherit display info across mismatched model families", async () => {
+            // https://github.com/agentclientprotocol/claude-agent-acp/issues/639:
+            // when the SDK's `opus` alias resolves to Opus 4.8, `claude-opus-4-6[1m]`
+            // fails the version check against `opus` but the tokenized matcher
+            // falls through to `sonnet[1m]` because the `1m` context hint alone
+            // is enough to score a match.
+            await fs.promises.writeFile(path.join(tempDir, "settings.json"), JSON.stringify({
+                availableModels: ["claude-opus-4-6", "claude-opus-4-6[1m]"],
+            }));
+            const projectDir = path.join(tempDir, "project");
+            await fs.promises.mkdir(projectDir, { recursive: true });
+            mockQueryWithModels([
+                { value: "default", displayName: "Default", description: "Default model" },
+                {
+                    value: "sonnet",
+                    displayName: "Sonnet",
+                    description: "Sonnet 4.6 · Best for everyday tasks",
+                },
+                {
+                    value: "sonnet[1m]",
+                    displayName: "Sonnet (1M context)",
+                    description: "Sonnet 4.6 for long sessions",
+                },
+                {
+                    value: "opus",
+                    displayName: "Opus 4.8",
+                    description: "Claude Opus 4.8",
+                },
+            ]);
+            const { ClaudeAcpAgent } = await import("../acp-agent.js");
+            const agent = new ClaudeAcpAgent(createMockClient());
+            const response = await agent.createSession({
+                cwd: projectDir,
+                mcpServers: [],
+                _meta: { disableBuiltInTools: true },
+            });
+            const modelOption = response.configOptions.find((o) => o.id === "model");
+            const byValue = {};
+            for (const opt of modelOption.options) {
+                byValue[opt.value] = { name: opt.name, description: opt.description };
+            }
+            expect(byValue["claude-opus-4-6[1m]"].name).toBe("claude-opus-4-6[1m]");
+            expect(byValue["claude-opus-4-6"].name).toBe("claude-opus-4-6");
+        });
+        it("preserves ANTHROPIC_CUSTOM_MODEL_OPTION even when absent from the allowlist", async () => {
+            // Per the model-config docs, ANTHROPIC_CUSTOM_MODEL_OPTION adds an entry
+            // "without replacing the built-in aliases" and "appears at the bottom of
+            // the /model picker", so it is exempt from the availableModels allowlist
+            // (the same way the Default option is "not affected by availableModels").
+            // ACP must match: a slim alias allowlist must not hide the custom model
+            // row, and it appears last, after the allowlisted entries.
+            // https://code.claude.com/docs/en/model-config#add-a-custom-model-option
+            const originalEnv = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+            process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = "claude-opus-4-8[1m]";
+            try {
+                await fs.promises.writeFile(path.join(tempDir, "settings.json"), JSON.stringify({
+                    availableModels: ["sonnet", "opus", "haiku"],
+                }));
+                const projectDir = path.join(tempDir, "project");
+                await fs.promises.mkdir(projectDir, { recursive: true });
+                mockQueryWithModels([
+                    { value: "default", displayName: "Default", description: "Default model" },
+                    { value: "sonnet", displayName: "Sonnet", description: "Claude Sonnet 4.6" },
+                    { value: "opus", displayName: "Opus", description: "Claude Opus 4.6" },
+                    { value: "haiku", displayName: "Haiku", description: "Claude Haiku 4.5" },
+                    {
+                        value: "claude-opus-4-8[1m]",
+                        displayName: "Opus 4.8",
+                        description: "Claude Opus 4.8",
+                    },
+                ]);
+                const { ClaudeAcpAgent } = await import("../acp-agent.js");
+                const agent = new ClaudeAcpAgent(createMockClient());
+                const response = await agent.createSession({
+                    cwd: projectDir,
+                    mcpServers: [],
+                    _meta: { disableBuiltInTools: true },
+                });
+                const modelOption = response.configOptions.find((o) => o.id === "model");
+                expect(modelOption.options.map((o) => o.value)).toEqual([
+                    "default",
+                    "sonnet",
+                    "opus",
+                    "haiku",
+                    "claude-opus-4-8[1m]",
+                ]);
+                const custom = modelOption.options.find((o) => o.value === "claude-opus-4-8[1m]");
+                expect(custom.name).toBe("Opus 4.8");
+                expect(custom.description).toBe("Claude Opus 4.8");
+            }
+            finally {
+                if (originalEnv === undefined) {
+                    delete process.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+                }
+                else {
+                    process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = originalEnv;
+                }
+            }
+        });
+        it("does not duplicate the custom model option when also in the allowlist", async () => {
+            // If the user lists the custom model's exact ID in availableModels AND it
+            // is set as ANTHROPIC_CUSTOM_MODEL_OPTION, it must appear exactly once.
+            const originalEnv = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+            process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = "claude-opus-4-8[1m]";
+            try {
+                await fs.promises.writeFile(path.join(tempDir, "settings.json"), JSON.stringify({
+                    availableModels: ["sonnet", "claude-opus-4-8[1m]"],
+                }));
+                const projectDir = path.join(tempDir, "project");
+                await fs.promises.mkdir(projectDir, { recursive: true });
+                mockQueryWithModels([
+                    { value: "default", displayName: "Default", description: "Default model" },
+                    { value: "sonnet", displayName: "Sonnet", description: "Claude Sonnet 4.6" },
+                    {
+                        value: "claude-opus-4-8[1m]",
+                        displayName: "Opus 4.8",
+                        description: "Claude Opus 4.8",
+                    },
+                ]);
+                const { ClaudeAcpAgent } = await import("../acp-agent.js");
+                const agent = new ClaudeAcpAgent(createMockClient());
+                const response = await agent.createSession({
+                    cwd: projectDir,
+                    mcpServers: [],
+                    _meta: { disableBuiltInTools: true },
+                });
+                const modelOption = response.configOptions.find((o) => o.id === "model");
+                expect(modelOption.options.map((o) => o.value)).toEqual([
+                    "default",
+                    "sonnet",
+                    "claude-opus-4-8[1m]",
+                ]);
+            }
+            finally {
+                if (originalEnv === undefined) {
+                    delete process.env.ANTHROPIC_CUSTOM_MODEL_OPTION;
+                }
+                else {
+                    process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = originalEnv;
+                }
+            }
+        });
     });
     it("resolves model aliases like opus[1m] to the correct model", async () => {
         await fs.promises.writeFile(path.join(tempDir, "settings.json"), JSON.stringify({
@@ -525,7 +667,7 @@ describe("ClaudeAcpAgent settings", () => {
             _meta: { disableBuiltInTools: true },
         });
         expect(setModelSpy).toHaveBeenCalledWith("claude-opus-4-6-1m");
-        expect(response.models.currentModelId).toBe("claude-opus-4-6-1m");
+        expect(response.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("claude-opus-4-6-1m");
     });
     it("skips the initial setModel when the resolved value matches the SDK's model list verbatim", async () => {
         // Covers the launcher case from PR #646: the launcher bakes the model into
@@ -559,7 +701,7 @@ describe("ClaudeAcpAgent settings", () => {
                 _meta: { disableBuiltInTools: true },
             });
             expect(setModelSpy).not.toHaveBeenCalled();
-            expect(response.models.currentModelId).toBe("claude-opus-4-6");
+            expect(response.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("claude-opus-4-6");
         }
         finally {
             if (originalEnv === undefined) {
@@ -602,6 +744,6 @@ describe("ClaudeAcpAgent settings", () => {
             _meta: { disableBuiltInTools: true },
         });
         expect(setModelSpy).toHaveBeenCalledWith("claude-haiku-4-5");
-        expect(response.models.currentModelId).toBe("claude-haiku-4-5");
+        expect(response.configOptions?.find((o) => o.id === "model")?.currentValue).toBe("claude-haiku-4-5");
     });
 });

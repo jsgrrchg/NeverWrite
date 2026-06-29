@@ -74,6 +74,23 @@ import { findAdjacentPane } from "./workspaceLayoutNavigation";
  */
 const MAX_RECENTLY_CLOSED_TABS = 20;
 
+/**
+ * How a pane lays out its tabs.
+ * - "default": one active tab visible at a time (classic tab strip).
+ * - "stacked": all tabs rendered side-by-side as columns (Obsidian-style).
+ *
+ * This is per-pane: toggling it on one pane must not affect the others.
+ */
+export type TabDisplayMode = "default" | "stacked";
+
+export const DEFAULT_TAB_DISPLAY_MODE: TabDisplayMode = "default";
+
+export function normalizeTabDisplayMode(
+    mode: TabDisplayMode | undefined | null,
+): TabDisplayMode {
+    return mode === "stacked" ? "stacked" : DEFAULT_TAB_DISPLAY_MODE;
+}
+
 type WorkspaceSetState<TState> = (
     partial:
         | TState
@@ -95,6 +112,7 @@ export interface PaneWorkspaceState {
 export interface EditorPaneState extends PaneWorkspaceState {
     id: string;
     tabIds: string[];
+    tabDisplayMode: TabDisplayMode;
 }
 
 export interface EditorPaneInput {
@@ -105,6 +123,7 @@ export interface EditorPaneInput {
     activationHistory?: string[];
     tabNavigationHistory?: string[];
     tabNavigationIndex?: number;
+    tabDisplayMode?: TabDisplayMode;
 }
 
 export type WorkspacePaneNeighborDirection = "left" | "right" | "up" | "down";
@@ -236,6 +255,8 @@ export interface EditorWorkspaceActions {
         fromIndex: number,
         toIndex: number,
     ) => void;
+    setPaneTabDisplayMode: (paneId: string, mode: TabDisplayMode) => void;
+    togglePaneTabDisplayMode: (paneId: string) => void;
     closePane: (paneId: string) => void;
     setTabDirty: (tabId: string, dirty: boolean) => void;
     updateTabContent: (tabId: string, content: string) => void;
@@ -319,6 +340,7 @@ type EditorWorkspaceReadableState = Pick<
 type EditorPaneWorkspaceInput = Partial<PaneWorkspaceState> & {
     tabIds?: readonly string[];
     tabsById?: Record<string, Tab>;
+    tabDisplayMode?: TabDisplayMode;
 };
 
 function normalizePaneWorkspaceState(
@@ -415,6 +437,7 @@ export function createEditorPaneState(
 ): EditorPaneState {
     return {
         id,
+        tabDisplayMode: normalizeTabDisplayMode(workspace.tabDisplayMode),
         ...normalizePaneWorkspaceState(workspace),
     };
 }
@@ -836,6 +859,21 @@ export function selectEditorPaneActiveTab<
     return pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
 }
 
+export function selectPaneTab<TState extends EditorWorkspaceReadableState>(
+    state: TState,
+    paneId: string | null | undefined,
+    tabId: string,
+) {
+    const pane = selectPaneState(state, paneId);
+    return pane.tabs.find((tab) => tab.id === tabId) ?? null;
+}
+
+export function selectPaneTabDisplayMode<
+    TState extends EditorWorkspaceReadableState,
+>(state: TState, paneId?: string | null): TabDisplayMode {
+    return normalizeTabDisplayMode(selectPaneState(state, paneId).tabDisplayMode);
+}
+
 export function selectFocusedEditorTab<
     TState extends EditorWorkspaceReadableState,
 >(state: TState) {
@@ -1066,13 +1104,14 @@ function getSingletonWorkspaceTabKind(
 
 function insertNormalizedTab(
     state: Pick<
-        EditorWorkspaceState,
+        EditorPaneState,
         | "tabs"
         | "pinnedTabIds"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
         | "tabNavigationIndex"
+        | "tabDisplayMode"
     >,
     incoming: Tab,
     index?: number,
@@ -1093,6 +1132,7 @@ function insertNormalizedTab(
                       );
             return {
                 tabs,
+                tabDisplayMode: state.tabDisplayMode,
                 pinnedTabIds: state.pinnedTabIds.filter(
                     (tabId) => tabId !== incoming.id,
                 ),
@@ -1116,6 +1156,7 @@ function insertNormalizedTab(
     tabs.splice(boundedIndex, 0, incoming);
     return {
         tabs,
+        tabDisplayMode: state.tabDisplayMode,
         pinnedTabIds: state.pinnedTabIds.filter(
             (tabId) => tabId !== incoming.id,
         ),
@@ -1125,13 +1166,14 @@ function insertNormalizedTab(
 
 function removeTabFromWorkspaceState(
     state: Pick<
-        EditorWorkspaceState,
+        EditorPaneState,
         | "tabs"
         | "pinnedTabIds"
         | "activeTabId"
         | "activationHistory"
         | "tabNavigationHistory"
         | "tabNavigationIndex"
+        | "tabDisplayMode"
     >,
     tabId: string,
 ) {
@@ -1172,6 +1214,8 @@ function removeTabFromWorkspaceState(
             );
             return {
                 tabs,
+                tabDisplayMode: state.tabDisplayMode,
+                pinnedTabIds: state.pinnedTabIds.filter((id) => id !== tabId),
                 activeTabId,
                 activationHistory,
                 tabNavigationHistory: navigation.history,
@@ -1185,6 +1229,7 @@ function removeTabFromWorkspaceState(
 
     return {
         tabs,
+        tabDisplayMode: state.tabDisplayMode,
         pinnedTabIds: state.pinnedTabIds.filter((id) => id !== tabId),
         activeTabId,
         activationHistory,
@@ -1226,6 +1271,7 @@ function mergePaneStates(
         activationHistory,
         tabNavigationHistory,
         tabNavigationIndex,
+        tabDisplayMode: targetPane.tabDisplayMode,
     });
 }
 
@@ -2011,7 +2057,9 @@ function mutatePaneWorkspace(
         | "tabNavigationIndex"
     >,
     paneId: string,
-    mutate: (pane: EditorPaneState) => Partial<PaneWorkspaceState>,
+    mutate: (
+        pane: EditorPaneState,
+    ) => Partial<PaneWorkspaceState> & { tabDisplayMode?: TabDisplayMode },
     options?: {
         focusedPaneId?: string | null;
     },
@@ -2047,7 +2095,9 @@ function mutateFocusedPaneWorkspace(
         | "tabNavigationHistory"
         | "tabNavigationIndex"
     >,
-    mutate: (pane: EditorPaneState) => Partial<PaneWorkspaceState>,
+    mutate: (
+        pane: EditorPaneState,
+    ) => Partial<PaneWorkspaceState> & { tabDisplayMode?: TabDisplayMode },
     options?: {
         preserveFocus?: boolean;
     },
@@ -3399,6 +3449,46 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
             });
         },
 
+        setPaneTabDisplayMode: (paneId, mode) => {
+            const nextMode = normalizeTabDisplayMode(mode);
+            set((state) => {
+                const workspace = getEffectivePaneWorkspace(state);
+                const pane = workspace.panes.find(
+                    (candidate) => candidate.id === paneId,
+                );
+                if (!pane || pane.tabDisplayMode === nextMode) {
+                    return state;
+                }
+
+                return buildWorkspaceSnapshot({
+                    panes: workspace.panes.map((candidate) =>
+                        candidate.id === paneId
+                            ? createEditorPaneState(candidate.id, {
+                                  ...candidate,
+                                  tabDisplayMode: nextMode,
+                              })
+                            : candidate,
+                    ),
+                    focusedPaneId: workspace.focusedPaneId,
+                    layoutTree: workspace.layoutTree,
+                    tabsById: state.tabsById,
+                });
+            });
+        },
+
+        togglePaneTabDisplayMode: (paneId) => {
+            const pane = getEffectivePaneWorkspace(get()).panes.find(
+                (candidate) => candidate.id === paneId,
+            );
+            if (!pane) {
+                return;
+            }
+            get().setPaneTabDisplayMode(
+                paneId,
+                pane.tabDisplayMode === "stacked" ? "default" : "stacked",
+            );
+        },
+
         closePane: (paneId) => {
             set((state) => {
                 const workspace = getEffectivePaneWorkspace(state);
@@ -3877,6 +3967,7 @@ export function createEditorWorkspaceSlice<TState extends EditorWorkspaceStore>(
                             activationHistory: pane.activationHistory,
                             tabNavigationHistory: pane.tabNavigationHistory,
                             tabNavigationIndex: pane.tabNavigationIndex,
+                            tabDisplayMode: pane.tabDisplayMode,
                         },
                     ),
                 ];

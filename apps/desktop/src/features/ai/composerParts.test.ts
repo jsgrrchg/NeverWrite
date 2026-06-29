@@ -43,7 +43,18 @@ describe("serializeComposerPartsForAI", () => {
                 mimeType: "text/markdown",
                 label: "guide.md",
             },
-            { id: "text-5", type: "text", text: " and " },
+        ];
+
+        expect(serializeComposerParts(parts)).toBe(
+            "Review [@Spec] and [@📁 docs] plus [@Lines 10-12] with [📎 guide.md]",
+        );
+        expect(serializeComposerPartsForAI(parts)).toBe(
+            "Review /vault/notes/spec.md and /vault/docs plus /vault/notes/spec.md:10-12 with /vault/docs/guide.md",
+        );
+    });
+
+    it("omits image attachments from the prompt because they are sent separately", () => {
+        const parts: AIComposerPart[] = [
             {
                 id: "shot-1",
                 type: "screenshot",
@@ -51,14 +62,22 @@ describe("serializeComposerPartsForAI", () => {
                 mimeType: "image/png",
                 label: "Screenshot 10:42 hrs",
             },
+            { id: "text-1", type: "text", text: " what do you see" },
+            {
+                id: "file-image",
+                type: "file_attachment",
+                filePath: "/vault/assets/chat/frame.webp",
+                mimeType: "image/webp",
+                label: "frame.webp",
+            },
+            { id: "text-2", type: "text", text: "?" },
         ];
 
-        expect(serializeComposerParts(parts)).toBe(
-            "Review [@Spec] and [@📁 docs] plus [@Lines 10-12] with [📎 guide.md] and [Screenshot 10:42 hrs]",
-        );
-        expect(serializeComposerPartsForAI(parts)).toBe(
-            "Review /vault/notes/spec.md and /vault/docs plus /vault/notes/spec.md:10-12 with /vault/docs/guide.md and /vault/assets/chat/screenshot.png",
-        );
+        expect(
+            serializeComposerPartsForAI(parts, {
+                vaultPath: "/vault",
+            }).trim(),
+        ).toBe("what do you see?");
     });
 
     it("resolves relative paths against the vault root before sending to the agent", () => {

@@ -1,10 +1,12 @@
 [package]
 name = "neverwrite-native-backend"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 
 [dependencies]
-agent-client-protocol = { version = "=0.12.1", features = ["unstable"] }
+agent-client-protocol = { version = "=0.14.0", features = ["unstable"] }
+acp12 = { package = "agent-client-protocol-legacy", path = "../../../vendor/acp12/agent-client-protocol", features = ["unstable"] }
+base64 = "0.22.1"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }
 neverwrite-diff = { path = "../../../crates/diff" }
 neverwrite-ai = { path = "../../../crates/ai" }
@@ -18,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
 spellbook = "0.4.0"
-tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "process", "io-util", "time", "macros"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 [dev-dependencies]

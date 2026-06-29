@@ -7,6 +7,11 @@ import { renderComponent, setVaultEntries } from "../../../test/test-utils";
 import type { AIChatSession } from "../types";
 import type { TrackedFile } from "../diff/actionLogTypes";
 import { EditedFilesBufferPanel } from "./EditedFilesBufferPanel";
+import {
+    COMPACT_REVIEW_MAX_LIST_HEIGHT_PX,
+    COMPACT_REVIEW_MAX_VISIBLE_ROWS,
+    COMPACT_REVIEW_ROW_HEIGHT_PX,
+} from "./editedFilesReviewStyles";
 import { resetChatStore, useChatStore } from "../store/chatStore";
 import { emptyPatch, syncDerivedLinePatch } from "../store/actionLogModel";
 
@@ -107,6 +112,98 @@ describe("EditedFilesBufferPanel", () => {
         renderComponent(<EditedFilesBufferPanel />);
 
         expect(screen.queryByText("Edits")).not.toBeInTheDocument();
+    });
+
+    it("does not render false entries for permission, user input, or URL requests without diffs", () => {
+        const session = createSession("session-interactions-only", []);
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            sessionsById: {
+                [session.sessionId]: {
+                    ...session,
+                    status: "waiting_user_input",
+                    activeWorkCycleId: "cycle-interactions",
+                    visibleWorkCycleId: "cycle-interactions",
+                    messages: [
+                        {
+                            id: "permission:no-diff",
+                            role: "assistant",
+                            kind: "permission",
+                            title: "Permission request",
+                            content: "Run command",
+                            timestamp: 1,
+                            workCycleId: "cycle-interactions",
+                            permissionRequestId: "permission-no-diff",
+                            permissionOptions: [
+                                {
+                                    option_id: "allow_once",
+                                    name: "Allow once",
+                                    kind: "allow_once",
+                                },
+                            ],
+                            meta: {
+                                status: "pending",
+                            },
+                        },
+                        {
+                            id: "user-input:no-diff",
+                            role: "assistant",
+                            kind: "user_input_request",
+                            title: "Need a choice",
+                            content: "Which scope should I use?",
+                            timestamp: 2,
+                            workCycleId: "cycle-interactions",
+                            userInputRequestId: "input-no-diff",
+                            userInputQuestions: [
+                                {
+                                    id: "scope",
+                                    header: "Scope",
+                                    question: "Which scope should I use?",
+                                    is_other: false,
+                                    is_secret: false,
+                                    options: [
+                                        {
+                                            label: "Safe",
+                                            value: "safe",
+                                            description: "Use the narrow scope.",
+                                        },
+                                    ],
+                                },
+                            ],
+                            meta: {
+                                status: "pending",
+                            },
+                        },
+                        {
+                            id: "url-elicitation:no-diff",
+                            role: "assistant",
+                            kind: "url_elicitation_request",
+                            title: "Authorize access",
+                            content: "https://example.com/auth",
+                            timestamp: 3,
+                            workCycleId: "cycle-interactions",
+                            urlElicitationRequestId: "url-no-diff",
+                            urlElicitationId: "elicitation-no-diff",
+                            urlElicitationUrl: "https://example.com/auth",
+                            meta: {
+                                status: "pending",
+                            },
+                        },
+                    ],
+                },
+            },
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        expect(screen.queryByText("Edits")).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Review" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Reject All" }),
+        ).not.toBeInTheDocument();
     });
 
     it("renders legacy tracked files without entering a sync loop", () => {
@@ -516,14 +613,67 @@ describe("EditedFilesBufferPanel", () => {
         expect(reviewTab?.title).toBe("Review Kilo");
     });
 
-    it("limits the expanded compact list to four visible items and scrolls the rest", () => {
-        const session = createSession("session-scroll", [
-            createTrackedFile("/vault/src/one.ts"),
-            createTrackedFile("/vault/src/two.ts"),
-            createTrackedFile("/vault/src/three.ts"),
-            createTrackedFile("/vault/src/four.ts"),
-            createTrackedFile("/vault/src/five.ts"),
-        ]);
+    it("opens the full review tab with the Grok runtime title", () => {
+        const session = createSession(
+            "session-review-grok",
+            [createTrackedFile("/vault/src/review-grok.ts")],
+            "grok-acp",
+        );
+
+        useChatStore.setState((state) => ({
+            ...state,
+            activeSessionId: session.sessionId,
+            runtimes: [
+                {
+                    runtime: {
+                        id: "grok-acp",
+                        name: "Grok",
+                        description: "Grok runtime",
+                        capabilities: [],
+                    },
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                },
+            ],
+            sessionsById: {
+                [session.sessionId]: session,
+            },
+            rejectEditedFile: vi.fn(async () => {}),
+            rejectAllEditedFiles: vi.fn(async () => {}),
+            keepAllEditedFiles: vi.fn(),
+        }));
+
+        renderComponent(<EditedFilesBufferPanel />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Review" }));
+
+        const reviewTab = useEditorStore
+            .getState()
+            .tabs.find(
+                (tab) =>
+                    isReviewTab(tab) && tab.sessionId === session.sessionId,
+            );
+
+        expect(reviewTab?.title).toBe("Review Grok");
+    });
+
+    it("keeps the expanded compact list bounded and row-stable for many pending edits", () => {
+        const files = Array.from({ length: 17 }, (_, index) => {
+            const lineCount = index + 12;
+            return createTrackedFile(
+                `/vault/src/feature-${index + 1}/very-long-edited-file-name-${index + 1}.tsx`,
+                {
+                    diffBase: "previous line\n",
+                    currentText: Array.from(
+                        { length: lineCount },
+                        (_, lineIndex) =>
+                            `new line ${lineIndex + 1} for edited file ${index + 1}`,
+                    ).join("\n"),
+                },
+            );
+        });
+        const session = createSession("session-scroll", files);
 
         useChatStore.setState((state) => ({
             ...state,
@@ -543,11 +693,27 @@ describe("EditedFilesBufferPanel", () => {
         ).not.toBeInTheDocument();
         expect(
             screen.getAllByRole("button", { name: "Open File" }),
-        ).toHaveLength(5);
+        ).toHaveLength(17);
         expect(screen.getByTestId("edited-files-buffer-list")).toHaveStyle({
-            maxHeight: "208px",
+            maxHeight: `${COMPACT_REVIEW_MAX_LIST_HEIGHT_PX}px`,
             overflowY: "auto",
         });
+        expect(screen.getAllByTestId("edited-files-buffer-row")).toHaveLength(
+            17,
+        );
+        expect(17).toBeGreaterThan(COMPACT_REVIEW_MAX_VISIBLE_ROWS);
+        expect(screen.getAllByTestId("edited-files-buffer-row")[0]).toHaveStyle(
+            {
+                height: `${COMPACT_REVIEW_ROW_HEIGHT_PX}px`,
+                minHeight: `${COMPACT_REVIEW_ROW_HEIGHT_PX}px`,
+                maxHeight: `${COMPACT_REVIEW_ROW_HEIGHT_PX}px`,
+            },
+        );
+        expect(screen.getAllByRole("button", { name: "Open File" })[0])
+            .toHaveStyle({
+                width: "24px",
+                height: "24px",
+            });
     });
 
     it("uses a chevron button to collapse and expand the edits list", () => {

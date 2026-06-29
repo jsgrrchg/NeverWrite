@@ -110,6 +110,25 @@ function ChatProviderIcon({ runtimeId }: { readonly runtimeId: string }) {
         );
     }
 
+    if (runtimeId.includes("grok")) {
+        return (
+            <svg
+                className="shrink-0 opacity-55"
+                fill="none"
+                height={12}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                viewBox="0 0 16 16"
+                width={12}
+            >
+                <path d="M3.25 8a4.75 4.75 0 1 1 4.75 4.75" strokeWidth="1.1" />
+                <path d="M8 3.25v4.75h4.75" strokeWidth="1.1" />
+                <path d="M4.4 11.6 11.6 4.4" strokeWidth="1" />
+            </svg>
+        );
+    }
+
     return (
         <svg
             className="shrink-0 opacity-55"

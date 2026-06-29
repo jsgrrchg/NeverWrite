@@ -1,10 +1,10 @@
 # NeverWrite APT Repository
 
 NeverWrite publishes a signed third-party APT repository for Ubuntu/Debian
-packages at:
+packages through the latest GitHub Release:
 
 ```text
-https://jsgrrchg.github.io/NeverWrite/apt
+https://github.com/jsgrrchg/NeverWrite/releases/latest/download
 ```
 
 This repository is separate from the Electron updater feeds. AppImage builds use
@@ -20,9 +20,8 @@ curl -fsSL https://jsgrrchg.github.io/NeverWrite/apt/neverwrite-archive-keyring.
 sudo chmod 0644 /etc/apt/keyrings/neverwrite.asc
 sudo tee /etc/apt/sources.list.d/neverwrite.sources >/dev/null <<'EOF'
 Types: deb
-URIs: https://jsgrrchg.github.io/NeverWrite/apt
-Suites: stable
-Components: main
+URIs: https://github.com/jsgrrchg/NeverWrite/releases/latest/download
+Suites: ./
 Architectures: amd64 arm64
 Signed-By: /etc/apt/keyrings/neverwrite.asc
 EOF
@@ -43,41 +42,35 @@ Do not use `apt-key`; the source is scoped to
 
 ## Published Layout
 
-The release workflow publishes these files to `gh-pages`:
+The release workflow uploads the repository metadata as GitHub Release assets:
+
+```text
+InRelease
+Release
+Release.gpg
+Packages
+Packages.gz
+NeverWrite-0.3.5-amd64.deb
+NeverWrite-0.3.5-arm64.deb
+```
+
+The `.deb` binary packages stay on GitHub Releases with the other release
+assets. The `Filename` field in each `Packages` stanza is the release asset file
+name, for example `NeverWrite-0.3.5-amd64.deb`. APT resolves it relative to the
+configured `latest/download` release URL.
+
+GitHub Pages only publishes the install helper files:
 
 ```text
 apt/
   neverwrite-archive-keyring.asc
   neverwrite.sources.example
-  pool/
-    main/
-      n/
-        neverwrite/
-          neverwrite_0.3.0_amd64.deb
-          neverwrite_0.3.0_arm64.deb
-  dists/
-    stable/
-      InRelease
-      Release
-      Release.gpg
-      main/
-        binary-amd64/
-          Packages
-          Packages.gz
-        binary-arm64/
-          Packages
-          Packages.gz
 ```
 
-The `.deb` binary packages are stored inside the APT repository pool. The
-`Filename` field in each `Packages` index must be a relative pool path, for
-example `pool/main/n/neverwrite/neverwrite_0.3.0_amd64.deb`. APT then resolves
-the package relative to the configured repository URL.
-
 The workflow reads the `.deb` metadata from the staged release assets,
-copies the packages into `apt/pool/`, generates `Packages` and `Release`, signs
-the repository, validates checksums and signatures, then publishes the result
-with the existing Electron feeds.
+generates flat `Packages` and `Release` metadata, signs the repository,
+validates checksums and signatures, uploads the metadata to the GitHub Release,
+then publishes the source example with the existing Electron feeds.
 
 ## Required GitHub Secrets
 
@@ -112,8 +105,8 @@ node scripts/validate-apt-repository.mjs ...
 Manual post-release checks:
 
 ```bash
-curl -fsSL https://jsgrrchg.github.io/NeverWrite/apt/dists/stable/InRelease | head
-curl -fsSL https://jsgrrchg.github.io/NeverWrite/apt/dists/stable/main/binary-amd64/Packages.gz \
+curl -fsSL https://github.com/jsgrrchg/NeverWrite/releases/latest/download/InRelease | head
+curl -fsSL https://github.com/jsgrrchg/NeverWrite/releases/latest/download/Packages.gz \
   | gunzip \
   | grep -E '^(Package|Version|Architecture|Filename):'
 apt-cache policy neverwrite
@@ -121,7 +114,7 @@ apt-cache policy neverwrite
 
 ## Rollback
 
-Rollback is done by regenerating repository metadata so APT no longer advertises
-the bad version. Do not delete release assets first. Keep at least one previous
-version in `apt/pool/`, regenerate `Packages` and `Release`, sign again, and
-publish `gh-pages`.
+Rollback is done by regenerating and re-uploading repository metadata so APT no
+longer advertises the bad version. Do not delete release assets first. Rebuild
+`Packages` and `Release`, sign again, upload the metadata to the relevant
+GitHub Release, and update the source example if the public endpoint changes.

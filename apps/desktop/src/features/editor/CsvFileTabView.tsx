@@ -86,9 +86,10 @@ const csvTextColumn = createTextColumn<string>({
 
 interface CsvFileTabViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
+export function CsvFileTabView({ paneId, tabId }: CsvFileTabViewProps) {
     const initialEditorState = buildCsvEditorState("", null);
     const contentRef = useRef(initialEditorState.rawContent);
     const editorStateRef = useRef<CsvEditorState>(initialEditorState);
@@ -106,7 +107,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
         (nextContent: string) => {
             const nextState = buildCsvEditorState(
                 nextContent,
-                getActiveCsvTabMetadata(paneId),
+                getActiveCsvTabMetadata(paneId, tabId),
                 getCsvIdentitySnapshot(editorStateRef.current),
             );
             contentRef.current = nextState.rawContent;
@@ -116,7 +117,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
                 nextState.isTableAvailable ? currentMode : "raw",
             );
         },
-        [paneId],
+        [paneId, tabId],
     );
 
     const {
@@ -127,6 +128,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
         keepLocalFileVersion,
     } = useEditableFileResource({
         paneId,
+        tabId,
         getCurrentContent,
         applyIncomingContent,
         acceptTab: (candidate) => candidate.viewer === "csv",
@@ -178,7 +180,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
             const nextState = buildCsvEditorState(
                 nextRawContent,
                 {
-                    ...getActiveCsvTabMetadata(paneId),
+                    ...getActiveCsvTabMetadata(paneId, tabId),
                     sizeBytes: getContentByteLength(nextRawContent),
                     contentTruncated: false,
                 },
@@ -193,7 +195,7 @@ export function CsvFileTabView({ paneId }: CsvFileTabViewProps) {
             setEditorState(nextState);
             handleLocalContentChange(nextRawContent);
         },
-        [handleLocalContentChange, paneId],
+        [handleLocalContentChange, paneId, tabId],
     );
 
     const handleGridChange = useCallback(
@@ -902,11 +904,12 @@ function createCsvEntityId(prefix: "column" | "row") {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function getActiveCsvTabMetadata(paneId?: string) {
+function getActiveCsvTabMetadata(paneId?: string, boundTabId?: string) {
     const state = useEditorStore.getState();
     const pane = selectEditorPaneState(state, paneId);
+    const resolvedTabId = boundTabId ?? pane.activeTabId;
     const activeTab = pane.tabs.find(
-        (candidate) => candidate.id === pane.activeTabId,
+        (candidate) => candidate.id === resolvedTabId,
     );
     if (!activeTab || !isFileTab(activeTab) || activeTab.viewer !== "csv") {
         return null;

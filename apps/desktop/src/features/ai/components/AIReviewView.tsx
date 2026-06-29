@@ -3,6 +3,7 @@ import {
     useEditorStore,
     isReviewTab,
     selectEditorPaneActiveTab,
+    selectPaneTab,
     type ReviewTab,
 } from "../../../app/store/editorStore";
 import { useSettingsStore } from "../../../app/store/settingsStore";
@@ -162,11 +163,14 @@ function StatChips({
 
 interface AIReviewViewProps {
     paneId?: string;
+    tabId?: string;
 }
 
-export function AIReviewView({ paneId }: AIReviewViewProps) {
+export function AIReviewView({ paneId, tabId }: AIReviewViewProps) {
     const tab = useEditorStore((state) => {
-        const current = selectEditorPaneActiveTab(state, paneId);
+        const current = tabId
+            ? selectPaneTab(state, paneId, tabId)
+            : selectEditorPaneActiveTab(state, paneId);
         return current && isReviewTab(current) ? current : null;
     });
 
@@ -306,7 +310,6 @@ function ReviewContent({ tab }: { tab: ReviewTab }) {
         },
         [
             expansion.expandedKeys,
-            persistedState?.scrollTop,
             tab.sessionId,
             vaultPath,
         ],

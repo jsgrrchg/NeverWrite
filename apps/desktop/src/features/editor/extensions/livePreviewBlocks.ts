@@ -14,7 +14,6 @@ import {
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import katex from "katex";
-import { vaultInvoke } from "../../../app/utils/vaultInvoke";
 import {
     buildVaultPreviewUrlFromAbsolutePath,
     isAuthorizedVaultPreviewPath,
@@ -29,7 +28,6 @@ import {
 import {
     useEditorStore,
     isNoteTab,
-    selectEditorWorkspaceTabs,
     selectFocusedEditorTab,
 } from "../../../app/store/editorStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
@@ -47,6 +45,12 @@ import {
     selectionTouchesLine,
     selectionTouchesRange,
 } from "./selectionActivity";
+import {
+    extractSection,
+    findPreviewNote,
+    getNotePreviewContentState,
+    renderEmbedPreview,
+} from "./notePreviewSource";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
 const PDF_EXTENSION = /\.pdf([?#].*)?$/i;
@@ -55,7 +59,6 @@ const TABLE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const TABLE_BOLD_RE = /\*\*(?=\S)(.+?\S)\*\*/g;
 const STANDALONE_URL_RE = /^https?:\/\/[^\s<>()"\]]+$/i;
-const NOTE_PREVIEW_CACHE_LIMIT = 64;
 type TableAlignment = "left" | "center" | "right";
 export interface TableInteractionHandlers {
     resolveWikilink: (target: string) => boolean;
@@ -78,29 +81,9 @@ type ParsedTableRow = {
     lineEnd: number;
 };
 
-const notePreviewContentCache = new Map<string, string>();
-const notePreviewRequestCache = new Map<string, Promise<string | null>>();
-
-function rememberNotePreviewContent(noteId: string, content: string) {
-    if (notePreviewContentCache.has(noteId)) {
-        notePreviewContentCache.delete(noteId);
-    }
-    notePreviewContentCache.set(noteId, content);
-
-    while (notePreviewContentCache.size > NOTE_PREVIEW_CACHE_LIMIT) {
-        const oldestKey = notePreviewContentCache.keys().next().value;
-        if (oldestKey === undefined) break;
-        notePreviewContentCache.delete(oldestKey);
-    }
-}
-
-export function invalidateLivePreviewNoteCache(
-    noteId: string | null | undefined,
-) {
-    if (!noteId) return;
-    notePreviewContentCache.delete(noteId);
-    notePreviewRequestCache.delete(noteId);
-}
+// Re-exported under its historical name; the implementation now lives in the
+// shared note-preview source consumed by both embeds and hover previews.
+export { invalidateNotePreviewCache as invalidateLivePreviewNoteCache } from "./notePreviewSource";
 
 function getActiveNotePath() {
     const activeTab = selectFocusedEditorTab(useEditorStore.getState());
@@ -231,28 +214,6 @@ export function resolvePreviewAssetPath(
     }
 
     return `${joinFilePath(baseDirectory, pathname)}${suffix}`;
-}
-
-async function loadNotePreviewContent(noteId: string) {
-    const cached = notePreviewContentCache.get(noteId);
-    if (cached !== undefined) return cached;
-
-    const pending = notePreviewRequestCache.get(noteId);
-    if (pending) return pending;
-
-    const request = vaultInvoke<{ content: string }>("read_note", { noteId })
-        .then((detail) => {
-            rememberNotePreviewContent(noteId, detail.content);
-            notePreviewRequestCache.delete(noteId);
-            return detail.content;
-        })
-        .catch(() => {
-            notePreviewRequestCache.delete(noteId);
-            return null;
-        });
-
-    notePreviewRequestCache.set(noteId, request);
-    return request;
 }
 
 // --- Image size toolbar ---
@@ -769,102 +730,6 @@ class YouTubeWidget extends WidgetType {
 
 const EMBED_MAX_LINES = 6;
 
-/**
- * Append inline-formatted text to a parent element using DOM nodes (no innerHTML).
- * Handles **bold**, *italic*, `code`, and [[wikilinks|label]].
- */
-function appendFormattedInline(parent: HTMLElement, text: string): void {
-    const re =
-        /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[\[([^\]|]+?)(?:\|([^\]]+))?\]\])/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-
-    while ((m = re.exec(text)) !== null) {
-        if (m.index > last) {
-            parent.appendChild(
-                document.createTextNode(text.slice(last, m.index)),
-            );
-        }
-        if (m[2]) {
-            const el = document.createElement("strong");
-            el.textContent = m[2];
-            parent.appendChild(el);
-        } else if (m[3]) {
-            const el = document.createElement("em");
-            el.textContent = m[3];
-            parent.appendChild(el);
-        } else if (m[4]) {
-            const el = document.createElement("code");
-            el.textContent = m[4];
-            parent.appendChild(el);
-        } else if (m[5]) {
-            const el = document.createElement("span");
-            el.className = "cm-note-embed-wikilink";
-            el.textContent = m[6] ?? m[5];
-            parent.appendChild(el);
-        }
-        last = m.index + m[0].length;
-    }
-
-    if (last < text.length) {
-        parent.appendChild(document.createTextNode(text.slice(last)));
-    }
-}
-
-/** Render a few lines of markdown content into a DocumentFragment (safe DOM). */
-function renderEmbedPreview(text: string, maxLines: number): DocumentFragment {
-    const fragment = document.createDocumentFragment();
-    const lines = text
-        .split("\n")
-        .filter((l) => l.trim())
-        .slice(0, maxLines);
-
-    for (const line of lines) {
-        const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
-        if (hMatch) {
-            const div = document.createElement("div");
-            div.className = `cm-note-embed-h${hMatch[1].length}`;
-            appendFormattedInline(div, hMatch[2]);
-            fragment.appendChild(div);
-            continue;
-        }
-
-        const liMatch = line.match(/^\s*[-*+]\s+(.+)$/);
-        if (liMatch) {
-            const div = document.createElement("div");
-            div.className = "cm-note-embed-li";
-            appendFormattedInline(div, liMatch[1]);
-            fragment.appendChild(div);
-            continue;
-        }
-
-        const div = document.createElement("div");
-        appendFormattedInline(div, line);
-        fragment.appendChild(div);
-    }
-
-    return fragment;
-}
-
-/** Extract content under a specific heading until the next heading of same or higher level. */
-function extractSection(content: string, heading: string): string {
-    const lines = content.split("\n");
-    const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const headingRe = new RegExp(`^(#{1,6})\\s+${escaped}\\s*$`, "i");
-    const startIdx = lines.findIndex((l) => headingRe.test(l));
-    if (startIdx < 0) return "";
-
-    const level = lines[startIdx].match(/^(#+)/)?.[1].length ?? 1;
-    let endIdx = startIdx + 1;
-    while (endIdx < lines.length) {
-        const lm = lines[endIdx].match(/^(#+)\s/);
-        if (lm && lm[1].length <= level) break;
-        endIdx++;
-    }
-
-    return lines.slice(startIdx, endIdx).join("\n");
-}
-
 class NoteEmbedWidget extends WidgetType {
     private target: string;
     private heading?: string;
@@ -898,22 +763,7 @@ class NoteEmbedWidget extends WidgetType {
         wrapper.tabIndex = 0;
         wrapper.setAttribute("role", "link");
 
-        const note = useVaultStore
-            .getState()
-            .notes.find(
-                (entry) =>
-                    entry.id === this.target ||
-                    entry.title === this.target ||
-                    entry.id.replace(/\.md$/i, "") === this.target,
-            );
-        const openTab = selectEditorWorkspaceTabs(
-            useEditorStore.getState(),
-        ).find(
-            (tab) =>
-                (isNoteTab(tab) && tab.noteId === note?.id) ||
-                (isNoteTab(tab) && tab.noteId === this.target) ||
-                tab.title === this.target,
-        );
+        const note = findPreviewNote(this.target);
 
         const title = document.createElement("div");
         title.className = "cm-note-embed-title";
@@ -953,32 +803,22 @@ class NoteEmbedWidget extends WidgetType {
             wrapper.appendChild(meta);
         };
 
-        const fullContent =
-            openTab && isNoteTab(openTab) ? openTab.content : null;
-        if (fullContent !== null) {
-            if (note?.id) {
-                rememberNotePreviewContent(note.id, fullContent);
-            }
-            renderContent(fullContent);
-            outer.appendChild(wrapper);
-            return outer;
-        }
-
-        const cachedContent = note?.id
-            ? (notePreviewContentCache.get(note.id) ?? null)
-            : null;
-        if (cachedContent !== null) {
-            renderContent(cachedContent);
+        const { content, load } = getNotePreviewContentState(
+            note,
+            this.target,
+        );
+        if (content !== null) {
+            renderContent(content);
             outer.appendChild(wrapper);
             return outer;
         }
 
         renderContent(null);
 
-        if (note?.id) {
-            void loadNotePreviewContent(note.id).then((content) => {
-                if (!outer.isConnected || content === null) return;
-                renderContent(content);
+        if (load) {
+            void load().then((loaded) => {
+                if (!outer.isConnected || loaded === null) return;
+                renderContent(loaded);
             });
         }
 
@@ -1228,13 +1068,23 @@ function needsBlockRebuild(tr: Transaction): boolean {
     );
 }
 
+function needsSyntaxBackedBlockRebuild(tr: Transaction): boolean {
+    // CodeMirror may finish markdown parsing in a background language-state
+    // transaction with no document or selection change. Syntax-backed widgets
+    // must rebuild when new nodes become available.
+    if (!tr.docChanged && syntaxTree(tr.startState) !== syntaxTree(tr.state)) {
+        return true;
+    }
+    return needsBlockRebuild(tr);
+}
+
 export function createCodeBlockLivePreviewExtension() {
     return StateField.define<DecorationSet>({
         create(state) {
             return buildCodeBlockDecorations(state);
         },
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
+            if (!needsSyntaxBackedBlockRebuild(transaction)) {
                 return transaction.docChanged
                     ? decorations.map(transaction.changes)
                     : decorations;
@@ -2294,7 +2144,7 @@ export function createImageLivePreviewExtension(vaultRoot: string | null) {
             return buildBlockDecorations(state, vaultRoot);
         },
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
+            if (!needsSyntaxBackedBlockRebuild(transaction)) {
                 return transaction.docChanged
                     ? decorations.map(transaction.changes)
                     : decorations;
@@ -2315,7 +2165,7 @@ export function createTableLivePreviewExtension(
             return buildTableDecorations(state, interactions);
         },
         update(decorations, transaction) {
-            if (!needsBlockRebuild(transaction)) {
+            if (!needsSyntaxBackedBlockRebuild(transaction)) {
                 return transaction.docChanged
                     ? decorations.map(transaction.changes)
                     : decorations;

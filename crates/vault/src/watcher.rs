@@ -81,6 +81,12 @@ impl WriteTracker {
     }
 }
 
+impl Default for WriteTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 const SELF_WRITE_WINDOW: Duration = Duration::from_secs(2);
 
 fn prune_expired(written: &mut HashMap<PathBuf, TrackedWrite>) {

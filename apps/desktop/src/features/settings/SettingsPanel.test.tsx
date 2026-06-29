@@ -176,7 +176,6 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("All")).toBeInTheDocument();
         expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
         expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
-        expect(screen.getByText("Gemini")).toBeInTheDocument();
         expect(screen.getByText("Kilo")).toBeInTheDocument();
     });
 
@@ -187,9 +186,13 @@ describe("SettingsPanel", () => {
 
         fireEvent.click(screen.getByRole("button", { name: "Editor" }));
 
-        expect(screen.getByText("Autosave delay")).toBeInTheDocument();
+        const autosaveLabel = screen.getByText("Autosave delay");
+        const autosaveRow = autosaveLabel.parentElement?.parentElement;
+        expect(autosaveRow).not.toBeNull();
 
-        const input = screen.getByDisplayValue("300");
+        const input = within(autosaveRow as HTMLElement).getByDisplayValue(
+            "300",
+        );
 
         fireEvent.focus(input);
         fireEvent.change(input, { target: { value: "750" } });
@@ -428,6 +431,8 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("Ctrl+Shift+0")).toBeInTheDocument();
         expect(screen.getByText("Add Selection to Chat")).toBeInTheDocument();
         expect(screen.getByText("Ctrl+L")).toBeInTheDocument();
+        expect(screen.getByText("Stop active agent")).toBeInTheDocument();
+        expect(screen.getByText("Escape")).toBeInTheDocument();
     });
 
     it("hides the inline close button in standalone Windows settings", () => {
@@ -546,6 +551,33 @@ describe("SettingsPanel", () => {
                 "How long pasted screenshots stay in the AI composer before they are removed automatically.",
             ),
         ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: /5 minutes/ }));
+
+        expect(
+            screen.getByRole("button", { name: "1 minute" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "30 minutes" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "1 hour" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "24 hours" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "7 days" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getAllByRole("button", { name: "Forever" }).length,
+        ).toBeGreaterThan(0);
+        expect(
+            screen.queryByRole("button", { name: "30 seconds" }),
+        ).not.toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "15 minutes" }),
+        ).not.toBeInTheDocument();
     });
 
     it("renders and persists the context usage bar toggle in AI settings", () => {
@@ -626,6 +658,24 @@ describe("SettingsPanel", () => {
         expect(toggle).toHaveAttribute("aria-checked", "false");
     });
 
+    it("renders and persists the wikilink hover preview toggle in editor settings", () => {
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Editor" }));
+
+        const label = screen.getByText("Note preview on hover");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        const toggle = within(row as HTMLElement).getByRole("switch");
+        expect(toggle).toHaveAttribute("aria-checked", "true");
+
+        fireEvent.click(toggle);
+
+        expect(useSettingsStore.getState().hoverPreviewEnabled).toBe(false);
+        expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+
     it("renders and persists terminal and Claude Code settings", async () => {
         mockInvoke().mockImplementation(async (command) => {
             if (command === "devtools_check_binary") {
@@ -684,15 +734,7 @@ describe("SettingsPanel", () => {
             true,
         );
 
-        const maxTurnsRow =
-            screen.getByText("Max turns").parentElement?.parentElement;
-        expect(maxTurnsRow).not.toBeNull();
-        const maxTurnsInput =
-            within(maxTurnsRow as HTMLElement).getByDisplayValue("0");
-        fireEvent.focus(maxTurnsInput);
-        fireEvent.change(maxTurnsInput, { target: { value: "12" } });
-        fireEvent.keyDown(maxTurnsInput, { key: "Enter" });
-        expect(useSettingsStore.getState().claudeCodeMaxTurns).toBe(12);
+        expect(screen.queryByText("Max turns")).not.toBeInTheDocument();
     });
 
     it("checks updater metadata manually without starting an install", async () => {

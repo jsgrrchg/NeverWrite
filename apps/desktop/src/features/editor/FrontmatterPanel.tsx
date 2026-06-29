@@ -362,7 +362,10 @@ function DateField({
             }
         };
         const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") setOpen(false);
+            if (event.key === "Escape") {
+                event.preventDefault();
+                setOpen(false);
+            }
         };
         document.addEventListener("mousedown", handleDown);
         document.addEventListener("keydown", handleKey);

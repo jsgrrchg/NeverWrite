@@ -56,7 +56,7 @@ static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwr
 
 fn clean_heading_title(raw: &str) -> String {
     let s = raw.trim();
-    let s = TRAILING_HASHES_RE.replace_all(&s, "");
+    let s = TRAILING_HASHES_RE.replace_all(s, "");
     let s = EMBED_WIKILINK_ALIAS_RE.replace_all(&s, "$2");
     let s = EMBED_WIKILINK_RE.replace_all(&s, "$1");
     let s = WIKILINK_ALIAS_RE.replace_all(&s, "$2");

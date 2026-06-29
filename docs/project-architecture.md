@@ -58,6 +58,8 @@ vendor/
   codex-acp/            Vendored Codex ACP adapter used for release builds
   Claude-agent-acp-upstream/
                         Vendored Claude ACP runtime snapshot and dist output
+  acp12/                Vendored legacy ACP crates used by the native backend
+                        for Grok compatibility
 
 scripts/                Root release, appcast, version, and validation utilities
 release/appcast/        Appcast and release topology documentation
@@ -202,10 +204,20 @@ Settings / AI chat UI
   -> chat store, review UI, transcript persistence
 ```
 
-The backend currently supports Codex, Claude, Gemini, and Kilo runtime IDs. Codex
-and Claude have vendored release inputs under `vendor/`; Gemini and Kilo are
-integrated as external runtimes that must be found on `PATH` or configured by
-override.
+The backend currently supports Codex, Claude, Grok, Kilo, and OpenCode
+runtime IDs. Codex and Claude have vendored release inputs under `vendor/`;
+Grok, Kilo, and OpenCode are integrated as external runtimes that must be found
+on `PATH` or configured by override.
+
+ACP runtime handling is split by provider compatibility:
+
+- Claude, Codex, Kilo, and OpenCode use the current ACP session-config path.
+- Grok uses the legacy ACP model/mode path, backed by the vendored
+  `vendor/acp12/` Rust crates in the native backend.
+
+`vendor/acp12/` is not a packaged provider runtime. It is a backend
+compatibility dependency that lets NeverWrite talk to the external Grok CLI
+while the rest of the ACP stack can continue using the current protocol path.
 
 ACP session notifications are normalized into renderer events for assistant
 message deltas, thinking deltas, tool activity, file diffs, permission requests,
@@ -315,4 +327,4 @@ and Electron smoke tests when possible.
   [`apps/web-clipper/src/lib/desktop-api.ts`](../apps/web-clipper/src/lib/desktop-api.ts),
   and [`apps/desktop/src-electron/main/webClipper.ts`](../apps/desktop/src-electron/main/webClipper.ts).
 
-Last updated: May 11, 2026.
+Last updated: June 1, 2026.

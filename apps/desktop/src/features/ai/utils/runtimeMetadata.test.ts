@@ -19,6 +19,11 @@ describe("runtimeMetadata", () => {
                     name: "OpenCode",
                     company: "OpenCode",
                 }),
+                expect.objectContaining({
+                    id: "grok-acp",
+                    name: "Grok",
+                    company: "xAI",
+                }),
             ]),
         );
     });
@@ -41,6 +46,20 @@ describe("runtimeMetadata", () => {
                             "OpenCode CLI running as a native ACP agent.",
                     }),
                 }),
+                expect.objectContaining({
+                    runtime: expect.objectContaining({
+                        id: "grok-acp",
+                        name: "Grok ACP",
+                        description: "Grok CLI running as a native ACP agent.",
+                        capabilities: expect.arrayContaining([
+                            "attachments",
+                            "permissions",
+                            "plans",
+                            "terminal_output",
+                            "create_session",
+                        ]),
+                    }),
+                }),
             ]),
         );
     });
@@ -59,6 +78,7 @@ describe("runtimeMetadata", () => {
     it("normalizes runtime display names for the UI", () => {
         expect(getRuntimeDisplayName("kilo-acp", "Kilo ACP")).toBe("Kilo");
         expect(getRuntimeDisplayName("kilo-acp")).toBe("Kilo");
+        expect(getRuntimeDisplayName("grok-acp")).toBe("Grok");
         expect(getRuntimeDisplayName("opencode-acp")).toBe("OpenCode");
         expect(getRuntimeDisplayName(undefined, undefined)).toBe("Assistant");
     });

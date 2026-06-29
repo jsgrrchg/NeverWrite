@@ -646,6 +646,36 @@ describe("Editor", () => {
         expect(view.scrollDOM.scrollLeft).toBe(11);
     });
 
+    it("restores note scroll after the editor unmounts and remounts", async () => {
+        vi.useFakeTimers();
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Line 1\nLine 2\nLine 3",
+            },
+        ]);
+
+        const { unmount } = renderComponent(<Editor />);
+        await flushEditorViewUpdates();
+
+        let view = getEditorView();
+        view.scrollDOM.scrollTop = 260;
+        view.scrollDOM.scrollLeft = 17;
+
+        await act(async () => {
+            unmount();
+        });
+
+        renderComponent(<Editor />);
+        await flushEditorViewUpdates();
+
+        view = getEditorView();
+        expect(view.scrollDOM.scrollTop).toBe(260);
+        expect(view.scrollDOM.scrollLeft).toBe(17);
+    });
+
     it("does not activate merge view when inline review is disabled", async () => {
         setEditorTabs([
             {
@@ -817,11 +847,96 @@ describe("Editor", () => {
             await flushPromises();
         });
 
+        expect(view.state.doc.toString()).toBe("Hello world\nBody");
+
+        await act(async () => {
+            fireEvent.click(headingButton);
+            await flushPromises();
+        });
+
         expect(view.state.doc.toString()).toBe("# Hello world\nBody");
         expect(screen.getByDisplayValue("Hello world")).toBeInTheDocument();
         expect(useEditorStore.getState().tabs[0]?.title).toBe("Hello world");
 
         coordsSpy.mockRestore();
+    });
+
+    it("waits for mouse release before showing the floating selection toolbar", async () => {
+        setEditorTabs([
+            {
+                id: "tab-1",
+                noteId: "notes/current",
+                title: "Current",
+                content: "Hello world\nBody",
+            },
+        ]);
+
+        renderComponent(<Editor />);
+
+        const view = getEditorView();
+        const coordsSpy = vi.spyOn(view, "coordsAtPos").mockImplementation(
+            () =>
+                ({
+                    left: 40,
+                    right: 180,
+                    top: 20,
+                    bottom: 40,
+                }) as DOMRect,
+        );
+        const fakeRect = {
+            x: 40,
+            y: 20,
+            left: 40,
+            right: 180,
+            top: 20,
+            bottom: 40,
+            width: 140,
+            height: 20,
+            toJSON: () => ({}),
+        } as DOMRect;
+        const rangeRectSpy = vi
+            .spyOn(Range.prototype, "getBoundingClientRect")
+            .mockReturnValue(fakeRect);
+        const rangeRectsSpy = vi
+            .spyOn(Range.prototype, "getClientRects")
+            .mockReturnValue([fakeRect] as unknown as DOMRectList);
+        const selectionLayer = view.dom.querySelector(".cm-selectionLayer");
+        expect(selectionLayer).toBeInstanceOf(HTMLElement);
+        (selectionLayer as HTMLElement).style.opacity = "0";
+
+        await act(async () => {
+            view.focus();
+            fireEvent.mouseDown(view.contentDOM, {
+                button: 0,
+                clientX: 48,
+                clientY: 28,
+            });
+            view.dispatch({
+                selection: {
+                    anchor: 0,
+                    head: 5,
+                },
+            });
+            await flushPromises();
+        });
+
+        expect(
+            screen.queryByRole("button", { name: "Heading 1" }),
+        ).not.toBeInTheDocument();
+        expect((selectionLayer as HTMLElement).style.opacity).toBe("1");
+
+        await act(async () => {
+            fireEvent.mouseUp(document, { button: 0 });
+            await flushPromises();
+        });
+
+        expect(
+            await screen.findByRole("button", { name: "Heading 1" }),
+        ).toBeInTheDocument();
+
+        coordsSpy.mockRestore();
+        rangeRectSpy.mockRestore();
+        rangeRectsSpy.mockRestore();
     });
 
     it("does not crash when CodeMirror throws during selection coordinate lookup", async () => {

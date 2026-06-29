@@ -1,10 +1,11 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderComponent } from "../../../test/test-utils";
 import type { AIChatMessage } from "../types";
 import { AIChatMessageList } from "./AIChatMessageList";
 import { resetChatMessageListViewState } from "./chatMessageListViewState";
 import { resetChatRowUiStore } from "../store/chatRowUiStore";
+import { AI_CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 
 function createMessages(): AIChatMessage[] {
     return [
@@ -83,6 +84,22 @@ function getScrollContainer(root: HTMLElement) {
     ) as HTMLDivElement | null;
     expect(container).not.toBeNull();
     return container!;
+}
+
+function getMessageColumn(root: HTMLElement) {
+    const column = root.querySelector(
+        '[data-selectable="true"]',
+    ) as HTMLDivElement | null;
+    expect(column).not.toBeNull();
+    return column!;
+}
+
+function expectSharedChatContentColumn(element: HTMLElement) {
+    expect(element).toHaveStyle({
+        width: "100%",
+        maxWidth: `${AI_CHAT_CONTENT_MAX_WIDTH_PX}px`,
+        marginInline: "auto",
+    });
 }
 
 describe("AIChatMessageList streaming run indicator", () => {
@@ -194,17 +211,96 @@ describe("AIChatMessageList streaming run indicator", () => {
             />,
         );
 
-        const messageColumn = view.container.querySelector(
-            '[data-selectable="true"]',
-        );
+        const messageColumn = getMessageColumn(view.container);
 
+        expectSharedChatContentColumn(messageColumn);
         expect(messageColumn).toHaveStyle({
             fontFamily:
                 '"American Typewriter", "Courier Prime", "Courier New", "Nimbus Mono PS", monospace',
         });
     });
 
-    it("bottom-aligns short transcripts near the composer", () => {
+    it("constrains the transcript content while keeping the scroll container full-width", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-column"
+                messages={createMessages()}
+                status="idle"
+            />,
+        );
+
+        const scrollContainer = getScrollContainer(view.container);
+        const messageColumn = getMessageColumn(view.container);
+
+        expect(scrollContainer).toHaveClass("flex-1");
+        expectSharedChatContentColumn(messageColumn);
+    });
+
+    it.each([
+        ["narrow", 320],
+        ["wide", 1200],
+    ])(
+        "keeps the shared transcript column responsive in a %s panel",
+        (_label, width) => {
+            const view = renderComponent(
+                <AIChatMessageList
+                    sessionId={`session-${width}`}
+                    messages={createMessages()}
+                    status="idle"
+                />,
+            );
+            const scrollContainer = getScrollContainer(view.container);
+            configureScrollableViewport(scrollContainer, 320, { width });
+
+            expect(scrollContainer.clientWidth).toBe(width);
+            expectSharedChatContentColumn(getMessageColumn(view.container));
+        },
+    );
+
+    it("keeps the shared transcript column during width-change scroll anchoring", () => {
+        let width = 1200;
+        const messages = createLongTranscript(80);
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-resize-column"
+                messages={messages}
+                status="idle"
+            />,
+        );
+        const scrollContainer = getScrollContainer(view.container);
+        configureScrollableViewport(scrollContainer, 320, {
+            getWidth: () => width,
+        });
+
+        act(() => {
+            scrollContainer.scrollTop = 2_400;
+            scrollContainer.dispatchEvent(new Event("scroll"));
+        });
+
+        width = 360;
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(scrollContainer.clientWidth).toBe(360);
+        expectSharedChatContentColumn(getMessageColumn(view.container));
+    });
+
+    it("keeps empty new chats top-aligned", () => {
+        const view = renderComponent(
+            <AIChatMessageList
+                sessionId="session-empty"
+                messages={[]}
+                status="idle"
+            />,
+        );
+
+        expect(
+            view.container.querySelector('[data-selectable="true"]'),
+        ).not.toHaveClass("mt-auto");
+    });
+
+    it("keeps short transcripts top-aligned", () => {
         const view = renderComponent(
             <AIChatMessageList
                 sessionId="session-short"
@@ -216,7 +312,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(getScrollContainer(view.container)).toHaveClass("flex-col");
         expect(
             view.container.querySelector('[data-selectable="true"]'),
-        ).toHaveClass("mt-auto");
+        ).not.toHaveClass("mt-auto");
     });
 
     it("keeps the transcript top-aligned while older messages can load", () => {
@@ -418,7 +514,7 @@ describe("AIChatMessageList streaming run indicator", () => {
         expect(secondScrollContainer.scrollTop).toBe(4_320);
     });
 
-    it("keeps only the two most recent non-visible diff work cycles as rich cards", () => {
+    it("keeps non-visible diff work cycles as rich cards", () => {
         const messages: AIChatMessage[] = [
             {
                 id: "tool:oldest",
@@ -519,12 +615,13 @@ describe("AIChatMessageList streaming run indicator", () => {
             />,
         );
 
-        expect(screen.getAllByTestId("recent-diff-badge")).toHaveLength(2);
+        expect(screen.queryByTestId("recent-diff-badge")).toBeNull();
+        expect(screen.queryByTestId("historical-diff-summary")).toBeNull();
+        expect(screen.queryByText("Earlier change")).not.toBeInTheDocument();
+        expect(screen.getByText("Edited oldest.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited older.ts")).toBeInTheDocument();
         expect(screen.getByText("Edited recent.ts")).toBeInTheDocument();
-        expect(screen.getByTestId("historical-diff-summary")).toHaveTextContent(
-            "Edited oldest.ts",
-        );
+        expect(screen.getByText("Edited current.ts")).toBeInTheDocument();
     });
 
     it("lets the user dismiss the pinned plan banner and keeps the plan in the timeline", () => {
@@ -575,6 +672,9 @@ describe("AIChatMessageList streaming run indicator", () => {
         );
 
         expect(screen.getAllByText("Implement")).toHaveLength(1);
+        expectSharedChatContentColumn(
+            screen.getByTestId("chat-pinned-plan-column"),
+        );
         expect(
             view.container.querySelector('[aria-label="Dismiss plan banner"]'),
         ).not.toBeNull();
@@ -588,5 +688,63 @@ describe("AIChatMessageList streaming run indicator", () => {
         ).not.toBeInTheDocument();
         expect(screen.getAllByText("Implement")).toHaveLength(1);
         expect(screen.getByText("Started implementation")).toBeInTheDocument();
+    });
+
+    it("scrolls to a requested chat message row and highlights it", async () => {
+        const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+            value: scrollIntoView,
+            configurable: true,
+        });
+
+        const messages: AIChatMessage[] = [
+            {
+                id: "user-1",
+                role: "user",
+                kind: "text",
+                content: "First prompt",
+                timestamp: 10,
+            },
+            {
+                id: "user-2",
+                role: "user",
+                kind: "text",
+                content: "Second prompt",
+                timestamp: 20,
+            },
+        ];
+        const onComplete = vi.fn();
+
+        try {
+            const view = renderComponent(
+                <AIChatMessageList
+                    sessionId="session-outline"
+                    messages={messages}
+                    status="idle"
+                    scrollToMessageId="user-2"
+                    onScrollToMessageComplete={onComplete}
+                />,
+            );
+
+            await waitFor(() => {
+                expect(scrollIntoView).toHaveBeenCalledWith({
+                    block: "center",
+                    behavior: "smooth",
+                });
+                expect(onComplete).toHaveBeenCalledTimes(1);
+            });
+
+            expect(
+                view.container.querySelector(
+                    '[data-chat-message-id="user-2"]',
+                ),
+            ).toHaveAttribute("data-chat-outline-active", "true");
+        } finally {
+            Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+                value: originalScrollIntoView,
+                configurable: true,
+            });
+        }
     });
 });

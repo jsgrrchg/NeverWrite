@@ -33,13 +33,13 @@ jobs:
             pages_base_url: ${{ steps.meta.outputs.pages_base_url }}
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Setup Node.js
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -78,7 +78,7 @@ jobs:
                   EOF
 
             - name: Upload release body artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-body-${{ steps.meta.outputs.tag }}
                   path: release-body.md
@@ -127,17 +127,17 @@ jobs:
                       node_dist: linux-arm64
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Setup Node.js
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@v6
               with:
                   node-version: 22
 
             - name: Setup Rust toolchain
-              uses: dtolnay/rust-toolchain@stable
+              uses: ./.github/actions/setup-rust
               with:
                   targets: ${{ matrix.rust_targets }}
 
@@ -409,21 +409,21 @@ jobs:
                     --require-signature
 
             - name: Upload release asset artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-assets-${{ matrix.target }}
                   path: ${{ runner.temp }}/release-assets
                   if-no-files-found: error
 
             - name: Upload target metadata artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-target-metadata-${{ matrix.target }}
                   path: ${{ runner.temp }}/target-metadata/${{ matrix.target }}.json
                   if-no-files-found: error
 
             - name: Upload target feed artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-target-feeds-${{ matrix.target }}
                   path: ${{ runner.temp }}/release-assets/feeds
@@ -435,17 +435,17 @@ jobs:
         runs-on: ubuntu-latest
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Setup Node.js
-              uses: actions/setup-node@v4
+              uses: actions/setup-node@v6
               with:
                   node-version: 22
 
             - name: Setup pnpm
-              uses: pnpm/action-setup@v4
+              uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
@@ -540,7 +540,7 @@ jobs:
                   cp "$firefox_zip" "$RUNNER_TEMP/web-clipper-assets/NeverWrite-Web-Clipper-${{ needs.prepare.outputs.tag }}-firefox-mv3.zip"
 
             - name: Upload browser extension release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: release-assets-web-clipper
                   path: ${{ runner.temp }}/web-clipper-assets
@@ -584,26 +584,26 @@ jobs:
         runs-on: ubuntu-latest
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Download release body
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   name: release-body-${{ needs.prepare.outputs.tag }}
                   path: .artifacts/release-body
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
                   merge-multiple: true
 
             - name: Download target metadata
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-target-metadata-*
                   path: .artifacts/release-targets
@@ -656,27 +656,27 @@ jobs:
         runs-on: ubuntu-latest
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Download target metadata
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-target-metadata-*
                   path: .artifacts/release-targets
                   merge-multiple: true
 
             - name: Download target feeds
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-target-feeds-*
                   path: .artifacts/feeds
                   merge-multiple: true
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v8
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
@@ -749,14 +749,14 @@ jobs:
                   EOF
 
             - name: Upload platform validation pack
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: platform-validation-pack-${{ needs.prepare.outputs.tag }}
                   path: dist/platform-validation/${{ needs.prepare.outputs.tag }}
                   if-no-files-found: error
 
             - name: Upload release asset size report
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: electron-release-asset-sizes-${{ needs.prepare.outputs.tag }}
                   path: dist/release-asset-sizes/${{ needs.prepare.outputs.tag }}
@@ -860,13 +860,14 @@ jobs:
             - name: Build APT repository
               shell: bash
               env:
-                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
               run: |
                   node scripts/build-apt-repository.mjs \
+                    --layout flat-release \
                     --version "${{ needs.prepare.outputs.version }}" \
                     --release-assets-dir .artifacts/release-assets \
-                    --pages-dir "$PAGES_DIR" \
-                    --base-url "${{ needs.prepare.outputs.pages_base_url }}/apt" \
+                    --output-dir "$APT_RELEASE_DIR" \
+                    --repo-slug "${{ needs.prepare.outputs.repo_slug }}" \
                     --suite stable \
                     --component main
 
@@ -888,7 +889,7 @@ jobs:
                   APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
                   APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
                   APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
-                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
               run: |
                   for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
                     if [[ -z "${!name}" ]]; then
@@ -904,7 +905,8 @@ jobs:
                   printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
 
                   node scripts/sign-apt-repository.mjs \
-                    --apt-dir "$PAGES_DIR/apt" \
+                    --layout flat-release \
+                    --apt-dir "$APT_RELEASE_DIR" \
                     --key-id "$APT_REPO_GPG_KEY_ID" \
                     --suite stable
 
@@ -935,10 +937,12 @@ jobs:
             - name: Validate APT repository
               shell: bash
               env:
-                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
               run: |
                   node scripts/validate-apt-repository.mjs \
-                    --apt-dir "$PAGES_DIR/apt" \
+                    --layout flat-release \
+                    --apt-dir "$APT_RELEASE_DIR" \
+                    --package-assets-dir .artifacts/release-assets \
                     --version "${{ needs.prepare.outputs.version }}" \
                     --suite stable \
                     --component main
@@ -955,12 +959,24 @@ jobs:
             - name: Validate APT repository with apt
               shell: bash
               env:
-                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
                   VERSION: ${{ needs.prepare.outputs.version }}
               run: |
+                  APT_SMOKE_DIR="$RUNNER_TEMP/apt-smoke"
+                  mkdir -p "$APT_SMOKE_DIR"
+                  cp "$APT_RELEASE_DIR"/InRelease \
+                    "$APT_RELEASE_DIR"/Release \
+                    "$APT_RELEASE_DIR"/Release.gpg \
+                    "$APT_RELEASE_DIR"/Packages \
+                    "$APT_RELEASE_DIR"/Packages.gz \
+                    "$APT_RELEASE_DIR"/neverwrite-archive-keyring.asc \
+                    "$APT_RELEASE_DIR"/neverwrite.sources.example \
+                    "$APT_SMOKE_DIR"/
+                  find .artifacts/release-assets -type f -name '*.deb' -exec cp {} "$APT_SMOKE_DIR"/ \;
+
                   docker run --rm \
                     -e VERSION="$VERSION" \
-                    -v "$PAGES_DIR/apt:/repo:ro" \
+                    -v "$APT_SMOKE_DIR:/repo:ro" \
                     ubuntu:24.04 \
                     bash -lc '
                       set -euo pipefail
@@ -988,7 +1004,7 @@ jobs:
                   docker run --rm \
                     -e VERSION="$VERSION" \
                     -v "$PAGES_DIR/dnf:/repo:ro" \
-                    fedora:40 \
+                    fedora:latest \
                     bash -lc '
                       set -euo pipefail
                       cp /repo/neverwrite-archive-keyring.asc /etc/pki/rpm-gpg/
@@ -1003,20 +1019,77 @@ jobs:
                       echo "DNF repository validated successfully."
                     '
 
-            - name: Publish Linux repositories to gh-pages
+            - name: Upload APT repository metadata to GitHub release
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  gh release upload "${{ needs.prepare.outputs.tag }}" \
+                    "$APT_RELEASE_DIR/InRelease" \
+                    "$APT_RELEASE_DIR/Release" \
+                    "$APT_RELEASE_DIR/Release.gpg" \
+                    "$APT_RELEASE_DIR/Packages" \
+                    "$APT_RELEASE_DIR/Packages.gz" \
+                    "$APT_RELEASE_DIR/neverwrite-archive-keyring.asc" \
+                    "$APT_RELEASE_DIR/neverwrite.sources.example" \
+                    --clobber
+
+            - name: Validate published APT release endpoint
+              shell: bash
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+                  REPO_SLUG: ${{ needs.prepare.outputs.repo_slug }}
+                  RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+                  VERSION: ${{ needs.prepare.outputs.version }}
+              run: |
+                  docker run --rm \
+                    -e REPO_SLUG="$REPO_SLUG" \
+                    -e RELEASE_TAG="$RELEASE_TAG" \
+                    -e VERSION="$VERSION" \
+                    -v "$APT_RELEASE_DIR:/repo:ro" \
+                    ubuntu:24.04 \
+                    bash -lc '
+                      set -euo pipefail
+                      apt-get update
+                      apt-get install -y ca-certificates gnupg
+                      install -d -m 0755 /etc/apt/keyrings
+                      cp /repo/neverwrite-archive-keyring.asc /etc/apt/keyrings/neverwrite.asc
+                      chmod 0644 /etc/apt/keyrings/neverwrite.asc
+                      sed "s|^URIs: .*|URIs: https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}|" \
+                        /repo/neverwrite.sources.example \
+                        >/etc/apt/sources.list.d/neverwrite.sources
+                      apt-get update
+                      apt-cache policy neverwrite | grep -F "$VERSION"
+                      apt-get --print-uris install "neverwrite=$VERSION" | tee /tmp/neverwrite-uris.txt
+                      grep -F "https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}" /tmp/neverwrite-uris.txt
+                      grep -F "NeverWrite-${VERSION}-amd64.deb" /tmp/neverwrite-uris.txt
+                    '
+
+            - name: Publish Linux repository entrypoints to gh-pages
               shell: bash
               env:
                   PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
               run: |
+                  mkdir -p "$PAGES_DIR/apt"
+                  rm -rf "$PAGES_DIR/apt/dists" "$PAGES_DIR/apt/pool"
+                  cp "$APT_RELEASE_DIR/neverwrite-archive-keyring.asc" "$PAGES_DIR/apt/"
+                  cp "$APT_RELEASE_DIR/neverwrite.sources.example" "$PAGES_DIR/apt/"
+                  package_asset="$(find "$PAGES_DIR/apt" "$PAGES_DIR/dnf" -type f \( -name '*.deb' -o -name '*.rpm' \) -print -quit)"
+                  if [[ -n "$package_asset" ]]; then
+                    echo "Package asset must stay on GitHub Releases, not gh-pages: $package_asset" >&2
+                    exit 1
+                  fi
                   (
                     cd "$PAGES_DIR"
                     git config user.name "github-actions[bot]"
                     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
                     git add apt dnf .nojekyll
                     if git diff --cached --quiet; then
-                      echo "No Linux repository changes to publish."
+                      echo "No Linux repository entrypoint changes to publish."
                     else
-                      git commit -m "Publish Linux repositories for ${{ needs.prepare.outputs.tag }}"
+                      git commit -m "Publish Linux repository entrypoints for ${{ needs.prepare.outputs.tag }}"
                       git push origin HEAD:gh-pages
                     fi
                   )

@@ -4,7 +4,10 @@ import path from "node:path";
 
 import {
     APT_DEFAULT_SUITE,
+    APT_LAYOUT_CLASSIC,
+    APT_LAYOUT_FLAT_RELEASE,
     APT_PUBLIC_KEY_FILE_NAME,
+    normalizeAptLayout,
     normalizeAptSuite,
 } from "./apt-repo-lib.mjs";
 
@@ -13,6 +16,7 @@ function parseArgs(argv) {
         aptDir: null,
         keyId: null,
         suite: APT_DEFAULT_SUITE,
+        layout: APT_LAYOUT_CLASSIC,
     };
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -34,9 +38,14 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
+        if (arg === "--layout") {
+            args.layout = next;
+            index += 1;
+            continue;
+        }
 
         throw new Error(
-            `Unknown argument "${arg}". Supported args: --apt-dir, --key-id, --suite.`,
+            `Unknown argument "${arg}". Supported args: --apt-dir, --key-id, --suite, --layout.`,
         );
     }
 
@@ -51,6 +60,7 @@ function parseArgs(argv) {
         ...args,
         keyId: args.keyId.trim(),
         suite: normalizeAptSuite(args.suite),
+        layout: normalizeAptLayout(args.layout),
     };
 }
 
@@ -89,7 +99,10 @@ function signingPassphraseArgs(passphrase) {
 
 function main() {
     const args = parseArgs(process.argv.slice(2));
-    const suiteDir = path.join(args.aptDir, "dists", args.suite);
+    const suiteDir =
+        args.layout === APT_LAYOUT_FLAT_RELEASE
+            ? args.aptDir
+            : path.join(args.aptDir, "dists", args.suite);
     const releasePath = path.join(suiteDir, "Release");
     const inReleasePath = path.join(suiteDir, "InRelease");
     const detachedSignaturePath = path.join(suiteDir, "Release.gpg");

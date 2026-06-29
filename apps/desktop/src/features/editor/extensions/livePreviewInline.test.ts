@@ -13,7 +13,13 @@ vi.mock("../../../app/utils/perfInstrumentation", () => ({
 }));
 
 import { perfMeasure } from "../../../app/utils/perfInstrumentation";
-import { linkReferenceField } from "./livePreviewHelpers";
+import {
+    linkReferenceField,
+    footnoteNumberField,
+    findFootnoteDefinition,
+    flashLineEffect,
+    lineFlashField,
+} from "./livePreviewHelpers";
 import {
     createInlineLivePreviewPlugin,
     createLeadingContentCollapseField,
@@ -124,6 +130,7 @@ function createView(
         extensions: [
             markdown({ base: markdownLanguage }),
             linkReferenceField,
+            footnoteNumberField,
             plugin,
         ],
     });
@@ -882,6 +889,135 @@ describe("createInlineLivePreviewPlugin", () => {
 
         view.destroy();
         parent.remove();
+    });
+
+    it("renders footnote references as sequential numbers", () => {
+        const doc = "x [^alpha] y [^beta]\n\n[^alpha]: A\n[^beta]: B";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const instance = view.plugin(plugin);
+        expect(instance).not.toBeNull();
+
+        const widgetTextAt = (from: number, to: number) => {
+            let text: string | null = null;
+            instance!.decorations.between(from, to, (dFrom, dTo, deco) => {
+                const widget = (deco.spec as { widget?: { toDOM(): HTMLElement } })
+                    .widget;
+                if (dFrom === from && dTo === to && widget) {
+                    text = widget.toDOM().textContent;
+                    return false;
+                }
+            });
+            return text;
+        };
+
+        // `[^alpha]` -> 1, `[^beta]` -> 2 (numbered by reference order).
+        // Content ranges exclude the `[^` ... `]` delimiters.
+        expect(widgetTextAt(4, 9)).toBe("1");
+        expect(widgetTextAt(15, 19)).toBe("2");
+
+        // The matching definition lines carry the same number for correlation.
+        const decorations = collectDecorations(view, plugin);
+        const alphaDef = decorations.find(
+            (deco) => deco.attributes["data-footnote-id"] === "alpha",
+        );
+        expect(alphaDef?.attributes["data-footnote-number"]).toBe("1");
+        const betaDef = decorations.find(
+            (deco) => deco.attributes["data-footnote-id"] === "beta",
+        );
+        expect(betaDef?.attributes["data-footnote-number"]).toBe("2");
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("separates abutting footnote references with a comma", () => {
+        const doc = "[^a][^b]\n\n[^a]: A\n[^b]: B";
+        const { plugin, parent, view } = createView(
+            doc,
+            EditorSelection.cursor(doc.length),
+        );
+
+        const instance = view.plugin(plugin);
+        expect(instance).not.toBeNull();
+
+        const widgetTextAt = (from: number, to: number) => {
+            let text: string | null = null;
+            instance!.decorations.between(from, to, (dFrom, dTo, deco) => {
+                const widget = (deco.spec as { widget?: { toDOM(): HTMLElement } })
+                    .widget;
+                if (dFrom === from && dTo === to && widget) {
+                    text = widget.toDOM().textContent;
+                    return false;
+                }
+            });
+            return text;
+        };
+
+        // `[^a]` is directly followed by `[^b]`, so its number carries a comma;
+        // the trailing `[^b]` does not.
+        expect(widgetTextAt(2, 3)).toBe("1,");
+        expect(widgetTextAt(6, 7)).toBe("2");
+
+        // The parser pairs the two carets of `[^a][^b]` into a spurious
+        // Superscript node; it must not be styled (that 0.8em wrapper used to
+        // shrink and misalign the first reference).
+        const decorations = collectDecorations(view, plugin);
+        expect(findDecorationByClass(decorations, "cm-lp-superscript")).toBe(
+            undefined,
+        );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("resolves a footnote definition position from the document text", () => {
+        // The definition sits far below the reference and well outside any
+        // rendered viewport — resolution must come from the text, not the DOM.
+        const doc = `Body ref[^note] here.${"\nfiller".repeat(80)}\n\n[^note]: The definition.`;
+        const state = EditorState.create({ doc });
+
+        const def = findFootnoteDefinition(state, "note");
+        expect(def).not.toBeNull();
+        expect(state.doc.lineAt(def!.from).text).toBe("[^note]: The definition.");
+        expect(findFootnoteDefinition(state, "missing")).toBeNull();
+    });
+
+    it("flashes the jumped-to line then clears it", () => {
+        const doc = "x\n[^note]: def";
+        const initial = EditorState.create({
+            doc,
+            extensions: [lineFlashField],
+        });
+        const defLine = initial.doc.line(2);
+
+        const flashed = initial.update({
+            effects: flashLineEffect.of({
+                from: defLine.from,
+                to: defLine.to,
+            }),
+        }).state;
+        const ranges: number[] = [];
+        flashed
+            .field(lineFlashField)
+            .between(0, flashed.doc.length, (from) => {
+                ranges.push(from);
+            });
+        expect(ranges).toEqual([defLine.from]);
+
+        const cleared = flashed.update({
+            effects: flashLineEffect.of(null),
+        }).state;
+        let count = 0;
+        cleared
+            .field(lineFlashField)
+            .between(0, cleared.doc.length, () => {
+                count++;
+            });
+        expect(count).toBe(0);
     });
 
     it("switches the active inline token when moving within the same line", () => {

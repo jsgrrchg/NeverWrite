@@ -5,9 +5,11 @@ import {
     ViewPlugin,
     gutter,
     GutterMarker,
+    highlightActiveLine,
+    highlightActiveLineGutter,
     lineNumbers,
 } from "@codemirror/view";
-import { Compartment, RangeSetBuilder } from "@codemirror/state";
+import { Compartment, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { syntaxTree, syntaxHighlighting } from "@codemirror/language";
 import { buildSyntaxHighlightStyle } from "./extensions/syntaxTheme";
 import type {
@@ -18,6 +20,7 @@ import type {
 import { vim } from "@replit/codemirror-vim";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { livePreviewExtension } from "./extensions/livePreview";
+import { wikilinkHoverPreviewExtension } from "./extensions/wikilinkHoverPreview";
 import { vimStatusBarExtension } from "./extensions/vimStatusBar";
 import { resolveWikilink } from "./wikilinkResolution";
 import { navigateWikilink, getNoteLinkTarget } from "./wikilinkNavigation";
@@ -134,8 +137,11 @@ export const baseTheme = EditorView.theme({
             backgroundColor: "transparent",
         },
     ".cm-activeLine": {
-        backgroundColor: "color-mix(in srgb, var(--accent) 3.5%, transparent)",
+        backgroundColor: "transparent",
         borderRadius: "8px",
+    },
+    "&.cm-focused .cm-activeLine": {
+        backgroundColor: "color-mix(in srgb, var(--accent) 3.5%, transparent)",
     },
     ".cm-activeLineGutter": {
         backgroundColor: "transparent",
@@ -153,10 +159,14 @@ export const baseTheme = EditorView.theme({
 export const syntaxCompartment = new Compartment();
 // Compartment for the live preview extension (reconfigured when vault changes)
 export const livePreviewCompartment = new Compartment();
+// Compartment for the wikilink hover preview (toggle + configurable delay)
+export const hoverPreviewCompartment = new Compartment();
 // Compartment for justified alignment
 export const alignmentCompartment = new Compartment();
 // Compartment for line wrapping
 export const wrappingCompartment = new Compartment();
+// Compartment for the cursor line highlight
+export const activeLineCompartment = new Compartment();
 // Compartment for tab size
 export const tabSizeCompartment = new Compartment();
 // Compartment for spellcheck attributes
@@ -169,6 +179,10 @@ export const grammarDecorationsCompartment = new Compartment();
 export const vimCompartment = new Compartment();
 // Compartment for the line-number gutter (absolute vs. vim relative numbering)
 export const lineNumberCompartment = new Compartment();
+
+export function getActiveLineExtension(enabled: boolean): Extension {
+    return enabled ? [highlightActiveLine(), highlightActiveLineGutter()] : [];
+}
 
 const sourceHeadingDecoration = Decoration.mark({
     class: "cm-source-heading",
@@ -246,6 +260,17 @@ export function getLivePreviewExtension(
             openLinkContextMenu,
         }),
     ];
+}
+
+// Wikilink hover preview. Returns an empty extension when disabled so the
+// `hoverTooltip` is not registered at all; otherwise it applies the configured
+// open delay. Lives in its own compartment so the per-vault toggle and delay
+// can be reconfigured without recreating the editor state.
+export function getWikilinkHoverPreviewExtension(
+    enabled: boolean,
+    delayMs: number,
+) {
+    return enabled ? wikilinkHoverPreviewExtension(delayMs) : [];
 }
 
 // Vim modal editing. Must take precedence over the default keymap, so the

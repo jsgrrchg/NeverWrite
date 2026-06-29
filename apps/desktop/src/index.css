@@ -409,8 +409,10 @@ textarea,
     display: none;
 }
 
-/* Workspace tab hover — inline styles block CSS hover, so we use !important. */
-[data-pane-tab-id]:not([aria-selected="true"]):hover {
+/* Workspace tab hover — inline styles block CSS hover, so we use !important.
+   Excludes stacked-tab columns, which reuse data-pane-tab-id only for drop
+   hit-testing and must not get the small-tab hover background. */
+[data-pane-tab-id]:not([aria-selected="true"]):not([data-stacked-column-id]):hover {
     background: var(--bg-tertiary) !important;
     color: var(--text-primary) !important;
 }
@@ -1237,6 +1239,20 @@ body.dragging-tab * {
 .nw-control-trigger:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
     outline-offset: 1px;
+}
+
+/* "Find in chat" matches, painted via the CSS Custom Highlight API. The active
+   match is distinguished by a stronger background. ::highlight() only supports a
+   small subset of properties (background-color, color, text-decoration).
+   Lightning CSS currently warns about ::highlight(), but the warning appears
+   speculative for this standards-backed selector and is intentionally ignored. */
+::highlight(chat-find) {
+    background-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    color: inherit;
+}
+::highlight(chat-find-active) {
+    background-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    color: var(--text-primary);
 }
 
 /* Composer send/stop pill buttons. The press should feel like a physical

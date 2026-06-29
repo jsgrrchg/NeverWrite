@@ -2,11 +2,9 @@
 import { WritableStream, ReadableStream } from "node:stream/web";
 // Useful for bridging push-based and async-iterator-based code.
 export class Pushable {
-    constructor() {
-        this.queue = [];
-        this.resolvers = [];
-        this.done = false;
-    }
+    queue = [];
+    resolvers = [];
+    done = false;
     push(item) {
         if (this.resolvers.length > 0) {
             const resolve = this.resolvers.shift();

@@ -53,6 +53,11 @@ import {
     shouldIncludeVaultEntryInFileScope,
     isTextLikeVaultEntry,
 } from "../../../app/utils/vaultEntries";
+import { AI_CHAT_CONTENT_COLUMN_STYLE } from "./chatContentLayout";
+import {
+    type ImageAttachmentValidationFailure,
+    validateNewImageAttachmentReference,
+} from "../imageAttachments";
 
 const MIN_COMPOSER_HEIGHT = 64;
 const MAX_COMPOSER_HEIGHT = 480;
@@ -87,6 +92,9 @@ interface AIChatComposerProps {
     onToggleExpanded?: () => void;
     onAttachFile?: () => void;
     onPasteImage?: (file: File) => void;
+    onImageAttachmentValidationFailure?: (
+        reason: ImageAttachmentValidationFailure,
+    ) => void;
     onFocus?: () => void;
     onSubmit: () => void;
     onStop: () => void;
@@ -139,66 +147,53 @@ const EMPTY_SLASH_STATE: SlashState = {
     range: null,
 };
 
-const COMMON_SLASH_COMMANDS: AIChatSlashCommand[] = [
-    {
-        id: "init",
-        label: "/init",
-        description: "starter instructions",
-        insertText: "/init ",
-    },
+// Mirrors the bundled Codex ACP builtins so slash commands are available while
+// the runtime's AvailableCommandsUpdate notification is still in flight.
+const CODEX_BUILTIN_SLASH_COMMANDS: AIChatSlashCommand[] = [
     {
         id: "review",
         label: "/review",
-        description: "review changes",
+        description: "Review my current changes and find issues",
         insertText: "/review ",
     },
     {
-        id: "plan",
-        label: "/plan",
-        description: "step-by-step plan",
-        insertText: "/plan ",
-    },
-    {
-        id: "compact",
-        label: "/compact",
-        description: "compact thread",
-        insertText: "/compact",
-    },
-];
-
-const CODEX_SLASH_COMMANDS: AIChatSlashCommand[] = [
-    {
         id: "review-branch",
         label: "/review-branch",
-        description: "review branch",
+        description: "Review the code changes against a specific branch",
         insertText: "/review-branch ",
     },
     {
         id: "review-commit",
         label: "/review-commit",
-        description: "review commit",
+        description: "Review the code changes introduced by a commit",
         insertText: "/review-commit ",
     },
     {
-        id: "undo",
-        label: "/undo",
-        description: "undo last change",
-        insertText: "/undo",
+        id: "init",
+        label: "/init",
+        description: "create an AGENTS.md file with instructions for Codex",
+        insertText: "/init",
+    },
+    {
+        id: "compact",
+        label: "/compact",
+        description: "summarize conversation to prevent hitting the context limit",
+        insertText: "/compact",
     },
     {
         id: "logout",
         label: "/logout",
-        description: "sign out",
+        description: "logout of Codex",
         insertText: "/logout",
     },
 ];
 
-function getFallbackSlashCommands(runtimeId?: string) {
+function getPendingRuntimeSlashCommands(runtimeId?: string) {
     if (runtimeId === "codex-acp") {
-        return [...COMMON_SLASH_COMMANDS, ...CODEX_SLASH_COMMANDS];
+        return CODEX_BUILTIN_SLASH_COMMANDS;
     }
 
-    return COMMON_SLASH_COMMANDS;
+    return [];
 }
 
 function applyComposerPillStyles(
@@ -337,6 +332,9 @@ function createScreenshotNode(
     element.dataset.filePath = part.filePath;
     element.dataset.mimeType = part.mimeType;
     element.dataset.label = part.label;
+    if (part.createdAt != null) {
+        element.dataset.createdAt = String(part.createdAt);
+    }
     element.contentEditable = "false";
     element.textContent = part.label;
     applyComposerPillStyles(element, metrics, CHAT_PILL_VARIANTS.file);
@@ -465,6 +463,9 @@ function readPartsFromNode(node: Node, parts: AIComposerPart[]) {
             filePath: node.dataset.filePath,
             mimeType: node.dataset.mimeType,
             label: node.dataset.label,
+            createdAt: node.dataset.createdAt
+                ? Number(node.dataset.createdAt)
+                : undefined,
         });
         return;
     }
@@ -512,6 +513,79 @@ function readPartsFromDom(root: HTMLElement): AIComposerPart[] {
     return normalizeComposerParts(normalized);
 }
 
+function assertNeverComposerPart(part: never): never {
+    throw new Error(`Unsupported composer part: ${JSON.stringify(part)}`);
+}
+
+function getComposerPartsDomSignature(parts: AIComposerPart[]) {
+    return JSON.stringify(
+        parts.map((part) => {
+            if (part.type === "text") {
+                return { type: part.type, text: part.text };
+            }
+            if (part.type === "mention") {
+                return {
+                    type: part.type,
+                    noteId: part.noteId,
+                    label: part.label,
+                    path: part.path,
+                };
+            }
+            if (part.type === "file_mention") {
+                return {
+                    type: part.type,
+                    label: part.label,
+                    path: part.path,
+                    relativePath: part.relativePath,
+                    mimeType: part.mimeType ?? null,
+                };
+            }
+            if (part.type === "folder_mention") {
+                return {
+                    type: part.type,
+                    folderPath: part.folderPath,
+                    label: part.label,
+                };
+            }
+            if (part.type === "fetch_mention") {
+                return { type: part.type };
+            }
+            if (part.type === "plan_mention") {
+                return { type: part.type };
+            }
+            if (part.type === "selection_mention") {
+                return {
+                    type: part.type,
+                    noteId: part.noteId ?? null,
+                    label: part.label,
+                    path: part.path,
+                    selectedText: part.selectedText,
+                    startLine: part.startLine,
+                    endLine: part.endLine,
+                };
+            }
+            if (part.type === "screenshot") {
+                return {
+                    type: part.type,
+                    filePath: part.filePath,
+                    mimeType: part.mimeType,
+                    label: part.label,
+                    createdAt: part.createdAt ?? null,
+                };
+            }
+            if (part.type === "file_attachment") {
+                return {
+                    type: part.type,
+                    filePath: part.filePath,
+                    mimeType: part.mimeType,
+                    label: part.label,
+                };
+            }
+            return assertNeverComposerPart(part);
+        }),
+    );
+}
+
 function setCaretAfterNode(node: Node) {
     const selection = window.getSelection();
     if (!selection) return;
@@ -544,6 +618,45 @@ function selectAllComposerContent(root: HTMLDivElement) {
     range.selectNodeContents(root);
     selection.removeAllRanges();
     selection.addRange(range);
+}
+
+function appendValidatedFileAttachmentPart(
+    parts: AIComposerPart[],
+    file: {
+        filePath: string;
+        mimeType: string;
+        label: string;
+        sizeBytes?: number | null;
+    },
+    runtimeId?: string | null,
+    onImageAttachmentValidationFailure?: (
+        reason: ImageAttachmentValidationFailure,
+    ) => void,
+) {
+    if (file.mimeType.startsWith("image/")) {
+        const validation = validateNewImageAttachmentReference(
+            { mimeType: file.mimeType, sizeBytes: file.sizeBytes },
+            parts,
+            runtimeId,
+        );
+        if (!validation.ok) {
+            onImageAttachmentValidationFailure?.(validation.reason);
+            return parts;
+        }
+    }
+
+    return appendFileAttachmentPart(parts, file);
+}
+
+function normalizeAttachmentLookupPath(path: string) {
+    return path.replace(/\\/g, "/");
+}
+
+function getKnownFileSizeBytes(
+    filePath: string,
+    fileSizeByPath: Map<string, number>,
+) {
+    return fileSizeByPath.get(normalizeAttachmentLookupPath(filePath)) ?? null;
 }
 
 function syncComposerDom(
@@ -978,6 +1091,7 @@ export function AIChatComposer({
     onFolderAttach,
     onToggleExpanded,
     onPasteImage,
+    onImageAttachmentValidationFailure,
     onFocus,
     onSubmit,
     onStop,
@@ -992,6 +1106,7 @@ export function AIChatComposer({
     const fallbackEntries = useVaultStore((state) => state.entries);
     const composerRef = useRef<HTMLDivElement>(null);
     const shellRef = useRef<HTMLDivElement>(null);
+    const fileSizeByPathRef = useRef<Map<string, number>>(new Map());
     const [composerElement, setComposerElement] =
         useState<HTMLDivElement | null>(null);
     const [mentionState, setMentionState] =
@@ -1000,10 +1115,6 @@ export function AIChatComposer({
     const [externalDragActive, setExternalDragActive] = useState(false);
     const [contextMenu, setContextMenu] =
         useState<ContextMenuState<ComposerContextMenuPayload> | null>(null);
-    const fallbackSlashCommands = useMemo(
-        () => getFallbackSlashCommands(runtimeId),
-        [runtimeId],
-    );
     const [customHeight, setCustomHeight] = useState<number | null>(null);
     const resizeSession = useRef<{
         startY: number;
@@ -1013,6 +1124,10 @@ export function AIChatComposer({
     const resizeHandleRef = useRef<HTMLDivElement>(null);
     const serializedValue = useMemo(
         () => serializeComposerParts(parts),
+        [parts],
+    );
+    const partsDomSignature = useMemo(
+        () => getComposerPartsDomSignature(parts),
         [parts],
     );
     const folderPaths = useMemo(
@@ -1061,6 +1176,14 @@ export function AIChatComposer({
         fileTreeContentMode,
         fileTreeExtensionFilter,
     ]);
+    useEffect(() => {
+        const next = new Map<string, number>();
+        for (const entry of fallbackEntries) {
+            if (typeof entry.size !== "number") continue;
+            next.set(normalizeAttachmentLookupPath(entry.path), entry.size);
+        }
+        fileSizeByPathRef.current = next;
+    }, [fallbackEntries]);
     const pillMetrics = useMemo(
         () => getChatPillMetrics(composerFontSize),
         [composerFontSize],
@@ -1098,15 +1221,15 @@ export function AIChatComposer({
         if (!composer) return;
 
         if (
-            serializeComposerParts(readPartsFromDom(composer)) ===
-                serializedValue &&
+            getComposerPartsDomSignature(readPartsFromDom(composer)) ===
+                partsDomSignature &&
             composer.dataset.pillMetricsSignature === pillMetricsSignature
         ) {
             return;
         }
 
         syncComposerDom(composer, parts, pillMetrics, pillMetricsSignature);
-    }, [parts, pillMetrics, pillMetricsSignature, serializedValue]);
+    }, [parts, partsDomSignature, pillMetrics, pillMetricsSignature]);
 
     const isStreaming = status === "streaming";
     const isStopTransitionActive = isStopping || hasPendingSubmitAfterStop;
@@ -1130,14 +1253,29 @@ export function AIChatComposer({
     const onMentionAttachRef = useRef(onMentionAttach);
     const onFileMentionAttachRef = useRef(onFileMentionAttach);
     const onFolderAttachRef = useRef(onFolderAttach);
+    const runtimeIdRef = useRef(runtimeId);
+    const onImageAttachmentValidationFailureRef = useRef(
+        onImageAttachmentValidationFailure,
+    );
 
     useEffect(() => {
         partsRef.current = parts;
+        runtimeIdRef.current = runtimeId;
         onChangeRef.current = onChange;
         onMentionAttachRef.current = onMentionAttach;
         onFileMentionAttachRef.current = onFileMentionAttach;
         onFolderAttachRef.current = onFolderAttach;
-    }, [onChange, onFileMentionAttach, onFolderAttach, onMentionAttach, parts]);
+        onImageAttachmentValidationFailureRef.current =
+            onImageAttachmentValidationFailure;
+    }, [
+        onChange,
+        onFileMentionAttach,
+        onFolderAttach,
+        onImageAttachmentValidationFailure,
+        onMentionAttach,
+        parts,
+        runtimeId,
+    ]);
 
     const syncFromDom = () => {
         const composer = composerRef.current;
@@ -1221,7 +1359,7 @@ export function AIChatComposer({
         );
         const commandSource = runtimeCommands.length
             ? runtimeCommands
-            : fallbackSlashCommands;
+            : getPendingRuntimeSlashCommands(runtimeId);
         const normalizedQuery = trigger.query.toLowerCase();
         const items = commandSource.filter((command) => {
             const haystack = [command.id, command.label, command.description]
@@ -1422,13 +1560,27 @@ export function AIChatComposer({
                 // File drop (PDFs, etc.) — inline pills
                 if (detail.files && detail.files.length > 0) {
                     for (const file of detail.files) {
-                        current = appendFileAttachmentPart(current, {
-                            filePath: file.filePath,
-                            mimeType: file.mimeType,
-                            label: file.fileName,
-                        });
+                        const next = appendValidatedFileAttachmentPart(
+                            current,
+                            {
+                                filePath: file.filePath,
+                                mimeType: file.mimeType,
+                                label: file.fileName,
+                                sizeBytes:
+                                    file.sizeBytes ??
+                                    getKnownFileSizeBytes(
+                                        file.filePath,
+                                        fileSizeByPathRef.current,
+                                    ),
+                            },
+                            runtimeIdRef.current,
+                            onImageAttachmentValidationFailureRef.current,
+                        );
+                        if (next !== current) {
+                            didAttach = true;
+                            current = next;
+                        }
                     }
-                    didAttach = true;
                 }
 
                 // Notes drop
@@ -1519,6 +1671,7 @@ export function AIChatComposer({
                         md: "text/markdown",
                     };
                     let currentParts = partsRef.current;
+                    let didAttach = false;
                     for (const filePath of paths) {
                         const fileName = filePath.split("/").pop() ?? "file";
                         const dotIdx = fileName.lastIndexOf(".");
@@ -1533,11 +1686,12 @@ export function AIChatComposer({
                                 filePath,
                                 fileName,
                             );
+                            didAttach = true;
                         } else {
                             const ext = fileName
                                 .slice(dotIdx + 1)
                                 .toLowerCase();
-                            currentParts = appendFileAttachmentPart(
+                            const nextParts = appendValidatedFileAttachmentPart(
                                 currentParts,
                                 {
                                     filePath,
@@ -1545,10 +1699,21 @@ export function AIChatComposer({
                                         mimeMap[ext] ??
                                         "application/octet-stream",
                                     label: fileName,
+                                    sizeBytes: getKnownFileSizeBytes(
+                                        filePath,
+                                        fileSizeByPathRef.current,
+                                    ),
                                 },
+                                runtimeIdRef.current,
+                                onImageAttachmentValidationFailureRef.current,
                             );
+                            if (nextParts !== currentParts) {
+                                didAttach = true;
+                                currentParts = nextParts;
+                            }
                         }
                     }
+                    if (!didAttach) return;
                     onChangeRef.current(currentParts);
                     focusComposerAtEnd();
                     return;
@@ -1608,6 +1773,10 @@ export function AIChatComposer({
         document.body.classList.remove("resizing-composer");
         resizeSession.current = null;
     };
+    const contentColumnClassName =
+        expanded || customHeight != null
+            ? "relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
+            : "relative flex min-w-0 flex-col";
 
     return (
         <div
@@ -1622,10 +1791,16 @@ export function AIChatComposer({
         >
             {contextBar ? (
                 <div className={expanded ? "px-2 pb-1.5" : "px-3 pb-1.5"}>
-                    {contextBar}
+                    <div
+                        className="min-w-0"
+                        style={AI_CHAT_CONTENT_COLUMN_STYLE}
+                    >
+                        {contextBar}
+                    </div>
                 </div>
             ) : null}
             <div
+                data-testid="chat-composer-shell"
                 className={
                     expanded
                         ? "relative flex h-full min-h-0 flex-1 flex-col"
@@ -1645,99 +1820,108 @@ export function AIChatComposer({
                         : { height: customHeight }),
                 }}
             >
-                {!expanded && (
-                    <div
-                        ref={resizeHandleRef}
-                        onPointerDown={onResizeDown}
-                        onPointerMove={onResizeMove}
-                        onPointerUp={onResizeUp}
-                        onPointerCancel={onResizeUp}
-                        className="group absolute left-0 right-0 flex cursor-row-resize items-center justify-center touch-none"
-                        style={{
-                            top: -4,
-                            height: 9,
-                            zIndex: 2,
-                        }}
-                    >
-                        <div
-                            className="rounded-full transition-colors duration-150"
-                            style={{
-                                width: 32,
-                                height: 3,
-                                backgroundColor: "var(--border)",
-                            }}
-                        />
-                    </div>
-                )}
-                <button
-                    type="button"
-                    tabIndex={-1}
-                    onClick={onToggleExpanded}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor =
-                            "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
-                        e.currentTarget.style.color = "var(--text-primary)";
-                        e.currentTarget.style.opacity = "1";
-                    }}
-                    onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = "transparent";
-                        e.currentTarget.style.color = "var(--text-secondary)";
-                        e.currentTarget.style.opacity = "0.45";
-                    }}
-                    className="absolute right-2 top-2 flex items-center justify-center rounded"
-                    style={{
-                        width: 22,
-                        height: 22,
-                        color: "var(--text-secondary)",
-                        backgroundColor: "transparent",
-                        border: "none",
-                        opacity: 0.45,
-                        outline: "none",
-                        zIndex: 1,
-                        transition:
-                            "background-color 100ms ease, color 100ms ease, opacity 100ms ease",
-                    }}
-                    title={expanded ? "Collapse composer" : "Expand composer"}
-                    aria-label={
-                        expanded ? "Collapse composer" : "Expand composer"
-                    }
+                <div
+                    className={contentColumnClassName}
+                    data-testid="chat-composer-content-column"
+                    style={AI_CHAT_CONTENT_COLUMN_STYLE}
                 >
-                    {expanded ? (
-                        <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 14 14"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                    {!expanded && (
+                        <div
+                            ref={resizeHandleRef}
+                            onPointerDown={onResizeDown}
+                            onPointerMove={onResizeMove}
+                            onPointerUp={onResizeUp}
+                            onPointerCancel={onResizeUp}
+                            className="group absolute left-0 right-0 flex cursor-row-resize items-center justify-center touch-none"
+                            style={{
+                                top: -4,
+                                height: 9,
+                                zIndex: 2,
+                            }}
                         >
-                            {/* Collapse: inner brackets at (5,5) and (9,9)
-                                with diagonals out to the outer corners — reads
-                                as arrows pulling inward toward the centre. */}
-                            <path d="M5 1V5H1M9 13V9H13M5 5L1 1M9 9L13 13" />
-                        </svg>
-                    ) : (
-                        <svg
-                            width="13"
-                            height="13"
-                            viewBox="0 0 14 14"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                        >
-                            {/* Expand: outer brackets at the corners with
-                                diagonals pushing outward — arrows reaching
-                                toward the corners. */}
-                            <path d="M9 1h4v4M5 13H1V9M13 1l-5 5M1 13l5-5" />
-                        </svg>
+                            <div
+                                className="rounded-full transition-colors duration-150"
+                                style={{
+                                    width: 32,
+                                    height: 3,
+                                    backgroundColor: "var(--border)",
+                                }}
+                            />
+                        </div>
                     )}
-                </button>
-                {isEmpty && (
+                    <button
+                        type="button"
+                        tabIndex={-1}
+                        onClick={onToggleExpanded}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onMouseEnter={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                                "color-mix(in srgb, var(--bg-tertiary) 80%, transparent)";
+                            e.currentTarget.style.color = "var(--text-primary)";
+                            e.currentTarget.style.opacity = "1";
+                        }}
+                        onMouseLeave={(e) => {
+                            e.currentTarget.style.backgroundColor =
+                                "transparent";
+                            e.currentTarget.style.color =
+                                "var(--text-secondary)";
+                            e.currentTarget.style.opacity = "0.45";
+                        }}
+                        className="absolute right-2 top-2 flex items-center justify-center rounded"
+                        style={{
+                            width: 22,
+                            height: 22,
+                            color: "var(--text-secondary)",
+                            backgroundColor: "transparent",
+                            border: "none",
+                            opacity: 0.45,
+                            outline: "none",
+                            zIndex: 1,
+                            transition:
+                                "background-color 100ms ease, color 100ms ease, opacity 100ms ease",
+                        }}
+                        title={
+                            expanded ? "Collapse composer" : "Expand composer"
+                        }
+                        aria-label={
+                            expanded ? "Collapse composer" : "Expand composer"
+                        }
+                    >
+                        {expanded ? (
+                            <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 14 14"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                {/* Collapse: inner brackets at (5,5) and (9,9)
+                                    with diagonals out to the outer corners — reads
+                                    as arrows pulling inward toward the centre. */}
+                                <path d="M5 1V5H1M9 13V9H13M5 5L1 1M9 9L13 13" />
+                            </svg>
+                        ) : (
+                            <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 14 14"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                {/* Expand: outer brackets at the corners with
+                                    diagonals pushing outward — arrows reaching
+                                    toward the corners. */}
+                                <path d="M9 1h4v4M5 13H1V9M13 1l-5 5M1 13l5-5" />
+                            </svg>
+                        )}
+                    </button>
+                    {isEmpty && (
                     <div
                         className="pointer-events-none absolute left-3.5 top-2.5"
                         style={{
@@ -1758,16 +1942,16 @@ export function AIChatComposer({
                                 ? "Set up a provider in Settings → AI providers"
                                 : `Message ${runtimeName} — @ to include context, / for commands`)}
                     </div>
-                )}
-                <div
-                    ref={bindComposerRef}
-                    contentEditable={!disabled}
-                    suppressContentEditableWarning
-                    role="textbox"
-                    aria-label={AI_MESSAGE_LABEL}
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
+                    )}
+                    <div
+                        ref={bindComposerRef}
+                        contentEditable={!disabled}
+                        suppressContentEditableWarning
+                        role="textbox"
+                        aria-label={AI_MESSAGE_LABEL}
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
                     onContextMenu={(event) => {
                         event.preventDefault();
                         const composer = composerRef.current;
@@ -2242,6 +2426,7 @@ export function AIChatComposer({
                     />
                 )}
                 {bottomAccent}
+                </div>
             </div>
         </div>
     );

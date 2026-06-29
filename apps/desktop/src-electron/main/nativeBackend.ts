@@ -72,6 +72,7 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_cancel_turn",
     "ai_respond_permission",
     "ai_respond_user_input",
+    "ai_respond_url_elicitation",
     "ai_save_session_history",
     "ai_load_session_histories",
     "ai_load_session_history_page",
@@ -97,6 +98,7 @@ const SUPPORTED_COMMANDS = new Set([
     "devtools_close_terminal_session",
     "devtools_get_terminal_session_snapshot",
     "devtools_check_binary",
+    "devtools_read_claude_transcript",
     "spellcheck_list_languages",
     "spellcheck_list_catalog",
     "spellcheck_check_text",
@@ -115,9 +117,9 @@ const SUPPORTED_COMMANDS = new Set([
 ]);
 
 const NATIVE_BACKEND_SECRET_JSON_KEY_PATTERN =
-    /("(?:codex_api_key|openai_api_key|gemini_api_key|google_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
+    /("(?:codex_api_key|openai_api_key|gemini_api_key|xai_api_key|google_api_key|gateway_headers|anthropic_custom_headers|anthropic_auth_token|anthropic_api_key|api[_-]?key|authorization|token|secret|password|value)"\s*:\s*")([^"]*)(")/giu;
 const NATIVE_BACKEND_SECRET_ENV_PATTERN =
-    /\b((?:CODEX_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_CUSTOM_HEADERS|GEMINI_API_KEY|GOOGLE_API_KEY)\s*=\s*)([^\s"',}]+)/gu;
+    /\b((?:CODEX_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_CUSTOM_HEADERS|GEMINI_API_KEY|GOOGLE_API_KEY|XAI_API_KEY)\s*=\s*)([^\s"',}]+)/gu;
 
 function redactNativeBackendSecrets(value: string) {
     return value
@@ -257,6 +259,7 @@ function buildSidecarPath() {
         "/bin",
         "/usr/sbin",
         "/sbin",
+        path.join(home, ".grok", "bin"),
         path.join(home, ".local", "bin"),
         path.join(home, ".bun", "bin"),
         path.join(home, ".cargo", "bin"),

@@ -11,6 +11,7 @@ import {
 } from "../store/editedFilesBufferModel";
 import { EditedFilesReviewList } from "./EditedFilesReviewList";
 import {
+    COMPACT_REVIEW_MAX_LIST_HEIGHT_PX,
     getAccentButtonStyle,
     getDangerButtonStyle,
     getNeutralButtonStyle,
@@ -21,7 +22,6 @@ import {
 } from "../diff/editedFilesPresentationModel";
 import { canOpenAiEditedFileByAbsolutePath } from "../chatFileNavigation";
 
-const COMPACT_MAX_LIST_HEIGHT = "208px";
 const UNDO_ONLY_BANNER_TIMEOUT_MS = 5000;
 
 function CollapseToggle({
@@ -401,7 +401,7 @@ export function EditedFilesBufferPanel({
                     data-scrollbar-active="true"
                     className="flex flex-col"
                     style={{
-                        maxHeight: COMPACT_MAX_LIST_HEIGHT,
+                        maxHeight: COMPACT_REVIEW_MAX_LIST_HEIGHT_PX,
                         overflowY: "auto",
                     }}
                 >

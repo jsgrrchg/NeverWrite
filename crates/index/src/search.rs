@@ -875,14 +875,15 @@ fn search_content(content: &str, cs: &ContentSearchParam) -> Vec<ContentMatchDto
                     let section_text: String = lines[section_start..i].join("\n");
                     let section_lower = section_text.to_lowercase();
                     if matcher.matches(&section_lower) {
-                        for j in section_start..i {
-                            let line_lower = lines[j].to_lowercase();
+                        for (j, line) in lines.iter().enumerate().take(i).skip(section_start) {
+                            let line = *line;
+                            let line_lower = line.to_lowercase();
                             let hits = matcher.find_in(&line_lower);
                             if !hits.is_empty() {
                                 for (start, end) in hits.iter().take(1) {
                                     results.push(ContentMatchDto {
                                         line_number: j + 1,
-                                        line_content: truncate_line(lines[j], 200),
+                                        line_content: truncate_line(line, 200),
                                         match_start: *start,
                                         match_end: *end,
                                         page: None,

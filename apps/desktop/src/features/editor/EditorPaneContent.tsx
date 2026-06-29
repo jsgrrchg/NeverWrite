@@ -1,21 +1,21 @@
 import React from "react";
 import {
     useEditorStore,
-    isChatTab,
-    isChatHistoryTab,
-    isFileTab,
     isGraphTab,
-    isMapTab,
     isNoteTab,
-    isPdfTab,
-    isReviewTab,
     isTerminalTab,
     selectEditorPaneState,
     selectFocusedPaneId,
+    selectPaneTabDisplayMode,
     type EditorPaneState,
     type EditorWorkspaceState,
     type TerminalTab,
 } from "../../app/store/editorStore";
+import { StackedPaneContent } from "./StackedPaneContent";
+import {
+    resolveEditorPanelView,
+    type EditorPanelView,
+} from "./editorPanelView";
 import { canUseExcalidrawRuntime } from "../../app/utils/safeBrowser";
 import { Editor } from "./Editor";
 import { FileTabView } from "./FileTabView";
@@ -26,18 +26,6 @@ import { AIChatHistoryWorkspaceView } from "../ai/components/AIChatHistoryWorksp
 import { AIReviewView } from "../ai/components/AIReviewView";
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { WorkspaceTerminalView } from "../terminal/WorkspaceTerminalView";
-
-type EditorPanelView =
-    | "pdf"
-    | "file"
-    | "search"
-    | "ai-review"
-    | "ai-chat"
-    | "ai-chat-history"
-    | "editor"
-    | "terminal"
-    | "map"
-    | "graph";
 
 const LazyExcalidrawTabView = React.lazy(() =>
     import("../maps/ExcalidrawTabView").then((m) => ({
@@ -161,24 +149,32 @@ export function EditorPaneContent({
     paneId,
     emptyStateMessage,
 }: EditorPaneContentProps) {
+    const displayMode = useEditorStore((state) =>
+        selectPaneTabDisplayMode(state, paneId),
+    );
+
+    if (displayMode === "stacked") {
+        return (
+            <StackedPaneContent
+                paneId={paneId}
+                emptyStateMessage={emptyStateMessage}
+            />
+        );
+    }
+
+    return (
+        <DefaultPaneContent
+            paneId={paneId}
+            emptyStateMessage={emptyStateMessage}
+        />
+    );
+}
+
+function DefaultPaneContent({ paneId, emptyStateMessage }: EditorPaneContentProps) {
     const pane = useEditorStore((state) => selectRenderablePane(state, paneId));
     const activeTab =
         pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? null;
-    const view: EditorPanelView = (() => {
-        const tab = activeTab;
-        if (!tab) return "editor";
-        if (isPdfTab(tab)) return "pdf";
-        if (isFileTab(tab)) return "file";
-        if (isReviewTab(tab)) return "ai-review";
-        if (isChatTab(tab)) return "ai-chat";
-        if (isChatHistoryTab(tab)) return "ai-chat-history";
-        if (isMapTab(tab)) return "map";
-        if (isGraphTab(tab)) return "graph";
-        if (isTerminalTab(tab)) return "terminal";
-        if (!isNoteTab(tab)) return "editor";
-        if (isSearchTab(tab)) return "search";
-        return "editor";
-    })();
+    const view: EditorPanelView = resolveEditorPanelView(activeTab);
     const paneTabs = pane.tabs;
     const focusedPaneId = useEditorStore(selectFocusedPaneId);
     const activePane = paneId ? focusedPaneId === paneId : true;

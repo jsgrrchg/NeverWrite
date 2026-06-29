@@ -19,6 +19,12 @@ describe("shortcut registry formatting", () => {
         expect(formatShortcutAction("new_agent", "windows")).toBe(
             "Ctrl+Shift+N",
         );
+        expect(formatShortcutAction("stop_active_agent", "macos")).toBe(
+            "Escape",
+        );
+        expect(formatShortcutAction("stop_active_agent", "windows")).toBe(
+            "Escape",
+        );
         expect(formatShortcutAction("new_terminal", "macos")).toBe("⌘R");
         expect(formatShortcutAction("new_terminal", "windows")).toBe("Ctrl+R");
         expect(formatShortcutAction("zoom_in", "macos")).toBe("⌘=");
@@ -65,6 +71,13 @@ describe("shortcut registry formatting", () => {
                 shortcut: "Ctrl+Shift+N",
             },
         );
+        expect(
+            entries.find((entry) => entry.id === "stop_active_agent"),
+        ).toMatchObject({
+            label: "Stop active agent",
+            category: "AI",
+            shortcut: "Escape",
+        });
         expect(
             entries.find((entry) => entry.id === "new_terminal"),
         ).toMatchObject({

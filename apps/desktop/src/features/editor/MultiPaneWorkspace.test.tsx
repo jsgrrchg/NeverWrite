@@ -9,7 +9,7 @@ import {
     setVaultEntries,
 } from "../../test/test-utils";
 import { publishWindowTabDropZone } from "../../app/detachedWindows";
-import { useEditorStore } from "../../app/store/editorStore";
+import { useEditorStore, type ChatTab } from "../../app/store/editorStore";
 import { CLEAR_FILE_TREE_SELECTION_EVENT } from "../../app/utils/navigation";
 import {
     createInitialLayout,
@@ -17,12 +17,18 @@ import {
 } from "../../app/store/workspaceLayoutTree";
 import { useVaultStore } from "../../app/store/vaultStore";
 import { FILE_TREE_NOTE_DRAG_EVENT } from "../ai/dragEvents";
+import {
+    resetChatStore,
+    useChatStore,
+} from "../ai/store/chatStore";
+import type { AIChatSession, AIChatSessionStatus } from "../ai/types";
 import { MultiPaneWorkspace } from "./MultiPaneWorkspace";
 import { CROSS_PANE_TAB_DROP_PREVIEW_EVENT } from "./workspaceTabDropPreview";
 
 const innerPositionMock = vi.fn();
 const scaleFactorMock = vi.fn();
 const onDragDropEventMock = vi.fn();
+const originalStopStreaming = useChatStore.getState().stopStreaming;
 
 vi.mock("../../app/detachedWindows", () => ({
     getCurrentWindowLabel: vi.fn(() => "main"),
@@ -76,7 +82,64 @@ describe("MultiPaneWorkspace", () => {
         );
     }
 
+    function createChatTab(sessionId: string): ChatTab {
+        return {
+            id: `tab-${sessionId}`,
+            kind: "ai-chat",
+            sessionId,
+            title: sessionId,
+        };
+    }
+
+    function createChatSession(
+        sessionId: string,
+        status: AIChatSessionStatus,
+    ): AIChatSession {
+        return {
+            sessionId,
+            status,
+        } as AIChatSession;
+    }
+
+    function setPaneChatSession(
+        paneId: string,
+        sessionId: string,
+        status: AIChatSessionStatus,
+    ) {
+        const tab = createChatTab(sessionId);
+        useEditorStore.setState((state) => ({
+            panes: state.panes.map((pane) =>
+                pane.id === paneId
+                    ? {
+                          ...pane,
+                          tabs: [tab],
+                          tabIds: [tab.id],
+                          activeTabId: tab.id,
+                      }
+                    : pane,
+            ),
+        }));
+        useChatStore.setState((state) => ({
+            sessionsById: {
+                ...state.sessionsById,
+                [sessionId]: createChatSession(sessionId, status),
+            },
+            sessionOrder: [
+                ...state.sessionOrder.filter((id) => id !== sessionId),
+                sessionId,
+            ],
+        }));
+    }
+
+    function installStopStreamingMock() {
+        const stopStreaming = vi.fn(async (_sessionId?: string) => {});
+        useChatStore.setState({ stopStreaming });
+        return stopStreaming;
+    }
+
     beforeEach(() => {
+        resetChatStore();
+        useChatStore.setState({ stopStreaming: originalStopStreaming });
         const mockWindow = getMockCurrentWindow() as unknown as {
             innerPosition: typeof innerPositionMock;
             scaleFactor: typeof scaleFactorMock;
@@ -159,6 +222,7 @@ describe("MultiPaneWorkspace", () => {
                     activationHistory: [],
                     tabNavigationHistory: [],
                     tabNavigationIndex: -1,
+                    tabDisplayMode: "default",
                 },
                 {
                     id: "secondary",
@@ -169,6 +233,7 @@ describe("MultiPaneWorkspace", () => {
                     activationHistory: [],
                     tabNavigationHistory: [],
                     tabNavigationIndex: -1,
+                    tabDisplayMode: "default",
                 },
                 {
                     id: "tertiary",
@@ -179,6 +244,7 @@ describe("MultiPaneWorkspace", () => {
                     activationHistory: [],
                     tabNavigationHistory: [],
                     tabNavigationIndex: -1,
+                    tabDisplayMode: "default",
                 },
             ],
             focusedPaneId: "primary",
@@ -250,6 +316,78 @@ describe("MultiPaneWorkspace", () => {
             );
         }
     });
+
+    it.each<AIChatSessionStatus>([
+        "streaming",
+        "waiting_permission",
+        "waiting_user_input",
+    ])("stops the focused chat when Escape is pressed in %s", (status) => {
+        setPaneChatSession("primary", "session-primary", status);
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+
+        fireEvent.keyDown(window, { key: "Escape" });
+
+        expect(stopStreaming).toHaveBeenCalledTimes(1);
+        expect(stopStreaming).toHaveBeenCalledWith("session-primary");
+    });
+
+    it("does not stop a chat in another pane", () => {
+        setPaneChatSession("primary", "session-primary", "streaming");
+        setPaneChatSession("secondary", "session-secondary", "streaming");
+        useEditorStore.setState({ focusedPaneId: "primary" });
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+
+        fireEvent.keyDown(window, { key: "Escape" });
+
+        expect(stopStreaming).toHaveBeenCalledTimes(1);
+        expect(stopStreaming).toHaveBeenCalledWith("session-primary");
+        expect(stopStreaming).not.toHaveBeenCalledWith("session-secondary");
+    });
+
+    it("does not stop the focused chat when Escape was already prevented", () => {
+        setPaneChatSession("primary", "session-primary", "streaming");
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+        const event = new KeyboardEvent("keydown", {
+            key: "Escape",
+            cancelable: true,
+        });
+        event.preventDefault();
+
+        window.dispatchEvent(event);
+
+        expect(stopStreaming).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["metaKey", { metaKey: true }],
+        ["ctrlKey", { ctrlKey: true }],
+        ["altKey", { altKey: true }],
+        ["shiftKey", { shiftKey: true }],
+    ])("does not stop the focused chat with %s", (_name, modifier) => {
+        setPaneChatSession("primary", "session-primary", "streaming");
+        const stopStreaming = installStopStreamingMock();
+        renderComponent(<MultiPaneWorkspace />);
+
+        fireEvent.keyDown(window, { key: "Escape", ...modifier });
+
+        expect(stopStreaming).not.toHaveBeenCalled();
+    });
+
+    it.each<AIChatSessionStatus>(["idle", "review_required", "error"])(
+        "does not stop a focused chat in %s",
+        (status) => {
+            setPaneChatSession("primary", "session-primary", status);
+            const stopStreaming = installStopStreamingMock();
+            renderComponent(<MultiPaneWorkspace />);
+
+            fireEvent.keyDown(window, { key: "Escape" });
+
+            expect(stopStreaming).not.toHaveBeenCalled();
+        },
+    );
 
     it("opens a dragged vault file in the pane under the pointer", async () => {
         setVaultEntries([
@@ -354,6 +492,102 @@ describe("MultiPaneWorkspace", () => {
             title: "reference.txt",
         });
         expect(useEditorStore.getState().focusedPaneId).toBe("secondary");
+    });
+
+    it("opens dragged Excalidraw vault files as map tabs", async () => {
+        setVaultEntries([
+            {
+                id: "Excalidraw/Board.excalidraw",
+                path: "/vault/Excalidraw/Board.excalidraw",
+                relative_path: "Excalidraw/Board.excalidraw",
+                title: "Board",
+                file_name: "Board.excalidraw",
+                extension: "excalidraw",
+                kind: "file",
+                modified_at: 1,
+                created_at: 1,
+                size: 2048,
+                mime_type: "application/json",
+            },
+        ]);
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "read_vault_file") {
+                throw new Error("Excalidraw drops should open as map tabs");
+            }
+
+            return undefined;
+        });
+
+        renderComponent(<MultiPaneWorkspace />);
+        await flushPromises();
+
+        const primaryPane = screen
+            .getByTestId("pane-content-primary")
+            .closest('[data-editor-pane-id="primary"]') as HTMLElement | null;
+        const secondaryPane = screen
+            .getByTestId("pane-content-secondary")
+            .closest('[data-editor-pane-id="secondary"]') as HTMLElement | null;
+        expect(primaryPane).not.toBeNull();
+        expect(secondaryPane).not.toBeNull();
+
+        vi.spyOn(primaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 300,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+        vi.spyOn(secondaryPane!, "getBoundingClientRect").mockReturnValue({
+            x: 320,
+            y: 0,
+            left: 320,
+            top: 0,
+            right: 620,
+            bottom: 300,
+            width: 300,
+            height: 300,
+            toJSON: () => ({}),
+        } as DOMRect);
+
+        const dragDropListener = onDragDropEventMock.mock.calls.at(-1)?.[0] as
+            | ((event: {
+                  payload: {
+                      type: "drop";
+                      position: { x: number; y: number };
+                      paths: string[];
+                  };
+              }) => void)
+            | undefined;
+        expect(dragDropListener).toBeTypeOf("function");
+
+        await act(async () => {
+            dragDropListener?.({
+                payload: {
+                    type: "drop",
+                    position: { x: 460, y: 120 },
+                    paths: ["/vault/Excalidraw/Board.excalidraw"],
+                },
+            });
+            await flushPromises();
+        });
+
+        const secondaryWorkspacePane = useEditorStore
+            .getState()
+            .panes.find((pane) => pane.id === "secondary");
+        expect(secondaryWorkspacePane?.tabs).toHaveLength(1);
+        expect(secondaryWorkspacePane?.tabs[0]).toMatchObject({
+            kind: "map",
+            relativePath: "Excalidraw/Board.excalidraw",
+            title: "Board",
+        });
+        expect(mockInvoke()).not.toHaveBeenCalledWith(
+            "read_vault_file",
+            expect.anything(),
+        );
     });
 
     it("copies external files into the hovered file-tree folder", async () => {

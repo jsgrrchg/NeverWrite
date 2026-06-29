@@ -22,6 +22,9 @@ import type {
     AIPlanUpdatePayload,
     AIStatusEventPayload,
     AITokenUsagePayload,
+    AIUrlElicitationAction,
+    AIUrlElicitationRequestPayload,
+    AIUserInputAction,
     AIToolActivityPayload,
     AIUserInputRequestPayload,
     AIRuntimeDescriptor,
@@ -52,6 +55,8 @@ export const AI_STATUS_EVENT = "ai://status-event";
 export const AI_IMAGE_GENERATION_EVENT = "ai://image-generation";
 export const AI_PERMISSION_REQUEST_EVENT = "ai://permission-request";
 export const AI_USER_INPUT_REQUEST_EVENT = "ai://user-input-request";
+export const AI_URL_ELICITATION_REQUEST_EVENT =
+    "ai://url-elicitation-request";
 export const AI_PLAN_UPDATED_EVENT = "ai://plan-updated";
 export const AI_AVAILABLE_COMMANDS_UPDATED_EVENT =
     "ai://available-commands-updated";
@@ -77,6 +82,7 @@ function normalizeConfigOption(
             value: item.value,
             label: item.label,
             description: item.description ?? undefined,
+            agentType: item.agent_type ?? undefined,
         })),
     };
 }
@@ -89,6 +95,7 @@ export function normalizeBackendSession(
         historySessionId: session.session_id,
         parentSessionId: session.parent_session_id ?? null,
         runtimeSessionId: session.runtime_session_id ?? null,
+        closedAt: session.closed_at ?? null,
         customTitle: session.title ?? null,
         persistedTitle: session.title ?? null,
         runtimeId: session.runtime_id,
@@ -105,6 +112,7 @@ export function normalizeBackendSession(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: session.modes.map((mode) => ({
             id: mode.id,
@@ -140,6 +148,7 @@ function normalizeRuntimeDescriptor(
             runtimeId: model.runtime_id,
             name: model.name,
             description: model.description,
+            agentType: model.agent_type ?? undefined,
         })),
         modes: descriptor.modes.map((mode) => ({
             id: mode.id,
@@ -299,11 +308,8 @@ export async function aiUpdateSetup(input: {
     customBinaryPath?: string;
     codexApiKey: AISecretPatch;
     openaiApiKey: AISecretPatch;
-    geminiApiKey: AISecretPatch;
+    xaiApiKey?: AISecretPatch;
     kiloApiKey?: AISecretPatch;
-    googleApiKey: AISecretPatch;
-    googleCloudProject?: string;
-    googleCloudLocation?: string;
     gatewayBaseUrl?: string;
     gatewayHeaders: AISecretPatch;
     anthropicBaseUrl?: string;
@@ -316,14 +322,13 @@ export async function aiUpdateSetup(input: {
         "ai_update_setup",
         {
             input: {
-                custom_binary_path: input.customBinaryPath ?? null,
+                ...(input.customBinaryPath !== undefined
+                    ? { custom_binary_path: input.customBinaryPath }
+                    : {}),
                 codex_api_key: input.codexApiKey,
                 openai_api_key: input.openaiApiKey,
-                gemini_api_key: input.geminiApiKey,
+                xai_api_key: input.xaiApiKey ?? { action: "unchanged" },
                 kilo_api_key: input.kiloApiKey ?? { action: "unchanged" },
-                google_api_key: input.googleApiKey,
-                google_cloud_project: input.googleCloudProject ?? null,
-                google_cloud_location: input.googleCloudLocation ?? null,
                 gateway_base_url: input.gatewayBaseUrl ?? null,
                 gateway_headers: input.gatewayHeaders,
                 anthropic_base_url: input.anthropicBaseUrl ?? null,
@@ -601,6 +606,7 @@ export async function aiRespondUserInput(
     sessionId: string,
     requestId: string,
     answers: Record<string, string[]>,
+    action: AIUserInputAction = "accept",
 ) {
     assertRuntimeSessionId(sessionId, "respond to a user input request");
     const session = await invoke<AIBackendSessionPayload>(
@@ -610,6 +616,26 @@ export async function aiRespondUserInput(
                 session_id: sessionId,
                 request_id: requestId,
                 answers,
+                action,
+            },
+        },
+    );
+    return normalizeBackendSession(session);
+}
+
+export async function aiRespondUrlElicitation(
+    sessionId: string,
+    requestId: string,
+    action: AIUrlElicitationAction,
+) {
+    assertRuntimeSessionId(sessionId, "respond to a URL elicitation request");
+    const session = await invoke<AIBackendSessionPayload>(
+        "ai_respond_url_elicitation",
+        {
+            input: {
+                session_id: sessionId,
+                request_id: requestId,
+                action,
             },
         },
     );
@@ -899,6 +925,17 @@ export async function listenToAiUserInputRequest(
 ): Promise<UnlistenFn> {
     return listen<AIUserInputRequestPayload>(
         AI_USER_INPUT_REQUEST_EVENT,
+        (event) => {
+            callback(event.payload);
+        },
+    );
+}
+
+export async function listenToAiUrlElicitationRequest(
+    callback: (payload: AIUrlElicitationRequestPayload) => void,
+): Promise<UnlistenFn> {
+    return listen<AIUrlElicitationRequestPayload>(
+        AI_URL_ELICITATION_REQUEST_EVENT,
         (event) => {
             callback(event.payload);
         },

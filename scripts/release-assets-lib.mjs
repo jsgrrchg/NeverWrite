@@ -15,6 +15,10 @@ import {
     getSignatureAssetName,
     normalizeReleaseVersion,
 } from "./appcast-lib.mjs";
+import {
+    APT_DEFAULT_BASE_URL,
+    APT_RELEASE_DOWNLOAD_BASE_URL,
+} from "./apt-repo-lib.mjs";
 
 export const PUBLIC_DOWNLOAD_VARIANTS = [
     {
@@ -326,14 +330,13 @@ export function buildReleaseBody(version, releaseNotes) {
         "",
         "```bash",
         "sudo install -d -m 0755 /etc/apt/keyrings",
-        "curl -fsSL https://jsgrrchg.github.io/NeverWrite/apt/neverwrite-archive-keyring.asc \\",
+        `curl -fsSL ${APT_DEFAULT_BASE_URL}/neverwrite-archive-keyring.asc \\`,
         "  | sudo tee /etc/apt/keyrings/neverwrite.asc >/dev/null",
         "sudo chmod 0644 /etc/apt/keyrings/neverwrite.asc",
         "sudo tee /etc/apt/sources.list.d/neverwrite.sources >/dev/null <<'EOF'",
         "Types: deb",
-        "URIs: https://jsgrrchg.github.io/NeverWrite/apt",
-        "Suites: stable",
-        "Components: main",
+        `URIs: ${APT_RELEASE_DOWNLOAD_BASE_URL}`,
+        "Suites: ./",
         "Architectures: amd64 arm64",
         "Signed-By: /etc/apt/keyrings/neverwrite.asc",
         "EOF",

@@ -195,7 +195,10 @@ export function FloatingSelectionToolbar({
         };
 
         const handleKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") onClose();
+            if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+            }
         };
 
         document.addEventListener("mousedown", handleDown);
@@ -235,6 +238,9 @@ export function FloatingSelectionToolbar({
                     title={button.title}
                     aria-label={button.title}
                     onMouseDown={(event) => {
+                        event.preventDefault();
+                    }}
+                    onClick={(event) => {
                         event.preventDefault();
                         onAction(button.action);
                     }}
@@ -283,6 +289,9 @@ export function FloatingSelectionToolbar({
                         title={`Add to Chat (${addToChatShortcut})`}
                         aria-label="Add to Chat"
                         onMouseDown={(event) => {
+                            event.preventDefault();
+                        }}
+                        onClick={(event) => {
                             event.preventDefault();
                             onAddToChat();
                         }}

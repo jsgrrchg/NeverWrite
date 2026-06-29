@@ -22,7 +22,11 @@ import { safeStorageGetItem, safeStorageSetItem } from "../utils/safeStorage";
 import { vaultInvoke } from "../utils/vaultInvoke";
 import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useLayoutStore } from "./layoutStore";
-import { getEffectivePaneWorkspace } from "./editorWorkspace";
+import {
+    getEffectivePaneWorkspace,
+    normalizeTabDisplayMode,
+    type TabDisplayMode,
+} from "./editorWorkspace";
 import {
     createInitialLayout,
     getLayoutPaneIds,
@@ -42,6 +46,7 @@ export interface PersistedSessionPane {
     activationHistory?: string[];
     tabNavigationHistory?: string[];
     tabNavigationIndex?: number;
+    tabDisplayMode?: TabDisplayMode;
 }
 
 export interface PersistedWorkspacePane {
@@ -52,6 +57,7 @@ export interface PersistedWorkspacePane {
     activationHistory?: string[];
     tabNavigationHistory?: string[];
     tabNavigationIndex?: number;
+    tabDisplayMode?: TabDisplayMode;
 }
 
 type PersistedNoteWorkspaceTab = {
@@ -246,6 +252,7 @@ export interface EditorSessionState {
         activationHistory: string[];
         tabNavigationHistory: string[];
         tabNavigationIndex: number;
+        tabDisplayMode?: TabDisplayMode;
     }>;
     focusedPaneId?: string | null;
     layoutTree?: WorkspaceLayoutNode;
@@ -466,6 +473,7 @@ function buildPersistedWorkspacePanes(
                 Boolean(tabsById[tabId]),
             ),
             tabNavigationIndex: pane.tabNavigationIndex,
+            tabDisplayMode: normalizeTabDisplayMode(pane.tabDisplayMode),
         }))
         .filter((pane) => pane.id.trim().length > 0);
 
@@ -971,6 +979,7 @@ function restorePersistedWorkspacePanes(
                     : activeTabId
                       ? 0
                       : -1,
+            tabDisplayMode: normalizeTabDisplayMode(pane.tabDisplayMode),
         };
     });
 }
@@ -1227,6 +1236,7 @@ function buildNormalizedPersistedSessionFromRestored(
             activationHistory: pane.activationHistory ?? [],
             tabNavigationHistory: pane.tabNavigationHistory ?? [],
             tabNavigationIndex: pane.tabNavigationIndex ?? -1,
+            tabDisplayMode: normalizeTabDisplayMode(pane.tabDisplayMode),
         })),
         focusedPaneId: restored.focusedPaneId ?? panes[0]?.id ?? null,
         layoutTree: restored.layoutTree,
@@ -1350,6 +1360,7 @@ function normalizeEditorSessionStateForWorkspace(state: EditorSessionState) {
         ...pane,
         tabIds: pane.tabIds ?? pane.tabs.map((tab) => tab.id),
         pinnedTabIds: pane.pinnedTabIds ?? [],
+        tabDisplayMode: normalizeTabDisplayMode(pane.tabDisplayMode),
     }));
     const paneIds = panes.map((pane) => pane.id);
 

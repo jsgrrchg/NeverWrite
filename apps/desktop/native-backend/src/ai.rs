@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -10,17 +10,23 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agent_client_protocol::schema::{
-    AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    FileSystemCapabilities, Implementation, InitializeRequest, LoadSessionRequest, LogoutRequest,
-    Meta, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan, PlanEntryPriority,
-    PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOptions, SessionId, SessionModeState, SessionModelState,
+    AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    CancelNotification, ClientCapabilities, CompleteElicitationNotification, ContentBlock,
+    ContentChunk, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
+    ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
+    ImageContent, Implementation, InitializeRequest, InitializeResponse, LogoutRequest, Meta,
+    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
+    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
     SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    SetSessionModelRequest, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
     AiAuthMethod, AiConfigOption, AiConfigOptionCategory, AiConfigSelectOption, AiFileDiffPayload,
     AiImageGenerationPayload, AiMessageCompletedPayload, AiMessageDeltaPayload,
@@ -29,15 +35,17 @@ use neverwrite_ai::{
     AiRuntimeConnectionPayload, AiRuntimeDescriptor, AiRuntimeOption, AiRuntimeSetupStatus,
     AiSession, AiSessionErrorPayload, AiSessionStatus, AiStatusEventPayload,
     AiTokenUsageCostPayload, AiTokenUsagePayload, AiToolActivityActionPayload,
-    AiToolActivityPayload, DiscardedAdditionalRoot, DiscardedAdditionalRootReason, ToolDiffState,
-    AI_AUTH_TERMINAL_ERROR_EVENT, AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT,
-    AI_AUTH_TERMINAL_STARTED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
+    AiToolActivityPayload, AiUrlElicitationRequestPayload, AiUserInputQuestionOptionPayload,
+    AiUserInputQuestionPayload, AiUserInputRequestPayload, DiscardedAdditionalRoot,
+    DiscardedAdditionalRootReason, ToolDiffState, AI_AUTH_TERMINAL_ERROR_EVENT,
+    AI_AUTH_TERMINAL_EXITED_EVENT, AI_AUTH_TERMINAL_OUTPUT_EVENT, AI_AUTH_TERMINAL_STARTED_EVENT,
+    AI_AVAILABLE_COMMANDS_UPDATED_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT,
     AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT,
     AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CREATED_EVENT,
     AI_SESSION_ERROR_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT, AI_THINKING_COMPLETED_EVENT,
     AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GEMINI_RUNTIME_ID,
-    KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
+    AI_TOOL_ACTIVITY_EVENT, AI_URL_ELICITATION_REQUEST_EVENT, AI_USER_INPUT_REQUEST_EVENT,
+    CLAUDE_RUNTIME_ID, CODEX_RUNTIME_ID, GROK_RUNTIME_ID, KILO_RUNTIME_ID, OPENCODE_RUNTIME_ID,
 };
 use portable_pty::{
     native_pty_system, Child as PtyChild, ChildKiller, CommandBuilder, MasterPty, PtySize,
@@ -50,20 +58,32 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::RpcOutput;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str =
-    "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
-const ELECTRON_AI_USER_INPUT_UNAVAILABLE: &str =
-    "Interactive AI user input prompts are not available in Electron yet.";
+const ELECTRON_AI_INTERACTIVE_AUTH_UNAVAILABLE: &str = "Interactive AI authentication is not available in Electron yet. Use an existing CLI login, an environment/API key, or a custom gateway.";
+const GROK_LOGIN_INVALIDATED_MESSAGE: &str =
+    "Grok login looks invalid or expired. Run Grok login again to reconnect.";
+const GROK_STORED_XAI_API_KEY_INVALID_MESSAGE: &str =
+    "Stored xAI API key looks invalid. Add a new xAI API key to reconnect Grok.";
+const GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE: &str =
+    "Inherited XAI_API_KEY looks invalid. Update the environment variable to reconnect Grok.";
 const AGENT_WRITE_ORIGIN_WINDOW: Duration = Duration::from_secs(15);
 const MAX_TERMINAL_SUMMARY_CHARS: usize = 8_000;
+const MAX_NATIVE_IMAGE_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+const CONSERVATIVE_NATIVE_BASE64_IMAGE_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+const CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES: u64 =
+    (CONSERVATIVE_NATIVE_BASE64_IMAGE_ATTACHMENT_BYTES / 4) * 3;
+const GROK_NATIVE_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE: usize = 12;
 const ACP_STATUS_EVENT_TYPE_KEY: &str = "neverwriteEventType";
 const ACP_STATUS_KIND_KEY: &str = "neverwriteStatusKind";
 const ACP_STATUS_EMPHASIS_KEY: &str = "neverwriteStatusEmphasis";
 const ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
+const NEVERWRITE_STATUS_EVENT_ID_PREFIX: &str = "neverwrite:status:";
+const NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX: &str = "neverwrite:status:turn:";
 const CODEX_ACP_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const MAX_COMPLETED_URL_ELICITATION_IDS: usize = 256;
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
 const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
@@ -79,6 +99,20 @@ const CODEX_ACP_TURN_STARTED_EVENT_TYPE: &str = "turn_started";
 const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
 const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
 const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
+
+fn neverwrite_acp_client_capabilities(_runtime_id: &str) -> ClientCapabilities {
+    // Capability matrix for this integration stage:
+    // - fs: supported and advertised.
+    // - elicitation.form: supported by NeverWrite's user-input bridge.
+    // - elicitation.url: supported by NeverWrite's URL completion bridge.
+    ClientCapabilities::new()
+        .fs(FileSystemCapabilities::new())
+        .elicitation(
+            ElicitationCapabilities::new()
+                .form(ElicitationFormCapabilities::new())
+                .url(ElicitationUrlCapabilities::new()),
+        )
+}
 const CODEX_ACP_SUBAGENT_CLOSE_END_EVENT_TYPE: &str = "close_end";
 const CODEX_ACP_SUBAGENT_INTERACTION_END_EVENT_TYPE: &str = "interaction_end";
 const CODEX_ACP_SUBAGENT_RESUME_END_EVENT_TYPE: &str = "resume_end";
@@ -91,6 +125,8 @@ const ACP_SESSION_START_TIMEOUT: Duration = Duration::from_secs(15);
 const RUNTIME_SETUP_STORE_VERSION: u32 = 2;
 const RUNTIME_SECRET_SERVICE: &str = "NeverWrite AI Provider Secrets";
 const RUNTIME_SECRET_STORE_MODE_ENV: &str = "NEVERWRITE_AI_SECRET_STORE";
+const LEGACY_GEMINI_RUNTIME_ID: &str = "gemini-acp";
+const LEGACY_GEMINI_SECRET_ENV_KEYS: &[&str] = &["GEMINI_API_KEY", "GOOGLE_API_KEY"];
 const RUNTIME_SETUP_LOAD_ERROR_MESSAGE: &str = "Secure credential storage is unavailable. Reconnect this AI provider or configure an environment variable before starting a session.";
 const OPENCODE_AUTH_UNVERIFIED_MESSAGE: &str = "OpenCode auth is managed by the OpenCode CLI. NeverWrite could not verify local OpenCode credentials, but OpenCode may still use /connect, environment variables, or a project .env.";
 
@@ -102,11 +138,18 @@ struct RuntimeDefinition {
     default_executable: &'static str,
     bin_env_var: &'static str,
     acp_args: &'static [&'static str],
+    acp_protocol: AcpProtocolFlavor,
     supports_native_resume: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AcpProtocolFlavor {
+    Current14,
+    Legacy12,
+}
+
 const NO_ACP_ARGS: &[&str] = &[];
-const GEMINI_ACP_ARGS: &[&str] = &["--acp"];
+const GROK_ACP_ARGS: &[&str] = &["--no-auto-update", "agent", "stdio"];
 const SHELL_ACP_ARGS: &[&str] = &["acp"];
 
 const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
@@ -117,6 +160,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "codex",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: true,
     },
     RuntimeDefinition {
@@ -126,15 +170,17 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
     RuntimeDefinition {
-        id: GEMINI_RUNTIME_ID,
-        name: "Gemini",
-        description: "Gemini ACP-compatible agent runtime.",
-        default_executable: "gemini",
-        bin_env_var: "NEVERWRITE_GEMINI_ACP_BIN",
-        acp_args: GEMINI_ACP_ARGS,
+        id: GROK_RUNTIME_ID,
+        name: "Grok",
+        description: "Grok ACP-compatible agent runtime.",
+        default_executable: "grok",
+        bin_env_var: "NEVERWRITE_GROK_ACP_BIN",
+        acp_args: GROK_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Legacy12,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -144,6 +190,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "kilo",
         bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -153,6 +200,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "opencode",
         bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
+        acp_protocol: AcpProtocolFlavor::Current14,
         supports_native_resume: false,
     },
 ];
@@ -205,13 +253,9 @@ struct AiRuntimeSetupPayload {
     #[serde(default)]
     openai_api_key: Option<AiSecretPatch>,
     #[serde(default)]
-    gemini_api_key: Option<AiSecretPatch>,
+    xai_api_key: Option<AiSecretPatch>,
     #[serde(default)]
     kilo_api_key: Option<AiSecretPatch>,
-    #[serde(default)]
-    google_api_key: Option<AiSecretPatch>,
-    google_cloud_project: Option<String>,
-    google_cloud_location: Option<String>,
     gateway_base_url: Option<String>,
     #[serde(default)]
     gateway_headers: Option<AiSecretPatch>,
@@ -283,6 +327,14 @@ struct AiRespondUserInputInput {
     session_id: String,
     request_id: String,
     answers: HashMap<String, Vec<String>>,
+    action: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AiRespondUrlElicitationInput {
+    session_id: String,
+    request_id: String,
+    action: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -299,6 +351,10 @@ struct AiAttachmentInput {
     #[serde(rename = "mimeType")]
     mime_type: Option<String>,
     transcription: Option<String>,
+    #[serde(rename = "startLine")]
+    start_line: Option<u32>,
+    #[serde(rename = "endLine")]
+    end_line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -448,6 +504,7 @@ impl RuntimeSetupStore {
     }
 
     fn load(&self) -> Result<HashMap<String, RuntimeSetupState>, String> {
+        self.cleanup_removed_runtime_secrets_best_effort();
         let raw = match std::fs::read_to_string(&self.path) {
             Ok(raw) => raw,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -536,6 +593,14 @@ impl RuntimeSetupStore {
             self.save(&setup)?;
         }
         Ok(setup)
+    }
+
+    fn cleanup_removed_runtime_secrets_best_effort(&self) {
+        for env_key in LEGACY_GEMINI_SECRET_ENV_KEYS {
+            let _ = self
+                .secrets
+                .delete_secret(LEGACY_GEMINI_RUNTIME_ID, env_key);
+        }
     }
 
     fn save(&self, setup: &HashMap<String, RuntimeSetupState>) -> Result<(), String> {
@@ -685,6 +750,7 @@ fn is_secret_runtime_env_key(key: &str) -> bool {
             | "ANTHROPIC_CUSTOM_HEADERS"
             | "GEMINI_API_KEY"
             | "GOOGLE_API_KEY"
+            | "XAI_API_KEY"
             | "OPENCODE_API_KEY"
             | "KILO_API_KEY"
     )
@@ -698,7 +764,7 @@ fn secret_env_keys_for_runtime(runtime_id: &str) -> &'static [&'static str] {
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_CUSTOM_HEADERS",
         ],
-        GEMINI_RUNTIME_ID => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        GROK_RUNTIME_ID => &["XAI_API_KEY"],
         KILO_RUNTIME_ID => &["KILO_API_KEY"],
         _ => &[],
     }
@@ -782,11 +848,65 @@ struct AcpProcessSpec {
     cwd: PathBuf,
     env: HashMap<String, String>,
     runtime_id: String,
+    auth_method: Option<String>,
+    auth_handshake: Option<AcpAuthHandshake>,
+}
+
+#[derive(Debug, Clone)]
+struct AcpAuthHandshake {
+    env_method_id: &'static str,
+    external_method_id: &'static str,
+    meta: Option<Meta>,
+}
+
+#[derive(Debug, Clone)]
+struct AcpAuthHandshakeRequest {
+    method_id: &'static str,
+    meta: Option<Meta>,
 }
 
 #[derive(Debug, Clone)]
 struct AcpSessionHandle {
     command_tx: tokio::sync::mpsc::UnboundedSender<AcpCommand>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AcpPromptCapabilities {
+    image: bool,
+    embedded_context: bool,
+}
+
+struct ElicitationWaiter {
+    session_id: String,
+    fields: HashMap<String, ElicitationFieldSpec>,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+struct UrlElicitationWaiter {
+    session_id: String,
+    elicitation_id: String,
+    title: String,
+    url: String,
+    scope: String,
+    runtime_session_id: Option<String>,
+    tool_call_id: Option<String>,
+    response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+#[derive(Debug, Clone)]
+struct ElicitationFieldSpec {
+    kind: ElicitationFieldKind,
+    option_values_by_label: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElicitationFieldKind {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    StringArray,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -857,17 +977,17 @@ impl AuthTerminalHandle {
 enum AcpCommand {
     Prompt {
         session_id: String,
-        content: String,
-        response_tx: mpsc::Sender<Result<(), String>>,
-    },
-    SetModel {
-        session_id: String,
-        model_id: String,
+        prompt: Vec<ContentBlock>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
     SetMode {
         session_id: String,
         mode_id: String,
+        response_tx: mpsc::Sender<Result<(), String>>,
+    },
+    SetModel {
+        session_id: String,
+        model_id: String,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
     SetConfigOption {
@@ -891,7 +1011,6 @@ enum AcpCommand {
 enum AcpConfigOptionRemoteCommand {
     SetConfigOption,
     SetModel,
-    SetMode,
     LocalOnly,
 }
 
@@ -902,6 +1021,9 @@ pub(crate) struct NativeAi {
     setup_store: RuntimeSetupStore,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
     auth_terminal_sessions: Arc<Mutex<HashMap<String, AuthTerminalHandle>>>,
     auth_terminal_counter: Arc<AtomicU64>,
 }
@@ -910,7 +1032,7 @@ impl NativeAi {
     pub(crate) fn new(event_tx: Sender<RpcOutput>) -> Self {
         #[cfg(test)]
         {
-            return Self::with_setup_store(event_tx, RuntimeSetupStore::in_memory_for_tests());
+            Self::with_setup_store(event_tx, RuntimeSetupStore::in_memory_for_tests())
         }
         #[cfg(not(test))]
         Self::with_setup_store(event_tx, RuntimeSetupStore::default())
@@ -931,6 +1053,9 @@ impl NativeAi {
             setup_store,
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
+            user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
+            url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
+            completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
             auth_terminal_counter: Arc::new(AtomicU64::new(1)),
         }
@@ -995,9 +1120,16 @@ impl NativeAi {
                     Some(message) => setup_load_error_status_for(&runtime_id, message),
                     None => setup_status_for(&runtime_id, setup_status),
                 };
-                let (setup_status, setup_error) = match status {
-                    Ok(status) => (Some(status), None),
-                    Err(error) => (None, Some(error)),
+                let (setup_status, setup_error, resolution_display) = match status {
+                    Ok(status) => {
+                        let resolution_display = if status.binary_ready {
+                            status.binary_path.clone()
+                        } else {
+                            None
+                        };
+                        (Some(status), None, resolution_display)
+                    }
+                    Err(error) => (None, Some(error), None),
                 };
                 json!({
                     "runtime_id": runtime_id,
@@ -1008,8 +1140,7 @@ impl NativeAi {
                     "launch_args": runtime_definition(&runtime_id)
                         .map(|definition| definition.acp_args.to_vec())
                         .unwrap_or_default(),
-                    "resolution_display": find_program_on_path(default_executable_name(&runtime_id))
-                        .map(|path| path.display().to_string()),
+                    "resolution_display": resolution_display,
                     "auth": runtime_auth_diagnostics(&runtime_id),
                 })
             })
@@ -1046,10 +1177,9 @@ impl NativeAi {
         }
         let setup = pending_setup.entry(runtime_id.clone()).or_default();
 
-        setup.custom_binary_path = input
-            .custom_binary_path
-            .clone()
-            .and_then(normalize_optional_string);
+        if let Some(custom_binary_path) = input.custom_binary_path.clone() {
+            setup.custom_binary_path = normalize_optional_string(custom_binary_path);
+        }
         update_auth_state(setup, &runtime_id, input)?;
         let status = setup_status_for(&runtime_id, setup.clone())?;
         self.setup_store.save(&pending_setup)?;
@@ -1216,7 +1346,7 @@ impl NativeAi {
                 .unwrap_or_default()
         };
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-        let created = start_acp_session(
+        let created = match start_acp_session(
             spec,
             AcpSessionStartMode::New {
                 additional_directories: normalized.kept.clone(),
@@ -1225,7 +1355,24 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
-        )?;
+            Arc::clone(&self.user_input_waiters),
+            Arc::clone(&self.url_elicitation_waiters),
+            Arc::clone(&self.completed_url_elicitations),
+        ) {
+            Ok(created) => created,
+            Err(error) => {
+                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                    &input.runtime_id,
+                    &setup,
+                    &error,
+                ) {
+                    return Err(format!(
+                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
         let mut session = created.session;
         let handle = created.handle;
         session.discarded_additional_roots = normalized.discarded.clone();
@@ -1311,7 +1458,7 @@ impl NativeAi {
                 .unwrap_or_default()
         };
         let spec = acp_process_spec(&input.runtime_id, &setup, vault_root_for_spec)?;
-        let created = start_acp_session(
+        let created = match start_acp_session(
             spec,
             AcpSessionStartMode::Load {
                 session_id: input.session_id,
@@ -1321,7 +1468,24 @@ impl NativeAi {
             Arc::clone(&self.inner),
             self.tool_diffs.clone(),
             self.agent_writes.clone(),
-        )?;
+            Arc::clone(&self.user_input_waiters),
+            Arc::clone(&self.url_elicitation_waiters),
+            Arc::clone(&self.completed_url_elicitations),
+        ) {
+            Ok(created) => created,
+            Err(error) => {
+                if let Err(update_error) = self.invalidate_grok_auth_after_session_start_error(
+                    &input.runtime_id,
+                    &setup,
+                    &error,
+                ) {
+                    return Err(format!(
+                        "{error}\n\nFailed to update Grok auth state: {update_error}"
+                    ));
+                }
+                return Err(error);
+            }
+        };
         let mut session = created.session;
         let handle = created.handle;
         session.discarded_additional_roots = normalized.discarded.clone();
@@ -1381,11 +1545,30 @@ impl NativeAi {
     pub(crate) fn set_model(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let model_id = required_string(args, &["modelId", "model_id"])?;
-        if let Some(handle) = self.session_handle(&session_id)? {
-            handle.set_model(&session_id, &model_id)?;
-        }
+        let model_config_option_id = self.session_model_config_option_id(&session_id)?;
+        let config_options = match (self.session_handle(&session_id)?, model_config_option_id) {
+            (Some(handle), Some(option_id)) => {
+                match self.session_config_option_remote_command(&session_id, &option_id)? {
+                    AcpConfigOptionRemoteCommand::SetConfigOption => {
+                        Some(handle.set_config_option(&session_id, &option_id, &model_id)?)
+                    }
+                    AcpConfigOptionRemoteCommand::SetModel => {
+                        handle.set_model(&session_id, &model_id)?;
+                        None
+                    }
+                    AcpConfigOptionRemoteCommand::LocalOnly => None,
+                }
+            }
+            _ => None,
+        };
         self.update_session(&session_id, |session| {
-            session.model_id = model_id;
+            if let Some(config_options) = config_options {
+                let mapped_options =
+                    map_session_config_options(&session.runtime_id, config_options);
+                apply_config_options_to_session(session, mapped_options);
+            } else {
+                apply_model_update_to_session(session, &model_id);
+            }
             Ok(())
         })
     }
@@ -1393,8 +1576,11 @@ impl NativeAi {
     pub(crate) fn set_mode(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
         let mode_id = required_string(args, &["modeId", "mode_id"])?;
-        if let Some(handle) = self.session_handle(&session_id)? {
-            handle.set_mode(&session_id, &mode_id)?;
+        let runtime_id = self.session_runtime_id(&session_id)?;
+        if runtime_supports_remote_mode_change(&runtime_id) {
+            if let Some(handle) = self.session_handle(&session_id)? {
+                handle.set_mode(&session_id, &mode_id)?;
+            }
         }
         self.update_session(&session_id, |session| {
             session.mode_id = mode_id;
@@ -1412,10 +1598,6 @@ impl NativeAi {
             }
             (Some(handle), AcpConfigOptionRemoteCommand::SetModel) => {
                 handle.set_model(&input.session_id, &input.value)?;
-                None
-            }
-            (Some(handle), AcpConfigOptionRemoteCommand::SetMode) => {
-                handle.set_mode(&input.session_id, &input.value)?;
                 None
             }
             (_, AcpConfigOptionRemoteCommand::LocalOnly) | (None, _) => None,
@@ -1451,27 +1633,37 @@ impl NativeAi {
                 .sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| format!("AI session not found: {session_id}"))?;
-            let prompt = build_prompt_with_attachments(
-                &content,
-                &attachments,
-                managed.vault_root.as_deref(),
-                &managed.additional_roots,
-            )?;
-            managed.session.status = AiSessionStatus::Streaming;
+            if managed.session.parent_session_id.is_some() && managed.session.closed_at.is_some() {
+                return Err(
+                    "This subagent was closed by its parent thread and can't receive new messages."
+                        .to_string(),
+                );
+            }
             let handle = managed
                 .runtime_handle
                 .clone()
                 .ok_or_else(|| "AI runtime session is not connected.".to_string())?;
+            let prompt = build_prompt_blocks_with_attachments(
+                &content,
+                &attachments,
+                managed.vault_root.as_deref(),
+                &managed.additional_roots,
+                handle.prompt_capabilities(),
+                Some(managed.session.runtime_id.as_str()),
+            )?;
+            managed.session.status = AiSessionStatus::Streaming;
             touch_session(&mut state, &session_id);
             (prompt, handle)
         };
 
-        handle.prompt(&session_id, &prompt)?;
+        handle.prompt(&session_id, prompt)?;
         self.load_session(&json!({ "sessionId": session_id }))
     }
 
     pub(crate) fn cancel_turn(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
+        self.cancel_user_input_waiters_for_session(&session_id);
+        self.cancel_url_elicitation_waiters_for_session(&session_id);
         let session = {
             let mut state = self
                 .inner
@@ -1502,15 +1694,88 @@ impl NativeAi {
 
     pub(crate) fn respond_user_input(&self, args: &Value) -> Result<Value, String> {
         let input: AiRespondUserInputInput = input_from_args(args)?;
-        let _ = input.request_id;
-        let _ = input.answers;
-        let runtime_id = self.session_runtime_id(&input.session_id)?;
-        self.emit_runtime_feature_unavailable(&runtime_id, ELECTRON_AI_USER_INPUT_UNAVAILABLE);
-        Err(ELECTRON_AI_USER_INPUT_UNAVAILABLE.to_string())
+        let request_id = input.request_id;
+        let session_id = input.session_id;
+        let action = input.action;
+        let answers = input.answers;
+        let (waiter, response) = {
+            let mut waiters = self
+                .user_input_waiters
+                .lock()
+                .map_err(|error| format!("Internal AI user input state error: {error}"))?;
+            let waiter = waiters
+                .get(&request_id)
+                .ok_or_else(|| format!("AI user input request not found: {request_id}"))?;
+            if waiter.session_id != session_id {
+                return Err(format!(
+                    "AI user input request {request_id} belongs to a different session."
+                ));
+            }
+            let response = create_elicitation_response_from_user_input(
+                action.as_deref(),
+                answers,
+                &waiter.fields,
+            )?;
+            let waiter = waiters
+                .remove(&request_id)
+                .expect("validated user input waiter should still exist");
+            (waiter, response)
+        };
+        waiter
+            .response_tx
+            .send(response)
+            .map_err(|_| "AI user input request was closed.".to_string())?;
+        self.load_session(&json!({ "sessionId": session_id }))
+    }
+
+    pub(crate) fn respond_url_elicitation(&self, args: &Value) -> Result<Value, String> {
+        let input: AiRespondUrlElicitationInput = input_from_args(args)?;
+        let response = create_url_elicitation_response(&input.action)?;
+        let waiter = {
+            let mut waiters = self
+                .url_elicitation_waiters
+                .lock()
+                .map_err(|error| format!("Internal AI URL elicitation state error: {error}"))?;
+            if let Some(waiter) = waiters.get(&input.request_id) {
+                if waiter.session_id != input.session_id {
+                    return Err(format!(
+                        "AI URL elicitation request {} belongs to a different session.",
+                        input.request_id
+                    ));
+                }
+            }
+            waiters.remove(&input.request_id)
+        };
+        let Some(waiter) = waiter else {
+            let completed_by_runtime = self
+                .completed_url_elicitations
+                .lock()
+                .map_err(|error| {
+                    format!("Internal AI URL elicitation completion state error: {error}")
+                })?
+                .contains(&input.request_id);
+            if completed_by_runtime {
+                return Err(format!(
+                    "AI URL elicitation request already completed by runtime: {}",
+                    input.request_id
+                ));
+            }
+            return Err(format!(
+                "AI URL elicitation request not found: {}",
+                input.request_id
+            ));
+        };
+        waiter
+            .response_tx
+            .send(response)
+            .map_err(|_| "AI URL elicitation request was closed.".to_string())?;
+        self.load_session(&json!({ "sessionId": input.session_id }))
     }
 
     pub(crate) fn delete_runtime_session(&self, args: &Value) -> Result<Value, String> {
         let session_id = required_string(args, &["sessionId", "session_id"])?;
+        self.cancel_user_input_waiters_for_session(&session_id);
+        self.cancel_url_elicitation_waiters_for_session(&session_id);
         let mut state = self
             .inner
             .lock()
@@ -1539,6 +1804,8 @@ impl NativeAi {
             .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
         for session_id in session_ids {
+            self.cancel_user_input_waiters_for_session(&session_id);
+            self.cancel_url_elicitation_waiters_for_session(&session_id);
             state.sessions.remove(&session_id);
             state.session_order.retain(|id| id != &session_id);
             self.tool_diffs.clear_session(&session_id);
@@ -1628,10 +1895,48 @@ impl NativeAi {
         pending.auth_method = Some(method_id.to_string());
         pending.auth_ready = false;
         pending.suppress_persisted_auth = false;
-        if runtime_id != OPENCODE_RUNTIME_ID {
+        if !is_invalidation_tracked_external_auth_runtime(runtime_id) {
             pending.auth_invalidated_at_ms = None;
         }
         pending.message = None;
+        self.setup_store.save(&pending_setup)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        state.setup = pending_setup;
+        state.setup_load_error = None;
+        Ok(())
+    }
+
+    fn invalidate_grok_auth_after_session_start_error(
+        &self,
+        runtime_id: &str,
+        setup_at_start: &RuntimeSetupState,
+        error: &str,
+    ) -> Result<(), String> {
+        if runtime_id != GROK_RUNTIME_ID || !is_grok_auth_error(error) {
+            return Ok(());
+        }
+
+        let Some(source) = grok_auth_failure_source(setup_at_start) else {
+            return Ok(());
+        };
+
+        let (mut pending_setup, setup_load_error) = {
+            let state = self
+                .inner
+                .lock()
+                .map_err(|error| format!("Internal AI state error: {error}"))?;
+            (state.setup.clone(), state.setup_load_error.clone())
+        };
+        if setup_load_error.is_some() {
+            pending_setup = self.setup_store.load().map_err(runtime_setup_load_error)?;
+        }
+
+        let setup = pending_setup.entry(runtime_id.to_string()).or_default();
+        apply_grok_auth_failure(setup, source);
         self.setup_store.save(&pending_setup)?;
 
         let mut state = self
@@ -1912,6 +2217,23 @@ impl NativeAi {
         ))
     }
 
+    fn session_model_config_option_id(&self, session_id: &str) -> Result<Option<String>, String> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|error| format!("Internal AI state error: {error}"))?;
+        let managed = state
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("AI session not found: {session_id}"))?;
+        Ok(managed
+            .session
+            .config_options
+            .iter()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+            .map(|option| option.id.clone()))
+    }
+
     fn session_handle(&self, session_id: &str) -> Result<Option<AcpSessionHandle>, String> {
         let state = self
             .inner
@@ -1924,15 +2246,16 @@ impl NativeAi {
             .ok_or_else(|| format!("AI session not found: {session_id}"))
     }
 
-    fn emit_runtime_feature_unavailable(&self, runtime_id: &str, message: &str) {
-        self.emit_json(
-            "ai://runtime-connection",
-            json!({
-                "runtime_id": runtime_id,
-                "status": "error",
-                "message": message,
-            }),
-        );
+    fn cancel_user_input_waiters_for_session(&self, session_id: &str) {
+        cancel_user_input_waiters_matching(&self.user_input_waiters, |waiter| {
+            waiter.session_id == session_id
+        });
+    }
+
+    fn cancel_url_elicitation_waiters_for_session(&self, session_id: &str) {
+        cancel_url_elicitation_waiters_matching(&self.url_elicitation_waiters, |waiter| {
+            waiter.session_id == session_id
+        });
     }
 
     fn emit_session(&self, event_name: &str, session: &AiSession) {
@@ -1976,7 +2299,6 @@ impl AcpSessionStartMode {
 
 struct AcpSessionStartResponse {
     session_id: String,
-    models: Option<SessionModelState>,
     modes: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 }
@@ -1993,18 +2315,17 @@ impl AcpSessionHandle {
         response_rx.recv().map_err(|error| error.to_string())?
     }
 
-    fn prompt(&self, session_id: &str, content: &str) -> Result<(), String> {
-        self.request(|response_tx| AcpCommand::Prompt {
-            session_id: session_id.to_string(),
-            content: content.to_string(),
-            response_tx,
-        })
+    fn prompt_capabilities(&self) -> AcpPromptCapabilities {
+        self.prompt_capabilities
+            .lock()
+            .map(|capabilities| *capabilities)
+            .unwrap_or_default()
     }
 
-    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
-        self.request(|response_tx| AcpCommand::SetModel {
+    fn prompt(&self, session_id: &str, prompt: Vec<ContentBlock>) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::Prompt {
             session_id: session_id.to_string(),
-            model_id: model_id.to_string(),
+            prompt,
             response_tx,
         })
     }
@@ -2013,6 +2334,14 @@ impl AcpSessionHandle {
         self.request(|response_tx| AcpCommand::SetMode {
             session_id: session_id.to_string(),
             mode_id: mode_id.to_string(),
+            response_tx,
+        })
+    }
+
+    fn set_model(&self, session_id: &str, model_id: &str) -> Result<(), String> {
+        self.request(|response_tx| AcpCommand::SetModel {
+            session_id: session_id.to_string(),
+            model_id: model_id.to_string(),
             response_tx,
         })
     }
@@ -2051,13 +2380,45 @@ impl AcpSessionHandle {
 struct NativeAcpClient {
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
-    message_ids: Arc<Mutex<HashMap<String, String>>>,
+    message_ids: Arc<Mutex<HashMap<MessageStreamKey, String>>>,
     thinking_ids: Arc<Mutex<HashMap<String, String>>>,
     permission_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    suppressed_status_tool_calls: Arc<Mutex<HashSet<String>>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
     terminal_output: Arc<Mutex<HashMap<String, String>>>,
     terminal_exit: Arc<Mutex<HashMap<String, TerminalExitMeta>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MessageStreamKey {
+    session_id: String,
+    role: MessageRole,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MessageRole {
+    User,
+    Assistant,
+}
+
+impl MessageRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    fn id_kind(self) -> &'static str {
+        match self {
+            Self::User => "user-message",
+            Self::Assistant => "message",
+        }
+    }
 }
 
 impl NativeAcpClient {
@@ -2079,6 +2440,11 @@ impl NativeAcpClient {
                 },
             ),
         }
+    }
+
+    fn cancel_all_user_input_waiters(&self) {
+        cancel_user_input_waiters_matching(&self.user_input_waiters, |_| true);
+        cancel_url_elicitation_waiters_matching(&self.url_elicitation_waiters, |_| true);
     }
 
     fn apply_config_options_update(
@@ -2249,43 +2615,157 @@ impl NativeAcpClient {
         )
     }
 
-    fn begin_message(&self, session_id: &str) -> String {
-        let message_id = self.next_message_id(session_id, "message");
+    fn message_stream_key(session_id: &str, role: MessageRole) -> MessageStreamKey {
+        MessageStreamKey {
+            session_id: session_id.to_string(),
+            role,
+        }
+    }
+
+    fn begin_text_message(&self, session_id: &str, role: MessageRole) -> String {
+        let message_id = self.next_message_id(session_id, role.id_kind());
         if let Ok(mut ids) = self.message_ids.lock() {
-            ids.insert(session_id.to_string(), message_id.clone());
+            ids.insert(
+                Self::message_stream_key(session_id, role),
+                message_id.clone(),
+            );
         }
         self.emit(
             AI_MESSAGE_STARTED_EVENT,
             AiMessageStartedPayload {
                 session_id: session_id.to_string(),
                 message_id: message_id.clone(),
+                role: role.as_str().to_string(),
             },
         );
         message_id
     }
 
-    fn current_message_id(&self, session_id: &str) -> Option<String> {
-        self.message_ids
-            .lock()
-            .ok()
-            .and_then(|ids| ids.get(session_id).cloned())
+    fn current_text_message_id(&self, session_id: &str, role: MessageRole) -> Option<String> {
+        self.message_ids.lock().ok().and_then(|ids| {
+            ids.get(&Self::message_stream_key(session_id, role))
+                .cloned()
+        })
     }
 
-    fn end_message(&self, session_id: &str) {
+    fn end_text_message(&self, session_id: &str, role: MessageRole, turn_complete: bool) {
         let message_id = self
             .message_ids
             .lock()
             .ok()
-            .and_then(|mut ids| ids.remove(session_id));
+            .and_then(|mut ids| ids.remove(&Self::message_stream_key(session_id, role)));
         if let Some(message_id) = message_id {
-            self.emit(
-                AI_MESSAGE_COMPLETED_EVENT,
-                AiMessageCompletedPayload {
-                    session_id: session_id.to_string(),
-                    message_id,
-                },
+            self.emit_text_message_completed(session_id, &message_id, role, turn_complete);
+        }
+    }
+
+    fn emit_text_message_completed(
+        &self,
+        session_id: &str,
+        message_id: &str,
+        role: MessageRole,
+        turn_complete: bool,
+    ) {
+        self.emit(
+            AI_MESSAGE_COMPLETED_EVENT,
+            AiMessageCompletedPayload {
+                session_id: session_id.to_string(),
+                message_id: message_id.to_string(),
+                role: role.as_str().to_string(),
+                turn_complete,
+            },
+        );
+    }
+
+    fn begin_message(&self, session_id: &str) -> String {
+        self.begin_text_message(session_id, MessageRole::Assistant)
+    }
+
+    fn current_message_id(&self, session_id: &str) -> Option<String> {
+        self.current_text_message_id(session_id, MessageRole::Assistant)
+    }
+
+    fn end_message(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::Assistant, true);
+    }
+
+    fn complete_assistant_turn(&self, session_id: &str, fallback_message_id: &str) {
+        if self.current_message_id(session_id).is_some() {
+            self.end_message(session_id);
+        } else {
+            self.emit_text_message_completed(
+                session_id,
+                fallback_message_id,
+                MessageRole::Assistant,
+                true,
             );
         }
+    }
+
+    fn end_message_segment(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::Assistant, false);
+    }
+
+    fn begin_user_message(&self, session_id: &str) -> String {
+        self.begin_text_message(session_id, MessageRole::User)
+    }
+
+    fn current_user_message_id(&self, session_id: &str) -> Option<String> {
+        self.current_text_message_id(session_id, MessageRole::User)
+    }
+
+    fn end_user_message(&self, session_id: &str) {
+        self.end_text_message(session_id, MessageRole::User, false);
+    }
+
+    fn end_text_streams_before_activity(&self, session_id: &str) {
+        self.end_thinking(session_id);
+        self.end_user_message(session_id);
+        self.end_message_segment(session_id);
+    }
+
+    fn remember_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_status_tool_calls.lock() {
+            ids.insert(call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn forget_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) {
+        if let Ok(mut ids) = self.suppressed_status_tool_calls.lock() {
+            ids.remove(&call_state_key(session_id, tool_call_id));
+        }
+    }
+
+    fn has_suppressed_status_tool_call(&self, session_id: &str, tool_call_id: &str) -> bool {
+        self.suppressed_status_tool_calls
+            .lock()
+            .ok()
+            .map(|ids| ids.contains(&call_state_key(session_id, tool_call_id)))
+            .unwrap_or(false)
+    }
+
+    fn should_suppress_tool_call_update(&self, session_id: &str, update: &ToolCallUpdate) -> bool {
+        let tool_call_id = &update.tool_call_id.0;
+        if self.has_suppressed_status_tool_call(session_id, tool_call_id) {
+            if tool_call_update_is_terminal(update) {
+                self.forget_suppressed_status_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        if should_suppress_status_tool_call_update(update) {
+            if !tool_call_update_is_terminal(update) {
+                self.remember_suppressed_status_tool_call(session_id, tool_call_id);
+            }
+            return true;
+        }
+
+        false
+    }
+
+    #[cfg(test)]
+    fn has_active_text_message(&self, session_id: &str, role: MessageRole) -> bool {
+        self.current_text_message_id(session_id, role).is_some()
     }
 
     fn begin_thinking(&self, session_id: &str) -> String {
@@ -2325,6 +2805,7 @@ impl NativeAcpClient {
 
     fn mark_session_idle(&self, session_id: &str) {
         self.end_thinking(session_id);
+        self.end_user_message(session_id);
         self.end_message(session_id);
 
         let session = self.session_state.lock().ok().and_then(|mut state| {
@@ -2338,10 +2819,29 @@ impl NativeAcpClient {
         }
     }
 
+    fn mark_subagent_closed_by_parent(&self, session_id: &str) {
+        self.end_thinking(session_id);
+        self.end_user_message(session_id);
+        self.end_message(session_id);
+
+        let session = self.session_state.lock().ok().and_then(|mut state| {
+            let managed = state.sessions.get_mut(session_id)?;
+            managed.session.parent_session_id.as_ref()?;
+            managed.active_turn_id = None;
+            managed.session.status = AiSessionStatus::Idle;
+            managed.session.closed_at = Some(epoch_millis_string());
+            Some(managed.session.clone())
+        });
+        if let Some(session) = session {
+            self.emit(AI_SESSION_UPDATED_EVENT, session);
+        }
+    }
+
     fn begin_session_turn(&self, session_id: &str, turn_id: Option<String>) {
         let session = self.session_state.lock().ok().and_then(|mut state| {
             let managed = state.sessions.get_mut(session_id)?;
             managed.active_turn_id = turn_id;
+            managed.session.closed_at = None;
             if managed.session.status == AiSessionStatus::Streaming {
                 return None;
             }
@@ -2549,7 +3049,7 @@ impl NativeAcpClient {
             self.child_session_ids_for_terminal_subagent_breadcrumb(parent_session_id, meta);
         for child_session_id in child_session_ids {
             if child_session_id != parent_session_id {
-                self.mark_session_idle(&child_session_id);
+                self.mark_subagent_closed_by_parent(&child_session_id);
             }
         }
     }
@@ -2670,6 +3170,7 @@ impl NativeAcpClient {
         let diffs = self
             .tool_diffs
             .normalized_diffs_for_tool_call(&session_id, &registered);
+        self.end_text_streams_before_activity(&session_id);
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             map_tool_call(
@@ -2705,6 +3206,182 @@ impl NativeAcpClient {
         Ok(RequestPermissionResponse::new(outcome))
     }
 
+    async fn create_elicitation(
+        &self,
+        request: CreateElicitationRequest,
+    ) -> agent_client_protocol::Result<CreateElicitationResponse> {
+        match request.mode {
+            ElicitationMode::Form(form) => {
+                let ElicitationScope::Session(scope) = form.scope else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let runtime_session_id = scope.session_id.0.to_string();
+                let session_id =
+                    self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+                let request_id = format!(
+                    "user-input-{}",
+                    SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let (questions, fields) = map_elicitation_form_questions(&form.requested_schema);
+                let (response_tx, response_rx) = oneshot::channel();
+                self.user_input_waiters
+                    .lock()
+                    .map_err(|error| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(format!("Internal AI user input state error: {error}"))
+                    })?
+                    .insert(
+                        request_id.clone(),
+                        ElicitationWaiter {
+                            session_id: session_id.clone(),
+                            fields,
+                            response_tx,
+                        },
+                    );
+                self.emit(
+                    AI_USER_INPUT_REQUEST_EVENT,
+                    AiUserInputRequestPayload {
+                        session_id: session_id.clone(),
+                        request_id,
+                        title: request.message,
+                        questions,
+                    },
+                );
+                Ok(response_rx
+                    .await
+                    .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+            }
+            ElicitationMode::Url(url_mode) => {
+                let Some(url) = safe_http_url(&url_mode.url) else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let ElicitationScope::Session(scope) = url_mode.scope else {
+                    return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                };
+                let runtime_session_id = scope.session_id.0.to_string();
+                let session_id =
+                    self.resolve_app_session_id(&runtime_session_id, request.meta.as_ref());
+                let request_id = format!(
+                    "url-elicitation-{}",
+                    SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+                );
+                let elicitation_id = url_mode.elicitation_id.0.to_string();
+                let tool_call_id = scope.tool_call_id.map(|id| id.0.to_string());
+                let title = request.message;
+                let (response_tx, response_rx) = oneshot::channel();
+                self.url_elicitation_waiters
+                    .lock()
+                    .map_err(|error| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(format!("Internal AI URL elicitation state error: {error}"))
+                    })?
+                    .insert(
+                        request_id.clone(),
+                        UrlElicitationWaiter {
+                            session_id: session_id.clone(),
+                            elicitation_id: elicitation_id.clone(),
+                            title: title.clone(),
+                            url: url.clone(),
+                            scope: "session".to_string(),
+                            runtime_session_id: Some(runtime_session_id.clone()),
+                            tool_call_id: tool_call_id.clone(),
+                            response_tx,
+                        },
+                    );
+                self.emit(
+                    AI_URL_ELICITATION_REQUEST_EVENT,
+                    AiUrlElicitationRequestPayload {
+                        session_id: session_id.clone(),
+                        request_id,
+                        elicitation_id,
+                        title,
+                        url,
+                        status: "pending".to_string(),
+                        scope: "session".to_string(),
+                        runtime_session_id: Some(runtime_session_id),
+                        tool_call_id,
+                    },
+                );
+                Ok(response_rx
+                    .await
+                    .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel)))
+            }
+            _ => Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        }
+    }
+
+    async fn complete_elicitation(
+        &self,
+        notification: CompleteElicitationNotification,
+    ) -> agent_client_protocol::Result<()> {
+        let elicitation_id = notification.elicitation_id.0.to_string();
+        let completed = self
+            .url_elicitation_waiters
+            .lock()
+            .map(|mut waiters| {
+                let request_id = waiters.iter().find_map(|(request_id, waiter)| {
+                    (waiter.elicitation_id == elicitation_id).then(|| request_id.clone())
+                })?;
+                waiters
+                    .remove(&request_id)
+                    .map(|waiter| (request_id, waiter))
+            })
+            .map_err(|error| {
+                agent_client_protocol::Error::internal_error()
+                    .data(format!("Internal AI URL elicitation state error: {error}"))
+            })?;
+
+        if let Some((request_id, waiter)) = completed {
+            remember_completed_url_elicitation(
+                &self.completed_url_elicitations,
+                request_id.clone(),
+            );
+            let _ =
+                waiter
+                    .response_tx
+                    .send(CreateElicitationResponse::new(ElicitationAction::Accept(
+                        ElicitationAcceptAction::new(),
+                    )));
+            self.emit(
+                AI_URL_ELICITATION_REQUEST_EVENT,
+                AiUrlElicitationRequestPayload {
+                    session_id: waiter.session_id,
+                    request_id,
+                    elicitation_id,
+                    title: waiter.title,
+                    url: waiter.url,
+                    status: "completed".to_string(),
+                    scope: waiter.scope,
+                    runtime_session_id: waiter.runtime_session_id,
+                    tool_call_id: waiter.tool_call_id,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    async fn request_permission_acp12(
+        &self,
+        args: acp12::schema::RequestPermissionRequest,
+    ) -> acp12::Result<acp12::schema::RequestPermissionResponse> {
+        let args = acp12_to_current(args).map_err(acp12_internal_error)?;
+        let response = self
+            .request_permission(args)
+            .await
+            .map_err(current_error_to_acp12)?;
+        current_to_acp12(response).map_err(acp12_internal_error)
+    }
+
+    async fn session_notification_acp12(
+        &self,
+        notification: acp12::schema::SessionNotification,
+    ) -> acp12::Result<()> {
+        let notification = acp12_to_current(notification).map_err(acp12_internal_error)?;
+        self.session_notification(notification)
+            .await
+            .map_err(current_error_to_acp12)
+    }
+
     async fn session_notification(
         &self,
         args: SessionNotification,
@@ -2716,11 +3393,37 @@ impl NativeAcpClient {
             return Ok(());
         }
         match args.update {
+            SessionUpdate::UserMessageChunk(ContentChunk {
+                content: ContentBlock::Text(text),
+                ..
+            }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
+                // User chunks come from the runtime, not the local composer, so they need
+                // their own stream state.
+                let message_id = self
+                    .current_user_message_id(&session_id)
+                    .unwrap_or_else(|| self.begin_user_message(&session_id));
+                self.emit(
+                    AI_MESSAGE_DELTA_EVENT,
+                    AiMessageDeltaPayload {
+                        session_id,
+                        message_id,
+                        delta: text.text,
+                        role: MessageRole::User.as_str().to_string(),
+                    },
+                );
+            }
             SessionUpdate::AgentMessageChunk(ContentChunk {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
                 self.end_thinking(&session_id);
+                self.end_user_message(&session_id);
                 let message_id = self
                     .current_message_id(&session_id)
                     .unwrap_or_else(|| self.begin_message(&session_id));
@@ -2730,6 +3433,7 @@ impl NativeAcpClient {
                         session_id,
                         message_id,
                         delta: text.text,
+                        role: MessageRole::Assistant.as_str().to_string(),
                     },
                 );
             }
@@ -2737,6 +3441,10 @@ impl NativeAcpClient {
                 content: ContentBlock::Text(text),
                 ..
             }) => {
+                if self.should_suppress_internal_text_chunk_for_session(&session_id, &text.text) {
+                    return Ok(());
+                }
+                self.end_user_message(&session_id);
                 let thinking_id = self
                     .current_thinking_id(&session_id)
                     .unwrap_or_else(|| self.begin_thinking(&session_id));
@@ -2748,6 +3456,14 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let tool_call = tool_call_with_merged_meta(tool_call, meta.as_ref());
+                if should_suppress_status_tool_call(&tool_call) {
+                    self.remember_suppressed_status_tool_call(
+                        &session_id,
+                        &tool_call.tool_call_id.0,
+                    );
+                    return Ok(());
+                }
+                self.end_text_streams_before_activity(&session_id);
                 self.record_terminal_meta(
                     &session_id,
                     &tool_call.tool_call_id.0,
@@ -2759,6 +3475,10 @@ impl NativeAcpClient {
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 let update = tool_call_update_with_merged_meta(update, meta.as_ref());
+                if self.should_suppress_tool_call_update(&session_id, &update) {
+                    return Ok(());
+                }
+                self.end_text_streams_before_activity(&session_id);
                 self.record_terminal_meta(
                     &session_id,
                     &update.tool_call_id.0,
@@ -2770,6 +3490,7 @@ impl NativeAcpClient {
                 self.handle_subagent_lifecycle_breadcrumb(&session_id, meta.as_ref());
             }
             SessionUpdate::Plan(plan) => {
+                self.end_text_streams_before_activity(&session_id);
                 self.emit(
                     AI_PLAN_UPDATED_EVENT,
                     map_plan_update(&session_id, plan, meta.as_ref()),
@@ -2798,10 +3519,91 @@ impl NativeAcpClient {
                     .apply_current_mode_update(&session_id, update.current_mode_id.0.to_string());
                 self.emit_session_update_from_result(result);
             }
+            SessionUpdate::AvailableCommandsUpdate(update) => {
+                self.emit(
+                    AI_AVAILABLE_COMMANDS_UPDATED_EVENT,
+                    map_available_commands_update(&session_id, update),
+                );
+            }
             _ => {}
         }
         Ok(())
     }
+
+    fn should_suppress_internal_text_chunk_for_session(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> bool {
+        self.session_state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .sessions
+                    .get(session_id)
+                    .map(|metadata| metadata.session.runtime_id.clone())
+            })
+            .is_some_and(|runtime_id| should_suppress_internal_text_chunk(&runtime_id, text))
+    }
+}
+
+fn acp12_to_current<T, U>(value: T) -> Result<U, String>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("Failed to convert ACP 0.12 payload: {error}"))
+}
+
+fn current_to_acp12<T, U>(value: T) -> Result<U, String>
+where
+    T: serde::Serialize,
+    U: serde::de::DeserializeOwned,
+{
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|error| format!("Failed to convert ACP 0.14 payload: {error}"))
+}
+
+fn acp12_internal_error(message: String) -> acp12::Error {
+    acp12::Error::internal_error().data(message)
+}
+
+fn current_error_to_acp12(error: agent_client_protocol::Error) -> acp12::Error {
+    acp12_internal_error(error.to_string())
+}
+
+fn prompt_capabilities_from_initialize_response(
+    initialize_response: &InitializeResponse,
+) -> AcpPromptCapabilities {
+    AcpPromptCapabilities {
+        image: initialize_response
+            .agent_capabilities
+            .prompt_capabilities
+            .image,
+        embedded_context: initialize_response
+            .agent_capabilities
+            .prompt_capabilities
+            .embedded_context,
+    }
+}
+
+fn remember_prompt_capabilities(
+    target: &Arc<Mutex<AcpPromptCapabilities>>,
+    capabilities: AcpPromptCapabilities,
+) {
+    if let Ok(mut target) = target.lock() {
+        *target = capabilities;
+    }
+}
+
+fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::ClientCapabilities {
+    // ACP 0.12 does not expose the newer elicitation capability flags through the
+    // umbrella `unstable` feature. Grok stays on the legacy surface.
+    acp12::schema::ClientCapabilities::new().fs(acp12::schema::FileSystemCapabilities::new())
 }
 
 fn start_acp_session(
@@ -2811,11 +3613,17 @@ fn start_acp_session(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
+    let flavor = acp_protocol_flavor(&spec.runtime_id);
+    let prompt_capabilities = Arc::new(Mutex::new(AcpPromptCapabilities::default()));
     let handle = AcpSessionHandle {
         command_tx: command_tx.clone(),
+        prompt_capabilities: Arc::clone(&prompt_capabilities),
     };
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -2826,17 +3634,42 @@ fn start_acp_session(
             }
         };
         runtime.block_on(async move {
-            run_acp_actor(
-                spec,
-                start_mode,
-                event_tx,
-                session_state,
-                tool_diffs,
-                agent_writes,
-                command_rx,
-                created_tx,
-            )
-            .await;
+            match flavor {
+                AcpProtocolFlavor::Current14 => {
+                    run_acp_actor(
+                        spec,
+                        start_mode,
+                        event_tx,
+                        session_state,
+                        tool_diffs,
+                        agent_writes,
+                        user_input_waiters,
+                        url_elicitation_waiters,
+                        completed_url_elicitations,
+                        prompt_capabilities,
+                        command_rx,
+                        created_tx,
+                    )
+                    .await;
+                }
+                AcpProtocolFlavor::Legacy12 => {
+                    run_acp12_actor(
+                        spec,
+                        start_mode,
+                        event_tx,
+                        session_state,
+                        tool_diffs,
+                        agent_writes,
+                        user_input_waiters,
+                        url_elicitation_waiters,
+                        completed_url_elicitations,
+                        prompt_capabilities,
+                        command_rx,
+                        created_tx,
+                    )
+                    .await;
+                }
+            }
         });
     });
     let session = created_rx
@@ -2869,6 +3702,7 @@ enum AcpAuthCommand {
 
 fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> Result<(), String> {
     let (result_tx, result_rx) = mpsc::channel();
+    let flavor = acp_protocol_flavor(&spec.runtime_id);
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime,
@@ -2877,13 +3711,135 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
                 return;
             }
         };
-        let result = runtime.block_on(run_acp_auth_inner(spec, auth_command));
+        let result = match flavor {
+            AcpProtocolFlavor::Current14 => {
+                runtime.block_on(run_acp_auth_inner(spec, auth_command))
+            }
+            AcpProtocolFlavor::Legacy12 => {
+                runtime.block_on(run_acp12_auth_inner(spec, auth_command))
+            }
+        };
         let _ = result_tx.send(result);
     });
 
     result_rx
         .recv()
         .map_err(|_| "AI runtime authentication disconnected before responding.".to_string())?
+}
+
+async fn send_acp_authenticate_request(
+    connection: &ConnectionTo<Agent>,
+    method_id: impl Into<String>,
+    meta: Option<Meta>,
+) -> Result<(), agent_client_protocol::Error> {
+    let mut request = AuthenticateRequest::new(method_id.into());
+    if let Some(meta) = meta {
+        request = request.meta(meta);
+    }
+    connection.send_request(request).block_task().await?;
+    Ok(())
+}
+
+async fn run_acp_auth_handshake(
+    connection: &ConnectionTo<Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<(), agent_client_protocol::Error> {
+    let Some(request) = validate_acp_auth_handshake_request(spec, initialize_response)
+        .map_err(|message| agent_client_protocol::Error::internal_error().data(message))?
+    else {
+        return Ok(());
+    };
+
+    send_acp_authenticate_request(connection, request.method_id, request.meta).await
+}
+
+async fn send_acp12_authenticate_request(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    method_id: impl Into<String>,
+    meta: Option<Meta>,
+) -> Result<(), acp12::Error> {
+    let mut request = acp12::schema::AuthenticateRequest::new(method_id.into());
+    if let Some(meta) = meta {
+        let legacy_meta: acp12::schema::Meta =
+            current_to_acp12(meta).map_err(acp12_internal_error)?;
+        request = request.meta(legacy_meta);
+    }
+    connection.send_request(request).block_task().await?;
+    Ok(())
+}
+
+async fn run_acp12_auth_handshake(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &acp12::schema::InitializeResponse,
+) -> Result<(), acp12::Error> {
+    let initialize_response =
+        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
+    let Some(request) = validate_acp_auth_handshake_request(spec, &initialize_response)
+        .map_err(acp12_internal_error)?
+    else {
+        return Ok(());
+    };
+
+    send_acp12_authenticate_request(connection, request.method_id, request.meta).await
+}
+
+fn validate_acp_auth_handshake_request(
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<Option<AcpAuthHandshakeRequest>, String> {
+    let Some(request) = acp_auth_handshake_request(spec)? else {
+        return Ok(None);
+    };
+
+    if !acp_initialize_response_has_auth_method(initialize_response, request.method_id) {
+        return Err(format!(
+            "{} ACP runtime did not advertise required auth method '{}'.",
+            runtime_name(&spec.runtime_id),
+            request.method_id
+        ));
+    }
+
+    Ok(Some(request))
+}
+
+fn acp_auth_handshake_request(
+    spec: &AcpProcessSpec,
+) -> Result<Option<AcpAuthHandshakeRequest>, String> {
+    let Some(handshake) = spec.auth_handshake.as_ref() else {
+        return Ok(None);
+    };
+    let Some(auth_method) = spec.auth_method.as_deref() else {
+        return Ok(None);
+    };
+
+    let method_id = match auth_method {
+        "xai-api-key" => handshake.env_method_id,
+        "grok-login" => handshake.external_method_id,
+        unsupported => {
+            return Err(format!(
+                "{} auth method '{}' cannot be used for the ACP auth handshake.",
+                runtime_name(&spec.runtime_id),
+                unsupported
+            ));
+        }
+    };
+
+    Ok(Some(AcpAuthHandshakeRequest {
+        method_id,
+        meta: handshake.meta.clone(),
+    }))
+}
+
+fn acp_initialize_response_has_auth_method(
+    initialize_response: &InitializeResponse,
+    method_id: &str,
+) -> bool {
+    initialize_response
+        .auth_methods
+        .iter()
+        .any(|method| method.id().0.as_ref() == method_id)
 }
 
 async fn run_acp_auth_inner(
@@ -2924,9 +3880,9 @@ async fn run_acp_auth_inner(
                     connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
-                                .client_capabilities(
-                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
-                                )
+                                .client_capabilities(neverwrite_acp_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
                                 .client_info(
                                     Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
                                         .title("NeverWrite"),
@@ -2936,10 +3892,7 @@ async fn run_acp_auth_inner(
                         .await?;
                     match auth_command {
                         AcpAuthCommand::Authenticate(method_id) => {
-                            connection
-                                .send_request(AuthenticateRequest::new(method_id))
-                                .block_task()
-                                .await?;
+                            send_acp_authenticate_request(&connection, method_id, None).await?;
                         }
                         AcpAuthCommand::Logout => {
                             connection
@@ -2969,6 +3922,91 @@ async fn run_acp_auth_inner(
     result.map_err(|error| error.to_string())
 }
 
+async fn run_acp12_auth_inner(
+    spec: AcpProcessSpec,
+    auth_command: AcpAuthCommand,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::null());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
+
+    let result = acp12::Client
+        .builder()
+        .name("neverwrite")
+        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
+            let auth_result = tokio::select! {
+                response = async {
+                    connection
+                        .send_request(
+                            acp12::schema::InitializeRequest::new(
+                                acp12::schema::ProtocolVersion::LATEST,
+                            )
+                                .client_capabilities(neverwrite_acp12_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
+                                .client_info(
+                                    acp12::schema::Implementation::new(
+                                        "neverwrite",
+                                        env!("CARGO_PKG_VERSION"),
+                                    )
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    match auth_command {
+                        AcpAuthCommand::Authenticate(method_id) => {
+                            send_acp12_authenticate_request(&connection, method_id, None).await?;
+                        }
+                        AcpAuthCommand::Logout => {
+                            connection
+                                .send_request(acp12::schema::LogoutRequest::new())
+                                .block_task()
+                                .await?;
+                        }
+                    }
+                    Ok::<(), acp12::Error>(())
+                } => response,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(acp12::Error::internal_error().data(message));
+                }
+            };
+
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            auth_result
+        })
+        .await;
+
+    result.map_err(|error| error.to_string())
+}
+
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
@@ -2976,6 +4014,10 @@ async fn run_acp_actor(
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
@@ -2986,6 +4028,10 @@ async fn run_acp_actor(
         session_state,
         tool_diffs,
         agent_writes,
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        prompt_capabilities,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -2995,13 +4041,51 @@ async fn run_acp_actor(
     }
 }
 
-async fn run_acp_actor_inner(
+async fn run_acp12_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
     event_tx: Sender<RpcOutput>,
     session_state: Arc<Mutex<NativeAiInner>>,
     tool_diffs: ToolDiffState,
     agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
+    created_tx: mpsc::Sender<Result<AiSession, String>>,
+) {
+    let result = run_acp12_actor_inner(
+        spec,
+        start_mode,
+        event_tx,
+        session_state,
+        tool_diffs,
+        agent_writes,
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        prompt_capabilities,
+        &mut command_rx,
+        created_tx.clone(),
+    )
+    .await;
+    if let Err(error) = result {
+        let _ = created_tx.send(Err(error));
+    }
+}
+
+async fn run_acp12_actor_inner(
+    spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -3033,6 +4117,212 @@ async fn run_acp_actor_inner(
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
+        tool_diffs,
+        agent_writes,
+        terminal_output: Arc::new(Mutex::new(HashMap::new())),
+        terminal_exit: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let permission_waiters = client.permission_waiters.clone();
+    let transport = acp12::ByteStreams::new(stdin.compat_write(), stdout.compat());
+    let session_created = Arc::new(AtomicBool::new(false));
+    let session_created_for_connection = Arc::clone(&session_created);
+    let disconnect_runtime_id = spec.runtime_id.clone();
+    let event_tx_for_connection = event_tx.clone();
+    let client_for_shutdown = client.clone();
+
+    let result = acp12::Client
+        .builder()
+        .name("neverwrite")
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: acp12::schema::RequestPermissionRequest,
+                            responder,
+                            cx: acp12::ConnectionTo<acp12::Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.request_permission_acp12(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            acp12::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: acp12::schema::SessionNotification,
+                            _cx: acp12::ConnectionTo<acp12::Agent>| {
+                    client.session_notification_acp12(notification).await
+                }
+            },
+            acp12::on_receive_notification!(),
+        )
+        .connect_with(transport, async move |connection: acp12::ConnectionTo<acp12::Agent>| {
+            let response = tokio::select! {
+                response = async {
+                    let initialize_response = connection
+                        .send_request(
+                            acp12::schema::InitializeRequest::new(
+                                acp12::schema::ProtocolVersion::LATEST,
+                            )
+                                .client_capabilities(neverwrite_acp12_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
+                                .client_info(
+                                    acp12::schema::Implementation::new(
+                                        "neverwrite",
+                                        env!("CARGO_PKG_VERSION"),
+                                    )
+                                        .title("NeverWrite"),
+                                ),
+                        )
+                        .block_task()
+                        .await?;
+                    let current_initialize_response: InitializeResponse =
+                        acp12_to_current(initialize_response.clone()).map_err(acp12_internal_error)?;
+                    remember_prompt_capabilities(
+                        &prompt_capabilities,
+                        prompt_capabilities_from_initialize_response(
+                            &current_initialize_response,
+                        ),
+                    );
+                    run_acp12_auth_handshake(&connection, &spec, &initialize_response).await?;
+                    emit_event(
+                        &event_tx_for_connection,
+                        AI_RUNTIME_CONNECTION_EVENT,
+                        json!(AiRuntimeConnectionPayload {
+                            runtime_id: spec.runtime_id.clone(),
+                            status: "ready".to_string(),
+                            message: None,
+                        }),
+                    );
+                    let initialize_model_state = acp12_initialize_model_state(&initialize_response);
+                    start_acp12_runtime_session(
+                        &connection,
+                        &spec,
+                        &start_mode,
+                        initialize_model_state,
+                    )
+                    .await
+                } => response?,
+                wait_result = child.wait() => {
+                    let message = wait_result
+                        .map(acp_child_exit_message)
+                        .unwrap_or_else(|error| {
+                            format!("Failed to wait for AI runtime process: {error}")
+                        });
+                    return Err(acp12::Error::internal_error().data(message));
+                }
+            };
+            let mut session = session_from_acp_response(
+                &spec.runtime_id,
+                response.session_id,
+                response.modes,
+                response.config_options,
+            );
+            session.additional_roots =
+                additional_roots_to_strings(start_mode.additional_directories());
+            client
+                .tool_diffs
+                .register_session_cwd(&session.session_id, spec.cwd.clone());
+            session_created_for_connection.store(true, Ordering::Relaxed);
+            let _ = created_tx.send(Ok(session));
+            loop {
+                tokio::select! {
+                    maybe_command = command_rx.recv() => {
+                        let Some(command) = maybe_command else {
+                            return Ok(());
+                        };
+                        handle_acp12_command(command, &connection, &client, &permission_waiters).await;
+                    }
+                    wait_result = child.wait() => {
+                        let message = wait_result
+                            .map(acp_child_exit_message)
+                            .unwrap_or_else(|error| {
+                                format!("Failed to wait for AI runtime process: {error}")
+                            });
+                        return Err(acp12::Error::internal_error().data(message));
+                    }
+                }
+            }
+        })
+        .await;
+
+    client_for_shutdown.cancel_all_user_input_waiters();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if session_created.load(Ordering::Relaxed) => {
+            emit_event(
+                &event_tx,
+                AI_RUNTIME_CONNECTION_EVENT,
+                json!(AiRuntimeConnectionPayload {
+                    runtime_id: disconnect_runtime_id,
+                    status: "error".to_string(),
+                    message: Some(format!(
+                        "The AI runtime process disconnected unexpectedly: {error}"
+                    )),
+                }),
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+async fn run_acp_actor_inner(
+    spec: AcpProcessSpec,
+    start_mode: AcpSessionStartMode,
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
+    created_tx: mpsc::Sender<Result<AiSession, String>>,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    command.current_dir(acp_process_launch_cwd(&spec.runtime_id, &spec.cwd));
+    command.stdin(std::process::Stdio::piped());
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    for (key, value) in &spec.env {
+        command.env(key, value);
+    }
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let client = NativeAcpClient {
+        event_tx: event_tx.clone(),
+        session_state,
+        message_ids: Arc::new(Mutex::new(HashMap::new())),
+        thinking_ids: Arc::new(Mutex::new(HashMap::new())),
+        permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+        user_input_waiters,
+        url_elicitation_waiters,
+        completed_url_elicitations,
+        suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
         tool_diffs,
         agent_writes,
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -3044,6 +4334,7 @@ async fn run_acp_actor_inner(
     let session_created_for_connection = Arc::clone(&session_created);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
+    let client_for_shutdown = client.clone();
 
     let result = Client
         .builder()
@@ -3065,6 +4356,23 @@ async fn run_acp_actor_inner(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let client = client.clone();
+                async move |request: CreateElicitationRequest,
+                            responder,
+                            cx: ConnectionTo<Agent>| {
+                    let client = client.clone();
+                    cx.spawn(async move {
+                        let result = client.create_elicitation(request).await;
+                        responder.respond_with_result(result)?;
+                        Ok(())
+                    })?;
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let client = client.clone();
@@ -3074,15 +4382,25 @@ async fn run_acp_actor_inner(
             },
             agent_client_protocol::on_receive_notification!(),
         )
+        .on_receive_notification(
+            {
+                let client = client.clone();
+                async move |notification: CompleteElicitationNotification,
+                            _cx: ConnectionTo<Agent>| {
+                    client.complete_elicitation(notification).await
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
         .connect_with(transport, async move |connection: ConnectionTo<Agent>| {
             let response = tokio::select! {
                 response = async {
-                    connection
+                    let initialize_response = connection
                         .send_request(
                             InitializeRequest::new(ProtocolVersion::LATEST)
-                                .client_capabilities(
-                                    ClientCapabilities::new().fs(FileSystemCapabilities::new()),
-                                )
+                                .client_capabilities(neverwrite_acp_client_capabilities(
+                                    &spec.runtime_id,
+                                ))
                                 .client_info(
                                     Implementation::new("neverwrite", env!("CARGO_PKG_VERSION"))
                                         .title("NeverWrite"),
@@ -3090,6 +4408,11 @@ async fn run_acp_actor_inner(
                         )
                         .block_task()
                         .await?;
+                    remember_prompt_capabilities(
+                        &prompt_capabilities,
+                        prompt_capabilities_from_initialize_response(&initialize_response),
+                    );
+                    run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
                     emit_event(
                         &event_tx_for_connection,
                         AI_RUNTIME_CONNECTION_EVENT,
@@ -3113,7 +4436,6 @@ async fn run_acp_actor_inner(
             let mut session = session_from_acp_response(
                 &spec.runtime_id,
                 response.session_id,
-                response.models,
                 response.modes,
                 response.config_options,
             );
@@ -3144,6 +4466,8 @@ async fn run_acp_actor_inner(
             }
         })
         .await;
+
+    client_for_shutdown.cancel_all_user_input_waiters();
 
     match result {
         Ok(()) => Ok(()),
@@ -3185,7 +4509,6 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: response.session_id.0.to_string(),
-                models: response.models,
                 modes: response.modes,
                 config_options: response.config_options,
             })
@@ -3196,7 +4519,7 @@ async fn start_acp_runtime_session(
         } => {
             let response = connection
                 .send_request(
-                    LoadSessionRequest::new(SessionId::new(session_id.clone()), cwd)
+                    ResumeSessionRequest::new(SessionId::new(session_id.clone()), cwd)
                         .additional_directories(additional_wire_paths(
                             &spec.runtime_id,
                             additional_directories,
@@ -3206,12 +4529,152 @@ async fn start_acp_runtime_session(
                 .await?;
             Ok(AcpSessionStartResponse {
                 session_id: session_id.clone(),
-                models: response.models,
-                modes: response.modes,
+                modes: None,
                 config_options: response.config_options,
             })
         }
     }
+}
+
+async fn start_acp12_runtime_session(
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    spec: &AcpProcessSpec,
+    start_mode: &AcpSessionStartMode,
+    initialize_model_state: Option<acp12::schema::SessionModelState>,
+) -> Result<AcpSessionStartResponse, acp12::Error> {
+    let cwd = acp_session_wire_cwd(&spec.runtime_id, &spec.cwd);
+    match start_mode {
+        AcpSessionStartMode::New {
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(
+                    acp12::schema::NewSessionRequest::new(cwd).additional_directories(
+                        additional_wire_paths(&spec.runtime_id, additional_directories),
+                    ),
+                )
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: response.session_id.0.to_string(),
+                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
+                config_options: acp12_session_config_options(
+                    response.config_options,
+                    response.models.or_else(|| initialize_model_state.clone()),
+                )
+                .map_err(acp12_internal_error)?,
+            })
+        }
+        AcpSessionStartMode::Load {
+            session_id,
+            additional_directories,
+        } => {
+            let response = connection
+                .send_request(
+                    acp12::schema::LoadSessionRequest::new(
+                        acp12::schema::SessionId::new(session_id.clone()),
+                        cwd,
+                    )
+                    .additional_directories(additional_wire_paths(
+                        &spec.runtime_id,
+                        additional_directories,
+                    )),
+                )
+                .block_task()
+                .await?;
+            Ok(AcpSessionStartResponse {
+                session_id: session_id.clone(),
+                modes: acp12_to_current(response.modes).map_err(acp12_internal_error)?,
+                config_options: acp12_session_config_options(
+                    response.config_options,
+                    response.models.or_else(|| initialize_model_state.clone()),
+                )
+                .map_err(acp12_internal_error)?,
+            })
+        }
+    }
+}
+
+fn acp12_initialize_model_state(
+    response: &acp12::schema::InitializeResponse,
+) -> Option<acp12::schema::SessionModelState> {
+    response
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("modelState").cloned())
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn acp12_session_config_options(
+    legacy_options: Option<Vec<acp12::schema::SessionConfigOption>>,
+    legacy_models: Option<acp12::schema::SessionModelState>,
+) -> Result<Option<Vec<SessionConfigOption>>, String> {
+    let mut options: Option<Vec<SessionConfigOption>> = acp12_to_current(legacy_options)?;
+    let Some(model_option) = acp12_model_state_to_config_option(legacy_models) else {
+        return Ok(options);
+    };
+
+    let options = options.get_or_insert_with(Vec::new);
+    if !options.iter().any(|option| {
+        matches!(
+            map_config_option_category(&option.id.0, option.category.as_ref()),
+            AiConfigOptionCategory::Model
+        )
+    }) {
+        options.insert(0, model_option);
+    }
+
+    Ok(Some(options.clone()))
+}
+
+fn acp12_model_state_to_config_option(
+    state: Option<acp12::schema::SessionModelState>,
+) -> Option<SessionConfigOption> {
+    let state = state?;
+    if state.available_models.is_empty() {
+        return None;
+    }
+
+    let options: Vec<SessionConfigSelectOption> = state
+        .available_models
+        .into_iter()
+        .map(|model| {
+            let mut option =
+                SessionConfigSelectOption::new(model.model_id.0.to_string(), model.name);
+            if let Some(description) = model.description {
+                option = option.description(description);
+            }
+            if let Some(meta) = model.meta {
+                option = option.meta(meta);
+            }
+            option
+        })
+        .collect();
+
+    Some(
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            state.current_model_id.0.to_string(),
+            options,
+        )
+        .category(SessionConfigOptionCategory::Model),
+    )
+}
+
+fn config_select_option_agent_type(meta: Option<&Meta>) -> Option<String> {
+    meta.and_then(|meta| meta.get("agentType"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_grok_model_switch_error(error: &str) -> String {
+    if error.contains("MODEL_SWITCH_INCOMPATIBLE_AGENT") {
+        return "Start a new Grok chat to switch models.".to_string();
+    }
+
+    error.to_string()
 }
 
 fn new_session_request(
@@ -3239,7 +4702,7 @@ async fn handle_acp_command(
     match command {
         AcpCommand::Prompt {
             session_id,
-            content,
+            prompt,
             response_tx,
         } => {
             let connection = connection.clone();
@@ -3249,23 +4712,15 @@ async fn handle_acp_command(
                 let result = connection
                     .send_request(PromptRequest::new(
                         SessionId::new(session_id.clone()),
-                        vec![ContentBlock::from(content)],
+                        prompt,
                     ))
                     .block_task()
                     .await
                     .map(|_| ())
                     .map_err(|error| error.to_string());
                 client.end_thinking(&session_id);
-                if client.current_message_id(&session_id).is_none() {
-                    client.emit(
-                        AI_MESSAGE_STARTED_EVENT,
-                        AiMessageStartedPayload {
-                            session_id: session_id.clone(),
-                            message_id: message_id.clone(),
-                        },
-                    );
-                }
-                client.end_message(&session_id);
+                client.end_user_message(&session_id);
+                client.complete_assistant_turn(&session_id, &message_id);
                 if let Err(error) = &result {
                     client.emit(
                         AI_SESSION_ERROR_EVENT,
@@ -3277,22 +4732,6 @@ async fn handle_acp_command(
                 }
             });
             let _ = response_tx.send(Ok(()));
-        }
-        AcpCommand::SetModel {
-            session_id,
-            model_id,
-            response_tx,
-        } => {
-            let result = connection
-                .send_request(SetSessionModelRequest::new(
-                    SessionId::new(session_id),
-                    model_id,
-                ))
-                .block_task()
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
-            let _ = response_tx.send(result);
         }
         AcpCommand::SetMode {
             session_id,
@@ -3307,8 +4746,17 @@ async fn handle_acp_command(
                 .block_task()
                 .await
                 .map(|_| ())
-                .map_err(|error| error.to_string());
+                .map_err(|error| normalize_grok_model_switch_error(&error.to_string()));
             let _ = response_tx.send(result);
+        }
+        AcpCommand::SetModel {
+            session_id: _,
+            model_id: _,
+            response_tx,
+        } => {
+            let _ = response_tx.send(Err(
+                "ACP 0.14 model changes must use session config options.".to_string(),
+            ));
         }
         AcpCommand::SetConfigOption {
             session_id,
@@ -3365,46 +4813,188 @@ async fn handle_acp_command(
     }
 }
 
+async fn handle_acp12_command(
+    command: AcpCommand,
+    connection: &acp12::ConnectionTo<acp12::Agent>,
+    client: &NativeAcpClient,
+    permission_waiters: &Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>,
+) {
+    match command {
+        AcpCommand::Prompt {
+            session_id,
+            prompt,
+            response_tx,
+        } => {
+            let connection = connection.clone();
+            let client = client.clone();
+            tokio::spawn(async move {
+                let message_id = client.begin_message(&session_id);
+                let legacy_prompt: Result<Vec<acp12::schema::ContentBlock>, String> =
+                    current_to_acp12(prompt);
+                let result = match legacy_prompt {
+                    Ok(legacy_prompt) => connection
+                        .send_request(acp12::schema::PromptRequest::new(
+                            acp12::schema::SessionId::new(session_id.clone()),
+                            legacy_prompt,
+                        ))
+                        .block_task()
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error),
+                };
+                client.end_thinking(&session_id);
+                client.end_user_message(&session_id);
+                client.complete_assistant_turn(&session_id, &message_id);
+                if let Err(error) = &result {
+                    client.emit(
+                        AI_SESSION_ERROR_EVENT,
+                        AiSessionErrorPayload {
+                            session_id: Some(session_id),
+                            message: error.clone(),
+                        },
+                    );
+                }
+            });
+            let _ = response_tx.send(Ok(()));
+        }
+        AcpCommand::SetMode {
+            session_id,
+            mode_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionModeRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    mode_id,
+                ))
+                .block_task()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::SetModel {
+            session_id,
+            model_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionModelRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    model_id,
+                ))
+                .block_task()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::SetConfigOption {
+            session_id,
+            option_id,
+            value,
+            response_tx,
+        } => {
+            let result = connection
+                .send_request(acp12::schema::SetSessionConfigOptionRequest::new(
+                    acp12::schema::SessionId::new(session_id),
+                    option_id,
+                    value.as_str(),
+                ))
+                .block_task()
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|response| acp12_to_current(response.config_options));
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::Cancel {
+            session_id,
+            response_tx,
+        } => {
+            let result = connection
+                .send_notification(acp12::schema::CancelNotification::new(
+                    acp12::schema::SessionId::new(session_id),
+                ))
+                .map_err(|error| error.to_string());
+            let _ = response_tx.send(result);
+        }
+        AcpCommand::RespondPermission {
+            request_id,
+            option_id,
+            response_tx,
+        } => {
+            let outcome = option_id
+                .map(|value| {
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(value))
+                })
+                .unwrap_or(RequestPermissionOutcome::Cancelled);
+            let result = permission_waiters
+                .lock()
+                .map_err(|error| error.to_string())
+                .and_then(|mut waiters| {
+                    waiters
+                        .remove(&request_id)
+                        .ok_or_else(|| format!("Permission request not found: {request_id}"))
+                })
+                .and_then(|sender| {
+                    sender
+                        .send(outcome)
+                        .map_err(|_| "Permission request was closed.".to_string())
+                });
+            let _ = response_tx.send(result);
+        }
+    }
+}
+
 fn session_from_acp_response(
     runtime_id: &str,
     session_id: String,
-    models_state: Option<SessionModelState>,
     modes_state: Option<SessionModeState>,
     config_options: Option<Vec<SessionConfigOption>>,
 ) -> AiSession {
-    let mapped_models = models_state
+    let mut config_options =
+        config_options.map(|options| map_session_config_options(runtime_id, options));
+    let modes = modes_state
         .as_ref()
-        .map(|state| map_session_models(runtime_id, state))
-        .unwrap_or_default();
+        .map(|state| map_session_modes(runtime_id, state))
+        .or_else(|| {
+            config_options
+                .as_ref()
+                .map(|options| map_session_modes_from_config_options(runtime_id, options))
+                .filter(|modes| !modes.is_empty())
+        })
+        .unwrap_or_else(|| default_modes_for_acp_session(runtime_id));
+    let mut config_options = match config_options.take() {
+        Some(options) => options,
+        None => {
+            let models = default_models(runtime_id);
+            let mut options = default_config_options(runtime_id, &models, &modes);
+            align_synthesized_config_options_to_acp_state(&mut options, modes_state.as_ref());
+            options
+        }
+    };
+    let mapped_models = map_session_models_from_config_options(runtime_id, &config_options);
     let models = if mapped_models.models.is_empty() {
         default_models(runtime_id)
     } else {
         mapped_models.models
     };
-    let modes = modes_state
-        .as_ref()
-        .map(|state| map_session_modes(runtime_id, state))
-        .unwrap_or_else(|| default_modes(runtime_id));
-    let mut config_options = config_options
-        .map(|options| map_session_config_options(runtime_id, options))
-        .unwrap_or_else(|| default_config_options(runtime_id, &models, &modes));
-    config_options = ensure_reasoning_config_option(
-        runtime_id,
-        config_options,
-        models_state.as_ref(),
-        &mapped_models.efforts_by_model,
-    );
-    let model_id = selected_model_id(models_state.as_ref(), &config_options)
+    config_options =
+        ensure_reasoning_config_option(runtime_id, config_options, &mapped_models.efforts_by_model);
+    let model_id = selected_model_id(&config_options)
         .or_else(|| models.first().map(|model| model.id.clone()))
         .unwrap_or_default();
     let mode_id = selected_mode_id(modes_state.as_ref(), &config_options)
         .or_else(|| modes.first().map(|mode| mode.id.clone()))
-        .unwrap_or_else(|| "default".to_string());
+        .or_else(|| default_mode_id_for_runtime(runtime_id))
+        .unwrap_or_default();
 
     AiSession {
         session_id,
         parent_session_id: None,
         runtime_session_id: None,
+        closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
         model_id,
@@ -3427,17 +5017,42 @@ fn acp_child_exit_message(status: std::process::ExitStatus) -> String {
     }
 }
 
+fn should_suppress_internal_text_chunk(runtime_id: &str, text: &str) -> bool {
+    if runtime_id != GROK_RUNTIME_ID {
+        return false;
+    }
+
+    let trimmed = text.trim();
+    let Some(mode_id) = trimmed.strip_prefix("[MODE_UPDATE]") else {
+        return false;
+    };
+    let mode_id = mode_id.trim();
+    !mode_id.is_empty()
+        && mode_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
 #[derive(Default)]
 struct MappedSessionModels {
     models: Vec<AiModelOption>,
     efforts_by_model: HashMap<String, Vec<String>>,
 }
 
-fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSessionModels {
+fn map_session_models_from_config_options(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+) -> MappedSessionModels {
     let mut mapped = MappedSessionModels::default();
+    let Some(model_option) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+    else {
+        return mapped;
+    };
 
-    for model in &state.available_models {
-        let model_id = model.model_id.0.as_ref();
+    for model in &model_option.options {
+        let model_id = model.value.as_str();
         let base_model_id = strip_effort_suffix(model_id).to_string();
         if let Some(effort) = extract_effort(model_id) {
             let efforts = mapped
@@ -3456,8 +5071,9 @@ fn map_session_models(runtime_id: &str, state: &SessionModelState) -> MappedSess
         mapped.models.push(AiModelOption {
             id: base_model_id,
             runtime_id: runtime_id.to_string(),
-            name: strip_effort_suffix(&model.name).to_string(),
+            name: strip_effort_suffix(&model.label).to_string(),
             description: model.description.clone().unwrap_or_default(),
+            agent_type: model.agent_type.clone(),
         });
     }
 
@@ -3473,6 +5089,30 @@ fn map_session_modes(runtime_id: &str, state: &SessionModeState) -> Vec<AiModeOp
             runtime_id: runtime_id.to_string(),
             name: mode.name.clone(),
             description: mode.description.clone().unwrap_or_default(),
+            disabled: false,
+        })
+        .collect()
+}
+
+fn map_session_modes_from_config_options(
+    runtime_id: &str,
+    config_options: &[AiConfigOption],
+) -> Vec<AiModeOption> {
+    let Some(mode_option) = config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+    else {
+        return Vec::new();
+    };
+
+    mode_option
+        .options
+        .iter()
+        .map(|option| AiModeOption {
+            id: option.value.clone(),
+            runtime_id: runtime_id.to_string(),
+            name: option.label.clone(),
+            description: option.description.clone().unwrap_or_default(),
             disabled: false,
         })
         .collect()
@@ -3511,6 +5151,7 @@ fn map_session_config_options(
                         value: item.value.0.to_string(),
                         label: item.name,
                         description: item.description,
+                        agent_type: config_select_option_agent_type(item.meta.as_ref()),
                     })
                     .collect(),
             })
@@ -3518,14 +5159,40 @@ fn map_session_config_options(
         .collect()
 }
 
+fn align_synthesized_config_options_to_acp_state(
+    config_options: &mut [AiConfigOption],
+    modes_state: Option<&SessionModeState>,
+) {
+    if let Some(mode_id) = modes_state
+        .map(|state| state.current_mode_id.0.to_string())
+        .filter(|value| !value.trim().is_empty())
+    {
+        if let Some(option) = config_options
+            .iter_mut()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Mode))
+        {
+            option.value = mode_id;
+        }
+    }
+}
+
 fn map_config_option_category(
     option_id: &str,
     category: Option<&SessionConfigOptionCategory>,
 ) -> AiConfigOptionCategory {
-    let normalized_id = option_id.to_ascii_lowercase();
+    let normalized_id = normalize_config_option_key(option_id);
+    if normalized_id == "model" {
+        return AiConfigOptionCategory::Model;
+    }
+    if normalized_id == "mode"
+        || normalized_id == "permissionmode"
+        || normalized_id == "approvalmode"
+    {
+        return AiConfigOptionCategory::Mode;
+    }
     if matches!(
         normalized_id.as_str(),
-        "reasoning_effort" | "thought_level" | "effort"
+        "reasoningeffort" | "thoughtlevel" | "effort" | "reasoning"
     ) {
         return AiConfigOptionCategory::Reasoning;
     }
@@ -3546,10 +5213,17 @@ fn map_config_option_category(
     }
 }
 
+fn normalize_config_option_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| *character != '_' && *character != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn ensure_reasoning_config_option(
     runtime_id: &str,
     mut config_options: Vec<AiConfigOption>,
-    models_state: Option<&SessionModelState>,
     efforts_by_model: &HashMap<String, Vec<String>>,
 ) -> Vec<AiConfigOption> {
     if config_options
@@ -3559,7 +5233,7 @@ fn ensure_reasoning_config_option(
         return config_options;
     }
 
-    let Some(model_id) = selected_model_id(models_state, &config_options) else {
+    let Some(model_id) = selected_model_id(&config_options) else {
         return config_options;
     };
     let Some(efforts) = efforts_by_model.get(&model_id) else {
@@ -3569,8 +5243,8 @@ fn ensure_reasoning_config_option(
         return config_options;
     }
 
-    let current_effort = models_state
-        .and_then(|state| extract_effort(state.current_model_id.0.as_ref()))
+    let current_effort = selected_model_value(&config_options)
+        .and_then(extract_effort)
         .filter(|effort| efforts.iter().any(|item| item == effort))
         .or_else(|| {
             efforts
@@ -3594,6 +5268,7 @@ fn ensure_reasoning_config_option(
                 value: effort.clone(),
                 label: reasoning_effort_label(effort),
                 description: None,
+                agent_type: None,
             })
             .collect(),
     };
@@ -3606,20 +5281,20 @@ fn ensure_reasoning_config_option(
     config_options
 }
 
-fn selected_model_id(
-    models_state: Option<&SessionModelState>,
-    config_options: &[AiConfigOption],
-) -> Option<String> {
+fn selected_model_id(config_options: &[AiConfigOption]) -> Option<String> {
     config_options
         .iter()
         .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
         .map(|option| strip_effort_suffix(&option.value).to_string())
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            models_state
-                .map(|state| strip_effort_suffix(state.current_model_id.0.as_ref()).to_string())
-                .filter(|value| !value.trim().is_empty())
-        })
+}
+
+fn selected_model_value(config_options: &[AiConfigOption]) -> Option<&str> {
+    config_options
+        .iter()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+        .map(|option| option.value.as_str())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn selected_mode_id(
@@ -3658,6 +5333,17 @@ fn apply_config_options_to_session(session: &mut AiSession, config_options: Vec<
     session.config_options = config_options;
 }
 
+fn apply_model_update_to_session(session: &mut AiSession, model_id: &str) {
+    session.model_id = strip_effort_suffix(model_id).to_string();
+    if let Some(option) = session
+        .config_options
+        .iter_mut()
+        .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+    {
+        option.value = model_id.to_string();
+    }
+}
+
 fn apply_mode_update_to_session(session: &mut AiSession, mode_id: &str) {
     session.mode_id = mode_id.to_string();
     if let Some(option) = session
@@ -3694,24 +5380,22 @@ fn acp_config_option_remote_command(
     config_options: &[AiConfigOption],
     option_id: &str,
 ) -> AcpConfigOptionRemoteCommand {
-    if runtime_id != GEMINI_RUNTIME_ID {
-        return AcpConfigOptionRemoteCommand::SetConfigOption;
+    if runtime_id == GROK_RUNTIME_ID {
+        let category = config_options
+            .iter()
+            .find(|option| option.id == option_id)
+            .map(|option| &option.category);
+        return match category {
+            Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
+            Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::LocalOnly,
+            Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
+            None if option_id == "model" => AcpConfigOptionRemoteCommand::LocalOnly,
+            None => AcpConfigOptionRemoteCommand::LocalOnly,
+        };
     }
 
-    let category = config_options
-        .iter()
-        .find(|option| option.id == option_id)
-        .map(|option| &option.category);
-    match category {
-        Some(AiConfigOptionCategory::Model) => AcpConfigOptionRemoteCommand::SetModel,
-        Some(AiConfigOptionCategory::Mode) => AcpConfigOptionRemoteCommand::SetMode,
-        Some(_) => AcpConfigOptionRemoteCommand::LocalOnly,
-        None if option_id == "model" => AcpConfigOptionRemoteCommand::SetModel,
-        None if option_id == "mode" => AcpConfigOptionRemoteCommand::SetMode,
-        None => AcpConfigOptionRemoteCommand::LocalOnly,
-    }
+    AcpConfigOptionRemoteCommand::SetConfigOption
 }
-
 fn map_permission_option(option: PermissionOption) -> AiPermissionOptionPayload {
     AiPermissionOptionPayload {
         option_id: option.option_id.0.to_string(),
@@ -3768,6 +5452,476 @@ fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanU
                 status: plan_entry_status_label(&entry.status).to_string(),
             })
             .collect(),
+    }
+}
+
+fn map_elicitation_form_questions(
+    schema: &agent_client_protocol::schema::ElicitationSchema,
+) -> (
+    Vec<AiUserInputQuestionPayload>,
+    HashMap<String, ElicitationFieldSpec>,
+) {
+    let mapped_fields = schema
+        .properties
+        .iter()
+        .map(|(id, property)| {
+            let (header, question, kind, options) = elicitation_question_parts(id, property);
+            let option_values_by_label = options
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .flat_map(|option| {
+                            let mut values = vec![(option.label.clone(), option.value.clone())];
+                            if option.label != option.value {
+                                values.push((option.value.clone(), option.value.clone()));
+                            }
+                            values
+                        })
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+            (
+                AiUserInputQuestionPayload {
+                    id: id.clone(),
+                    custom_answer_id: None,
+                    header,
+                    question,
+                    is_other: false,
+                    is_secret: false,
+                    allows_multiple: matches!(kind, ElicitationFieldKind::StringArray),
+                    options,
+                },
+                (
+                    id.clone(),
+                    ElicitationFieldSpec {
+                        kind,
+                        option_values_by_label,
+                    },
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let field_ids = mapped_fields
+        .iter()
+        .map(|(question, _)| question.id.clone())
+        .collect::<HashSet<_>>();
+    let custom_answer_ids_by_parent = mapped_fields
+        .iter()
+        .filter_map(|(question, _)| {
+            let parent_id = elicitation_custom_answer_parent_id(&question.id)?;
+            field_ids
+                .contains(&parent_id)
+                .then(|| (parent_id, question.id.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    mapped_fields.into_iter().fold(
+        (Vec::new(), HashMap::new()),
+        |(mut questions, mut fields), (mut question, (id, field))| {
+            fields.insert(id.clone(), field);
+            if elicitation_custom_answer_parent_id(&id)
+                .is_some_and(|parent_id| field_ids.contains(&parent_id))
+            {
+                return (questions, fields);
+            }
+            if let Some(custom_answer_id) = custom_answer_ids_by_parent.get(&id) {
+                question.custom_answer_id = Some(custom_answer_id.clone());
+                question.is_other = true;
+            }
+            questions.push(question);
+            (questions, fields)
+        },
+    )
+}
+
+fn elicitation_custom_answer_parent_id(id: &str) -> Option<String> {
+    let index = id
+        .strip_prefix("question_")?
+        .strip_suffix("_custom")?
+        .parse::<usize>()
+        .ok()?;
+    Some(format!("question_{index}"))
+}
+
+fn elicitation_question_parts(
+    id: &str,
+    property: &ElicitationPropertySchema,
+) -> (
+    String,
+    String,
+    ElicitationFieldKind,
+    Option<Vec<AiUserInputQuestionOptionPayload>>,
+) {
+    match property {
+        ElicitationPropertySchema::String(schema) => {
+            let options = schema
+                .one_of
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| elicitation_titled_option(&item.value, &item.title))
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    schema.enum_values.as_ref().map(|values| {
+                        values
+                            .iter()
+                            .map(|value| elicitation_plain_option(value))
+                            .collect::<Vec<_>>()
+                    })
+                });
+            (
+                schema
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| humanize_field_id(id)),
+                schema.description.clone().unwrap_or_else(|| {
+                    schema
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id)))
+                }),
+                ElicitationFieldKind::String,
+                options,
+            )
+        }
+        ElicitationPropertySchema::Number(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id))),
+            ElicitationFieldKind::Number,
+            None,
+        ),
+        ElicitationPropertySchema::Integer(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Provide {}", humanize_field_id(id))),
+            ElicitationFieldKind::Integer,
+            None,
+        ),
+        ElicitationPropertySchema::Boolean(schema) => (
+            schema
+                .title
+                .clone()
+                .unwrap_or_else(|| humanize_field_id(id)),
+            schema
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("Choose {}", humanize_field_id(id))),
+            ElicitationFieldKind::Boolean,
+            Some(vec![
+                AiUserInputQuestionOptionPayload {
+                    label: "Yes".to_string(),
+                    value: "true".to_string(),
+                    description: None,
+                    preview: None,
+                },
+                AiUserInputQuestionOptionPayload {
+                    label: "No".to_string(),
+                    value: "false".to_string(),
+                    description: None,
+                    preview: None,
+                },
+            ]),
+        ),
+        ElicitationPropertySchema::Array(schema) => {
+            let options = match &schema.items {
+                MultiSelectItems::Untitled(items) => items
+                    .values
+                    .iter()
+                    .map(|value| elicitation_plain_option(value))
+                    .collect(),
+                MultiSelectItems::Titled(items) => items
+                    .options
+                    .iter()
+                    .map(|item| elicitation_titled_option(&item.value, &item.title))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (
+                schema
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| humanize_field_id(id)),
+                schema
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| format!("Choose {}", humanize_field_id(id))),
+                ElicitationFieldKind::StringArray,
+                Some(options),
+            )
+        }
+        _ => (
+            humanize_field_id(id),
+            format!("Provide {}", humanize_field_id(id)),
+            ElicitationFieldKind::String,
+            None,
+        ),
+    }
+}
+
+fn elicitation_plain_option(value: &str) -> AiUserInputQuestionOptionPayload {
+    AiUserInputQuestionOptionPayload {
+        label: value.to_string(),
+        value: value.to_string(),
+        description: None,
+        preview: None,
+    }
+}
+
+fn elicitation_titled_option(value: &str, title: &str) -> AiUserInputQuestionOptionPayload {
+    let (label, description) = elicitation_option_label_and_description(value, title)
+        .unwrap_or_else(|| (title.to_string(), None));
+
+    AiUserInputQuestionOptionPayload {
+        label,
+        value: value.to_string(),
+        description,
+        preview: None,
+    }
+}
+
+fn elicitation_option_label_and_description(
+    value: &str,
+    title: &str,
+) -> Option<(String, Option<String>)> {
+    for separator in [" \u{2014} ", " - "] {
+        let Some(description) = title.strip_prefix(value)?.strip_prefix(separator) else {
+            continue;
+        };
+        return Some((value.to_string(), Some(description.to_string())));
+    }
+    None
+}
+
+fn create_elicitation_response_from_user_input(
+    action: Option<&str>,
+    answers: HashMap<String, Vec<String>>,
+    fields: &HashMap<String, ElicitationFieldSpec>,
+) -> Result<CreateElicitationResponse, String> {
+    match action.unwrap_or(if answers.is_empty() {
+        "cancel"
+    } else {
+        "accept"
+    }) {
+        "cancel" => return Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        "decline" | "skip" => {
+            return Ok(CreateElicitationResponse::new(ElicitationAction::Decline));
+        }
+        "accept" => {}
+        other => return Err(format!("Unsupported user input action: {other}")),
+    }
+
+    let mut content = BTreeMap::new();
+    for (id, values) in answers {
+        let Some(field) = fields.get(&id) else {
+            continue;
+        };
+        if let Some(value) = elicitation_content_value_from_answers(&values, field) {
+            content.insert(id, value);
+        }
+    }
+    Ok(CreateElicitationResponse::new(ElicitationAction::Accept(
+        ElicitationAcceptAction::new().content(content),
+    )))
+}
+
+fn cancel_user_input_waiters_matching(
+    waiters: &Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    matches_waiter: impl Fn(&ElicitationWaiter) -> bool,
+) {
+    let waiters_to_cancel = waiters
+        .lock()
+        .map(|mut waiters| {
+            let request_ids = waiters
+                .iter()
+                .filter(|(_, waiter)| matches_waiter(waiter))
+                .map(|(request_id, _)| request_id.clone())
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| waiters.remove(&request_id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for waiter in waiters_to_cancel {
+        let _ = waiter
+            .response_tx
+            .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+    }
+}
+
+fn cancel_url_elicitation_waiters_matching(
+    waiters: &Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    matches_waiter: impl Fn(&UrlElicitationWaiter) -> bool,
+) {
+    let waiters_to_cancel = waiters
+        .lock()
+        .map(|mut waiters| {
+            let request_ids = waiters
+                .iter()
+                .filter(|(_, waiter)| matches_waiter(waiter))
+                .map(|(request_id, _)| request_id.clone())
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| waiters.remove(&request_id))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for waiter in waiters_to_cancel {
+        let _ = waiter
+            .response_tx
+            .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+    }
+}
+
+fn create_url_elicitation_response(action: &str) -> Result<CreateElicitationResponse, String> {
+    match action {
+        "complete" | "done" | "accept" => Ok(CreateElicitationResponse::new(
+            ElicitationAction::Accept(ElicitationAcceptAction::new()),
+        )),
+        "cancel" => Ok(CreateElicitationResponse::new(ElicitationAction::Cancel)),
+        other => Err(format!("Unsupported URL elicitation action: {other}")),
+    }
+}
+
+fn remember_completed_url_elicitation(
+    completed_url_elicitations: &Arc<Mutex<VecDeque<String>>>,
+    request_id: String,
+) {
+    if let Ok(mut completed_requests) = completed_url_elicitations.lock() {
+        completed_requests.retain(|known_request_id| known_request_id != &request_id);
+        if completed_requests.len() >= MAX_COMPLETED_URL_ELICITATION_IDS {
+            completed_requests.pop_front();
+        }
+        completed_requests.push_back(request_id);
+    }
+}
+
+fn safe_http_url(raw_url: &str) -> Option<String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let Ok(parsed) = reqwest::Url::parse(trimmed) else {
+        return None;
+    };
+    (matches!(parsed.scheme(), "http" | "https") && parsed.host_str().is_some())
+        .then(|| parsed.to_string())
+}
+
+fn elicitation_content_value_from_answers(
+    values: &[String],
+    field: &ElicitationFieldSpec,
+) -> Option<ElicitationContentValue> {
+    match field.kind {
+        ElicitationFieldKind::StringArray => {
+            let mapped = values
+                .iter()
+                .map(|value| elicitation_answer_value(value, field))
+                .filter(|value| !value.trim().is_empty())
+                .collect::<Vec<_>>();
+            Some(ElicitationContentValue::StringArray(mapped))
+        }
+        ElicitationFieldKind::Boolean => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            match mapped.to_ascii_lowercase().as_str() {
+                "true" | "yes" | "1" => ElicitationContentValue::Boolean(true),
+                "false" | "no" | "0" => ElicitationContentValue::Boolean(false),
+                _ => ElicitationContentValue::String(mapped),
+            }
+        }),
+        ElicitationFieldKind::Integer => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            mapped
+                .parse::<i64>()
+                .map(ElicitationContentValue::Integer)
+                .unwrap_or(ElicitationContentValue::String(mapped))
+        }),
+        ElicitationFieldKind::Number => values.first().map(|value| {
+            let mapped = elicitation_answer_value(value, field);
+            mapped
+                .parse::<f64>()
+                .map(ElicitationContentValue::Number)
+                .unwrap_or(ElicitationContentValue::String(mapped))
+        }),
+        ElicitationFieldKind::String => values
+            .first()
+            .map(|value| ElicitationContentValue::String(elicitation_answer_value(value, field))),
+    }
+}
+
+fn elicitation_answer_value(value: &str, field: &ElicitationFieldSpec) -> String {
+    field
+        .option_values_by_label
+        .get(value)
+        .cloned()
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn humanize_field_id(id: &str) -> String {
+    let mut result = String::new();
+    for (index, word) in id
+        .split(['_', '-', '.'])
+        .filter(|part| !part.is_empty())
+        .enumerate()
+    {
+        if index > 0 {
+            result.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            result.extend(first.to_uppercase());
+            result.push_str(chars.as_str());
+        }
+    }
+    if result.is_empty() {
+        id.to_string()
+    } else {
+        result
+    }
+}
+
+fn map_available_commands_update(
+    session_id: &str,
+    update: AvailableCommandsUpdate,
+) -> neverwrite_ai::AiAvailableCommandsPayload {
+    neverwrite_ai::AiAvailableCommandsPayload {
+        session_id: session_id.to_string(),
+        commands: update
+            .available_commands
+            .into_iter()
+            .map(map_available_command)
+            .collect(),
+    }
+}
+
+fn map_available_command(command: AvailableCommand) -> neverwrite_ai::AiAvailableCommandPayload {
+    let name = command.name.trim_start_matches('/').to_string();
+    let label = format!("/{name}");
+    let has_input = matches!(command.input, Some(AvailableCommandInput::Unstructured(_)));
+    neverwrite_ai::AiAvailableCommandPayload {
+        id: name.clone(),
+        label: label.clone(),
+        description: command.description,
+        insert_text: if has_input {
+            format!("{label} ")
+        } else {
+            label
+        },
     }
 }
 
@@ -3983,6 +6137,51 @@ fn map_status_event(
     })
 }
 
+fn is_suppressed_status_title(title: &str) -> bool {
+    matches!(title.trim(), "Preparing input" | "Drafting response")
+}
+
+fn is_internal_status_activity_id(tool_call_id: &str) -> bool {
+    tool_call_id.starts_with(NEVERWRITE_STATUS_EVENT_ID_PREFIX)
+        && !tool_call_id.starts_with(NEVERWRITE_STATUS_TURN_EVENT_ID_PREFIX)
+}
+
+fn should_suppress_status_tool_call(tool_call: &ToolCall) -> bool {
+    if !is_suppressed_status_title(&tool_call.title) {
+        return false;
+    }
+
+    is_internal_status_activity_id(&tool_call.tool_call_id.0)
+        || tool_call
+            .meta
+            .as_ref()
+            .and_then(acp_event_type)
+            .is_some_and(|event_type| event_type == "status")
+}
+
+fn should_suppress_status_tool_call_update(update: &ToolCallUpdate) -> bool {
+    let Some(title) = update.fields.title.as_deref() else {
+        return false;
+    };
+    if !is_suppressed_status_title(title) {
+        return false;
+    }
+
+    is_internal_status_activity_id(&update.tool_call_id.0)
+        || update
+            .meta
+            .as_ref()
+            .and_then(acp_event_type)
+            .is_some_and(|event_type| event_type == "status")
+}
+
+fn tool_call_update_is_terminal(update: &ToolCallUpdate) -> bool {
+    matches!(
+        update.fields.status.as_ref(),
+        Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+    )
+}
+
 fn raw_string_field(raw: Option<&Value>, keys: &[&str]) -> Option<String> {
     let raw = raw?;
     keys.iter()
@@ -4173,13 +6372,19 @@ fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
         .find(|definition| definition.id == runtime_id)
 }
 
+fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
+    runtime_definition(runtime_id)
+        .map(|definition| definition.acp_protocol)
+        .unwrap_or(AcpProtocolFlavor::Current14)
+}
+
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
     RUNTIME_DEFINITIONS
         .iter()
         .map(|definition| {
             let runtime_id = definition.id;
             let models = default_models(runtime_id);
-            let modes = default_modes(runtime_id);
+            let modes = default_modes_for_runtime_descriptor(runtime_id);
             let mut capabilities = vec![
                 "create_session".to_string(),
                 "prompt_queueing".to_string(),
@@ -4210,6 +6415,10 @@ fn runtime_supports_native_resume(runtime_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn runtime_supports_remote_mode_change(runtime_id: &str) -> bool {
+    runtime_id != GROK_RUNTIME_ID
+}
+
 trait RuntimeDescriptorAuthTags {
     fn with_auth_capabilities(self, auth_methods: Vec<&str>) -> Self;
 }
@@ -4224,11 +6433,16 @@ impl RuntimeDescriptorAuthTags for AiRuntimeDescriptor {
 }
 
 fn default_models(runtime_id: &str) -> Vec<AiModelOption> {
+    if runtime_id == GROK_RUNTIME_ID {
+        return Vec::new();
+    }
+
     vec![AiModelOption {
         id: "auto".to_string(),
         runtime_id: runtime_id.to_string(),
         name: "Auto".to_string(),
         description: "Use the runtime default model.".to_string(),
+        agent_type: None,
     }]
 }
 
@@ -4251,13 +6465,35 @@ fn default_modes(runtime_id: &str) -> Vec<AiModeOption> {
     ]
 }
 
+fn default_modes_for_acp_session(runtime_id: &str) -> Vec<AiModeOption> {
+    if runtime_id == GROK_RUNTIME_ID {
+        Vec::new()
+    } else {
+        default_modes(runtime_id)
+    }
+}
+
+fn default_modes_for_runtime_descriptor(runtime_id: &str) -> Vec<AiModeOption> {
+    if runtime_id == GROK_RUNTIME_ID {
+        Vec::new()
+    } else {
+        default_modes(runtime_id)
+    }
+}
+
+fn default_mode_id_for_runtime(runtime_id: &str) -> Option<String> {
+    (runtime_id != GROK_RUNTIME_ID).then(|| "default".to_string())
+}
+
 fn default_config_options(
     runtime_id: &str,
     models: &[AiModelOption],
     modes: &[AiModeOption],
 ) -> Vec<AiConfigOption> {
-    vec![
-        AiConfigOption {
+    let mut options = Vec::new();
+
+    if !models.is_empty() {
+        options.push(AiConfigOption {
             id: "model".to_string(),
             runtime_id: runtime_id.to_string(),
             category: AiConfigOptionCategory::Model,
@@ -4274,10 +6510,14 @@ fn default_config_options(
                     value: model.id.clone(),
                     label: model.name.clone(),
                     description: Some(model.description.clone()),
+                    agent_type: model.agent_type.clone(),
                 })
                 .collect(),
-        },
-        AiConfigOption {
+        });
+    }
+
+    if !modes.is_empty() {
+        options.push(AiConfigOption {
             id: "mode".to_string(),
             runtime_id: runtime_id.to_string(),
             category: AiConfigOptionCategory::Mode,
@@ -4294,10 +6534,13 @@ fn default_config_options(
                     value: mode.id.clone(),
                     label: mode.name.clone(),
                     description: Some(mode.description.clone()),
+                    agent_type: None,
                 })
                 .collect(),
-        },
-    ]
+        });
+    }
+
+    options
 }
 
 fn new_session(runtime_id: &str) -> Result<AiSession, String> {
@@ -4312,12 +6555,13 @@ fn new_session(runtime_id: &str) -> Result<AiSession, String> {
 fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession, String> {
     validate_runtime_id(runtime_id)?;
     let models = default_models(runtime_id);
-    let modes = default_modes(runtime_id);
+    let modes = default_modes_for_acp_session(runtime_id);
     let config_options = default_config_options(runtime_id, &models, &modes);
     Ok(AiSession {
         session_id,
         parent_session_id: None,
         runtime_session_id: None,
+        closed_at: None,
         title: None,
         runtime_id: runtime_id.to_string(),
         model_id: models
@@ -4327,7 +6571,8 @@ fn new_session_with_id(runtime_id: &str, session_id: String) -> Result<AiSession
         mode_id: modes
             .first()
             .map(|mode| mode.id.clone())
-            .unwrap_or_else(|| "default".to_string()),
+            .or_else(|| default_mode_id_for_runtime(runtime_id))
+            .unwrap_or_default(),
         status: AiSessionStatus::Idle,
         efforts_by_model: HashMap::new(),
         models,
@@ -4366,7 +6611,7 @@ fn setup_status_for_with_inherited_auth(
     };
     let inherited_auth_method = inherited_auth_method
         .filter(|method| inherited_auth_method_applies_to_setup(&setup, method));
-    let auth_ready = setup.auth_ready || inherited_auth_method.is_some();
+    let auth_ready = binary_ready && (setup.auth_ready || inherited_auth_method.is_some());
     let auth_method = setup.auth_method.or(inherited_auth_method);
     let message = if !binary_ready {
         setup.message
@@ -4399,16 +6644,17 @@ fn inherited_auth_method_applies_to_setup(
     setup: &RuntimeSetupState,
     inherited_method: &str,
 ) -> bool {
-    match setup.auth_method.as_deref() {
+    if inherited_method == "xai-api-key" && grok_inherited_xai_api_key_marked_invalid(setup) {
+        return false;
+    }
+
+    !matches!(
+        setup.auth_method.as_deref(),
         Some(selected_method)
             if is_local_auth_method(selected_method)
                 && selected_method != inherited_method
-                && !auth_method_has_local_config(setup, selected_method) =>
-        {
-            false
-        }
-        _ => true,
-    }
+                && !auth_method_has_local_config(setup, selected_method)
+    )
 }
 
 fn runtime_setup_load_error(error: String) -> String {
@@ -4477,13 +6723,18 @@ fn acp_process_spec(
         )
     })?;
     let mut env = setup.env.clone();
-    if let Some(method) = setup.auth_method.as_deref() {
-        if runtime_id == GEMINI_RUNTIME_ID {
-            env.insert(
-                "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
-                gemini_cli_auth_type(method).to_string(),
-            );
+    for key in secret_env_keys_for_runtime(runtime_id) {
+        let inherited_secret_should_win = env_secret_present(key)
+            && !setup_secret_env_overrides_inherited(runtime_id, setup, key);
+        if inherited_secret_should_win {
+            env.remove(*key);
         }
+    }
+    if runtime_id == GROK_RUNTIME_ID && grok_inherited_xai_api_key_marked_invalid(setup) {
+        env.insert("XAI_API_KEY".to_string(), String::new());
+    }
+    let auth_method = effective_auth_method_for_acp_process_spec(runtime_id, setup);
+    if let Some(method) = setup.auth_method.as_deref() {
         if runtime_id == CLAUDE_RUNTIME_ID && method == "gateway-bedrock" {
             env.insert("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string());
             env.entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
@@ -4505,7 +6756,54 @@ fn acp_process_spec(
         cwd,
         env,
         runtime_id: runtime_id.to_string(),
+        auth_method,
+        auth_handshake: acp_auth_handshake_for_runtime(runtime_id),
     })
+}
+
+fn setup_secret_env_overrides_inherited(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+    env_key: &str,
+) -> bool {
+    runtime_id == GROK_RUNTIME_ID
+        && env_key == "XAI_API_KEY"
+        && setup.auth_method.as_deref() == Some("xai-api-key")
+        && setup.auth_ready
+        && auth_method_has_local_config(setup, "xai-api-key")
+}
+
+fn effective_auth_method_for_acp_process_spec(
+    runtime_id: &str,
+    setup: &RuntimeSetupState,
+) -> Option<String> {
+    if runtime_id == GROK_RUNTIME_ID && grok_inherited_xai_api_key_marked_invalid(setup) {
+        return None;
+    }
+
+    let inherited_auth_method = inherited_auth_method_for_setup(runtime_id, setup)
+        .filter(|method| inherited_auth_method_applies_to_setup(setup, method));
+    if let Some(selected_method) = setup.auth_method.as_deref() {
+        if is_persistable_external_auth_method(runtime_id, selected_method) && !setup.auth_ready {
+            return inherited_auth_method.or_else(|| setup.auth_method.clone());
+        }
+    }
+    setup.auth_method.clone().or(inherited_auth_method)
+}
+
+fn acp_auth_handshake_for_runtime(runtime_id: &str) -> Option<AcpAuthHandshake> {
+    if runtime_id == GROK_RUNTIME_ID {
+        return Some(AcpAuthHandshake {
+            env_method_id: "xai.api_key",
+            external_method_id: "cached_token",
+            meta: Some(grok_acp_auth_meta()),
+        });
+    }
+    None
+}
+
+fn grok_acp_auth_meta() -> Meta {
+    Meta::from_iter([("headless".to_string(), json!(true))])
 }
 
 #[derive(Debug)]
@@ -4573,7 +6871,7 @@ fn resolve_base_acp_command(runtime_id: &str, setup: &RuntimeSetupState) -> Reso
         };
     }
 
-    if let Some(path) = resolve_macos_homebrew_runtime_fallback(runtime_id) {
+    if let Some(path) = resolve_known_runtime_fallback(runtime_id) {
         return ResolvedAcpCommand {
             display: Some(path.display().to_string()),
             program: Some(path),
@@ -4655,9 +6953,26 @@ fn runtime_binary_name(base: &str) -> String {
     }
 }
 
+fn resolve_known_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
+    resolve_grok_official_runtime_fallback(runtime_id)
+        .or_else(|| resolve_macos_homebrew_runtime_fallback(runtime_id))
+}
+
+fn resolve_grok_official_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
+    if runtime_id != GROK_RUNTIME_ID {
+        return None;
+    }
+    let home = home_dir()?;
+    let candidate = home
+        .join(".grok")
+        .join("bin")
+        .join(runtime_binary_name(default_executable_name(runtime_id)));
+    find_executable_candidate(candidate, &executable_extensions_for_path_lookup())
+}
+
 #[cfg(target_os = "macos")]
 fn resolve_macos_homebrew_runtime_fallback(runtime_id: &str) -> Option<PathBuf> {
-    if runtime_id != OPENCODE_RUNTIME_ID {
+    if !matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID) {
         return None;
     }
     ["/opt/homebrew/bin", "/usr/local/bin"]
@@ -4674,18 +6989,10 @@ fn resolve_macos_homebrew_runtime_fallback(_runtime_id: &str) -> Option<PathBuf>
 fn default_terminal_auth_method(runtime_id: &str) -> &'static str {
     match runtime_id {
         CLAUDE_RUNTIME_ID => default_claude_terminal_auth_method(),
-        GEMINI_RUNTIME_ID => "login_with_google",
+        GROK_RUNTIME_ID => "grok-login",
         KILO_RUNTIME_ID => "kilo-login",
         OPENCODE_RUNTIME_ID => "opencode-login",
         _ => "terminal-login",
-    }
-}
-
-fn gemini_cli_auth_type(method_id: &str) -> &str {
-    match method_id {
-        "login_with_google" => "oauth-personal",
-        "use_gemini" => "gemini-api-key",
-        method_id => method_id,
     }
 }
 
@@ -4704,7 +7011,7 @@ fn auth_terminal_launch_config(
         )
     })?;
     let mut args = resolved.args;
-    let mut env = setup.env.clone();
+    let env = setup.env.clone();
     let display_name = match (runtime_id, method_id) {
         (CLAUDE_RUNTIME_ID, "claude-ai-login") => {
             args.extend([
@@ -4728,12 +7035,9 @@ fn auth_terminal_launch_config(
             args.push("--cli".to_string());
             "Claude Login".to_string()
         }
-        (GEMINI_RUNTIME_ID, "login_with_google") => {
-            env.insert(
-                "GEMINI_DEFAULT_AUTH_TYPE".to_string(),
-                gemini_cli_auth_type(method_id).to_string(),
-            );
-            "Gemini Login".to_string()
+        (GROK_RUNTIME_ID, "grok-login") => {
+            args.push("login".to_string());
+            "Grok Login".to_string()
         }
         (KILO_RUNTIME_ID, "kilo-login") => {
             args.extend(["auth".to_string(), "login".to_string()]);
@@ -4748,7 +7052,7 @@ fn auth_terminal_launch_config(
                 "Unsupported terminal auth method for {}: {}",
                 runtime_name(runtime_id),
                 method_id
-            ))
+            ));
         }
     };
 
@@ -4947,9 +7251,8 @@ fn inherited_auth_method(
                     auth_invalidated_at_ms,
                 )
             }),
-        GEMINI_RUNTIME_ID => env_secret_present("GEMINI_API_KEY")
-            .then(|| "use_gemini".to_string())
-            .or_else(|| env_secret_present("GOOGLE_API_KEY").then(|| "use_gemini".to_string()))
+        GROK_RUNTIME_ID => env_secret_present("XAI_API_KEY")
+            .then(|| "xai-api-key".to_string())
             .or_else(|| {
                 inherited_persisted_auth_method(
                     runtime_id,
@@ -5029,10 +7332,11 @@ fn persisted_cli_auth_method_for_home_with_invalidated_at(
             };
             Some(method_id.to_string())
         }
-        GEMINI_RUNTIME_ID => non_empty_file_exists(&home.join(".gemini").join("oauth_creds.json"))
-            .then(|| "login_with_google".to_string()),
         KILO_RUNTIME_ID if non_empty_file_exists_any(kilo_auth_file_candidates(home)) => {
             Some("kilo-login".to_string())
+        }
+        GROK_RUNTIME_ID if active_grok_auth_file_exists(home, auth_invalidated_at_ms) => {
+            Some("grok-login".to_string())
         }
         OPENCODE_RUNTIME_ID if active_opencode_auth_file_exists(home, auth_invalidated_at_ms) => {
             Some("opencode-login".to_string())
@@ -5042,33 +7346,33 @@ fn persisted_cli_auth_method_for_home_with_invalidated_at(
 }
 
 fn kilo_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    candidates.push(
-        home.join(".local")
-            .join("share")
-            .join("kilo")
-            .join("auth.json"),
-    );
+    let user_data_auth_file = home
+        .join(".local")
+        .join("share")
+        .join("kilo")
+        .join("auth.json");
 
     #[cfg(target_os = "windows")]
     {
-        candidates.push(
+        vec![
+            user_data_auth_file,
             std::env::var_os("APPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("AppData").join("Roaming"))
                 .join("kilo")
                 .join("auth.json"),
-        );
-        candidates.push(
             std::env::var_os("LOCALAPPDATA")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("AppData").join("Local"))
                 .join("kilo")
                 .join("auth.json"),
-        );
+        ]
     }
 
-    candidates
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![user_data_auth_file]
+    }
 }
 
 fn opencode_env_auth_keys() -> &'static [&'static str] {
@@ -5086,6 +7390,14 @@ fn opencode_env_auth_present() -> bool {
     opencode_env_auth_keys()
         .iter()
         .any(|key| env_secret_present(key))
+}
+
+fn grok_auth_file_path(home: &Path) -> PathBuf {
+    home.join(".grok").join("auth.json")
+}
+
+fn active_grok_auth_file_exists(home: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
+    timestamped_non_empty_file_is_active(&grok_auth_file_path(home), auth_invalidated_at_ms)
 }
 
 fn opencode_auth_file_candidates(home: &Path) -> Vec<PathBuf> {
@@ -5124,6 +7436,22 @@ fn active_opencode_auth_file_exists(home: &Path, auth_invalidated_at_ms: Option<
         .any(|path| opencode_auth_file_is_active(&path, auth_invalidated_at_ms))
 }
 
+fn timestamped_non_empty_file_is_active(path: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
+        _ => return false,
+    };
+    if let Some(invalidated_at_ms) = auth_invalidated_at_ms {
+        let Some(modified_at_ms) = metadata.modified().ok().and_then(system_time_epoch_ms) else {
+            return false;
+        };
+        if modified_at_ms <= invalidated_at_ms {
+            return false;
+        }
+    }
+    true
+}
+
 fn opencode_auth_file_status(path: &Path) -> &'static str {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => metadata,
@@ -5144,17 +7472,8 @@ fn opencode_auth_file_status(path: &Path) -> &'static str {
 }
 
 fn opencode_auth_file_is_active(path: &Path, auth_invalidated_at_ms: Option<u64>) -> bool {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
-        _ => return false,
-    };
-    if let Some(invalidated_at_ms) = auth_invalidated_at_ms {
-        let Some(modified_at_ms) = metadata.modified().ok().and_then(system_time_epoch_ms) else {
-            return false;
-        };
-        if modified_at_ms <= invalidated_at_ms {
-            return false;
-        }
+    if !timestamped_non_empty_file_is_active(path, auth_invalidated_at_ms) {
+        return false;
     }
 
     match std::fs::read_to_string(path)
@@ -5192,26 +7511,20 @@ fn auth_method_has_local_config(setup: &RuntimeSetupState, method_id: &str) -> b
             .env
             .get("ANTHROPIC_API_KEY")
             .is_some_and(|value| !value.is_empty()),
-        "use_gemini" => {
-            setup
-                .env
-                .get("GEMINI_API_KEY")
-                .is_some_and(|value| !value.is_empty())
-                || setup
-                    .env
-                    .get("GOOGLE_API_KEY")
-                    .is_some_and(|value| !value.is_empty())
-        }
         "kilo-api-key" => setup
             .env
             .get("KILO_API_KEY")
             .is_some_and(|value| !value.is_empty()),
+        "xai-api-key" => setup
+            .env
+            .get("XAI_API_KEY")
+            .is_some_and(|value| !value.is_empty()),
         "gateway" => {
             setup.has_gateway_config
-                && !setup
+                && setup
                     .env
                     .get("ANTHROPIC_BEDROCK_BASE_URL")
-                    .is_some_and(|value| !value.is_empty())
+                    .is_none_or(|value| value.is_empty())
         }
         "gateway-bedrock" => setup
             .env
@@ -5233,8 +7546,12 @@ fn should_persist_auth_method(
 fn is_persistable_external_auth_method(runtime_id: &str, method_id: &str) -> bool {
     matches!(
         (runtime_id, method_id),
-        (OPENCODE_RUNTIME_ID, "opencode-login")
+        (GROK_RUNTIME_ID, "grok-login") | (OPENCODE_RUNTIME_ID, "opencode-login")
     )
+}
+
+fn is_invalidation_tracked_external_auth_runtime(runtime_id: &str) -> bool {
+    matches!(runtime_id, GROK_RUNTIME_ID | OPENCODE_RUNTIME_ID)
 }
 
 fn is_local_auth_method(method_id: &str) -> bool {
@@ -5243,8 +7560,8 @@ fn is_local_auth_method(method_id: &str) -> bool {
         "codex-api-key"
             | "openai-api-key"
             | "anthropic-api-key"
-            | "use_gemini"
             | "kilo-api-key"
+            | "xai-api-key"
             | "gateway"
             | "gateway-bedrock"
     )
@@ -5284,15 +7601,16 @@ fn local_auth_method_for_runtime(runtime_id: &str, setup: &RuntimeSetupState) ->
                     .is_some_and(|value| !value.is_empty())
                     .then(|| "console-login".to_string())
             }),
-        GEMINI_RUNTIME_ID => ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
-            .into_iter()
-            .any(|key| setup.env.get(key).is_some_and(|value| !value.is_empty()))
-            .then(|| "use_gemini".to_string()),
         KILO_RUNTIME_ID => setup
             .env
             .get("KILO_API_KEY")
             .is_some_and(|value| !value.is_empty())
             .then(|| "kilo-api-key".to_string()),
+        GROK_RUNTIME_ID => setup
+            .env
+            .get("XAI_API_KEY")
+            .is_some_and(|value| !value.is_empty())
+            .then(|| "xai-api-key".to_string()),
         _ => None,
     }
 }
@@ -5320,7 +7638,8 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     setup.auth_ready = false;
     setup.auth_method = None;
     setup.suppress_persisted_auth = true;
-    setup.auth_invalidated_at_ms = (runtime_id == OPENCODE_RUNTIME_ID).then(current_epoch_ms);
+    setup.auth_invalidated_at_ms =
+        is_invalidation_tracked_external_auth_runtime(runtime_id).then(current_epoch_ms);
     setup.has_gateway_config = false;
     setup.has_gateway_url = false;
     setup.message = None;
@@ -5334,15 +7653,88 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
         "ANTHROPIC_BEDROCK_BASE_URL",
         "CLAUDE_CODE_USE_BEDROCK",
         "AWS_BEARER_TOKEN_BEDROCK",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
+        "XAI_API_KEY",
         "OPENCODE_API_KEY",
         "KILO_API_KEY",
-        "GOOGLE_CLOUD_PROJECT",
-        "GOOGLE_CLOUD_LOCATION",
     ] {
         setup.env.remove(key);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrokAuthFailureSource {
+    Login,
+    StoredXaiApiKey,
+    InheritedXaiApiKey,
+}
+
+fn is_grok_auth_error(error: &str) -> bool {
+    let normalized = error.to_lowercase();
+    [
+        "run grok login",
+        "set xai_api_key",
+        "authentication required",
+        "auth_required",
+        "unauthorized",
+        "401",
+        "invalid api key",
+        "cached_token",
+    ]
+    .into_iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn grok_auth_failure_source(setup: &RuntimeSetupState) -> Option<GrokAuthFailureSource> {
+    match effective_auth_method_for_acp_process_spec(GROK_RUNTIME_ID, setup).as_deref() {
+        Some("grok-login") => Some(GrokAuthFailureSource::Login),
+        Some("xai-api-key") if env_secret_present("XAI_API_KEY") => {
+            Some(GrokAuthFailureSource::InheritedXaiApiKey)
+        }
+        Some("xai-api-key") => Some(GrokAuthFailureSource::StoredXaiApiKey),
+        _ if env_secret_present("XAI_API_KEY") => Some(GrokAuthFailureSource::InheritedXaiApiKey),
+        _ if setup
+            .env
+            .get("XAI_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty()) =>
+        {
+            Some(GrokAuthFailureSource::StoredXaiApiKey)
+        }
+        _ => None,
+    }
+}
+
+fn apply_grok_auth_failure(setup: &mut RuntimeSetupState, source: GrokAuthFailureSource) {
+    match source {
+        GrokAuthFailureSource::Login => {
+            setup.auth_method = Some("grok-login".to_string());
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = false;
+            setup.auth_invalidated_at_ms = Some(current_epoch_ms());
+            setup.message = Some(GROK_LOGIN_INVALIDATED_MESSAGE.to_string());
+        }
+        GrokAuthFailureSource::StoredXaiApiKey => {
+            setup.env.remove("XAI_API_KEY");
+            setup.auth_method = None;
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = true;
+            setup.auth_invalidated_at_ms = None;
+            setup.message = Some(GROK_STORED_XAI_API_KEY_INVALID_MESSAGE.to_string());
+        }
+        GrokAuthFailureSource::InheritedXaiApiKey => {
+            setup.auth_method = Some("xai-api-key".to_string());
+            setup.auth_ready = false;
+            setup.suppress_persisted_auth = false;
+            setup.auth_invalidated_at_ms = None;
+            setup.message = Some(GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE.to_string());
+        }
+    }
+    refresh_runtime_setup_flags(GROK_RUNTIME_ID, setup);
+}
+
+fn grok_inherited_xai_api_key_marked_invalid(setup: &RuntimeSetupState) -> bool {
+    setup.auth_method.as_deref() == Some("xai-api-key")
+        && !setup.auth_ready
+        && setup.message.as_deref() == Some(GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE)
 }
 
 fn env_secret_present(key: &str) -> bool {
@@ -5403,17 +7795,17 @@ fn auth_methods(runtime_id: &str) -> Vec<AiAuthMethod> {
             },
         ],
         CLAUDE_RUNTIME_ID => claude_auth_methods_for_environment(is_claude_remote_environment()),
-        GEMINI_RUNTIME_ID => vec![
+        GROK_RUNTIME_ID => vec![
             AiAuthMethod {
-                id: "login_with_google".to_string(),
-                name: "Log in with Google".to_string(),
-                description: "Open a Gemini sign-in terminal for Google account authentication."
+                id: "grok-login".to_string(),
+                name: "Grok login".to_string(),
+                description: "Open the Grok CLI sign-in flow in an integrated terminal."
                     .to_string(),
             },
             AiAuthMethod {
-                id: "use_gemini".to_string(),
-                name: "Gemini API key".to_string(),
-                description: "Use a Gemini Developer API key stored locally.".to_string(),
+                id: "xai-api-key".to_string(),
+                name: "xAI API key".to_string(),
+                description: "Use an xAI API key stored locally.".to_string(),
             },
         ],
         KILO_RUNTIME_ID => vec![
@@ -5443,7 +7835,7 @@ fn auth_method_ids(runtime_id: &str) -> Vec<&'static str> {
     match runtime_id {
         CODEX_RUNTIME_ID => vec!["chatgpt", "openai-api-key", "codex-api-key"],
         CLAUDE_RUNTIME_ID => claude_auth_method_ids_for_environment(is_claude_remote_environment()),
-        GEMINI_RUNTIME_ID => vec!["login_with_google", "use_gemini"],
+        GROK_RUNTIME_ID => vec!["grok-login", "xai-api-key"],
         KILO_RUNTIME_ID => vec!["kilo-login", "kilo-api-key"],
         OPENCODE_RUNTIME_ID => vec!["opencode-login"],
         _ => vec![],
@@ -5600,10 +7992,8 @@ fn update_auth_state(
         .anthropic_custom_headers
         .clone()
         .or_else(|| input.gateway_headers.clone());
-    let gateway_config_touched = runtime_id == CLAUDE_RUNTIME_ID
-        && (gateway_url_touched
-            || gateway_headers_patch.is_some()
-            || (input.anthropic_auth_token.is_some() && gateway_url_touched));
+    let gateway_config_touched =
+        runtime_id == CLAUDE_RUNTIME_ID && (gateway_url_touched || gateway_headers_patch.is_some());
     let gateway_base_url = input
         .gateway_base_url
         .as_ref()
@@ -5679,38 +8069,14 @@ fn update_auth_state(
             touched_auth = true;
         }
     }
-    if runtime_id == GEMINI_RUNTIME_ID {
-        if let Some(patch) = input.gemini_api_key.clone() {
-            touched_auth |= apply_secret_patch(setup, "GEMINI_API_KEY", patch, "use_gemini");
-        }
-        if let Some(patch) = input.google_api_key.clone() {
-            touched_auth |= apply_secret_patch(setup, "GOOGLE_API_KEY", patch, "use_gemini");
+    if runtime_id == GROK_RUNTIME_ID {
+        if let Some(patch) = input.xai_api_key.clone() {
+            touched_auth |= apply_secret_patch(setup, "XAI_API_KEY", patch, "xai-api-key");
         }
     }
     if runtime_id == KILO_RUNTIME_ID {
         if let Some(patch) = input.kilo_api_key.clone() {
             touched_auth |= apply_secret_patch(setup, "KILO_API_KEY", patch, "kilo-api-key");
-        }
-    }
-
-    if input.google_cloud_project.is_some() {
-        if let Some(value) = input
-            .google_cloud_project
-            .and_then(normalize_optional_string)
-        {
-            setup.env.insert("GOOGLE_CLOUD_PROJECT".to_string(), value);
-        } else {
-            setup.env.remove("GOOGLE_CLOUD_PROJECT");
-        }
-    }
-    if input.google_cloud_location.is_some() {
-        if let Some(value) = input
-            .google_cloud_location
-            .and_then(normalize_optional_string)
-        {
-            setup.env.insert("GOOGLE_CLOUD_LOCATION".to_string(), value);
-        } else {
-            setup.env.remove("GOOGLE_CLOUD_LOCATION");
         }
     }
 
@@ -5769,7 +8135,11 @@ fn build_prompt_with_attachments(
     attachments: &[AiAttachmentInput],
     vault_root: Option<&Path>,
     additional_roots: &[PathBuf],
+    runtime_id: Option<&str>,
 ) -> Result<String, String> {
+    let image_limits = native_image_attachment_limits_for_runtime(runtime_id);
+    validate_image_attachment_policy(attachments, &image_limits)?;
+
     let mut context_parts = Vec::new();
     for attachment in attachments {
         if let Some(content) = attachment.content.as_deref() {
@@ -5841,6 +8211,423 @@ fn build_prompt_with_attachments(
         return Ok(content.to_string());
     }
     Ok(format!("{}\n\n{}", context_parts.join("\n\n"), content))
+}
+
+fn build_prompt_blocks_with_attachments(
+    content: &str,
+    attachments: &[AiAttachmentInput],
+    vault_root: Option<&Path>,
+    additional_roots: &[PathBuf],
+    capabilities: AcpPromptCapabilities,
+    runtime_id: Option<&str>,
+) -> Result<Vec<ContentBlock>, String> {
+    if !capabilities.embedded_context && !capabilities.image {
+        return build_prompt_with_attachments(
+            content,
+            attachments,
+            vault_root,
+            additional_roots,
+            runtime_id,
+        )
+        .map(|content| vec![ContentBlock::from(content)]);
+    }
+
+    let image_limits = native_image_attachment_limits_for_runtime(runtime_id);
+    validate_image_attachment_policy(attachments, &image_limits)?;
+
+    let mut blocks = Vec::new();
+    let mut text_context_parts = Vec::new();
+
+    for attachment in attachments {
+        if let Some(content) = attachment.content.as_deref() {
+            if capabilities.embedded_context {
+                blocks.push(embedded_text_resource_block(
+                    content,
+                    attachment_resource_uri(attachment, "selection"),
+                    text_attachment_mime(attachment),
+                ));
+            } else {
+                let tag = if attachment.attachment_type.as_deref() == Some("selection") {
+                    "attached_selection"
+                } else {
+                    "attached_note"
+                };
+                text_context_parts.push(format!(
+                    "<{tag} name=\"{}\">\n{}\n</{tag}>",
+                    attachment.label, content
+                ));
+            }
+            continue;
+        }
+
+        match attachment.attachment_type.as_deref() {
+            Some("folder") => {
+                if let Some(folder_rel) = attachment.note_id.as_deref() {
+                    text_context_parts.push(format!(
+                        "<attached_folder name=\"{}\" path=\"{}\" />",
+                        attachment.label.trim_start_matches("Folder "),
+                        folder_rel
+                    ));
+                }
+            }
+            Some("audio") => {
+                if let Some(transcription) = attachment.transcription.as_deref() {
+                    if capabilities.embedded_context {
+                        blocks.push(embedded_text_resource_block(
+                            transcription,
+                            attachment_resource_uri(attachment, "audio"),
+                            Some("text/plain".to_string()),
+                        ));
+                    } else {
+                        let source = attachment.file_path.as_deref().unwrap_or("audio");
+                        text_context_parts.push(format!(
+                            "<attached_audio name=\"{}\" source=\"{}\">\n[Transcription]\n{}\n</attached_audio>",
+                            attachment.label, source, transcription
+                        ));
+                    }
+                }
+            }
+            Some("file") => {
+                if let Some(file_path) = attachment
+                    .file_path
+                    .as_deref()
+                    .or(attachment.path.as_deref())
+                {
+                    append_file_attachment_blocks(
+                        &mut blocks,
+                        &mut text_context_parts,
+                        attachment,
+                        file_path,
+                        vault_root,
+                        additional_roots,
+                        capabilities,
+                        &image_limits,
+                    )?;
+                }
+            }
+            _ => {
+                if let Some(path) = attachment.path.as_deref() {
+                    let path = allowed_attachment_path(path, vault_root, additional_roots)?;
+                    if capabilities.embedded_context {
+                        match std::fs::read_to_string(&path) {
+                            Ok(file_content) => blocks.push(embedded_text_resource_block(
+                                &file_content,
+                                path_resource_uri(&path, attachment),
+                                text_attachment_mime(attachment),
+                            )),
+                            Err(error) => text_context_parts.push(format!(
+                                "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                                attachment.label, error
+                            )),
+                        }
+                    } else {
+                        match std::fs::read_to_string(&path) {
+                            Ok(file_content) => text_context_parts.push(format!(
+                                "<attached_note name=\"{}\">\n{}\n</attached_note>",
+                                attachment.label, file_content
+                            )),
+                            Err(error) => text_context_parts.push(format!(
+                                "<attached_note name=\"{}\">\n[Error reading note: {}]\n</attached_note>",
+                                attachment.label, error
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let prompt_text = if capabilities.embedded_context {
+        prompt_without_embedded_attachment_references(content, attachments)
+    } else {
+        content.to_string()
+    };
+    let prompt_text = if text_context_parts.is_empty() {
+        prompt_text
+    } else if prompt_text.is_empty() {
+        text_context_parts.join("\n\n")
+    } else {
+        format!("{}\n\n{}", text_context_parts.join("\n\n"), prompt_text)
+    };
+    if !prompt_text.trim().is_empty() {
+        blocks.push(ContentBlock::from(prompt_text));
+    }
+    if blocks.is_empty() {
+        blocks.push(ContentBlock::from(content.to_string()));
+    }
+    Ok(blocks)
+}
+
+fn embedded_text_resource_block(
+    text: &str,
+    uri: String,
+    mime_type: Option<String>,
+) -> ContentBlock {
+    ContentBlock::Resource(EmbeddedResource::new(
+        EmbeddedResourceResource::TextResourceContents(
+            TextResourceContents::new(text.to_string(), uri).mime_type(mime_type),
+        ),
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeImageAttachmentLimits {
+    runtime_label: &'static str,
+    max_bytes: u64,
+    max_images_per_message: usize,
+    allowed_mime_types: &'static [&'static str],
+}
+
+const DEFAULT_NATIVE_IMAGE_MIME_TYPES: &[&str] =
+    &["image/png", "image/jpeg", "image/gif", "image/webp"];
+const CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp"];
+const GROK_NATIVE_IMAGE_MIME_TYPES: &[&str] = &["image/png", "image/jpeg"];
+
+fn native_image_attachment_limits_for_runtime(
+    runtime_id: Option<&str>,
+) -> NativeImageAttachmentLimits {
+    match runtime_id {
+        Some(CODEX_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Codex",
+            max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(CLAUDE_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Claude",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(GROK_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Grok",
+            max_bytes: GROK_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: GROK_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(KILO_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "Kilo",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
+        Some(OPENCODE_RUNTIME_ID) => NativeImageAttachmentLimits {
+            runtime_label: "OpenCode",
+            max_bytes: CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: CONSERVATIVE_NATIVE_IMAGE_MIME_TYPES,
+        },
+        _ => NativeImageAttachmentLimits {
+            runtime_label: "this provider",
+            max_bytes: MAX_NATIVE_IMAGE_ATTACHMENT_BYTES,
+            max_images_per_message: MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE,
+            allowed_mime_types: DEFAULT_NATIVE_IMAGE_MIME_TYPES,
+        },
+    }
+}
+
+fn is_supported_native_image_mime(mime: &str, limits: &NativeImageAttachmentLimits) -> bool {
+    limits.allowed_mime_types.contains(&mime)
+}
+
+fn validate_image_attachment_policy(
+    attachments: &[AiAttachmentInput],
+    limits: &NativeImageAttachmentLimits,
+) -> Result<(), String> {
+    let mut image_count = 0;
+
+    for attachment in attachments {
+        if attachment.attachment_type.as_deref() != Some("file") {
+            continue;
+        }
+
+        let Some(mime) = attachment.mime_type.as_deref() else {
+            continue;
+        };
+        if !mime.starts_with("image/") {
+            continue;
+        }
+
+        image_count += 1;
+        if !is_supported_native_image_mime(mime, limits) {
+            return Err(format!(
+                "Unsupported image attachment type for {}: {}.",
+                limits.runtime_label, mime
+            ));
+        }
+    }
+
+    if image_count > limits.max_images_per_message {
+        return Err(format!(
+            "Too many image attachments for {}: {} exceeds the {} image limit.",
+            limits.runtime_label, image_count, limits.max_images_per_message
+        ));
+    }
+
+    Ok(())
+}
+
+fn append_file_attachment_blocks(
+    blocks: &mut Vec<ContentBlock>,
+    text_context_parts: &mut Vec<String>,
+    attachment: &AiAttachmentInput,
+    file_path: &str,
+    vault_root: Option<&Path>,
+    additional_roots: &[PathBuf],
+    capabilities: AcpPromptCapabilities,
+    image_limits: &NativeImageAttachmentLimits,
+) -> Result<(), String> {
+    let path = allowed_attachment_path(file_path, vault_root, additional_roots)?;
+    let mime = attachment
+        .mime_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    let rel_path = display_attachment_path(&path, vault_root);
+
+    if mime == "application/pdf" {
+        text_context_parts.push(format!(
+            "<attached_pdf name=\"{}\" path=\"{}\" />",
+            attachment.label, rel_path
+        ));
+    } else if mime.starts_with("text/") || mime == "application/json" {
+        if capabilities.embedded_context {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => blocks.push(embedded_text_resource_block(
+                    &text,
+                    path_resource_uri(&path, attachment),
+                    Some(mime.to_string()),
+                )),
+                Err(error) => text_context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                    attachment.label, mime, error
+                )),
+            }
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => text_context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n{}\n</attached_file>",
+                    attachment.label, mime, text
+                )),
+                Err(error) => text_context_parts.push(format!(
+                    "<attached_file name=\"{}\" type=\"{}\">\n[Error reading file: {}]\n</attached_file>",
+                    attachment.label, mime, error
+                )),
+            }
+        }
+    } else if mime.starts_with("image/") {
+        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        if capabilities.image {
+            if size > image_limits.max_bytes {
+                return Err(format!(
+                    "Image attachment is too large for {}: {} exceeds the {} byte limit.",
+                    image_limits.runtime_label, rel_path, image_limits.max_bytes
+                ));
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) => blocks.push(ContentBlock::Image(
+                    ImageContent::new(BASE64_STANDARD.encode(bytes), mime.to_string())
+                        .uri(path_resource_uri(&path, attachment)),
+                )),
+                Err(error) => text_context_parts.push(format!(
+                    "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\">\n[Error reading image: {}]\n</attached_image>",
+                    attachment.label, mime, rel_path, size, error
+                )),
+            }
+        } else {
+            text_context_parts.push(format!(
+                "<attached_image name=\"{}\" type=\"{}\" path=\"{}\" size=\"{}\" />",
+                attachment.label, mime, rel_path, size
+            ));
+        }
+    } else {
+        let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        text_context_parts.push(format!(
+            "<attached_file name=\"{}\" type=\"{}\">\n[Binary file: {} bytes]\n</attached_file>",
+            attachment.label, mime, size
+        ));
+    }
+
+    Ok(())
+}
+
+fn prompt_without_embedded_attachment_references(
+    content: &str,
+    attachments: &[AiAttachmentInput],
+) -> String {
+    let mut prompt = content.to_string();
+    for attachment in attachments {
+        if attachment.attachment_type.as_deref() != Some("selection") {
+            continue;
+        }
+        let (Some(path), Some(start_line), Some(end_line)) = (
+            attachment.path.as_deref(),
+            attachment.start_line,
+            attachment.end_line,
+        ) else {
+            continue;
+        };
+        prompt = prompt.replace(&format!("{path}:{start_line}-{end_line}"), "");
+    }
+    prompt.trim().to_string()
+}
+
+fn text_attachment_mime(attachment: &AiAttachmentInput) -> Option<String> {
+    attachment.mime_type.clone().or_else(|| {
+        attachment
+            .path
+            .as_deref()
+            .or(attachment.file_path.as_deref())
+            .and_then(|path| {
+                if path.ends_with(".md") || path.ends_with(".markdown") {
+                    Some("text/markdown".to_string())
+                } else if path.ends_with(".json") {
+                    Some("application/json".to_string())
+                } else if path.ends_with(".txt") {
+                    Some("text/plain".to_string())
+                } else {
+                    None
+                }
+            })
+    })
+}
+
+fn attachment_resource_uri(attachment: &AiAttachmentInput, fallback_kind: &str) -> String {
+    let source = attachment
+        .file_path
+        .as_deref()
+        .or(attachment.path.as_deref())
+        .or(attachment.note_id.as_deref())
+        .unwrap_or(&attachment.label);
+    let mut uri = if source.contains("://") {
+        source.to_string()
+    } else if Path::new(source).is_absolute() {
+        format!("file://{source}")
+    } else {
+        format!(
+            "neverwrite://{fallback_kind}/{}",
+            source.replace(' ', "%20")
+        )
+    };
+    if let (Some(start_line), Some(end_line)) = (attachment.start_line, attachment.end_line) {
+        if start_line == end_line {
+            uri.push_str(&format!("#L{start_line}"));
+        } else {
+            uri.push_str(&format!("#L{start_line}-L{end_line}"));
+        }
+    }
+    uri
+}
+
+fn path_resource_uri(path: &Path, attachment: &AiAttachmentInput) -> String {
+    let mut uri = format!("file://{}", path.display());
+    if let (Some(start_line), Some(end_line)) = (attachment.start_line, attachment.end_line) {
+        if start_line == end_line {
+            uri.push_str(&format!("#L{start_line}"));
+        } else {
+            uri.push_str(&format!("#L{start_line}-L{end_line}"));
+        }
+    }
+    uri
 }
 
 fn append_file_attachment(
@@ -6229,10 +9016,6 @@ fn spawn_auth_terminal_output_reader(
 
 fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> bool {
     match runtime_id {
-        GEMINI_RUNTIME_ID => {
-            buffer.contains("Authentication succeeded")
-                || buffer.contains("successfully signed in with Google")
-        }
         OPENCODE_RUNTIME_ID => {
             let lower = buffer.to_ascii_lowercase();
             lower.contains("authentication successful")
@@ -6240,40 +9023,29 @@ fn auth_terminal_output_indicates_success(runtime_id: &str, buffer: &str) -> boo
                 || lower.contains("successfully authenticated")
                 || lower.contains("successfully logged in")
         }
+        GROK_RUNTIME_ID => {
+            let lower = buffer.to_ascii_lowercase();
+            lower.contains("authentication successful")
+                || lower.contains("login successful")
+                || lower.contains("logged in successfully")
+                || lower.contains("successfully authenticated")
+                || lower.contains("successfully logged in")
+                || lower.contains("successfully signed in")
+        }
         _ => false,
     }
 }
 
-fn acp_session_wire_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
-    acp_session_wire_path(runtime_id, cwd)
-}
-
-fn acp_session_wire_path(runtime_id: &str, path: &Path) -> PathBuf {
-    if runtime_id == GEMINI_RUNTIME_ID {
-        return PathBuf::from(normalize_path_for_node_acp(path));
-    }
-    path.to_path_buf()
-}
-
-fn acp_process_launch_cwd(runtime_id: &str, cwd: &Path) -> PathBuf {
-    if runtime_id == GEMINI_RUNTIME_ID {
-        return PathBuf::from(normalize_path_for_node_acp(cwd));
-    }
+fn acp_session_wire_cwd(_runtime_id: &str, cwd: &Path) -> PathBuf {
     cwd.to_path_buf()
 }
 
-fn normalize_path_for_node_acp(path: &Path) -> String {
-    strip_windows_verbatim_prefix(&path.to_string_lossy().replace('\\', "/"))
+fn acp_session_wire_path(_runtime_id: &str, path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
-fn strip_windows_verbatim_prefix(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("//?/UNC/") {
-        return format!("//{rest}");
-    }
-    if let Some(rest) = path.strip_prefix("//?/") {
-        return rest.to_string();
-    }
-    path.to_string()
+fn acp_process_launch_cwd(_runtime_id: &str, cwd: &Path) -> PathBuf {
+    cwd.to_path_buf()
 }
 
 fn spawn_auth_terminal_exit_monitor(
@@ -6452,6 +9224,13 @@ fn touch_session(state: &mut NativeAiInner, session_id: &str) {
     state.session_order.insert(0, session_id.to_string());
 }
 
+fn epoch_millis_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 fn emit_event(event_tx: &Sender<RpcOutput>, event_name: &str, payload: Value) {
     let _ = event_tx.send(RpcOutput::Event {
         event_name: event_name.to_string(),
@@ -6470,14 +9249,20 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::{
-        ConfigOptionUpdate, Meta, ModelInfo, PermissionOptionKind, PlanEntry, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
-        SessionModelState, SessionNotification, SessionUpdate, ToolCallContent, ToolCallId,
-        ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema,
+        CompleteElicitationNotification, ConfigOptionUpdate, ElicitationFormMode,
+        ElicitationSchema, ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta,
+        PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
+        StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
+        ToolKind, UnstructuredCommandInput,
     };
     use std::fs;
     use std::sync::mpsc;
+    use std::sync::Mutex as StdMutex;
     use std::time::Duration as StdDuration;
+
+    static ENV_TEST_LOCK: StdMutex<()> = StdMutex::new(());
 
     fn test_client(event_tx: mpsc::Sender<RpcOutput>) -> NativeAcpClient {
         test_client_with_state(event_tx, Arc::new(Mutex::new(NativeAiInner::default())))
@@ -6493,6 +9278,10 @@ mod tests {
             message_ids: Arc::new(Mutex::new(HashMap::new())),
             thinking_ids: Arc::new(Mutex::new(HashMap::new())),
             permission_waiters: Arc::new(Mutex::new(HashMap::new())),
+            user_input_waiters: Arc::new(Mutex::new(HashMap::new())),
+            url_elicitation_waiters: Arc::new(Mutex::new(HashMap::new())),
+            completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
+            suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
             tool_diffs: ToolDiffState::default(),
             agent_writes: AgentWriteTracker::default(),
             terminal_output: Arc::new(Mutex::new(HashMap::new())),
@@ -6628,6 +9417,23 @@ mod tests {
     }
 
     #[test]
+    fn client_capabilities_advertise_form_and_url_elicitation() {
+        let capabilities = neverwrite_acp_client_capabilities(CLAUDE_RUNTIME_ID);
+        let elicitation = capabilities
+            .elicitation
+            .expect("elicitation capabilities should be advertised");
+
+        assert!(
+            elicitation.form.is_some(),
+            "form elicitation should be advertised"
+        );
+        assert!(
+            elicitation.url.is_some(),
+            "url elicitation should be advertised with the completion UX"
+        );
+    }
+
+    #[test]
     fn new_session_request_serializes_additional_directories() {
         let request = new_session_request(
             CLAUDE_RUNTIME_ID,
@@ -6649,21 +9455,19 @@ mod tests {
     }
 
     #[test]
-    fn load_session_request_serializes_additional_directories() {
-        let request = LoadSessionRequest::new("claude-session-1", "/vault").additional_directories(
-            additional_wire_paths(
+    fn resume_session_request_serializes_additional_directories() {
+        let request = ResumeSessionRequest::new("claude-session-1", "/vault")
+            .additional_directories(additional_wire_paths(
                 CLAUDE_RUNTIME_ID,
                 &[
                     PathBuf::from("/external/project"),
                     PathBuf::from("/external/notes"),
                 ],
-            ),
-        );
+            ));
 
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             json!({
-                "mcpServers": [],
                 "cwd": "/vault",
                 "additionalDirectories": ["/external/project", "/external/notes"],
                 "sessionId": "claude-session-1",
@@ -6928,6 +9732,15 @@ mod tests {
         )
     }
 
+    fn subagent_child_user_message_notification_fixture() -> SessionNotification {
+        SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Parent task for child agent",
+            ))),
+        )
+    }
+
     fn turn_lifecycle_notification_fixture(
         runtime_session_id: &str,
         turn_event_type: &str,
@@ -7004,9 +9817,295 @@ mod tests {
     fn native_resume_is_currently_limited_to_codex() {
         assert!(runtime_supports_native_resume(CODEX_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(CLAUDE_RUNTIME_ID));
-        assert!(!runtime_supports_native_resume(GEMINI_RUNTIME_ID));
+        assert!(!runtime_supports_native_resume(GROK_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(KILO_RUNTIME_ID));
         assert!(!runtime_supports_native_resume(OPENCODE_RUNTIME_ID));
+    }
+
+    #[test]
+    fn gemini_runtime_is_not_registered() {
+        assert!(validate_runtime_id("gemini-acp").is_err());
+        assert!(runtime_definition("gemini-acp").is_none());
+        assert!(runtime_descriptors()
+            .iter()
+            .all(|descriptor| descriptor.runtime.id != "gemini-acp"));
+    }
+
+    #[test]
+    fn removed_gemini_runtime_secrets_are_cleaned_up_best_effort() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        secrets
+            .set_secret(
+                LEGACY_GEMINI_RUNTIME_ID,
+                "GEMINI_API_KEY",
+                "legacy-gemini-key",
+            )
+            .unwrap();
+        secrets
+            .set_secret(
+                LEGACY_GEMINI_RUNTIME_ID,
+                "GOOGLE_API_KEY",
+                "legacy-google-key",
+            )
+            .unwrap();
+
+        let _native_ai = test_native_ai_with_secret_store(store_path, secrets.clone());
+
+        assert_eq!(
+            secrets.stored_secret(LEGACY_GEMINI_RUNTIME_ID, "GEMINI_API_KEY"),
+            None
+        );
+        assert_eq!(
+            secrets.stored_secret(LEGACY_GEMINI_RUNTIME_ID, "GOOGLE_API_KEY"),
+            None
+        );
+    }
+
+    #[test]
+    fn removed_gemini_runtime_secret_cleanup_failure_does_not_block_setup_load() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        secrets.fail_delete(true);
+
+        let native_ai = test_native_ai_with_secret_store(store_path, secrets);
+
+        assert!(native_ai.inner.lock().unwrap().setup_load_error.is_none());
+    }
+
+    #[test]
+    fn grok_runtime_is_registered_with_expected_launch_contract() {
+        let definition = runtime_definition(GROK_RUNTIME_ID).unwrap();
+        assert_eq!(definition.name, "Grok");
+        assert_eq!(definition.default_executable, "grok");
+        assert_eq!(definition.bin_env_var, "NEVERWRITE_GROK_ACP_BIN");
+        assert_eq!(definition.acp_args, ["--no-auto-update", "agent", "stdio"]);
+
+        let descriptors = runtime_descriptors();
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.runtime.id == GROK_RUNTIME_ID)
+            .unwrap();
+        assert_eq!(descriptor.runtime.name, "Grok");
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .all(|capability| capability != "resume_session"));
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .any(|capability| capability == "xai-api-key"));
+        assert!(descriptor
+            .runtime
+            .capabilities
+            .iter()
+            .any(|capability| capability == "grok-login"));
+        assert!(diagnostic_executable_names().contains(&"grok"));
+    }
+
+    #[test]
+    fn grok_setup_status_finds_official_user_install_path() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous_path = std::env::var_os("PATH");
+        let previous_home = std::env::var_os("HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        let previous_override = std::env::var_os("NEVERWRITE_GROK_ACP_BIN");
+        let temp = tempfile::tempdir().unwrap();
+        let grok_bin = temp
+            .path()
+            .join(".grok")
+            .join("bin")
+            .join(runtime_binary_name("grok"));
+        fs::create_dir_all(grok_bin.parent().unwrap()).unwrap();
+        fs::write(&grok_bin, "").unwrap();
+
+        std::env::set_var("PATH", "");
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var("USERPROFILE", temp.path());
+        std::env::remove_var("NEVERWRITE_GROK_ACP_BIN");
+
+        let status = setup_status_for(GROK_RUNTIME_ID, RuntimeSetupState::default());
+        let spec = acp_process_spec(
+            GROK_RUNTIME_ID,
+            &RuntimeSetupState::default(),
+            temp.path().into(),
+        );
+
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match previous_override {
+            Some(value) => std::env::set_var("NEVERWRITE_GROK_ACP_BIN", value),
+            None => std::env::remove_var("NEVERWRITE_GROK_ACP_BIN"),
+        }
+
+        let status = status.unwrap();
+        let spec = spec.unwrap();
+        assert!(status.binary_ready);
+        assert_eq!(status.binary_source, AiRuntimeBinarySource::Env);
+        let grok_bin_display = grok_bin.to_string_lossy().into_owned();
+        assert_eq!(
+            status.binary_path.as_deref(),
+            Some(grok_bin_display.as_str())
+        );
+        assert_eq!(spec.program, grok_bin);
+        assert_eq!(
+            spec.args,
+            GROK_ACP_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn grok_setup_status_reports_missing_binary_without_auth_ready() {
+        let status = setup_status_for(
+            GROK_RUNTIME_ID,
+            RuntimeSetupState {
+                custom_binary_path: Some("/neverwrite/missing/grok".to_string()),
+                ..RuntimeSetupState::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(status.runtime_id, GROK_RUNTIME_ID);
+        assert!(!status.binary_ready);
+        assert_eq!(status.binary_source, AiRuntimeBinarySource::Missing);
+        assert!(!status.auth_ready);
+        assert!(status.onboarding_required);
+    }
+
+    #[test]
+    fn setup_status_accepts_grok_xai_api_key() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let status = setup_status_for(
+            GROK_RUNTIME_ID,
+            RuntimeSetupState {
+                custom_binary_path: Some(current_exe.display().to_string()),
+                auth_method: Some("xai-api-key".to_string()),
+                auth_ready: true,
+                env,
+                ..RuntimeSetupState::default()
+            },
+        )
+        .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(status.runtime_id, GROK_RUNTIME_ID);
+        assert!(status.binary_ready);
+        assert!(status.auth_ready);
+        assert!(!status.onboarding_required);
+        assert_eq!(status.auth_method.as_deref(), Some("xai-api-key"));
+    }
+
+    #[test]
+    fn grok_xai_key_update_preserves_custom_binary_path() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path,
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let current_exe = std::env::current_exe().unwrap();
+        let current_exe_display = current_exe.display().to_string();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-first-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": null,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-second-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let setup = native_ai.inner.lock().unwrap();
+        let grok_setup = setup
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should remain configured");
+        assert_eq!(
+            grok_setup.custom_binary_path.as_deref(),
+            Some(current_exe_display.as_str())
+        );
+        assert_eq!(grok_setup.auth_method.as_deref(), Some("xai-api-key"));
+        assert!(grok_setup.auth_ready);
+    }
+
+    #[test]
+    fn inherited_xai_api_key_marks_grok_ready() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let status = setup_status_for(
+            GROK_RUNTIME_ID,
+            RuntimeSetupState {
+                custom_binary_path: Some(current_exe.display().to_string()),
+                ..RuntimeSetupState::default()
+            },
+        )
+        .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert!(status.binary_ready);
+        assert!(status.auth_ready);
+        assert!(!status.onboarding_required);
+        assert_eq!(status.auth_method.as_deref(), Some("xai-api-key"));
     }
 
     #[test]
@@ -7231,6 +10330,10 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
 
         let event = event_rx
             .recv_timeout(StdDuration::from_millis(250))
@@ -7247,10 +10350,240 @@ mod tests {
             payload.get("session_id").and_then(Value::as_str),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
 
-        let message_ids = client.message_ids.lock().unwrap();
-        assert!(message_ids.contains_key(CHILD_RUNTIME_SESSION_ID));
-        assert!(!message_ids.contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+    }
+
+    #[test]
+    fn child_user_message_chunks_emit_user_role_without_touching_assistant_state() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(
+            client.session_notification(subagent_child_user_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+        let user_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("user message id")
+            .to_string();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+        assert_eq!(
+            payload.get("delta").and_then(Value::as_str),
+            Some("Parent task for child agent")
+        );
+
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::User));
+
+        run_client_future(
+            client.session_notification(subagent_child_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
+        let assistant_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("assistant message id")
+            .to_string();
+        assert_ne!(assistant_message_id, user_message_id);
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child assistant message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(assistant_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::Assistant.as_str())
+        );
+
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+        assert!(!client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn child_user_message_closes_before_child_thinking_starts() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        let client = test_client_with_state(event_tx, session_state);
+
+        run_client_future(
+            client.session_notification(subagent_child_user_message_notification_fixture()),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_STARTED_EVENT);
+        let user_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("user message id")
+            .to_string();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message delta event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_DELTA_EVENT);
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            CHILD_RUNTIME_SESSION_ID,
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new(ContentBlock::from(
+                "Thinking about the delegated task",
+            ))),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child user message completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some(CHILD_RUNTIME_SESSION_ID)
+        );
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(user_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("role").and_then(Value::as_str),
+            Some(MessageRole::User.as_str())
+        );
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("child thinking started event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_THINKING_STARTED_EVENT);
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
     }
 
     #[test]
@@ -7264,6 +10597,15 @@ mod tests {
             CHILD_RUNTIME_SESSION_ID,
             CHILD_RUNTIME_SESSION_ID,
         );
+        {
+            let mut state = session_state.lock().unwrap();
+            state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist")
+                .session
+                .closed_at = Some("123".to_string());
+        }
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
 
         run_client_future(
@@ -7293,6 +10635,7 @@ mod tests {
             payload.get("status").and_then(Value::as_str),
             Some("streaming")
         );
+        assert!(payload.get("closed_at").is_none());
     }
 
     #[test]
@@ -7316,6 +10659,7 @@ mod tests {
                 .status = AiSessionStatus::Streaming;
         }
         let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+        client.begin_user_message(CHILD_RUNTIME_SESSION_ID);
         client.begin_message(CHILD_RUNTIME_SESSION_ID);
         while event_rx.try_recv().is_ok() {}
 
@@ -7328,9 +10672,10 @@ mod tests {
         )
         .unwrap();
 
-        let mut saw_message_completed = false;
+        let mut saw_user_message_completed = false;
+        let mut saw_assistant_message_completed = false;
         let mut saw_idle_update = false;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let RpcOutput::Event {
                 event_name,
                 payload,
@@ -7344,7 +10689,14 @@ mod tests {
                 && payload.get("session_id").and_then(Value::as_str)
                     == Some(CHILD_RUNTIME_SESSION_ID)
             {
-                saw_message_completed = true;
+                if payload.get("role").and_then(Value::as_str) == Some(MessageRole::User.as_str()) {
+                    saw_user_message_completed = true;
+                }
+                if payload.get("role").and_then(Value::as_str)
+                    == Some(MessageRole::Assistant.as_str())
+                {
+                    saw_assistant_message_completed = true;
+                }
             }
             if event_name == AI_SESSION_UPDATED_EVENT
                 && payload.get("session_id").and_then(Value::as_str)
@@ -7355,13 +10707,11 @@ mod tests {
             }
         }
 
-        assert!(saw_message_completed);
+        assert!(saw_user_message_completed);
+        assert!(saw_assistant_message_completed);
         assert!(saw_idle_update);
-        assert!(!client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
     }
 
     #[test]
@@ -7398,11 +10748,7 @@ mod tests {
         .unwrap();
 
         assert!(event_rx.try_recv().is_err());
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -7443,11 +10789,7 @@ mod tests {
         .unwrap();
 
         assert!(event_rx.try_recv().is_err());
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(PARENT_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(PARENT_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -7461,7 +10803,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_close_breadcrumb_marks_child_idle() {
+    fn subagent_close_breadcrumb_marks_child_closed() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
         insert_test_managed_session(&session_state, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
@@ -7478,11 +10820,7 @@ mod tests {
         )
         .unwrap();
         while event_rx.try_recv().is_ok() {}
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
 
         let close_meta = Meta::from_iter([
             (
@@ -7512,7 +10850,7 @@ mod tests {
         .unwrap();
 
         let mut saw_message_completed = false;
-        let mut saw_idle_update = false;
+        let mut saw_closed_update = false;
         for _ in 0..3 {
             let RpcOutput::Event {
                 event_name,
@@ -7531,18 +10869,47 @@ mod tests {
                 && payload.get("session_id").and_then(Value::as_str)
                     == Some(CHILD_RUNTIME_SESSION_ID)
                 && payload.get("status").and_then(Value::as_str) == Some("idle")
+                && payload.get("closed_at").and_then(Value::as_str).is_some()
             {
-                saw_idle_update = true;
+                saw_closed_update = true;
             }
         }
 
         assert!(saw_message_completed);
-        assert!(saw_idle_update);
-        assert!(!client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(saw_closed_update);
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::User));
+        assert!(!client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
+    }
+
+    #[test]
+    fn send_message_rejects_subagent_closed_by_parent() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, PARENT_RUNTIME_SESSION_ID);
+        insert_test_managed_session(&ai.inner, CODEX_RUNTIME_ID, CHILD_RUNTIME_SESSION_ID);
+        mark_test_session_as_child(
+            &ai.inner,
+            CHILD_RUNTIME_SESSION_ID,
+            CHILD_RUNTIME_SESSION_ID,
+        );
+        {
+            let mut state = ai.inner.lock().unwrap();
+            let child = state
+                .sessions
+                .get_mut(CHILD_RUNTIME_SESSION_ID)
+                .expect("child session should exist");
+            child.session.closed_at = Some("123".to_string());
+        }
+
+        let error = ai
+            .send_message(&json!({
+                "session_id": CHILD_RUNTIME_SESSION_ID,
+                "content": "continue",
+                "attachments": [],
+            }))
+            .expect_err("closed child should reject direct prompts");
+
+        assert!(error.contains("closed by its parent thread"));
     }
 
     #[test]
@@ -7610,11 +10977,7 @@ mod tests {
             assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
         }
 
-        assert!(client
-            .message_ids
-            .lock()
-            .unwrap()
-            .contains_key(CHILD_RUNTIME_SESSION_ID));
+        assert!(client.has_active_text_message(CHILD_RUNTIME_SESSION_ID, MessageRole::Assistant));
         let state = session_state.lock().unwrap();
         assert_eq!(
             state
@@ -7893,12 +11256,12 @@ mod tests {
     fn pending_terminal_auth_records_method_without_auth_ready() {
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
 
-        mark_runtime_auth_pending(&session_state, GEMINI_RUNTIME_ID, "login_with_google");
+        mark_runtime_auth_pending(&session_state, KILO_RUNTIME_ID, "kilo-login");
 
         let state = session_state.lock().unwrap();
-        let setup = state.setup.get(GEMINI_RUNTIME_ID).expect("runtime setup");
+        let setup = state.setup.get(KILO_RUNTIME_ID).expect("runtime setup");
         assert!(!setup.auth_ready);
-        assert_eq!(setup.auth_method.as_deref(), Some("login_with_google"));
+        assert_eq!(setup.auth_method.as_deref(), Some("kilo-login"));
         assert_eq!(setup.message, None);
     }
 
@@ -7907,21 +11270,21 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::channel();
         let ai = NativeAi::new(event_tx);
         let temp = tempfile::tempdir().unwrap();
-        let runtime = temp.path().join("fake-gemini");
+        let runtime = temp.path().join("fake-kilo");
         fs::write(&runtime, "#!/bin/sh\n").unwrap();
 
         ai.update_setup(&json!({
-            "runtimeId": GEMINI_RUNTIME_ID,
+            "runtimeId": KILO_RUNTIME_ID,
             "input": {
                 "custom_binary_path": runtime,
-                "gemini_api_key": { "action": "set", "value": "test-key" }
+                "kilo_api_key": { "action": "set", "value": "test-key" }
             }
         }))
         .expect("setup should update");
 
         let status = ai
             .logout(&json!({
-                "runtimeId": GEMINI_RUNTIME_ID,
+                "runtimeId": KILO_RUNTIME_ID,
                 "vaultPath": temp.path()
             }))
             .expect("logout should clear local setup");
@@ -7935,6 +11298,49 @@ mod tests {
             Some(true)
         );
         assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn logout_marks_grok_external_auth_invalidated() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let temp = tempfile::tempdir().unwrap();
+
+        ai.update_setup(&json!({
+            "runtimeId": GROK_RUNTIME_ID,
+            "input": {
+                "custom_binary_path": temp.path().join("missing-grok"),
+            }
+        }))
+        .expect("setup should update");
+
+        let status = ai
+            .logout(&json!({
+                "runtimeId": GROK_RUNTIME_ID,
+                "vaultPath": temp.path()
+            }))
+            .expect("logout should clear local setup");
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let state = ai.inner.lock().unwrap();
+        let setup = state
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should remain in memory");
+        assert!(setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]
@@ -8172,12 +11578,12 @@ mod tests {
     #[test]
     fn path_lookup_resolves_windows_cmd_shims_from_pathext() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("gemini"), "#!/usr/bin/env node\n").unwrap();
-        let shim = temp.path().join("gemini.cmd");
+        fs::write(temp.path().join("kilo"), "#!/usr/bin/env node\n").unwrap();
+        let shim = temp.path().join("kilo.cmd");
         fs::write(&shim, "").unwrap();
 
         let resolved = find_program_in_path_entries(
-            "gemini",
+            "kilo",
             vec![temp.path().to_path_buf()],
             &parse_windows_pathext(Some(".COM;.EXE;.BAT;.CMD")),
         );
@@ -8189,12 +11595,12 @@ mod tests {
     #[test]
     fn explicit_program_path_prefers_windows_extension_shim() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("gemini"), "#!/usr/bin/env node\n").unwrap();
-        let shim = temp.path().join("gemini.cmd");
+        fs::write(temp.path().join("kilo"), "#!/usr/bin/env node\n").unwrap();
+        let shim = temp.path().join("kilo.cmd");
         fs::write(&shim, "").unwrap();
 
         let resolved = resolve_command_candidate(
-            &temp.path().join("gemini").display().to_string(),
+            &temp.path().join("kilo").display().to_string(),
             AiRuntimeBinarySource::Custom,
         );
 
@@ -8503,27 +11909,22 @@ mod tests {
 
     #[test]
     fn acp_session_synthesizes_reasoning_config_from_model_efforts() {
-        let models_state = SessionModelState::new(
-            "gpt-5.5/medium",
-            vec![
-                ModelInfo::new("gpt-5.5/low", "GPT-5.5 (low)"),
-                ModelInfo::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
-                ModelInfo::new("gpt-5.5/high", "GPT-5.5 (high)"),
-                ModelInfo::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
-            ],
-        );
         let config_options = vec![SessionConfigOption::select(
             "model",
             "Model",
-            "gpt-5.5",
-            vec![SessionConfigSelectOption::new("gpt-5.5", "GPT-5.5")],
+            "gpt-5.5/medium",
+            vec![
+                SessionConfigSelectOption::new("gpt-5.5/low", "GPT-5.5 (low)"),
+                SessionConfigSelectOption::new("gpt-5.5/medium", "GPT-5.5 (medium)"),
+                SessionConfigSelectOption::new("gpt-5.5/high", "GPT-5.5 (high)"),
+                SessionConfigSelectOption::new("gpt-5.5/xhigh", "GPT-5.5 (xhigh)"),
+            ],
         )
         .category(SessionConfigOptionCategory::Model)];
 
         let session = session_from_acp_response(
             CODEX_RUNTIME_ID,
             "session-1".to_string(),
-            Some(models_state),
             None,
             Some(config_options),
         );
@@ -8561,6 +11962,1014 @@ mod tests {
     }
 
     #[test]
+    fn grok_session_uses_acp_model_config_without_static_model_list() {
+        let config_options = vec![SessionConfigOption::select(
+            "model",
+            "Model",
+            "grok-build",
+            vec![
+                SessionConfigSelectOption::new("grok-composer-2.5-fast", "Composer 2.5")
+                    .description("Cursor's latest coding model"),
+                SessionConfigSelectOption::new("grok-build", "Grok Build")
+                    .description("Best for advanced coding tasks"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Model)];
+
+        let session = session_from_acp_response(
+            GROK_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(config_options),
+        );
+
+        assert_eq!(session.model_id, "grok-build");
+        assert_eq!(
+            session
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["grok-composer-2.5-fast", "grok-build"]
+        );
+        let model_config = session
+            .config_options
+            .iter()
+            .find(|option| matches!(option.category, AiConfigOptionCategory::Model))
+            .expect("model config should be synthesized from ACP models");
+        assert_eq!(model_config.value, "grok-build");
+        assert!(session.modes.is_empty());
+        assert!(
+            session
+                .config_options
+                .iter()
+                .all(|option| !matches!(option.category, AiConfigOptionCategory::Mode)),
+            "Grok must not receive synthetic modes when ACP does not advertise them"
+        );
+        assert_eq!(
+            acp_config_option_remote_command(
+                &session.runtime_id,
+                &session.config_options,
+                &model_config.id
+            ),
+            AcpConfigOptionRemoteCommand::SetModel
+        );
+    }
+
+    #[test]
+    fn grok_uses_legacy_acp12_protocol() {
+        assert_eq!(
+            acp_protocol_flavor(GROK_RUNTIME_ID),
+            AcpProtocolFlavor::Legacy12
+        );
+    }
+
+    #[test]
+    fn current_runtimes_keep_acp14_protocol() {
+        for runtime_id in [
+            CLAUDE_RUNTIME_ID,
+            CODEX_RUNTIME_ID,
+            KILO_RUNTIME_ID,
+            OPENCODE_RUNTIME_ID,
+        ] {
+            assert_eq!(
+                acp_protocol_flavor(runtime_id),
+                AcpProtocolFlavor::Current14
+            );
+        }
+    }
+
+    #[test]
+    fn grok_session_without_model_config_does_not_synthesize_auto_model() {
+        let session = session_from_acp_response(
+            GROK_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(Vec::new()),
+        );
+
+        assert!(session.models.is_empty());
+        assert_eq!(session.model_id, "");
+        assert!(
+            session
+                .config_options
+                .iter()
+                .all(|option| !matches!(option.category, AiConfigOptionCategory::Model)),
+            "Grok must not receive a synthetic Auto model when ACP exposes no model option"
+        );
+    }
+
+    #[test]
+    fn config_options_infer_core_categories_from_ids() {
+        let options = map_session_config_options(
+            CODEX_RUNTIME_ID,
+            vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "provider-model",
+                    vec![SessionConfigSelectOption::new(
+                        "provider-model",
+                        "Provider Model",
+                    )],
+                ),
+                SessionConfigOption::select(
+                    "permission-mode",
+                    "Mode",
+                    "yolo",
+                    vec![SessionConfigSelectOption::new("yolo", "YOLO")],
+                ),
+                SessionConfigOption::select(
+                    "reasoningEffort",
+                    "Reasoning",
+                    "high",
+                    vec![SessionConfigSelectOption::new("high", "High")],
+                ),
+            ],
+        );
+
+        assert!(matches!(options[0].category, AiConfigOptionCategory::Model));
+        assert!(matches!(options[1].category, AiConfigOptionCategory::Mode));
+        assert!(matches!(
+            options[2].category,
+            AiConfigOptionCategory::Reasoning
+        ));
+    }
+
+    #[test]
+    fn session_modes_derive_from_mode_config_option_when_mode_state_missing() {
+        let session = session_from_acp_response(
+            CODEX_RUNTIME_ID,
+            "session-1".to_string(),
+            None,
+            Some(vec![SessionConfigOption::select(
+                "mode",
+                "Mode",
+                "yolo",
+                vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("yolo", "YOLO"),
+                ],
+            )]),
+        );
+
+        assert_eq!(
+            session
+                .modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default", "yolo"]
+        );
+        assert_eq!(session.mode_id, "yolo");
+    }
+
+    #[test]
+    fn acp12_model_state_is_exposed_as_model_config_option() {
+        let config_options = acp12_session_config_options(
+            None,
+            Some(acp12::schema::SessionModelState::new(
+                "grok-build",
+                vec![
+                    acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5").meta(
+                        acp12::schema::Meta::from_iter([(
+                            "agentType".to_string(),
+                            serde_json::json!("composer-agent"),
+                        )]),
+                    ),
+                    acp12::schema::ModelInfo::new("grok-build", "Grok Build").meta(
+                        acp12::schema::Meta::from_iter([(
+                            "agentType".to_string(),
+                            serde_json::json!("build-agent"),
+                        )]),
+                    ),
+                ],
+            )),
+        )
+        .expect("legacy model state should map")
+        .expect("model option should be synthesized");
+
+        let mapped = map_session_config_options(GROK_RUNTIME_ID, config_options);
+
+        assert_eq!(mapped.len(), 1);
+        assert!(matches!(mapped[0].category, AiConfigOptionCategory::Model));
+        assert_eq!(mapped[0].value, "grok-build");
+        assert_eq!(
+            mapped[0]
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Composer 2.5", "Grok Build"]
+        );
+        assert_eq!(
+            mapped[0]
+                .options
+                .iter()
+                .map(|option| option.agent_type.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("composer-agent"), Some("build-agent")]
+        );
+    }
+
+    #[test]
+    fn acp12_initialize_meta_model_state_is_parsed() {
+        let model_state = acp12::schema::SessionModelState::new(
+            "grok-build",
+            vec![
+                acp12::schema::ModelInfo::new("grok-composer-2.5-fast", "Composer 2.5"),
+                acp12::schema::ModelInfo::new("grok-build", "Grok Build"),
+            ],
+        );
+        let response = acp12::schema::InitializeResponse::new(
+            acp12::schema::ProtocolVersion::LATEST,
+        )
+        .meta(acp12::schema::Meta::from_iter([(
+            "modelState".to_string(),
+            serde_json::to_value(model_state).expect("model state should serialize"),
+        )]));
+
+        let parsed = acp12_initialize_model_state(&response).expect("modelState should be present");
+
+        assert_eq!(parsed.current_model_id.0.as_ref(), "grok-build");
+        assert_eq!(
+            parsed
+                .available_models
+                .iter()
+                .map(|model| model.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Composer 2.5", "Grok Build"]
+        );
+    }
+
+    #[test]
+    fn acp12_initialize_meta_model_state_ignores_unknown_shapes() {
+        let response = acp12::schema::InitializeResponse::new(
+            acp12::schema::ProtocolVersion::LATEST,
+        )
+        .meta(acp12::schema::Meta::from_iter([(
+            "modelState".to_string(),
+            serde_json::json!({ "unexpected": true }),
+        )]));
+
+        assert!(acp12_initialize_model_state(&response).is_none());
+    }
+
+    #[test]
+    fn internal_mode_update_text_chunks_are_suppressed() {
+        assert!(should_suppress_internal_text_chunk(
+            GROK_RUNTIME_ID,
+            "  [MODE_UPDATE] default\n"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            GROK_RUNTIME_ID,
+            "[MODE_UPDATE]"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            CODEX_RUNTIME_ID,
+            "[MODE_UPDATE] yolo"
+        ));
+        assert!(!should_suppress_internal_text_chunk(
+            GROK_RUNTIME_ID,
+            "Please mention [MODE_UPDATE] yolo in the document"
+        ));
+    }
+
+    #[test]
+    fn acp_form_elicitation_emits_user_input_request() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let waiters = Arc::clone(&client.user_input_waiters);
+        let request = CreateElicitationRequest::new(
+            ElicitationFormMode::new(
+                ElicitationSessionScope::new("session-1"),
+                ElicitationSchema::new()
+                    .property(
+                        "scope",
+                        StringPropertySchema::new()
+                            .title("Scope")
+                            .description("Choose a scope")
+                            .one_of(vec![
+                                EnumOption::new("safe", "Safe"),
+                                EnumOption::new("wide", "Wide"),
+                            ]),
+                        true,
+                    )
+                    .property(
+                        "confirmed",
+                        BooleanPropertySchema::new()
+                            .title("Confirm")
+                            .description("Continue?"),
+                        false,
+                    ),
+            ),
+            "Input requested",
+        );
+
+        let handle = thread::spawn(move || run_client_future(client.create_elicitation(request)));
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("user input event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_USER_INPUT_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.pointer("/title").and_then(Value::as_str),
+            Some("Input requested")
+        );
+        let request_id = payload
+            .pointer("/request_id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_string();
+        assert_eq!(
+            payload
+                .pointer("/questions/1/options/0/label")
+                .and_then(Value::as_str),
+            Some("Safe")
+        );
+        assert_eq!(
+            payload
+                .pointer("/questions/1/options/0/value")
+                .and_then(Value::as_str),
+            Some("safe")
+        );
+        assert_eq!(payload.pointer("/questions/1/options/0/description"), None);
+        assert_eq!(
+            payload
+                .pointer("/questions/0/options/0/label")
+                .and_then(Value::as_str),
+            Some("Yes")
+        );
+        assert_eq!(
+            payload
+                .pointer("/questions/0/options/0/value")
+                .and_then(Value::as_str),
+            Some("true")
+        );
+        cancel_user_input_waiters_matching(&waiters, |waiter| waiter.session_id == "session-1");
+        let response = handle.join().unwrap().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(
+            !waiters.lock().unwrap().contains_key(&request_id),
+            "waiter should be removed after cancellation"
+        );
+    }
+
+    #[test]
+    fn elicitation_titled_options_split_claude_description_fallback() {
+        let option =
+            elicitation_titled_option("Grid layout", "Grid layout \u{2014} Cards in columns");
+
+        assert_eq!(option.label, "Grid layout");
+        assert_eq!(option.value, "Grid layout");
+        assert_eq!(option.description.as_deref(), Some("Cards in columns"));
+        assert_eq!(option.preview, None);
+    }
+
+    #[test]
+    fn acp_form_elicitation_groups_per_question_custom_answer() {
+        let schema = ElicitationSchema::new()
+            .property(
+                "question_0",
+                StringPropertySchema::new()
+                    .title("Scope")
+                    .description("Choose a scope")
+                    .one_of(vec![EnumOption::new("safe", "Safe")]),
+                false,
+            )
+            .property(
+                "question_0_custom",
+                StringPropertySchema::new()
+                    .title("Other")
+                    .description("Custom answer"),
+                false,
+            );
+
+        let (questions, fields) = map_elicitation_form_questions(&schema);
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].id, "question_0");
+        assert_eq!(
+            questions[0].custom_answer_id.as_deref(),
+            Some("question_0_custom")
+        );
+        assert!(questions[0].is_other);
+        assert!(fields.contains_key("question_0"));
+        assert!(fields.contains_key("question_0_custom"));
+    }
+
+    #[test]
+    fn acp_url_elicitation_emits_url_request() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let waiters = Arc::clone(&client.url_elicitation_waiters);
+        let request = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new("session-1").tool_call_id("tool-1"),
+                "elicitation-1",
+                "https://example.com/auth",
+            ),
+            "Open this page",
+        );
+
+        let handle = thread::spawn(move || run_client_future(client.create_elicitation(request)));
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("url elicitation event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_URL_ELICITATION_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-1")
+        );
+        assert_eq!(
+            payload.pointer("/title").and_then(Value::as_str),
+            Some("Open this page")
+        );
+        assert_eq!(
+            payload.pointer("/url").and_then(Value::as_str),
+            Some("https://example.com/auth")
+        );
+        assert_eq!(
+            payload.pointer("/elicitation_id").and_then(Value::as_str),
+            Some("elicitation-1")
+        );
+        assert_eq!(
+            payload.pointer("/tool_call_id").and_then(Value::as_str),
+            Some("tool-1")
+        );
+        assert_eq!(
+            payload.pointer("/status").and_then(Value::as_str),
+            Some("pending")
+        );
+
+        let request_id = payload
+            .pointer("/request_id")
+            .and_then(Value::as_str)
+            .expect("request id")
+            .to_string();
+        assert!(
+            waiters.lock().unwrap().contains_key(&request_id),
+            "url waiter should be registered"
+        );
+        cancel_url_elicitation_waiters_matching(&waiters, |waiter| {
+            waiter.session_id == "session-1"
+        });
+        let response = handle.join().unwrap().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+    }
+
+    #[test]
+    fn acp_url_elicitation_rejects_unsafe_urls_without_event() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let request = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new("session-1"),
+                "elicitation-unsafe",
+                "file:///tmp/secret",
+            ),
+            "Open this page",
+        );
+
+        let response = run_client_future(client.create_elicitation(request)).unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(
+            event_rx.recv_timeout(StdDuration::from_millis(50)).is_err(),
+            "unsafe URL should not be emitted"
+        );
+    }
+
+    #[test]
+    fn safe_http_url_normalizes_and_requires_http_host() {
+        assert_eq!(
+            safe_http_url("  https://example.com/auth  ").as_deref(),
+            Some("https://example.com/auth")
+        );
+        assert_eq!(safe_http_url("http://"), None);
+        assert_eq!(safe_http_url("javascript:alert(1)"), None);
+        assert_eq!(safe_http_url("https://example.com/bad path"), None);
+    }
+
+    #[test]
+    fn respond_url_elicitation_resolves_waiter_with_accept() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        ai.respond_url_elicitation(&json!({
+            "input": {
+                "session_id": "session-1",
+                "request_id": "url-1",
+                "action": "complete"
+            }
+        }))
+        .unwrap();
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(ai.url_elicitation_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_url_elicitation_response_does_not_consume_waiter() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, _response_rx) = oneshot::channel();
+        ai.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        let action_error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-1",
+                    "request_id": "url-1",
+                    "action": "bogus"
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(action_error, "Unsupported URL elicitation action: bogus");
+        assert!(ai
+            .url_elicitation_waiters
+            .lock()
+            .unwrap()
+            .contains_key("url-1"));
+
+        let session_error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-2",
+                    "request_id": "url-1",
+                    "action": "complete"
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            session_error,
+            "AI URL elicitation request url-1 belongs to a different session."
+        );
+        assert!(ai
+            .url_elicitation_waiters
+            .lock()
+            .unwrap()
+            .contains_key("url-1"));
+    }
+
+    #[test]
+    fn respond_url_elicitation_reports_runtime_completed_request() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        ai.completed_url_elicitations
+            .lock()
+            .unwrap()
+            .push_back("url-1".to_string());
+
+        let error = ai
+            .respond_url_elicitation(&json!({
+                "input": {
+                    "session_id": "session-1",
+                    "request_id": "url-1",
+                    "action": "complete"
+                }
+            }))
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "AI URL elicitation request already completed by runtime: url-1"
+        );
+    }
+
+    #[test]
+    fn completed_url_elicitation_ids_are_pruned_fifo() {
+        let completed = Arc::new(Mutex::new(VecDeque::new()));
+        for index in 0..=MAX_COMPLETED_URL_ELICITATION_IDS {
+            remember_completed_url_elicitation(&completed, format!("url-{index}"));
+        }
+
+        let completed = completed.lock().unwrap();
+        assert_eq!(completed.len(), MAX_COMPLETED_URL_ELICITATION_IDS);
+        assert!(!completed.contains(&"url-0".to_string()));
+        assert_eq!(completed.front().map(String::as_str), Some("url-1"));
+        let newest_request_id = format!("url-{MAX_COMPLETED_URL_ELICITATION_IDS}");
+        assert_eq!(
+            completed.back().map(String::as_str),
+            Some(newest_request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn complete_elicitation_notification_marks_url_waiter_complete() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+        let (response_tx, response_rx) = oneshot::channel();
+        client.url_elicitation_waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        run_client_future(
+            client.complete_elicitation(CompleteElicitationNotification::new("elicitation-1")),
+        )
+        .unwrap();
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(client
+            .completed_url_elicitations
+            .lock()
+            .unwrap()
+            .contains(&"url-1".to_string()));
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("completion event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_URL_ELICITATION_REQUEST_EVENT);
+        assert_eq!(
+            payload.pointer("/request_id").and_then(Value::as_str),
+            Some("url-1")
+        );
+        assert_eq!(
+            payload.pointer("/status").and_then(Value::as_str),
+            Some("completed")
+        );
+    }
+
+    #[test]
+    fn cancel_url_elicitation_waiters_for_session_sends_cancel() {
+        let waiters = Arc::new(Mutex::new(HashMap::new()));
+        let (response_tx, response_rx) = oneshot::channel();
+        waiters.lock().unwrap().insert(
+            "url-1".to_string(),
+            UrlElicitationWaiter {
+                session_id: "session-1".to_string(),
+                elicitation_id: "elicitation-1".to_string(),
+                title: "Open this page".to_string(),
+                url: "https://example.com/auth".to_string(),
+                scope: "session".to_string(),
+                runtime_session_id: Some("session-1".to_string()),
+                tool_call_id: None,
+                response_tx,
+            },
+        );
+
+        cancel_url_elicitation_waiters_matching(&waiters, |waiter| {
+            waiter.session_id == "session-1"
+        });
+
+        let response = response_rx.blocking_recv().unwrap();
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+        assert!(waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn respond_user_input_resolves_elicitation_waiter_with_accept() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.user_input_waiters.lock().unwrap().insert(
+            "user-input-1".to_string(),
+            ElicitationWaiter {
+                session_id: "session-1".to_string(),
+                fields: HashMap::from([
+                    (
+                        "scope".to_string(),
+                        ElicitationFieldSpec {
+                            kind: ElicitationFieldKind::String,
+                            option_values_by_label: HashMap::from([(
+                                "Safe".to_string(),
+                                "safe".to_string(),
+                            )]),
+                        },
+                    ),
+                    (
+                        "confirmed".to_string(),
+                        ElicitationFieldSpec {
+                            kind: ElicitationFieldKind::Boolean,
+                            option_values_by_label: HashMap::from([(
+                                "Yes".to_string(),
+                                "true".to_string(),
+                            )]),
+                        },
+                    ),
+                ]),
+                response_tx,
+            },
+        );
+
+        ai.respond_user_input(&json!({
+            "session_id": "session-1",
+            "request_id": "user-input-1",
+            "action": "accept",
+            "answers": {
+                "scope": ["Safe"],
+                "confirmed": ["Yes"]
+            }
+        }))
+        .unwrap();
+        let response = run_client_future(response_rx).unwrap();
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("scope"),
+            Some(&ElicitationContentValue::String("safe".to_string()))
+        );
+        assert_eq!(
+            content.get("confirmed"),
+            Some(&ElicitationContentValue::Boolean(true))
+        );
+    }
+
+    #[test]
+    fn invalid_user_input_response_does_not_consume_waiter() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let ai = NativeAi::new(event_tx);
+        let session =
+            session_from_acp_response(CLAUDE_RUNTIME_ID, "session-1".to_string(), None, None);
+        ai.inner.lock().unwrap().sessions.insert(
+            "session-1".to_string(),
+            ManagedAiSession {
+                session,
+                vault_root: None,
+                additional_roots: vec![],
+                runtime_handle: None,
+                active_turn_id: None,
+            },
+        );
+        let (response_tx, response_rx) = oneshot::channel();
+        ai.user_input_waiters.lock().unwrap().insert(
+            "user-input-1".to_string(),
+            ElicitationWaiter {
+                session_id: "session-1".to_string(),
+                fields: HashMap::from([(
+                    "scope".to_string(),
+                    ElicitationFieldSpec {
+                        kind: ElicitationFieldKind::String,
+                        option_values_by_label: HashMap::from([(
+                            "Safe".to_string(),
+                            "safe".to_string(),
+                        )]),
+                    },
+                )]),
+                response_tx,
+            },
+        );
+
+        let action_error = ai
+            .respond_user_input(&json!({
+                "session_id": "session-1",
+                "request_id": "user-input-1",
+                "action": "bogus",
+                "answers": {}
+            }))
+            .unwrap_err();
+        assert_eq!(action_error, "Unsupported user input action: bogus");
+        assert!(ai
+            .user_input_waiters
+            .lock()
+            .unwrap()
+            .contains_key("user-input-1"));
+
+        let session_error = ai
+            .respond_user_input(&json!({
+                "session_id": "session-2",
+                "request_id": "user-input-1",
+                "action": "accept",
+                "answers": {
+                    "scope": ["Safe"]
+                }
+            }))
+            .unwrap_err();
+        assert_eq!(
+            session_error,
+            "AI user input request user-input-1 belongs to a different session."
+        );
+        assert!(ai
+            .user_input_waiters
+            .lock()
+            .unwrap()
+            .contains_key("user-input-1"));
+
+        ai.respond_user_input(&json!({
+            "session_id": "session-1",
+            "request_id": "user-input-1",
+            "action": "accept",
+            "answers": {
+                "scope": ["Safe"]
+            }
+        }))
+        .unwrap();
+        let response = run_client_future(response_rx).unwrap();
+        assert!(matches!(response.action, ElicitationAction::Accept(_)));
+        assert!(ai.user_input_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn user_input_response_accepts_only_per_question_custom_answer() {
+        let fields = HashMap::from([(
+            "question_0_custom".to_string(),
+            ElicitationFieldSpec {
+                kind: ElicitationFieldKind::String,
+                option_values_by_label: HashMap::new(),
+            },
+        )]);
+
+        let response = create_elicitation_response_from_user_input(
+            Some("accept"),
+            HashMap::from([(
+                "question_0_custom".to_string(),
+                vec!["Use my own approach".to_string()],
+            )]),
+            &fields,
+        )
+        .unwrap();
+
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("question_0_custom"),
+            Some(&ElicitationContentValue::String(
+                "Use my own approach".to_string()
+            ))
+        );
+        assert_eq!(content.len(), 1);
+    }
+
+    #[test]
+    fn user_input_response_preserves_selection_and_custom_answer_fields() {
+        let fields = HashMap::from([
+            (
+                "question_0".to_string(),
+                ElicitationFieldSpec {
+                    kind: ElicitationFieldKind::String,
+                    option_values_by_label: HashMap::from([(
+                        "Safe".to_string(),
+                        "safe".to_string(),
+                    )]),
+                },
+            ),
+            (
+                "question_0_custom".to_string(),
+                ElicitationFieldSpec {
+                    kind: ElicitationFieldKind::String,
+                    option_values_by_label: HashMap::new(),
+                },
+            ),
+        ]);
+
+        let response = create_elicitation_response_from_user_input(
+            Some("accept"),
+            HashMap::from([
+                ("question_0".to_string(), vec!["Safe".to_string()]),
+                (
+                    "question_0_custom".to_string(),
+                    vec!["Use my own approach".to_string()],
+                ),
+            ]),
+            &fields,
+        )
+        .unwrap();
+
+        let ElicitationAction::Accept(accept) = response.action else {
+            panic!("expected accept");
+        };
+        let content = accept.content.expect("accept content");
+        assert_eq!(
+            content.get("question_0"),
+            Some(&ElicitationContentValue::String("safe".to_string()))
+        );
+        assert_eq!(
+            content.get("question_0_custom"),
+            Some(&ElicitationContentValue::String(
+                "Use my own approach".to_string()
+            ))
+        );
+        assert_eq!(content.len(), 2);
+    }
+
+    #[test]
+    fn user_input_actions_map_to_elicitation_decline_and_cancel() {
+        let fields = HashMap::new();
+        let decline =
+            create_elicitation_response_from_user_input(Some("decline"), HashMap::new(), &fields)
+                .unwrap();
+        assert!(matches!(decline.action, ElicitationAction::Decline));
+
+        let cancel =
+            create_elicitation_response_from_user_input(Some("cancel"), HashMap::new(), &fields)
+                .unwrap();
+        assert!(matches!(cancel.action, ElicitationAction::Cancel));
+    }
+
+    #[test]
     fn acp_config_mapping_treats_effort_category_as_reasoning() {
         let mapped = map_session_config_options(
             CODEX_RUNTIME_ID,
@@ -8580,18 +12989,18 @@ mod tests {
     }
 
     #[test]
-    fn gemini_config_options_route_to_supported_acp_methods() {
+    fn grok_config_options_route_model_to_supported_acp_method() {
         let options = map_session_config_options(
-            GEMINI_RUNTIME_ID,
+            GROK_RUNTIME_ID,
             vec![
                 SessionConfigOption::select(
                     "model",
                     "Model",
-                    "gemini-2.5-pro",
-                    vec![SessionConfigSelectOption::new(
-                        "gemini-2.5-pro",
-                        "Gemini 2.5 Pro",
-                    )],
+                    "grok-build",
+                    vec![
+                        SessionConfigSelectOption::new("grok-composer-2.5-fast", "Composer 2.5"),
+                        SessionConfigSelectOption::new("grok-build", "Grok Build"),
+                    ],
                 )
                 .category(SessionConfigOptionCategory::Model),
                 SessionConfigOption::select(
@@ -8601,31 +13010,80 @@ mod tests {
                     vec![SessionConfigSelectOption::new("default", "Default")],
                 )
                 .category(SessionConfigOptionCategory::Mode),
-                SessionConfigOption::select(
-                    "thought_level",
-                    "Thought Level",
-                    "high",
-                    vec![SessionConfigSelectOption::new("high", "High")],
-                )
-                .category(SessionConfigOptionCategory::ThoughtLevel),
             ],
         );
 
         assert_eq!(
-            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "model"),
+            acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "model"),
             AcpConfigOptionRemoteCommand::SetModel
         );
         assert_eq!(
-            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "mode"),
-            AcpConfigOptionRemoteCommand::SetMode
-        );
-        assert_eq!(
-            acp_config_option_remote_command(GEMINI_RUNTIME_ID, &options, "thought_level"),
+            acp_config_option_remote_command(GROK_RUNTIME_ID, &options, "mode"),
             AcpConfigOptionRemoteCommand::LocalOnly
         );
         assert_eq!(
-            acp_config_option_remote_command(CODEX_RUNTIME_ID, &options, "model"),
-            AcpConfigOptionRemoteCommand::SetConfigOption
+            acp_config_option_remote_command(GROK_RUNTIME_ID, &[], "model"),
+            AcpConfigOptionRemoteCommand::LocalOnly
+        );
+    }
+
+    #[test]
+    fn grok_synthetic_modes_are_local_only() {
+        assert!(!runtime_supports_remote_mode_change(GROK_RUNTIME_ID));
+        assert!(runtime_supports_remote_mode_change(CODEX_RUNTIME_ID));
+    }
+
+    #[test]
+    fn acp_available_commands_update_is_forwarded_to_renderer() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-commands",
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("login", "Sign in to the provider"),
+                AvailableCommand::new("search", "Search the workspace").input(
+                    AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("query")),
+                ),
+            ])),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("available commands event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_AVAILABLE_COMMANDS_UPDATED_EVENT);
+        assert_eq!(
+            payload.pointer("/session_id").and_then(Value::as_str),
+            Some("session-commands")
+        );
+        assert_eq!(
+            payload.pointer("/commands/0/label").and_then(Value::as_str),
+            Some("/login")
+        );
+        assert_eq!(
+            payload
+                .pointer("/commands/0/insert_text")
+                .and_then(Value::as_str),
+            Some("/login")
+        );
+        assert_eq!(
+            payload.pointer("/commands/1/label").and_then(Value::as_str),
+            Some("/search")
+        );
+        assert_eq!(
+            payload
+                .pointer("/commands/1/insert_text")
+                .and_then(Value::as_str),
+            Some("/search ")
         );
     }
 
@@ -8805,13 +13263,412 @@ mod tests {
                 file_path: Some(outside_file.display().to_string()),
                 mime_type: Some("text/plain".to_string()),
                 transcription: None,
+                start_line: None,
+                end_line: None,
             }],
             Some(vault.path()),
             &[],
+            None,
         )
         .expect_err("outside attachment should be blocked");
 
         assert!(error.contains("outside the vault"));
+    }
+
+    #[test]
+    fn prompt_blocks_embed_selection_context_without_textual_wrapper() {
+        let selection_path = "/Users/example/vault/cuento.md";
+        let attachments = vec![AiAttachmentInput {
+            label: "(30) Una mujer bajó prime...".to_string(),
+            path: Some(selection_path.to_string()),
+            content: Some("Una mujer bajó primero.".to_string()),
+            attachment_type: Some("selection".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: None,
+            transcription: None,
+            start_line: Some(30),
+            end_line: Some(30),
+        }];
+
+        let blocks = build_prompt_blocks_with_attachments(
+            &format!("{selection_path}:30-30 elimina esto"),
+            &attachments,
+            None,
+            &[],
+            AcpPromptCapabilities {
+                image: false,
+                embedded_context: true,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Resource(EmbeddedResource {
+                resource:
+                    EmbeddedResourceResource::TextResourceContents(TextResourceContents {
+                        text,
+                        uri,
+                        ..
+                    }),
+                ..
+            }) => {
+                assert_eq!(text, "Una mujer bajó primero.");
+                assert_eq!(uri, "file:///Users/example/vault/cuento.md#L30");
+            }
+            other => panic!("expected embedded selection resource, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Text(text) => {
+                assert_eq!(text.text, "elimina esto");
+                assert!(!text.text.contains("attached_selection"));
+                assert!(!text.text.contains(selection_path));
+            }
+            other => panic!("expected text prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_keep_textual_attachment_fallback_without_embedded_context() {
+        let attachments = vec![AiAttachmentInput {
+            label: "(30) Una mujer bajó prime...".to_string(),
+            path: Some("/Users/example/vault/cuento.md".to_string()),
+            content: Some("Una mujer bajó primero.".to_string()),
+            attachment_type: Some("selection".to_string()),
+            note_id: None,
+            file_path: None,
+            mime_type: None,
+            transcription: None,
+            start_line: Some(30),
+            end_line: Some(30),
+        }];
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "/Users/example/vault/cuento.md:30-30 elimina esto",
+            &attachments,
+            None,
+            &[],
+            AcpPromptCapabilities {
+                image: false,
+                embedded_context: false,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => {
+                assert!(text.text.contains("<attached_selection"));
+                assert!(text.text.contains("Una mujer bajó primero."));
+            }
+            other => panic!("expected fallback text prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_send_image_attachment_as_native_block() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("screenshot.png");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: false,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 2);
+        let expected_uri = format!("file://{}", image_path.canonicalize().unwrap().display());
+        match &blocks[0] {
+            ContentBlock::Image(image) => {
+                assert_eq!(image.data, "AAECAw==");
+                assert_eq!(image.mime_type, "image/png");
+                assert_eq!(image.uri.as_deref(), Some(expected_uri.as_str()));
+            }
+            other => panic!("expected native image block, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "describe this image"),
+            other => panic!("expected text prompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_keep_image_attachment_fallback_without_image_capability() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("screenshot.png");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let blocks = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: false,
+                embedded_context: true,
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            ContentBlock::Text(text) => {
+                assert!(text.text.contains("<attached_image"));
+                assert!(text.text.contains("type=\"image/png\""));
+                assert!(text.text.contains("path=\"screenshot.png\""));
+                assert!(text.text.contains("describe this image"));
+            }
+            other => panic!("expected textual image fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_blocks_reject_native_image_attachment_outside_allowed_roots() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let image_path = outside.path().join("secret.png");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Secret Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            None,
+        )
+        .expect_err("outside native image attachment should be blocked");
+
+        assert!(error.contains("outside the vault"));
+    }
+
+    #[test]
+    fn prompt_blocks_reject_native_image_attachment_above_size_limit() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("huge.png");
+        let file = fs::File::create(&image_path).unwrap();
+        file.set_len(MAX_NATIVE_IMAGE_ATTACHMENT_BYTES + 1).unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Huge Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            None,
+        )
+        .expect_err("oversized native image attachment should be blocked");
+
+        assert!(error.contains("Image attachment is too large"));
+    }
+
+    #[test]
+    fn prompt_blocks_apply_claude_native_image_size_limit() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("claude-huge.png");
+        let file = fs::File::create(&image_path).unwrap();
+        file.set_len(CONSERVATIVE_NATIVE_BASE64_RAW_IMAGE_ATTACHMENT_BYTES + 1)
+            .unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Huge Screenshot".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            Some(CLAUDE_RUNTIME_ID),
+        )
+        .expect_err("Claude native image limit should be provider-aware");
+
+        assert!(error.contains("Image attachment is too large for Claude"));
+    }
+
+    #[test]
+    fn prompt_blocks_apply_grok_native_image_mime_policy() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("image.webp");
+        fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "WebP".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/webp".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            Some(GROK_RUNTIME_ID),
+        )
+        .expect_err("Grok native image MIME policy should be provider-aware");
+
+        assert!(error.contains("Unsupported image attachment type for Grok"));
+    }
+
+    #[test]
+    fn prompt_blocks_reject_unsupported_image_attachment_type() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let image_path = vault.path().join("vector.svg");
+        fs::write(&image_path, "<svg />").unwrap();
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe this image",
+            &[AiAttachmentInput {
+                label: "Vector".to_string(),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/svg+xml".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            }],
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            None,
+        )
+        .expect_err("unsupported native image type should be blocked");
+
+        assert!(error.contains("Unsupported image attachment type"));
+        assert!(error.contains("image/svg+xml"));
+    }
+
+    #[test]
+    fn prompt_blocks_reject_too_many_image_attachments() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_root = vault.path().canonicalize().unwrap();
+        let mut attachments = Vec::new();
+        for index in 0..=MAX_NATIVE_IMAGE_ATTACHMENTS_PER_MESSAGE {
+            let image_path = vault.path().join(format!("shot-{index}.png"));
+            fs::write(&image_path, [0_u8, 1, 2, 3]).unwrap();
+            attachments.push(AiAttachmentInput {
+                label: format!("Screenshot {index}"),
+                path: None,
+                content: None,
+                attachment_type: Some("file".to_string()),
+                note_id: None,
+                file_path: Some(image_path.display().to_string()),
+                mime_type: Some("image/png".to_string()),
+                transcription: None,
+                start_line: None,
+                end_line: None,
+            });
+        }
+
+        let error = build_prompt_blocks_with_attachments(
+            "describe these images",
+            &attachments,
+            Some(vault_root.as_path()),
+            &[],
+            AcpPromptCapabilities {
+                image: true,
+                embedded_context: true,
+            },
+            None,
+        )
+        .expect_err("too many native image attachments should be blocked");
+
+        assert!(error.contains("Too many image attachments"));
     }
 
     #[test]
@@ -9015,6 +13872,264 @@ mod tests {
     }
 
     #[test]
+    fn session_tool_call_suppresses_internal_drafting_status() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:agent-msg-42"),
+            "Drafting response",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress)
+        .meta(Meta::from_iter([(
+            ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+            json!("status"),
+        )]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_internal_drafting_status_update_without_meta() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let update = ToolCallUpdate::new(
+            "neverwrite:status:item:agent-msg-42",
+            ToolCallUpdateFields::new()
+                .title("Drafting response")
+                .status(ToolCallStatus::Completed),
+        );
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(update),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn session_tool_call_suppresses_internal_status_update_without_title_after_suppressed_start() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Before status",
+            ))),
+        )))
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        let tool_call = ToolCall::new(
+            ToolCallId::from("neverwrite:status:item:agent-msg-42"),
+            "Drafting response",
+        )
+        .kind(ToolKind::Other)
+        .status(ToolCallStatus::InProgress)
+        .meta(Meta::from_iter([(
+            ACP_STATUS_EVENT_TYPE_KEY.to_string(),
+            json!("status"),
+        )]));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+        assert!(client.has_active_text_message("session-1", MessageRole::Assistant));
+
+        let update = ToolCallUpdate::new(
+            "neverwrite:status:item:agent-msg-42",
+            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+        );
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCallUpdate(update),
+        )))
+        .unwrap();
+
+        assert!(event_rx.recv_timeout(StdDuration::from_millis(50)).is_err());
+        assert!(client.has_active_text_message("session-1", MessageRole::Assistant));
+    }
+
+    #[test]
+    fn session_tool_call_keeps_real_tool_with_suppressed_status_title() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let tool_call = ToolCall::new(ToolCallId::from("normal-tool-1"), "Drafting response")
+            .kind(ToolKind::Other)
+            .status(ToolCallStatus::Completed);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::ToolCall(tool_call),
+        )))
+        .unwrap();
+
+        let event = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event
+        else {
+            panic!("expected event");
+        };
+
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            payload.get("tool_call_id").and_then(Value::as_str),
+            Some("normal-tool-1")
+        );
+    }
+
+    #[test]
+    fn session_tool_call_closes_active_assistant_segment_without_finishing_turn() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("Before tool"))),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event { payload, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        let first_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("assistant message id")
+            .to_string();
+        let _ = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message delta event");
+
+        run_client_future(
+            client.session_notification(SessionNotification::new(
+                "session-1",
+                SessionUpdate::ToolCall(
+                    ToolCall::new(ToolCallId::from("tool-1"), "Read file")
+                        .kind(ToolKind::Read)
+                        .status(ToolCallStatus::Completed),
+                ),
+            )),
+        )
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant segment completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(first_message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("tool activity event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_TOOL_ACTIVITY_EVENT);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from("After tool"))),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event { payload, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("next assistant message started event")
+        else {
+            panic!("expected event");
+        };
+        let next_message_id = payload
+            .get("message_id")
+            .and_then(Value::as_str)
+            .expect("next assistant message id");
+        assert_ne!(next_message_id, first_message_id);
+    }
+
+    #[test]
+    fn complete_assistant_turn_finishes_when_no_segment_is_active() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        let message_id = client.begin_message("session-1");
+        let _ = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant message started event");
+
+        client.end_message_segment("session-1");
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("assistant segment completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(false)
+        );
+
+        client.complete_assistant_turn("session-1", &message_id);
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("turn completed event")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            payload.get("message_id").and_then(Value::as_str),
+            Some(message_id.as_str())
+        );
+        assert_eq!(
+            payload.get("turn_complete").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn session_tool_call_image_generation_meta_emits_image_event() {
         let (event_tx, event_rx) = mpsc::channel();
         let client = test_client(event_tx);
@@ -9201,6 +14316,91 @@ mod tests {
     }
 
     #[test]
+    fn permission_request_closes_active_assistant_segment_before_timeline_events() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "session-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::from(
+                "Before permission",
+            ))),
+        )))
+        .unwrap();
+        while event_rx.try_recv().is_ok() {}
+
+        let waiters = client.permission_waiters.clone();
+        let event_thread = std::thread::spawn(move || {
+            let mut event_names = Vec::new();
+            let mut completed_turn_complete = None;
+            let mut request_id = None;
+
+            for _ in 0..3 {
+                let event = event_rx
+                    .recv_timeout(StdDuration::from_secs(1))
+                    .expect("permission timeline event");
+                let RpcOutput::Event {
+                    event_name,
+                    payload,
+                } = event
+                else {
+                    continue;
+                };
+
+                if event_name == AI_MESSAGE_COMPLETED_EVENT {
+                    completed_turn_complete = payload.get("turn_complete").and_then(Value::as_bool);
+                }
+                if event_name == AI_PERMISSION_REQUEST_EVENT {
+                    request_id = payload
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                }
+                event_names.push(event_name);
+            }
+
+            let request_id = request_id.expect("permission request id");
+            let sender = waiters
+                .lock()
+                .unwrap()
+                .remove(&request_id)
+                .expect("permission waiter");
+            sender.send(RequestPermissionOutcome::Cancelled).unwrap();
+
+            (event_names, completed_turn_complete)
+        });
+
+        let request = RequestPermissionRequest::new(
+            "session-1",
+            ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new()
+                    .title("Write note.md".to_string())
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Pending),
+            ),
+            vec![PermissionOption::new(
+                "allow",
+                "Allow",
+                PermissionOptionKind::AllowOnce,
+            )],
+        );
+        run_client_future(client.request_permission(request)).unwrap();
+
+        let (event_names, completed_turn_complete) = event_thread.join().unwrap();
+        assert_eq!(
+            event_names,
+            vec![
+                AI_MESSAGE_COMPLETED_EVENT,
+                AI_TOOL_ACTIVITY_EVENT,
+                AI_PERMISSION_REQUEST_EVENT,
+            ]
+        );
+        assert_eq!(completed_turn_complete, Some(false));
+        assert!(!client.has_active_text_message("session-1", MessageRole::Assistant));
+    }
+
+    #[test]
     fn auth_terminal_launch_config_uses_selected_claude_method() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
@@ -9270,32 +14470,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_persisted_gemini_oauth_credentials() {
-        let temp = tempfile::tempdir().unwrap();
-        let gemini_dir = temp.path().join(".gemini");
-        fs::create_dir_all(&gemini_dir).unwrap();
-        fs::write(gemini_dir.join("oauth_creds.json"), "{}").unwrap();
-
-        assert_eq!(
-            persisted_cli_auth_method_for_home(GEMINI_RUNTIME_ID, temp.path(), false),
-            Some("login_with_google".to_string())
-        );
-    }
-
-    #[test]
-    fn ignores_empty_persisted_gemini_oauth_credentials() {
-        let temp = tempfile::tempdir().unwrap();
-        let gemini_dir = temp.path().join(".gemini");
-        fs::create_dir_all(&gemini_dir).unwrap();
-        fs::write(gemini_dir.join("oauth_creds.json"), "").unwrap();
-
-        assert_eq!(
-            persisted_cli_auth_method_for_home(GEMINI_RUNTIME_ID, temp.path(), false),
-            None
-        );
-    }
-
-    #[test]
     fn detects_persisted_claude_credentials_for_environment() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join(".claude.json"), "{}").unwrap();
@@ -9354,6 +14528,37 @@ mod tests {
     }
 
     #[test]
+    fn detects_active_persisted_grok_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(
+            &auth_file,
+            r#"{"https://accounts.x.ai/sign-in":{"key":"redacted"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GROK_RUNTIME_ID, temp.path(), false),
+            Some("grok-login".to_string())
+        );
+    }
+
+    #[test]
+    fn grok_login_auth_store_detects_non_empty_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"{"token":"redacted"}"#).unwrap();
+
+        assert!(active_grok_auth_file_exists(temp.path(), None));
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GROK_RUNTIME_ID, temp.path(), false),
+            Some("grok-login".to_string())
+        );
+    }
+
+    #[test]
     fn ignores_inactive_or_invalid_opencode_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let auth_file = temp
@@ -9372,6 +14577,19 @@ mod tests {
                 "{raw:?} should not count as active OpenCode auth"
             );
         }
+    }
+
+    #[test]
+    fn ignores_empty_persisted_grok_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, "").unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home(GROK_RUNTIME_ID, temp.path(), false),
+            None
+        );
     }
 
     #[test]
@@ -9410,6 +14628,62 @@ mod tests {
             ),
             Some("opencode-login".to_string())
         );
+    }
+
+    #[test]
+    fn grok_auth_invalidation_blocks_stale_auth_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"{"token":"redacted"}"#).unwrap();
+        let modified_at_ms = fs::metadata(&auth_file)
+            .unwrap()
+            .modified()
+            .ok()
+            .and_then(system_time_epoch_ms)
+            .unwrap();
+
+        assert_eq!(
+            persisted_cli_auth_method_for_home_with_invalidated_at(
+                GROK_RUNTIME_ID,
+                temp.path(),
+                false,
+                Some(modified_at_ms),
+            ),
+            None
+        );
+        assert_eq!(
+            persisted_cli_auth_method_for_home_with_invalidated_at(
+                GROK_RUNTIME_ID,
+                temp.path(),
+                false,
+                Some(modified_at_ms.saturating_sub(1)),
+            ),
+            Some("grok-login".to_string())
+        );
+    }
+
+    #[test]
+    fn grok_login_respects_auth_invalidated_at_ms() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        fs::create_dir_all(auth_file.parent().unwrap()).unwrap();
+        fs::write(&auth_file, r#"{"token":"redacted"}"#).unwrap();
+        let modified_at_ms = fs::metadata(&auth_file)
+            .unwrap()
+            .modified()
+            .ok()
+            .and_then(system_time_epoch_ms)
+            .unwrap();
+
+        assert!(!active_grok_auth_file_exists(
+            temp.path(),
+            Some(modified_at_ms)
+        ));
+        assert!(active_grok_auth_file_exists(
+            temp.path(),
+            Some(modified_at_ms.saturating_sub(1))
+        ));
     }
 
     #[test]
@@ -9495,7 +14769,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_terminal_launch_config_forces_gemini_google_login_method() {
+    fn auth_terminal_launch_config_uses_grok_login_command() {
         let current_exe = std::env::current_exe().unwrap();
         let setup = RuntimeSetupState {
             custom_binary_path: Some(current_exe.display().to_string()),
@@ -9503,34 +14777,37 @@ mod tests {
         };
 
         let config = auth_terminal_launch_config(
-            GEMINI_RUNTIME_ID,
-            "login_with_google",
+            GROK_RUNTIME_ID,
+            "grok-login",
             &setup,
             std::env::current_dir().unwrap(),
         )
         .unwrap();
 
-        assert!(config.args.is_empty());
-        assert_eq!(config.display_name, "Gemini Login");
-        assert_eq!(
-            config
-                .env
-                .get("GEMINI_DEFAULT_AUTH_TYPE")
-                .map(String::as_str),
-            Some("oauth-personal")
-        );
+        assert_eq!(default_terminal_auth_method(GROK_RUNTIME_ID), "grok-login");
+        assert_eq!(config.args, vec!["login".to_string()]);
+        assert_eq!(config.display_name, "Grok Login");
     }
 
     #[test]
-    fn gemini_auth_terminal_success_output_is_detected_before_exit() {
-        assert!(auth_terminal_output_indicates_success(
-            GEMINI_RUNTIME_ID,
-            "\u{1b}[33mAuthentication succeeded\u{1b}[0m\nYou've successfully signed in with Google."
-        ));
-        assert!(!auth_terminal_output_indicates_success(
-            CLAUDE_RUNTIME_ID,
-            "Authentication succeeded"
-        ));
+    fn auth_terminal_launch_config_starts_grok_login() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let config = auth_terminal_launch_config(
+            GROK_RUNTIME_ID,
+            "grok-login",
+            &setup,
+            std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(config.program, current_exe);
+        assert_eq!(config.args, vec!["login".to_string()]);
+        assert_eq!(config.display_name, "Grok Login");
     }
 
     #[test]
@@ -9542,6 +14819,18 @@ mod tests {
         assert!(!auth_terminal_output_indicates_success(
             OPENCODE_RUNTIME_ID,
             "OpenCode login required"
+        ));
+    }
+
+    #[test]
+    fn grok_auth_terminal_success_output_is_detected_before_exit() {
+        assert!(auth_terminal_output_indicates_success(
+            GROK_RUNTIME_ID,
+            "Grok login successful"
+        ));
+        assert!(!auth_terminal_output_indicates_success(
+            GROK_RUNTIME_ID,
+            "Grok login required"
         ));
     }
 
@@ -9570,55 +14859,18 @@ mod tests {
     }
 
     #[test]
-    fn gemini_api_key_setup_persists_across_native_ai_instances() {
-        let temp = tempfile::tempdir().unwrap();
-        let store_path = temp.path().join("runtime-setup.json");
-        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
-        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
-
-        native_ai
-            .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
-                "input": {
-                    "gemini_api_key": {
-                        "action": "set",
-                        "value": "gemini-test-secret",
-                    },
-                },
-            }))
-            .unwrap();
-
-        let encoded = fs::read_to_string(&store_path).unwrap();
-        assert!(!encoded.contains("gemini-test-secret"));
-        assert!(encoded.contains("GEMINI_API_KEY"));
-
-        let rehydrated_native_ai = test_native_ai_with_secret_store(store_path, secrets);
-        let status = rehydrated_native_ai
-            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
-            .unwrap();
-
-        assert_eq!(
-            status.get("auth_ready").and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            status.get("auth_method").and_then(Value::as_str),
-            Some("use_gemini")
-        );
-        assert!(!status.to_string().contains("gemini-test-secret"));
-    }
-
-    #[test]
     fn kilo_api_key_setup_persists_across_native_ai_instances() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
 
         native_ai
             .update_setup(&json!({
                 "runtime_id": KILO_RUNTIME_ID,
                 "input": {
+                    "custom_binary_path": current_exe,
                     "kilo_api_key": {
                         "action": "set",
                         "value": "kilo-test-secret",
@@ -9645,6 +14897,311 @@ mod tests {
             Some("kilo-api-key")
         );
         assert!(!status.to_string().contains("kilo-test-secret"));
+    }
+
+    #[test]
+    fn grok_xai_api_key_setup_persists_across_native_ai_instances() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        let status = native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("xai-api-key")
+        );
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(!encoded.contains("xai-test-secret"));
+        assert!(encoded.contains("XAI_API_KEY"));
+
+        let rehydrated_native_ai = test_native_ai_with_secret_store(store_path, secrets);
+        let status = rehydrated_native_ai
+            .get_setup_status(&json!({ "runtime_id": GROK_RUNTIME_ID }))
+            .unwrap();
+
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("xai-api-key")
+        );
+        assert!(!status.to_string().contains("xai-test-secret"));
+    }
+
+    #[test]
+    fn grok_xai_api_key_is_secret_keyring_value() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-keyring-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("XAI_API_KEY"));
+        assert!(!encoded.contains("xai-keyring-secret"));
+        assert_eq!(
+            secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"),
+            Some("xai-keyring-secret".to_string())
+        );
+    }
+
+    #[test]
+    fn grok_auth_error_detector_matches_cli_auth_failures() {
+        for error in [
+            "Please run grok login to continue",
+            "set XAI_API_KEY before starting",
+            "authentication required",
+            "auth_required",
+            "Unauthorized request",
+            "HTTP 401",
+            "invalid api key",
+            "cached_token is expired",
+        ] {
+            assert!(is_grok_auth_error(error), "{error:?} should be detected");
+        }
+
+        assert!(!is_grok_auth_error("model does not support that option"));
+    }
+
+    #[test]
+    fn grok_login_auth_error_marks_external_auth_invalidated() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let setup_at_start = RuntimeSetupState {
+            auth_method: Some("grok-login".to_string()),
+            auth_ready: true,
+            ..RuntimeSetupState::default()
+        };
+        native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .insert(GROK_RUNTIME_ID.to_string(), setup_at_start.clone());
+
+        native_ai
+            .invalidate_grok_auth_after_session_start_error(
+                GROK_RUNTIME_ID,
+                &setup_at_start,
+                "cached_token unauthorized",
+            )
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should remain");
+        assert_eq!(setup.auth_method.as_deref(), Some("grok-login"));
+        assert!(!setup.auth_ready);
+        assert!(setup.auth_invalidated_at_ms.is_some());
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(GROK_LOGIN_INVALIDATED_MESSAGE)
+        );
+
+        let persisted_setup = native_ai
+            .setup_store
+            .load()
+            .unwrap()
+            .remove(GROK_RUNTIME_ID)
+            .expect("Grok setup should persist invalidated login");
+        assert_eq!(persisted_setup.auth_method.as_deref(), Some("grok-login"));
+        assert!(persisted_setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
+    fn grok_stored_xai_key_auth_error_clears_local_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path, secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-stored-secret",
+                    },
+                },
+            }))
+            .unwrap();
+        assert_eq!(
+            secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"),
+            Some("xai-stored-secret".to_string())
+        );
+
+        let setup_at_start = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should exist");
+        native_ai
+            .invalidate_grok_auth_after_session_start_error(
+                GROK_RUNTIME_ID,
+                &setup_at_start,
+                "401 invalid api key",
+            )
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"), None);
+        let setup = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should remain");
+        assert_eq!(setup.auth_method, None);
+        assert!(!setup.auth_ready);
+        assert_eq!(
+            setup.message.as_deref(),
+            Some(GROK_STORED_XAI_API_KEY_INVALID_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn grok_inherited_xai_key_auth_error_preserves_local_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(FailableRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path, secrets.clone());
+        let current_exe = std::env::current_exe().unwrap();
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "custom_binary_path": current_exe,
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-stored-secret",
+                    },
+                },
+            }))
+            .unwrap();
+
+        let setup_at_start = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should exist");
+        native_ai
+            .invalidate_grok_auth_after_session_start_error(
+                GROK_RUNTIME_ID,
+                &setup_at_start,
+                "unauthorized",
+            )
+            .unwrap();
+
+        let status = native_ai
+            .get_setup_status(&json!({ "runtime_id": GROK_RUNTIME_ID }))
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(
+            secrets.stored_secret(GROK_RUNTIME_ID, "XAI_API_KEY"),
+            Some("xai-stored-secret".to_string())
+        );
+        assert_eq!(
+            status.get("auth_ready").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            status.get("auth_method").and_then(Value::as_str),
+            Some("xai-api-key")
+        );
+        assert_eq!(
+            status.get("message").and_then(Value::as_str),
+            Some(GROK_INHERITED_XAI_API_KEY_INVALID_MESSAGE)
+        );
     }
 
     #[test]
@@ -9676,6 +15233,37 @@ mod tests {
             .expect("OpenCode setup should reload");
         assert_eq!(opencode.auth_method.as_deref(), Some("opencode-login"));
         assert_eq!(opencode.auth_invalidated_at_ms, Some(123));
+    }
+
+    #[test]
+    fn grok_login_selection_persists_without_local_secret() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let store = RuntimeSetupStore::with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+        let mut setup = HashMap::new();
+        setup.insert(
+            GROK_RUNTIME_ID.to_string(),
+            RuntimeSetupState {
+                auth_method: Some("grok-login".to_string()),
+                auth_invalidated_at_ms: Some(123),
+                ..RuntimeSetupState::default()
+            },
+        );
+
+        store.save(&setup).unwrap();
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("grok-login"));
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+
+        let loaded = store.load().unwrap();
+        let grok = loaded
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should reload");
+        assert_eq!(grok.auth_method.as_deref(), Some("grok-login"));
+        assert_eq!(grok.auth_invalidated_at_ms, Some(123));
     }
 
     #[test]
@@ -9730,6 +15318,57 @@ mod tests {
     }
 
     #[test]
+    fn grok_pending_terminal_auth_preserves_disconnect_invalidation_until_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let native_ai = test_native_ai_with_secret_store(
+            store_path.clone(),
+            Arc::new(InMemoryRuntimeSecretStore::default()),
+        );
+
+        native_ai
+            .persist_auth_terminal_pending_setup(
+                GROK_RUNTIME_ID,
+                "grok-login",
+                RuntimeSetupState {
+                    auth_invalidated_at_ms: Some(123),
+                    suppress_persisted_auth: true,
+                    ..RuntimeSetupState::default()
+                },
+            )
+            .unwrap();
+
+        let grok = native_ai
+            .inner
+            .lock()
+            .unwrap()
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .cloned()
+            .expect("Grok setup should be pending");
+        assert_eq!(grok.auth_method.as_deref(), Some("grok-login"));
+        assert!(!grok.auth_ready);
+        assert_eq!(grok.auth_invalidated_at_ms, Some(123));
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+
+        mark_runtime_auth_verified(
+            &native_ai.inner,
+            Some(&native_ai.setup_store),
+            GROK_RUNTIME_ID,
+            "grok-login",
+        );
+
+        let loaded = native_ai.setup_store.load().unwrap();
+        let verified = loaded
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup should persist verified method");
+        assert_eq!(verified.auth_method.as_deref(), Some("grok-login"));
+        assert_eq!(verified.auth_invalidated_at_ms, None);
+    }
+
+    #[test]
     fn update_setup_secret_store_failure_does_not_commit_memory() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -9739,26 +15378,26 @@ mod tests {
 
         let error = native_ai
             .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
+                "runtime_id": KILO_RUNTIME_ID,
                 "input": {
-                    "gemini_api_key": {
+                    "kilo_api_key": {
                         "action": "set",
-                        "value": "gemini-new-secret",
+                        "value": "kilo-new-secret",
                     },
                 },
             }))
             .expect_err("secret store failure should reject setup update");
 
         assert!(error.contains("test set_secret failure"));
-        assert!(!error.contains("gemini-new-secret"));
+        assert!(!error.contains("kilo-new-secret"));
         let state = native_ai.inner.lock().unwrap();
         let setup = state
             .setup
-            .get(GEMINI_RUNTIME_ID)
+            .get(KILO_RUNTIME_ID)
             .cloned()
             .unwrap_or_default();
         assert!(!setup.auth_ready);
-        assert!(!setup.env.contains_key("GEMINI_API_KEY"));
+        assert!(!setup.env.contains_key("KILO_API_KEY"));
     }
 
     #[test]
@@ -9770,11 +15409,11 @@ mod tests {
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "runtimes": {
-                    GEMINI_RUNTIME_ID: {
+                    KILO_RUNTIME_ID: {
                         "custom_binary_path": null,
-                        "auth_method": "use_gemini",
+                        "auth_method": "kilo-api-key",
                         "env": {
-                            "GEMINI_API_KEY": "legacy-gemini-secret"
+                            "KILO_API_KEY": "legacy-kilo-secret"
                         }
                     }
                 }
@@ -9788,7 +15427,7 @@ mod tests {
 
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets);
         let status = native_ai
-            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .get_setup_status(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .unwrap();
 
         assert_eq!(
@@ -9804,26 +15443,26 @@ mod tests {
             .and_then(Value::as_str)
             .expect("setup load failure should be visible");
         assert!(message.contains("Secure credential storage is unavailable"));
-        assert!(!message.contains("legacy-gemini-secret"));
+        assert!(!message.contains("legacy-kilo-secret"));
         assert_eq!(fs::read_to_string(&store_path).unwrap(), original);
 
         let update_error = native_ai
             .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
+                "runtime_id": KILO_RUNTIME_ID,
                 "input": {
-                    "custom_binary_path": temp.path().join("fake-gemini")
+                    "custom_binary_path": temp.path().join("fake-kilo")
                 },
             }))
             .expect_err("updates should not rewrite setup while migration is failing");
         assert!(update_error.contains("Secure credential storage is unavailable"));
-        assert!(!update_error.contains("legacy-gemini-secret"));
+        assert!(!update_error.contains("legacy-kilo-secret"));
         assert_eq!(fs::read_to_string(&store_path).unwrap(), original);
 
         let logout_error = native_ai
-            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .logout(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .expect_err("logout should not rewrite setup while migration is failing");
         assert!(logout_error.contains("Secure credential storage is unavailable"));
-        assert!(!logout_error.contains("legacy-gemini-secret"));
+        assert!(!logout_error.contains("legacy-kilo-secret"));
         assert_eq!(fs::read_to_string(&store_path).unwrap(), original);
     }
 
@@ -9834,14 +15473,6 @@ mod tests {
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets);
 
-        native_ai
-            .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
-                "input": {
-                    "gemini_api_key": { "action": "set", "value": "gemini-secret" },
-                },
-            }))
-            .unwrap();
         native_ai
             .update_setup(&json!({
                 "runtime_id": CODEX_RUNTIME_ID,
@@ -9866,33 +15497,42 @@ mod tests {
                 },
             }))
             .unwrap();
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "xai_api_key": { "action": "set", "value": "xai-secret" },
+                },
+            }))
+            .unwrap();
 
         let encoded = fs::read_to_string(&store_path).unwrap();
-        assert!(!encoded.contains("gemini-secret"));
         assert!(!encoded.contains("openai-secret"));
         assert!(!encoded.contains("claude-secret"));
         assert!(!encoded.contains("kilo-secret"));
+        assert!(!encoded.contains("xai-secret"));
         assert!(encoded.contains("\"secret_env_keys\""));
-        assert!(encoded.contains("GEMINI_API_KEY"));
         assert!(encoded.contains("OPENAI_API_KEY"));
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(encoded.contains("KILO_API_KEY"));
+        assert!(encoded.contains("XAI_API_KEY"));
     }
 
     #[test]
     fn legacy_plaintext_runtime_setup_is_migrated_to_secret_store() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
+        let current_exe = std::env::current_exe().unwrap();
         fs::write(
             &store_path,
             serde_json::to_string_pretty(&json!({
                 "version": 1,
                 "runtimes": {
-                    GEMINI_RUNTIME_ID: {
-                        "custom_binary_path": null,
-                        "auth_method": "use_gemini",
+                    KILO_RUNTIME_ID: {
+                        "custom_binary_path": current_exe,
+                        "auth_method": "kilo-api-key",
                         "env": {
-                            "GEMINI_API_KEY": "legacy-gemini-secret"
+                            "KILO_API_KEY": "legacy-kilo-secret"
                         }
                     }
                 }
@@ -9904,7 +15544,7 @@ mod tests {
 
         let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
         let status = native_ai
-            .get_setup_status(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .get_setup_status(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .unwrap();
 
         assert_eq!(
@@ -9913,13 +15553,13 @@ mod tests {
         );
         assert_eq!(
             secrets
-                .get_secret(GEMINI_RUNTIME_ID, "GEMINI_API_KEY")
+                .get_secret(KILO_RUNTIME_ID, "KILO_API_KEY")
                 .expect("migrated secret should be readable"),
-            Some("legacy-gemini-secret".to_string())
+            Some("legacy-kilo-secret".to_string())
         );
         let migrated = fs::read_to_string(&store_path).unwrap();
         assert!(migrated.contains("\"version\": 2"));
-        assert!(!migrated.contains("legacy-gemini-secret"));
+        assert!(!migrated.contains("legacy-kilo-secret"));
     }
 
     #[test]
@@ -9973,58 +15613,6 @@ mod tests {
     }
 
     #[test]
-    fn logout_removes_persisted_gemini_api_key_setup() {
-        let temp = tempfile::tempdir().unwrap();
-        let store_path = temp.path().join("runtime-setup.json");
-        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
-        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
-
-        native_ai
-            .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
-                "input": {
-                    "gemini_api_key": {
-                        "action": "set",
-                        "value": "gemini-test-secret",
-                    },
-                    "google_api_key": {
-                        "action": "set",
-                        "value": "google-test-secret",
-                    },
-                },
-            }))
-            .unwrap();
-        assert!(store_path.exists());
-
-        native_ai
-            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
-            .unwrap();
-
-        assert!(!store_path.exists());
-        assert_eq!(
-            secrets
-                .get_secret(GEMINI_RUNTIME_ID, "GEMINI_API_KEY")
-                .expect("secret store should remain readable"),
-            None
-        );
-        assert_eq!(
-            secrets
-                .get_secret(GEMINI_RUNTIME_ID, "GOOGLE_API_KEY")
-                .expect("secret store should remain readable"),
-            None
-        );
-        let setup = native_ai.inner.lock().unwrap();
-        let gemini_setup = setup
-            .setup
-            .get(GEMINI_RUNTIME_ID)
-            .expect("Gemini setup entry should remain in memory");
-        assert!(!gemini_setup.env.contains_key("GEMINI_API_KEY"));
-        assert!(!gemini_setup.env.contains_key("GOOGLE_API_KEY"));
-        assert_eq!(gemini_setup.auth_method, None);
-        assert!(!gemini_setup.auth_ready);
-    }
-
-    #[test]
     fn logout_removes_persisted_kilo_api_key_setup() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -10066,6 +15654,51 @@ mod tests {
     }
 
     #[test]
+    fn logout_removes_persisted_grok_xai_api_key_setup() {
+        let temp = tempfile::tempdir().unwrap();
+        let store_path = temp.path().join("runtime-setup.json");
+        let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
+        let native_ai = test_native_ai_with_secret_store(store_path.clone(), secrets.clone());
+
+        native_ai
+            .update_setup(&json!({
+                "runtime_id": GROK_RUNTIME_ID,
+                "input": {
+                    "xai_api_key": {
+                        "action": "set",
+                        "value": "xai-test-secret",
+                    },
+                },
+            }))
+            .unwrap();
+        assert!(store_path.exists());
+
+        native_ai
+            .logout(&json!({ "runtime_id": GROK_RUNTIME_ID }))
+            .unwrap();
+
+        let encoded = fs::read_to_string(&store_path).unwrap();
+        assert!(encoded.contains("auth_invalidated_at_ms"));
+        assert!(!encoded.contains("xai-test-secret"));
+        assert!(!encoded.contains("XAI_API_KEY"));
+        assert_eq!(
+            secrets
+                .get_secret(GROK_RUNTIME_ID, "XAI_API_KEY")
+                .expect("secret store should remain readable"),
+            None
+        );
+        let setup = native_ai.inner.lock().unwrap();
+        let grok_setup = setup
+            .setup
+            .get(GROK_RUNTIME_ID)
+            .expect("Grok setup entry should remain in memory");
+        assert!(!grok_setup.env.contains_key("XAI_API_KEY"));
+        assert_eq!(grok_setup.auth_method, None);
+        assert!(!grok_setup.auth_ready);
+        assert!(grok_setup.auth_invalidated_at_ms.is_some());
+    }
+
+    #[test]
     fn logout_secret_store_failure_does_not_commit_memory() {
         let temp = tempfile::tempdir().unwrap();
         let store_path = temp.path().join("runtime-setup.json");
@@ -10074,11 +15707,11 @@ mod tests {
 
         native_ai
             .update_setup(&json!({
-                "runtime_id": GEMINI_RUNTIME_ID,
+                "runtime_id": KILO_RUNTIME_ID,
                 "input": {
-                    "gemini_api_key": {
+                    "kilo_api_key": {
                         "action": "set",
-                        "value": "gemini-test-secret",
+                        "value": "kilo-test-secret",
                     },
                 },
             }))
@@ -10086,73 +15719,25 @@ mod tests {
 
         secrets.fail_delete(true);
         let error = native_ai
-            .logout(&json!({ "runtime_id": GEMINI_RUNTIME_ID }))
+            .logout(&json!({ "runtime_id": KILO_RUNTIME_ID }))
             .expect_err("secret store delete failure should reject logout");
 
         assert!(error.contains("test delete_secret failure"));
-        assert!(!error.contains("gemini-test-secret"));
+        assert!(!error.contains("kilo-test-secret"));
         assert_eq!(
-            secrets.stored_secret(GEMINI_RUNTIME_ID, "GEMINI_API_KEY"),
-            Some("gemini-test-secret".to_string())
+            secrets.stored_secret(KILO_RUNTIME_ID, "KILO_API_KEY"),
+            Some("kilo-test-secret".to_string())
         );
         let setup = native_ai.inner.lock().unwrap();
-        let gemini_setup = setup
+        let kilo_setup = setup
             .setup
-            .get(GEMINI_RUNTIME_ID)
-            .expect("Gemini setup should remain committed after failed logout");
-        assert!(gemini_setup.auth_ready);
-        assert_eq!(gemini_setup.auth_method.as_deref(), Some("use_gemini"));
+            .get(KILO_RUNTIME_ID)
+            .expect("Kilo setup should remain committed after failed logout");
+        assert!(kilo_setup.auth_ready);
+        assert_eq!(kilo_setup.auth_method.as_deref(), Some("kilo-api-key"));
         assert_eq!(
-            gemini_setup.env.get("GEMINI_API_KEY").map(String::as_str),
-            Some("gemini-test-secret")
-        );
-    }
-
-    #[test]
-    fn gemini_acp_session_cwd_uses_node_friendly_separators() {
-        let cwd = PathBuf::from(r"C:\Users\jsgrr\Vault");
-
-        let gemini_cwd = acp_session_wire_cwd(GEMINI_RUNTIME_ID, &cwd);
-        let codex_cwd = acp_session_wire_cwd(CODEX_RUNTIME_ID, &cwd);
-
-        assert_eq!(gemini_cwd.to_string_lossy(), "C:/Users/jsgrr/Vault");
-        assert_eq!(codex_cwd, cwd);
-    }
-
-    #[test]
-    fn gemini_acp_session_cwd_strips_windows_verbatim_prefix() {
-        let cwd = PathBuf::from(r"\\?\C:\Users\jsgrr\Vault");
-        let unc = PathBuf::from(r"\\?\UNC\server\share\Vault");
-
-        assert_eq!(
-            acp_session_wire_cwd(GEMINI_RUNTIME_ID, &cwd).to_string_lossy(),
-            "C:/Users/jsgrr/Vault"
-        );
-        assert_eq!(
-            acp_process_launch_cwd(GEMINI_RUNTIME_ID, &cwd).to_string_lossy(),
-            "C:/Users/jsgrr/Vault"
-        );
-        assert_eq!(
-            acp_session_wire_cwd(GEMINI_RUNTIME_ID, &unc).to_string_lossy(),
-            "//server/share/Vault"
-        );
-    }
-
-    #[test]
-    fn acp_process_spec_maps_gemini_api_key_method_to_cli_auth_type() {
-        let current_exe = std::env::current_exe().unwrap();
-        let setup = RuntimeSetupState {
-            custom_binary_path: Some(current_exe.display().to_string()),
-            auth_method: Some("use_gemini".to_string()),
-            ..RuntimeSetupState::default()
-        };
-
-        let spec = acp_process_spec(GEMINI_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
-            .expect("Gemini ACP process spec should resolve");
-
-        assert_eq!(
-            spec.env.get("GEMINI_DEFAULT_AUTH_TYPE").map(String::as_str),
-            Some("gemini-api-key")
+            kilo_setup.env.get("KILO_API_KEY").map(String::as_str),
+            Some("kilo-test-secret")
         );
     }
 
@@ -10175,6 +15760,389 @@ mod tests {
             spec.env.get("KILO_API_KEY").map(String::as_str),
             Some("kilo-test-secret")
         );
+    }
+
+    #[test]
+    fn acp_process_spec_injects_xai_api_key_from_setup_env() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(
+            spec.env.get("XAI_API_KEY").map(String::as_str),
+            Some("xai-test-secret")
+        );
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map API key auth")
+            .expect("Grok API key auth should request an ACP authenticate call");
+
+        assert_eq!(handshake_request.method_id, "xai.api_key");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn grok_acp_process_spec_uses_no_auto_update_agent_stdio() {
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        assert_eq!(spec.program, current_exe);
+        assert_eq!(
+            spec.args,
+            vec![
+                "--no-auto-update".to_string(),
+                "agent".to_string(),
+                "stdio".to_string()
+            ]
+        );
+        assert_eq!(spec.runtime_id, GROK_RUNTIME_ID);
+        assert!(spec.auth_handshake.is_some());
+    }
+
+    #[test]
+    fn grok_auth_handshake_selects_xai_api_key() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map API key auth")
+            .expect("Grok API key auth should request an ACP authenticate call");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(handshake_request.method_id, "xai.api_key");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn acp_process_spec_lets_inherited_xai_api_key_override_stored_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-stored-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        assert_eq!(
+            inherited_auth_method(GROK_RUNTIME_ID, true, None),
+            Some("xai-api-key".to_string())
+        );
+        assert_eq!(spec.env.get("XAI_API_KEY"), None);
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_process_spec_lets_ready_stored_xai_key_override_inherited_secret() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-stored-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            auth_ready: true,
+            env,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+
+        assert_eq!(
+            spec.env.get("XAI_API_KEY").map(String::as_str),
+            Some("xai-stored-secret")
+        );
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_auth_handshake_maps_grok_login_to_cached_token() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("grok-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map login auth")
+            .expect("Grok login auth should request an ACP authenticate call");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(handshake_request.method_id, "cached_token");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn grok_auth_handshake_selects_cached_token() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("grok-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map login auth")
+            .expect("Grok login auth should request an ACP authenticate call");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert_eq!(handshake_request.method_id, "cached_token");
+        assert_eq!(
+            handshake_request
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("headless"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn acp_auth_handshake_uses_inherited_xai_key_when_grok_login_is_unverified() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::set_var("XAI_API_KEY", "xai-env-secret");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("grok-login".to_string()),
+            auth_ready: false,
+            ..RuntimeSetupState::default()
+        };
+
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let handshake_request = acp_auth_handshake_request(&spec)
+            .expect("Grok handshake should map inherited API key auth")
+            .expect("Inherited xAI API key should request an ACP authenticate call");
+
+        assert_eq!(spec.auth_method.as_deref(), Some("xai-api-key"));
+        assert_eq!(handshake_request.method_id, "xai.api_key");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_auth_handshake_is_grok_only_and_requires_selected_auth() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let grok_setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            suppress_persisted_auth: true,
+            ..RuntimeSetupState::default()
+        };
+        let grok_spec = acp_process_spec(
+            GROK_RUNTIME_ID,
+            &grok_setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("Grok ACP process spec should resolve");
+
+        assert!(acp_auth_handshake_request(&grok_spec)
+            .expect("Missing selected auth should not fail")
+            .is_none());
+
+        let codex_setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("codex-api-key".to_string()),
+            ..RuntimeSetupState::default()
+        };
+        let codex_spec = acp_process_spec(
+            CODEX_RUNTIME_ID,
+            &codex_setup,
+            std::env::current_dir().unwrap(),
+        )
+        .expect("Codex ACP process spec should resolve");
+
+        assert!(acp_auth_handshake_request(&codex_spec)
+            .expect("Non-Grok runtime should not need a handshake")
+            .is_none());
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn acp_initialize_response_auth_method_validation_matches_acp_ids() {
+        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
+            agent_client_protocol::schema::AuthMethod::Agent(
+                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
+            ),
+        ]);
+
+        assert!(acp_initialize_response_has_auth_method(
+            &response,
+            "cached_token"
+        ));
+        assert!(!acp_initialize_response_has_auth_method(
+            &response,
+            "xai.api_key"
+        ));
+    }
+
+    #[test]
+    fn acp_prompt_capabilities_copy_image_support_from_initialize_response() {
+        let response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
+            agent_client_protocol::schema::AgentCapabilities::new().prompt_capabilities(
+                agent_client_protocol::schema::PromptCapabilities::new()
+                    .image(true)
+                    .embedded_context(true),
+            ),
+        );
+
+        let capabilities = prompt_capabilities_from_initialize_response(&response);
+
+        assert!(capabilities.image);
+        assert!(capabilities.embedded_context);
+    }
+
+    #[test]
+    fn grok_auth_handshake_rejects_missing_advertised_method() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap();
+        let previous = std::env::var_os("XAI_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+
+        let current_exe = std::env::current_exe().unwrap();
+        let mut env = HashMap::new();
+        env.insert("XAI_API_KEY".to_string(), "xai-test-secret".to_string());
+        let setup = RuntimeSetupState {
+            custom_binary_path: Some(current_exe.display().to_string()),
+            auth_method: Some("xai-api-key".to_string()),
+            env,
+            ..RuntimeSetupState::default()
+        };
+        let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
+            .expect("Grok ACP process spec should resolve");
+        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
+            agent_client_protocol::schema::AuthMethod::Agent(
+                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
+            ),
+        ]);
+
+        let error = validate_acp_auth_handshake_request(&spec, &response)
+            .expect_err("Missing xai.api_key should be rejected");
+
+        match previous {
+            Some(value) => std::env::set_var("XAI_API_KEY", value),
+            None => std::env::remove_var("XAI_API_KEY"),
+        }
+
+        assert!(error.contains("Grok ACP runtime did not advertise"));
+        assert!(error.contains("xai.api_key"));
     }
 
     #[test]

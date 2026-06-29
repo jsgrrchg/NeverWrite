@@ -151,34 +151,26 @@ impl VaultIndex {
         created_at: u64,
         size: u64,
     ) {
-        self.register_pdf_metadata(
-            doc.id.clone(),
-            doc.path.clone(),
-            doc.title.clone(),
-            doc.page_count,
+        self.register_pdf_metadata(PdfMetadata {
+            id: doc.id.clone(),
+            path: doc.path.clone(),
+            title: doc.title.clone(),
+            page_count: doc.page_count,
             modified_at,
             created_at,
             size,
-        );
+        });
     }
 
-    pub fn register_pdf_metadata(
-        &mut self,
-        id: NoteId,
-        path: neverwrite_types::NotePath,
-        title: String,
-        page_count: usize,
-        modified_at: u64,
-        created_at: u64,
-        size: u64,
-    ) {
-        let metadata_id = id.clone();
+    pub fn register_pdf_metadata(&mut self, metadata: PdfMetadata) {
+        let id = metadata.id.clone();
         self.pdf_search_index.insert(
             id.clone(),
             SearchEntry {
-                title_lower: title.to_lowercase(),
+                title_lower: metadata.title.to_lowercase(),
                 path_lower: id.0.to_lowercase(),
-                file_name_lower: path
+                file_name_lower: metadata
+                    .path
                     .0
                     .file_name()
                     .and_then(|value| value.to_str())
@@ -186,18 +178,7 @@ impl VaultIndex {
                     .unwrap_or_else(|| id.0.rsplit('/').next().unwrap_or(&id.0).to_lowercase()),
             },
         );
-        self.pdf_metadata.insert(
-            id,
-            PdfMetadata {
-                id: metadata_id,
-                path,
-                title,
-                page_count,
-                modified_at,
-                created_at,
-                size,
-            },
-        );
+        self.pdf_metadata.insert(id, metadata);
     }
 
     pub fn remove_pdf(&mut self, pdf_id: &NoteId) {
@@ -210,18 +191,9 @@ impl VaultIndex {
         self.register_pdf(doc, modified_at, created_at, size);
     }
 
-    pub fn reindex_pdf_metadata(
-        &mut self,
-        id: NoteId,
-        path: neverwrite_types::NotePath,
-        title: String,
-        page_count: usize,
-        modified_at: u64,
-        created_at: u64,
-        size: u64,
-    ) {
-        self.remove_pdf(&id);
-        self.register_pdf_metadata(id, path, title, page_count, modified_at, created_at, size);
+    pub fn reindex_pdf_metadata(&mut self, metadata: PdfMetadata) {
+        self.remove_pdf(&metadata.id);
+        self.register_pdf_metadata(metadata);
     }
 
     pub fn get_note_metadata(&self, note_id: &NoteId) -> Option<&NoteMetadata> {
@@ -993,6 +965,8 @@ struct ResolveCacheKey {
     from_parent_dir: String,
 }
 
+type ResolveCache = Arc<Mutex<HashMap<ResolveCacheKey, Option<NoteId>>>>;
+
 struct ResolvedChunk {
     forward_links: Vec<(NoteId, Vec<NoteId>)>,
     backlinks: Vec<(NoteId, NoteId)>,
@@ -1024,7 +998,7 @@ impl ResolverContext {
         &self,
         link: &PreparedLink,
         from_parent_dir: &str,
-        cache: Option<&Arc<Mutex<HashMap<ResolveCacheKey, Option<NoteId>>>>>,
+        cache: Option<&ResolveCache>,
     ) -> Option<NoteId> {
         if let Some(cache) = cache {
             let key = ResolveCacheKey {
@@ -1260,12 +1234,10 @@ fn suggestion_prefix_keys(value: &str) -> Vec<String> {
 }
 
 fn suggestion_lookup_key(value: &str) -> &str {
-    let mut count = 0;
-    for (index, _) in value.char_indices() {
+    for (count, (index, _)) in value.char_indices().enumerate() {
         if count == MAX_SUGGESTION_PREFIX_CHARS {
             return &value[..index];
         }
-        count += 1;
     }
     value
 }

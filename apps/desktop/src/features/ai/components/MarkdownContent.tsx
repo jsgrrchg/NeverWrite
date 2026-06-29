@@ -328,6 +328,34 @@ type InlineContextMenuHandler = (
     reference: string,
 ) => void;
 
+function renderExternalLink(key: number, href: string, label = href) {
+    return (
+        <a
+            key={key}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+                color: "var(--accent)",
+                whiteSpace: "normal",
+                overflowWrap: "anywhere",
+                wordBreak: "break-word",
+            }}
+            className="underline"
+        >
+            {label}
+        </a>
+    );
+}
+
+function splitTrailingUrlPunctuation(url: string) {
+    const match = /^(.+?)([.,!?;:]*)$/.exec(url);
+    return {
+        href: match?.[1] ?? url,
+        trailing: match?.[2] ?? "",
+    };
+}
+
 function renderInlineMarkdown(
     text: string,
     pillMetrics: ChatPillMetrics,
@@ -337,9 +365,9 @@ function renderInlineMarkdown(
     onFileContextMenu?: InlineContextMenuHandler,
 ): Array<string | ReactElement> {
     const parts: Array<string | ReactElement> = [];
-    // Process: wikilinks, inline code, bold, italic, links, and absolute vault file paths.
+    // Process: wikilinks, inline code, bold, italic, links, raw URLs, and absolute vault file paths.
     const inlineRegex =
-        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|((?<![\w\u00C0-\u024F])(?:\/)[\w\u00C0-\u024F~.()/-]+(?::\d+|#L\d+)?)/g;
+        /(\[\[[^\]]+\]\])|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))|(\bhttps?:\/\/[^\s<>"']+)|((?<![\w\u00C0-\u024F])(?:\/)[\w\u00C0-\u024F~.()/-]+(?::\d+|#L\d+)?)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let keyIndex = 0;
@@ -592,26 +620,16 @@ function renderInlineMarkdown(
                         />,
                     );
                 } else {
-                    parts.push(
-                        <a
-                            key={key}
-                            href={url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            style={{
-                                color: "var(--accent)",
-                                whiteSpace: "normal",
-                                overflowWrap: "anywhere",
-                                wordBreak: "break-word",
-                            }}
-                            className="underline"
-                        >
-                            {linkMatch[1]}
-                        </a>,
-                    );
+                    parts.push(renderExternalLink(key, url, linkMatch[1]));
                 }
             }
         } else if (match[6]) {
+            const { href, trailing } = splitTrailingUrlPunctuation(full);
+            parts.push(renderExternalLink(key, href));
+            if (trailing) {
+                parts.push(trailing);
+            }
+        } else if (match[7]) {
             // Absolute vault file path.
             const filePath = safeDecodeUriComponent(full);
             const excalidrawRef = parseExcalidrawReference(filePath);
