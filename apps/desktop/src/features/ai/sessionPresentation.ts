@@ -42,11 +42,12 @@ export function getSessionTitleText(session: SessionTitleSession) {
     const custom = session.customTitle?.trim();
     if (custom) return custom;
 
-    const firstUserText = getFirstUserTextMessage(session as AIChatSession);
     const fallbackTitle = session.persistedTitle?.trim();
+    if (fallbackTitle) return fallbackTitle;
 
+    const firstUserText = getFirstUserTextMessage(session as AIChatSession);
     if (!firstUserText) {
-        return fallbackTitle || "New chat";
+        return "New chat";
     }
     return cleanPillMarkers(firstUserText.content).trim() || "New chat";
 }

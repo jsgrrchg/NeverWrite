@@ -4,6 +4,7 @@ import {
     findSessionForHistorySelection,
     getReviewTabTitle,
     getHistorySelectionId,
+    getSessionTitleText,
 } from "./sessionPresentation";
 
 function createSession(
@@ -62,6 +63,43 @@ const runtimes: AIRuntimeDescriptor[] = [
 ];
 
 describe("sessionPresentation history selection", () => {
+    it("prefers manual titles over runtime titles", () => {
+        const session = {
+            ...createSession("live-session-title-1", "history-title-1"),
+            customTitle: "Manual title",
+            persistedTitle: "Runtime title",
+            messages: [
+                {
+                    id: "message-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "First prompt",
+                    timestamp: 1,
+                },
+            ],
+        };
+
+        expect(getSessionTitleText(session)).toBe("Manual title");
+    });
+
+    it("prefers runtime titles over first-message fallback", () => {
+        const session = {
+            ...createSession("live-session-title-2", "history-title-2"),
+            persistedTitle: "Runtime generated title",
+            messages: [
+                {
+                    id: "message-2",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "First prompt",
+                    timestamp: 1,
+                },
+            ],
+        };
+
+        expect(getSessionTitleText(session)).toBe("Runtime generated title");
+    });
+
     it("uses historySessionId as the stable history selection key", () => {
         const session = createSession("live-session-1", "history-1");
 
