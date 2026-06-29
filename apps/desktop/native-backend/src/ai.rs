@@ -21,9 +21,10 @@ use agent_client_protocol::schema::{
     PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionInfoUpdate,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionModeRequest, TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -1271,9 +1272,7 @@ impl NativeAi {
         };
         let setup_for_logout = pending_setup.get(&runtime_id).cloned().unwrap_or_default();
 
-        if runtime_id == CODEX_RUNTIME_ID
-            && setup_for_logout.auth_method.as_deref() == Some("chatgpt")
-        {
+        if should_run_acp_logout(&runtime_id, &setup_for_logout) {
             let spec = acp_process_spec(&runtime_id, &setup_for_logout, cwd)?;
             run_acp_logout(spec)?;
         }
@@ -3525,9 +3524,29 @@ impl NativeAcpClient {
                     map_available_commands_update(&session_id, update),
                 );
             }
+            SessionUpdate::SessionInfoUpdate(update) => {
+                self.apply_session_info_update(&session_id, update);
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn apply_session_info_update(&self, session_id: &str, update: SessionInfoUpdate) {
+        let Some(next_title) = update.title.as_opt_ref().map(|title| title.cloned()) else {
+            return;
+        };
+        let session = self.session_state.lock().ok().and_then(|mut state| {
+            let managed = state.sessions.get_mut(session_id)?;
+            if managed.session.title == next_title {
+                return None;
+            }
+            managed.session.title = next_title;
+            Some(managed.session.clone())
+        });
+        if let Some(session) = session {
+            self.emit(AI_SESSION_UPDATED_EVENT, session);
+        }
     }
 
     fn should_suppress_internal_text_chunk_for_session(
@@ -7661,6 +7680,18 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     }
 }
 
+fn should_run_acp_logout(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
+    match (runtime_id, setup.auth_method.as_deref()) {
+        (CODEX_RUNTIME_ID, Some("chatgpt")) => true,
+        (CLAUDE_RUNTIME_ID, Some("claude-ai-login" | "claude-login")) => true,
+        (CLAUDE_RUNTIME_ID, Some("console-login")) => !setup
+            .env
+            .get("ANTHROPIC_AUTH_TOKEN")
+            .is_some_and(|value| !value.trim().is_empty()),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GrokAuthFailureSource {
     Login,
@@ -10304,6 +10335,93 @@ mod tests {
     }
 
     #[test]
+    fn session_info_update_updates_title_without_timeline_activity() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "claude-session");
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "claude-session",
+            SessionUpdate::SessionInfoUpdate(
+                SessionInfoUpdate::new().title("Investigate startup crash"),
+            ),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("session info update should emit one session update")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("claude-session")
+        );
+        assert_eq!(
+            payload.get("title").and_then(Value::as_str),
+            Some("Investigate startup crash")
+        );
+        assert!(event_rx.try_recv().is_err());
+
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get("claude-session")
+                .and_then(|managed| managed.session.title.as_deref()),
+            Some("Investigate startup crash")
+        );
+    }
+
+    #[test]
+    fn session_info_update_preserves_active_text_streams() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "claude-session");
+        let client = test_client_with_state(event_tx, session_state);
+        client.begin_message("claude-session");
+        while event_rx.try_recv().is_ok() {}
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "claude-session",
+            SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("New title")),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("session info update should emit session update")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_UPDATED_EVENT);
+        assert!(event_rx.try_recv().is_err());
+        assert!(client.has_active_text_message("claude-session", MessageRole::Assistant));
+    }
+
+    #[test]
+    fn session_info_update_ignores_unknown_sessions() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "missing-session",
+            SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Ignored title")),
+        )))
+        .unwrap();
+
+        assert!(event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .is_err());
+    }
+
+    #[test]
     fn child_runtime_updates_do_not_mutate_parent_message_state() {
         let (event_tx, event_rx) = mpsc::channel();
         let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
@@ -11370,6 +11488,44 @@ mod tests {
             Some(false)
         );
         assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn logout_decision_uses_acp_only_for_external_account_auth() {
+        let mut setup = RuntimeSetupState {
+            auth_method: Some("chatgpt".to_string()),
+            ..RuntimeSetupState::default()
+        };
+        assert!(should_run_acp_logout(CODEX_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("openai-api-key".to_string());
+        assert!(!should_run_acp_logout(CODEX_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("claude-ai-login".to_string());
+        assert!(should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("claude-login".to_string());
+        assert!(should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("anthropic-api-key".to_string());
+        assert!(!should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("gateway".to_string());
+        assert!(!should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+    }
+
+    #[test]
+    fn logout_decision_keeps_locally_stored_console_tokens_local() {
+        let mut setup = RuntimeSetupState {
+            auth_method: Some("console-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+        assert!(should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup
+            .env
+            .insert("ANTHROPIC_AUTH_TOKEN".to_string(), "test-token".to_string());
+        assert!(!should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
     }
 
     #[test]

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.53.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.52.0...v0.53.0) (2026-06-29)
+
+
+### Features
+
+* Add ACP logout support ([#816](https://github.com/agentclientprotocol/claude-agent-acp/issues/816)) ([0a0468c](https://github.com/agentclientprotocol/claude-agent-acp/commit/0a0468c72092b7ceccc551b4353dd92f9c22cbb8))
+* **deps:** bump @anthropic-ai/claude-agent-sdk to 0.3.195 ([#818](https://github.com/agentclientprotocol/claude-agent-acp/issues/818)) ([5dd8746](https://github.com/agentclientprotocol/claude-agent-acp/commit/5dd87462376597eb7b695200f4c716af46e764d6))
+
+
+### Bug Fixes
+
+* Emit tool_call before permission request ([#820](https://github.com/agentclientprotocol/claude-agent-acp/issues/820)) ([c95fc88](https://github.com/agentclientprotocol/claude-agent-acp/commit/c95fc884e82e5a297d1b17b8965690260867835b))
+
+## [0.52.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.51.0...v0.52.0) (2026-06-25)
+
+
+### Features
+
+* Add version flag handling ([#813](https://github.com/agentclientprotocol/claude-agent-acp/issues/813)) ([9616bda](https://github.com/agentclientprotocol/claude-agent-acp/commit/9616bdac47505e4a14c36d667fcffc9ae97e1f2a)), closes [#809](https://github.com/agentclientprotocol/claude-agent-acp/issues/809)
+* **deps-dev:** bump expect-type from 1.3.0 to 1.4.0 in the minor group ([#814](https://github.com/agentclientprotocol/claude-agent-acp/issues/814)) ([61272ac](https://github.com/agentclientprotocol/claude-agent-acp/commit/61272acb30dcafaa2455d334b11ce2ad97339707))
+* **deps:** Update @anthropic-ai/claude-agent-sdk to 0.3.191 ([#810](https://github.com/agentclientprotocol/claude-agent-acp/issues/810)) ([228f02e](https://github.com/agentclientprotocol/claude-agent-acp/commit/228f02ecfb23be16e59e121c6b42c0f2b2f40a4e))
+* Push session title updates at turn end ([#812](https://github.com/agentclientprotocol/claude-agent-acp/issues/812)) ([1fe7ec0](https://github.com/agentclientprotocol/claude-agent-acp/commit/1fe7ec09a3a7bcb7501231dae4b0ffe6ef9b70a4))
+
 ## [0.51.0](https://github.com/agentclientprotocol/claude-agent-acp/compare/v0.50.0...v0.51.0) (2026-06-24)
 
 

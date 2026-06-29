@@ -45,6 +45,7 @@ import {
 import { Pushable } from "../utils.js";
 import {
   deleteSession,
+  getSessionInfo,
   getSessionMessages,
   query,
   SDKAssistantMessage,
@@ -56,6 +57,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   return {
     ...actual,
     deleteSession: vi.fn(),
+    getSessionInfo: vi.fn(),
   };
 });
 import type {
@@ -116,6 +118,7 @@ function mockSessionState(overrides: Record<string, any> = {}) {
     contextWindowSize: 200000,
     taskState: new Map(),
     toolUseCache: {},
+    emittedToolCalls: new Set(),
     messageIdToUuid: new Map(),
     ...overrides,
   } as any;
@@ -1812,6 +1815,7 @@ describe("permission request cancellation", () => {
       contextWindowSize: 200000,
       taskState: new Map(),
       toolUseCache: {},
+      emittedToolCalls: new Set(),
       messageIdToUuid: new Map(),
     } as any;
     return agent.sessions[sessionId]!;
@@ -1833,7 +1837,11 @@ describe("permission request cancellation", () => {
       },
     } as unknown as AcpClient;
     const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
-    injectSession(agent, "session-1");
+    const session = injectSession(agent, "session-1");
+    // The tool_call was already surfaced by the streamed tool_use chunk, so the
+    // permission request goes straight to requestPermission without first
+    // emitting one.
+    session.emittedToolCalls.add("tool-1");
 
     const controller = new AbortController();
     const pending = agent.canUseTool("session-1")("Bash", { command: "ls" }, {
@@ -1867,6 +1875,136 @@ describe("permission request cancellation", () => {
         toolUseID: "tool-1",
       } as any),
     ).rejects.toThrow("Tool use aborted");
+  });
+});
+
+describe("tool_call emitted before permission request", () => {
+  // The SDK can invoke canUseTool before the assistant message's tool_use block
+  // streams to us. ACP clients expect the tool_call a permission request
+  // references to already exist, so the permission flow emits it eagerly and the
+  // streamed chunk later refines it with a tool_call_update (deduped via
+  // session.emittedToolCalls) rather than emitting a duplicate.
+  function setup(overrides: Record<string, any> = {}) {
+    const events: string[] = [];
+    const updates: SessionNotification[] = [];
+    const mockClient = {
+      sessionUpdate: async (n: SessionNotification) => {
+        events.push(`update:${n.update.sessionUpdate}`);
+        updates.push(n);
+      },
+      requestPermission: async () => {
+        events.push("permission");
+        return { outcome: { outcome: "selected", optionId: "allow" } };
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    agent.sessions["session-1"] = mockSessionState(overrides);
+    return { agent, events, updates, session: agent.sessions["session-1"]! };
+  }
+
+  it("emits the tool_call (then asks permission) when the stream hasn't yet", async () => {
+    const { agent, events, updates, session } = setup();
+
+    const result = await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+    } as any);
+
+    // tool_call is sent before the permission request is raised.
+    expect(events).toEqual(["update:tool_call", "permission"]);
+    expect(updates[0].update).toMatchObject({
+      sessionUpdate: "tool_call",
+      toolCallId: "tool-1",
+      status: "pending",
+    });
+    expect(session.emittedToolCalls.has("tool-1")).toBe(true);
+    expect(result).toMatchObject({ behavior: "allow" });
+  });
+
+  it("does not re-emit the tool_call when the stream already surfaced it", async () => {
+    const { agent, events } = setup();
+    agent.sessions["session-1"]!.emittedToolCalls.add("tool-1");
+
+    await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+    } as any);
+
+    expect(events).toEqual(["permission"]);
+  });
+
+  it("refines the eagerly-emitted tool_call with a tool_call_update when the chunk streams", () => {
+    const { session } = setup();
+    // Permission flow already emitted the tool_call for this id.
+    session.emittedToolCalls.add("tool-1");
+
+    const notifications = toAcpNotifications(
+      [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } }],
+      "assistant",
+      "session-1",
+      session.toolUseCache,
+      {} as AcpClient,
+      console,
+      { emittedToolCalls: session.emittedToolCalls },
+    );
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].update.sessionUpdate).toBe("tool_call_update");
+  });
+
+  it("does not emit a tool_call for suppressed tools (TodoWrite) on a permission request", async () => {
+    const { agent, events, session } = setup();
+
+    await agent.canUseTool("session-1")(
+      "TodoWrite",
+      { todos: [{ content: "x", status: "pending" }] },
+      { signal: new AbortController().signal, suggestions: [], toolUseID: "todo-1" } as any,
+    );
+
+    expect(events).toEqual(["permission"]);
+    expect(session.emittedToolCalls.has("todo-1")).toBe(false);
+  });
+
+  it("includes Bash terminal_info _meta in the eager tool_call so terminal output can attach", async () => {
+    const { agent, updates } = setup();
+    // Terminal-capable client (e.g. Zed). The eager tool_call must carry
+    // terminal_info.terminal_id, otherwise the later terminal_output/terminal_exit
+    // updates (keyed by terminal_id) have nothing to attach to.
+    (agent as any).clientCapabilities = { _meta: { terminal_output: true } };
+
+    await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+    } as any);
+
+    expect(updates[0].update).toMatchObject({
+      sessionUpdate: "tool_call",
+      toolCallId: "tool-1",
+      _meta: { terminal_info: { terminal_id: "tool-1" } },
+    });
+  });
+
+  it("prunes the emission marker on a tool_result even when the tool_use was never cached", () => {
+    const { session } = setup();
+    // Eager-emitted via the permission flow, but the tool_use chunk never
+    // streamed (e.g. cancelled), so toolUseCache has no entry for it.
+    session.emittedToolCalls.add("tool-1");
+
+    toAcpNotifications(
+      [{ type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "x" }] }],
+      "user",
+      "session-1",
+      session.toolUseCache,
+      {} as AcpClient,
+      // Silence the expected "tool result for tool use that wasn't tracked" log.
+      { log: () => {}, error: () => {} },
+      { emittedToolCalls: session.emittedToolCalls },
+    );
+
+    expect(session.emittedToolCalls.has("tool-1")).toBe(false);
   });
 });
 
@@ -1927,6 +2065,12 @@ describe("runPromptWithCancellation", () => {
 });
 
 describe("stop reason propagation", () => {
+  // The title-update tests set `getSessionInfo` to resolve a title; reset it so
+  // that value can't leak into other turn-end (idle) assertions in this block.
+  beforeEach(() => {
+    vi.mocked(getSessionInfo).mockReset();
+  });
+
   function createMockAgent() {
     const mockClient = {
       sessionUpdate: async () => {},
@@ -2322,6 +2466,98 @@ describe("stop reason propagation", () => {
     expect(chunkTexts).toContain("between-turn background note");
   });
 
+  it("pushes a session_info_update when the SDK generates a title at turn-end", async () => {
+    const sessionUpdates: any[] = [];
+    const mockClient = {
+      sessionUpdate: async (u: any) => {
+        sessionUpdates.push(u);
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+
+    vi.mocked(getSessionInfo).mockResolvedValue({
+      sessionId: "test-session",
+      summary: "Fix the flaky title test",
+      lastModified: 1_700_000_000_000,
+    } as any);
+
+    const input = new Pushable<any>();
+    async function* messageGenerator() {
+      const iter = input[Symbol.asyncIterator]();
+      const { value: userMessage } = await iter.next();
+      yield userEcho(userMessage);
+      yield createResultMessage({ subtype: "success", stop_reason: "end_turn", is_error: false });
+      yield { type: "system", subtype: "session_state_changed", state: "idle" };
+    }
+
+    agent.sessions["test-session"] = mockSessionState({
+      query: wrapQuery(messageGenerator()),
+      input,
+    });
+
+    await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "test" }],
+    });
+    await agent.sessions["test-session"]?.consumer;
+
+    const titleUpdate = sessionUpdates.find(
+      (u) => u.update?.sessionUpdate === "session_info_update",
+    );
+    expect(titleUpdate?.update).toEqual({
+      sessionUpdate: "session_info_update",
+      title: "Fix the flaky title test",
+      updatedAt: new Date(1_700_000_000_000).toISOString(),
+    });
+    expect(getSessionInfo).toHaveBeenCalledWith("test-session", { dir: "/test" });
+  });
+
+  it("does not re-push session_info_update when the title is unchanged", async () => {
+    const sessionUpdates: any[] = [];
+    const mockClient = {
+      sessionUpdate: async (u: any) => {
+        sessionUpdates.push(u);
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+
+    vi.mocked(getSessionInfo).mockResolvedValue({
+      sessionId: "test-session",
+      summary: "Stable title",
+      lastModified: 1_700_000_000_000,
+    } as any);
+
+    const input = new Pushable<any>();
+    async function* messageGenerator() {
+      const iter = input[Symbol.asyncIterator]();
+      // Two turns, each ending in idle, but the title never changes.
+      for (let i = 0; i < 2; i++) {
+        const { value: userMessage } = await iter.next();
+        yield userEcho(userMessage);
+        yield createResultMessage({
+          subtype: "success",
+          stop_reason: "end_turn",
+          is_error: false,
+        });
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      }
+    }
+
+    agent.sessions["test-session"] = mockSessionState({
+      query: wrapQuery(messageGenerator()),
+      input,
+    });
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "one" }] });
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "two" }] });
+    await agent.sessions["test-session"]?.consumer;
+
+    const titleUpdates = sessionUpdates.filter(
+      (u) => u.update?.sessionUpdate === "session_info_update",
+    );
+    expect(titleUpdates).toHaveLength(1);
+  });
+
   it("should throw internal error for success with is_error true and no max_tokens", async () => {
     const agent = createMockAgent();
     injectSession(agent, [
@@ -2423,6 +2659,24 @@ describe("stop reason propagation", () => {
   });
 });
 
+describe("logout", () => {
+  function createMockAgent() {
+    const mockClient = {
+      sessionUpdate: async () => {},
+    } as unknown as AcpClient;
+    return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+  }
+
+  it("advertises the logout capability during initialize", async () => {
+    const agent = createMockAgent();
+    const response = await agent.initialize({
+      protocolVersion: 1,
+      clientCapabilities: {},
+    });
+    expect(response.agentCapabilities?.auth?.logout).toEqual({});
+  });
+});
+
 describe("session/close", () => {
   function createMockAgent() {
     const mockClient = {
@@ -2464,6 +2718,7 @@ describe("session/close", () => {
       contextWindowSize: 200000,
       taskState: new Map(),
       toolUseCache: {},
+      emittedToolCalls: new Set(),
       messageIdToUuid: new Map(),
     };
     return agent.sessions[sessionId]!;
@@ -2549,6 +2804,7 @@ describe("session/delete", () => {
       contextWindowSize: 200000,
       taskState: new Map(),
       toolUseCache: {},
+      emittedToolCalls: new Set(),
       messageIdToUuid: new Map(),
     };
     return agent.sessions[sessionId]!;
@@ -2651,6 +2907,7 @@ describe("getOrCreateSession param change detection", () => {
       contextWindowSize: 200000,
       taskState: new Map(),
       toolUseCache: {},
+      emittedToolCalls: new Set(),
       messageIdToUuid: new Map(),
     };
     return agent.sessions[sessionId]!;
@@ -4865,6 +5122,7 @@ describe("post-error recovery", () => {
       contextWindowSize: 200000,
       taskState: new Map(),
       toolUseCache: {},
+      emittedToolCalls: new Set(),
       messageIdToUuid: new Map(),
     };
     return { interrupt };
@@ -5435,6 +5693,7 @@ describe("session/cancel wedge recovery (issue #680)", () => {
       contextWindowSize: 200000,
       taskState: new Map(),
       toolUseCache: {},
+      emittedToolCalls: new Set(),
       messageIdToUuid: new Map(),
     };
     return { interrupt };
@@ -5888,6 +6147,7 @@ describe("agent selection config option", () => {
         contextWindowSize: 200000,
         taskState: new Map(),
         toolUseCache: {},
+        emittedToolCalls: new Set(),
         messageIdToUuid: new Map(),
       };
       return { session: agent.sessions[sessionId]!, applyFlagSettings };

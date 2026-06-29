@@ -664,6 +664,26 @@ describe("chatStore", () => {
         ).toBe("streaming");
     });
 
+    it("preserves manual renames when runtime titles arrive later", () => {
+        const session = {
+            ...createSessionWithTrackedFiles("live-session", []),
+            persistedTitle: "Initial runtime title",
+            customTitle: "Manual title",
+            runtimeState: "live" as const,
+        };
+
+        useChatStore.getState().upsertSession(session, true);
+        useChatStore.getState().upsertSession({
+            ...session,
+            persistedTitle: "Late ACP title",
+            customTitle: null,
+        });
+
+        const updated = useChatStore.getState().sessionsById["live-session"];
+        expect(updated?.customTitle).toBe("Manual title");
+        expect(updated?.persistedTitle).toBe("Late ACP title");
+    });
+
     it("continues rejecting unexpected non-active root session upserts", () => {
         useChatStore
             .getState()

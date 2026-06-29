@@ -109,6 +109,8 @@ describe("session config options", () => {
             })),
             configOptions: structuredClone(MOCK_CONFIG_OPTIONS),
             contextWindowSize: 200000,
+            toolUseCache: {},
+            emittedToolCalls: new Set(),
         };
     }
     beforeEach(async () => {
@@ -905,6 +907,9 @@ describe("session config options", () => {
                     { id: "dontAsk", name: "Don't Ask", description: "Deny if not pre-approved" },
                 ],
             };
+            // The tool_call was already surfaced (by the streamed tool_use chunk), so
+            // the permission request won't re-emit one — keep this focused on options.
+            session.emittedToolCalls.add("toolu_1");
             const canUseTool = agent.canUseTool(SESSION_ID);
             const signal = new AbortController().signal;
             try {
@@ -931,6 +936,10 @@ describe("session config options", () => {
                 ],
             };
             permissionResponse = { outcome: { outcome: "selected", optionId: "auto" } };
+            // The tool_call was already surfaced (by the streamed tool_use chunk), so
+            // the permission request won't re-emit one — the deny path below should
+            // produce no session updates at all.
+            session.emittedToolCalls.add("toolu_2");
             const canUseTool = agent.canUseTool(SESSION_ID);
             const result = await canUseTool("ExitPlanMode", { plan: "do stuff" }, { signal: new AbortController().signal, suggestions: undefined, toolUseID: "toolu_2" });
             expect(capturedPermissionRequest).not.toBeNull();
@@ -951,6 +960,9 @@ describe("session config options", () => {
                     { id: "dontAsk", name: "Don't Ask", description: "Deny if not pre-approved" },
                 ],
             };
+            // The tool_call was already surfaced (by the streamed tool_use chunk), so
+            // the permission request won't re-emit one — keep this focused on options.
+            session.emittedToolCalls.add("toolu_3");
             const canUseTool = agent.canUseTool(SESSION_ID);
             const signal = new AbortController().signal;
             try {
