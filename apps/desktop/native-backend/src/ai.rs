@@ -21,9 +21,10 @@ use agent_client_protocol::schema::{
     PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionModeState,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest,
-    TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionInfoUpdate,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionModeRequest, TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -3523,9 +3524,29 @@ impl NativeAcpClient {
                     map_available_commands_update(&session_id, update),
                 );
             }
+            SessionUpdate::SessionInfoUpdate(update) => {
+                self.apply_session_info_update(&session_id, update);
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn apply_session_info_update(&self, session_id: &str, update: SessionInfoUpdate) {
+        let Some(next_title) = update.title.as_opt_ref().map(|title| title.cloned()) else {
+            return;
+        };
+        let session = self.session_state.lock().ok().and_then(|mut state| {
+            let managed = state.sessions.get_mut(session_id)?;
+            if managed.session.title == next_title {
+                return None;
+            }
+            managed.session.title = next_title;
+            Some(managed.session.clone())
+        });
+        if let Some(session) = session {
+            self.emit(AI_SESSION_UPDATED_EVENT, session);
+        }
     }
 
     fn should_suppress_internal_text_chunk_for_session(
@@ -10311,6 +10332,93 @@ mod tests {
             child.session.runtime_session_id.as_deref(),
             Some(CHILD_RUNTIME_SESSION_ID)
         );
+    }
+
+    #[test]
+    fn session_info_update_updates_title_without_timeline_activity() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "claude-session");
+        let client = test_client_with_state(event_tx, Arc::clone(&session_state));
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "claude-session",
+            SessionUpdate::SessionInfoUpdate(
+                SessionInfoUpdate::new().title("Investigate startup crash"),
+            ),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event {
+            event_name,
+            payload,
+        } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("session info update should emit one session update")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            payload.get("session_id").and_then(Value::as_str),
+            Some("claude-session")
+        );
+        assert_eq!(
+            payload.get("title").and_then(Value::as_str),
+            Some("Investigate startup crash")
+        );
+        assert!(event_rx.try_recv().is_err());
+
+        let state = session_state.lock().unwrap();
+        assert_eq!(
+            state
+                .sessions
+                .get("claude-session")
+                .and_then(|managed| managed.session.title.as_deref()),
+            Some("Investigate startup crash")
+        );
+    }
+
+    #[test]
+    fn session_info_update_preserves_active_text_streams() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let session_state = Arc::new(Mutex::new(NativeAiInner::default()));
+        insert_test_managed_session(&session_state, CLAUDE_RUNTIME_ID, "claude-session");
+        let client = test_client_with_state(event_tx, session_state);
+        client.begin_message("claude-session");
+        while event_rx.try_recv().is_ok() {}
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "claude-session",
+            SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("New title")),
+        )))
+        .unwrap();
+
+        let RpcOutput::Event { event_name, .. } = event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .expect("session info update should emit session update")
+        else {
+            panic!("expected event");
+        };
+        assert_eq!(event_name, AI_SESSION_UPDATED_EVENT);
+        assert!(event_rx.try_recv().is_err());
+        assert!(client.has_active_text_message("claude-session", MessageRole::Assistant));
+    }
+
+    #[test]
+    fn session_info_update_ignores_unknown_sessions() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let client = test_client(event_tx);
+
+        run_client_future(client.session_notification(SessionNotification::new(
+            "missing-session",
+            SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().title("Ignored title")),
+        )))
+        .unwrap();
+
+        assert!(event_rx
+            .recv_timeout(StdDuration::from_millis(250))
+            .is_err());
     }
 
     #[test]
