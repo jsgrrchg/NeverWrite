@@ -1,4 +1,4 @@
-import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
+import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
 import { AgentInfo, CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
@@ -119,12 +119,26 @@ type Session = {
     /** Accumulated task list for the session, keyed by task ID. Task IDs are
      *  per-session, so this state must not be shared across sessions. */
     taskState: TaskState;
+    /** Last session title we pushed to the client via `session_info_update`.
+     *  The SDK auto-generates a title in a background task and persists it to the
+     *  session file; we poll it on each turn-end (`session_state_changed: idle`)
+     *  and only notify the client when it actually changes. Undefined until the
+     *  first title is observed. */
+    lastTitle?: string;
     /** Caches `tool_use` blocks by id so the matching `tool_result` can recover
      *  the tool name/input when mapping it to a `tool_call_update`. Per-session
      *  (tool_use ids are only unique within a session) and pruned at
      *  `tool_result` time so a long-running session doesn't accumulate every
      *  tool call for its whole lifetime. */
     toolUseCache: ToolUseCache;
+    /** Tracks which tool_use ids we've already emitted a `tool_call` for, so the
+     *  second source to encounter a tool call sends a `tool_call_update` instead
+     *  of a duplicate `tool_call`. The SDK can invoke `canUseTool` (→ a permission
+     *  request, which emits the tool_call eagerly so the client has it before
+     *  being asked to approve it) either before or after the assistant message's
+     *  tool_use block streams; this set makes the two paths converge regardless of
+     *  order. Pruned at `tool_result` time alongside `toolUseCache`. */
+    emittedToolCalls: Set<string>;
     /** Maps the ACP `messageId` we expose to clients (see `messageIdForGrouping`)
      *  to the SDK message uuid that the Agent SDK's rewind/resume APIs key on
      *  (`Query.rewindFiles` takes a user-message uuid; `resumeSessionAt` takes an
@@ -285,7 +299,14 @@ export declare class ClaudeAcpAgent {
     resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse>;
     loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse>;
     listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse>;
+    /** Read the SDK-maintained title for a session and, if it changed since the
+     *  last time we looked, notify the client with a `session_info_update`. The
+     *  SDK has no push event for the title it auto-generates in the background, so
+     *  we pull it at turn-end. A missing session file or read error is non-fatal:
+     *  the title is best-effort and another turn will retry. */
+    private maybeUpdateSessionTitle;
     authenticate(_params: AuthenticateRequest): Promise<void>;
+    logout(_params: LogoutRequest): Promise<void>;
     prompt(params: PromptRequest): Promise<PromptResponse>;
     /** Lazily start the per-session consumer that drains the SDK query stream for
      *  the session's whole life. Idempotent: only the first `prompt()` starts it. */
@@ -338,6 +359,14 @@ export declare class ClaudeAcpAgent {
      *  "Tool use aborted" the callers already expect, so a cancelled dialog no
      *  longer leaves the `await` hanging. */
     private requestPermissionFromClient;
+    /** Emit the `tool_call` a permission request references if it hasn't been sent
+     *  yet, so the client has the tool call before being asked to approve it. The
+     *  matching streamed tool_use chunk later refines it with a `tool_call_update`
+     *  instead of emitting a duplicate (see `emittedToolCalls`). Built via the same
+     *  `toolCallNotification` helper as the streamed path so the two are identical.
+     *  Tools the stream renders as a plan (TodoWrite) or suppresses (Task*) are
+     *  skipped so a permission prompt for them never surfaces a stray tool_call. */
+    private ensureToolCallEmitted;
     canUseTool(sessionId: string): CanUseTool;
     /**
      * Handle elicitation requests that originate from MCP servers by forwarding
@@ -399,12 +428,14 @@ export declare function toAcpNotifications(content: string | ContentBlockParam[]
     parentToolUseId?: string | null;
     cwd?: string;
     taskState?: TaskState;
+    emittedToolCalls?: Set<string>;
     messageId?: string;
 }): SessionNotification[];
 export declare function streamEventToAcpNotifications(message: SDKPartialAssistantMessage, sessionId: string, toolUseCache: ToolUseCache, client: AcpClient, logger: Logger, options?: {
     clientCapabilities?: ClientCapabilities;
     cwd?: string;
     taskState?: TaskState;
+    emittedToolCalls?: Set<string>;
     messageId?: string;
 }): SessionNotification[];
 /** Run a `session/prompt` while honoring `$/cancel_request` for it. ACP clients

@@ -1271,9 +1271,7 @@ impl NativeAi {
         };
         let setup_for_logout = pending_setup.get(&runtime_id).cloned().unwrap_or_default();
 
-        if runtime_id == CODEX_RUNTIME_ID
-            && setup_for_logout.auth_method.as_deref() == Some("chatgpt")
-        {
+        if should_run_acp_logout(&runtime_id, &setup_for_logout) {
             let spec = acp_process_spec(&runtime_id, &setup_for_logout, cwd)?;
             run_acp_logout(spec)?;
         }
@@ -7661,6 +7659,18 @@ fn clear_runtime_auth_state(runtime_id: &str, setup: &mut RuntimeSetupState) {
     }
 }
 
+fn should_run_acp_logout(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
+    match (runtime_id, setup.auth_method.as_deref()) {
+        (CODEX_RUNTIME_ID, Some("chatgpt")) => true,
+        (CLAUDE_RUNTIME_ID, Some("claude-ai-login" | "claude-login")) => true,
+        (CLAUDE_RUNTIME_ID, Some("console-login")) => !setup
+            .env
+            .get("ANTHROPIC_AUTH_TOKEN")
+            .is_some_and(|value| !value.trim().is_empty()),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GrokAuthFailureSource {
     Login,
@@ -11370,6 +11380,44 @@ mod tests {
             Some(false)
         );
         assert_eq!(status.get("auth_method").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn logout_decision_uses_acp_only_for_external_account_auth() {
+        let mut setup = RuntimeSetupState {
+            auth_method: Some("chatgpt".to_string()),
+            ..RuntimeSetupState::default()
+        };
+        assert!(should_run_acp_logout(CODEX_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("openai-api-key".to_string());
+        assert!(!should_run_acp_logout(CODEX_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("claude-ai-login".to_string());
+        assert!(should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("claude-login".to_string());
+        assert!(should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("anthropic-api-key".to_string());
+        assert!(!should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup.auth_method = Some("gateway".to_string());
+        assert!(!should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+    }
+
+    #[test]
+    fn logout_decision_keeps_locally_stored_console_tokens_local() {
+        let mut setup = RuntimeSetupState {
+            auth_method: Some("console-login".to_string()),
+            ..RuntimeSetupState::default()
+        };
+        assert!(should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
+
+        setup
+            .env
+            .insert("ANTHROPIC_AUTH_TOKEN".to_string(), "test-token".to_string());
+        assert!(!should_run_acp_logout(CLAUDE_RUNTIME_ID, &setup));
     }
 
     #[test]
