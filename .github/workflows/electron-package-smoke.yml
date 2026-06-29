@@ -264,7 +264,7 @@ jobs:
                   EOF
                   fi
                   sudo apt-get update
-                  sudo apt-get install -y pkg-config libcap-dev
+                  sudo apt-get install -y pkg-config libcap-dev rpm
                   if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
                     sudo apt-get install -y gcc-aarch64-linux-gnu libcap-dev:arm64 libssl-dev:arm64
                     echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
@@ -322,3 +322,12 @@ jobs:
                     --target ${{ matrix.target }} \
                     --version "$VERSION" \
                     --install
+
+            - name: Validate Linux RPM package
+              shell: bash
+              run: |
+                  VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+                  node apps/desktop/scripts/validate-linux-rpm-package.mjs \
+                    --staged-assets-dir "$RUNNER_TEMP/release-assets" \
+                    --target ${{ matrix.target }} \
+                    --version "$VERSION"

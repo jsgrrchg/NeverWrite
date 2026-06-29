@@ -86,7 +86,9 @@ jobs:
 
     build-target:
         name: Build ${{ matrix.target }}
-        needs: prepare
+        needs:
+            - prepare
+            - apt-repository-preflight
         runs-on: ${{ matrix.runner }}
         strategy:
             fail-fast: false
@@ -167,7 +169,7 @@ jobs:
                   EOF
                   fi
                   sudo apt-get update
-                  sudo apt-get install -y pkg-config libcap-dev
+                  sudo apt-get install -y pkg-config libcap-dev gnupg rpm
                   if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
                     sudo apt-get install -y gcc-aarch64-linux-gnu libcap-dev:arm64 libssl-dev:arm64
                     echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
@@ -346,6 +348,33 @@ jobs:
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/binaries/codex-acp"
                   verify_universal "$APP_PATH/Contents/Resources/native-backend/embedded/node/bin/node"
 
+            - name: Sign Linux RPM package
+              if: matrix.platform == 'linux'
+              shell: bash
+              env:
+                  APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+                  APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+                  APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+              run: |
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name}" ]]; then
+                      echo "Missing required GitHub Actions secret: ${name}" >&2
+                      exit 1
+                    fi
+                  done
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  trap 'rm -rf "$GNUPGHOME"' EXIT
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --armor --export "$APT_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
+                  sudo rpm --import "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
+
+                  node scripts/sign-rpm-packages.mjs \
+                    --rpm-dir "$RUNNER_TEMP/electron-dist" \
+                    --key-id "$APT_REPO_GPG_KEY_ID"
+
             - name: Stage release assets and target metadata
               shell: bash
               run: |
@@ -368,6 +397,16 @@ jobs:
                     --target ${{ matrix.target }} \
                     --version "${{ needs.prepare.outputs.version }}" \
                     --install
+
+            - name: Validate Linux RPM package
+              if: matrix.platform == 'linux'
+              shell: bash
+              run: |
+                  node apps/desktop/scripts/validate-linux-rpm-package.mjs \
+                    --staged-assets-dir "$RUNNER_TEMP/release-assets" \
+                    --target ${{ matrix.target }} \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --require-signature
 
             - name: Upload release asset artifact
               uses: actions/upload-artifact@v7
@@ -815,8 +854,8 @@ jobs:
                   }
                   EOF
 
-            - name: Install APT repository tools
-              run: sudo apt-get update && sudo apt-get install -y dpkg gnupg gzip
+            - name: Install Linux repository tools
+              run: sudo apt-get update && sudo apt-get install -y createrepo-c dpkg gnupg gzip rpm
 
             - name: Build APT repository
               shell: bash
@@ -831,6 +870,18 @@ jobs:
                     --repo-slug "${{ needs.prepare.outputs.repo_slug }}" \
                     --suite stable \
                     --component main
+
+            - name: Build DNF repository
+              shell: bash
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  node scripts/build-dnf-repository.mjs \
+                    --version "${{ needs.prepare.outputs.version }}" \
+                    --tag "${{ needs.prepare.outputs.tag }}" \
+                    --release-assets-dir .artifacts/release-assets \
+                    --pages-dir "$PAGES_DIR" \
+                    --repo-slug "${{ needs.prepare.outputs.repo_slug }}"
 
             - name: Sign APT repository
               shell: bash
@@ -859,6 +910,30 @@ jobs:
                     --key-id "$APT_REPO_GPG_KEY_ID" \
                     --suite stable
 
+            - name: Sign DNF repository
+              shell: bash
+              env:
+                  APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+                  APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+                  APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name}" ]]; then
+                      echo "Missing required GitHub Actions secret: ${name}" >&2
+                      exit 1
+                    fi
+                  done
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  trap 'rm -rf "$GNUPGHOME"' EXIT
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  node scripts/sign-dnf-repository.mjs \
+                    --dnf-dir "$PAGES_DIR/dnf" \
+                    --key-id "$APT_REPO_GPG_KEY_ID"
+
             - name: Validate APT repository
               shell: bash
               env:
@@ -871,6 +946,15 @@ jobs:
                     --version "${{ needs.prepare.outputs.version }}" \
                     --suite stable \
                     --component main
+
+            - name: Validate DNF repository
+              shell: bash
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  node scripts/validate-dnf-repository.mjs \
+                    --dnf-dir "$PAGES_DIR/dnf" \
+                    --version "${{ needs.prepare.outputs.version }}"
 
             - name: Validate APT repository with apt
               shell: bash
@@ -909,6 +993,30 @@ jobs:
                       apt-cache policy neverwrite | grep -F "$VERSION"
                       apt-get --print-uris install "neverwrite=$VERSION"
                       apt-get install -y --download-only "neverwrite=$VERSION"
+                    '
+
+            - name: Validate DNF repository with dnf
+              shell: bash
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+                  VERSION: ${{ needs.prepare.outputs.version }}
+              run: |
+                  docker run --rm \
+                    -e VERSION="$VERSION" \
+                    -v "$PAGES_DIR/dnf:/repo:ro" \
+                    fedora:latest \
+                    bash -lc '
+                      set -euo pipefail
+                      cp /repo/neverwrite-archive-keyring.asc /etc/pki/rpm-gpg/
+                      rpm --import /repo/neverwrite-archive-keyring.asc
+                      cp /repo/neverwrite.repo.example /etc/yum.repos.d/neverwrite.repo
+                      sed -i "s|baseurl=.*|baseurl=file:///repo|" /etc/yum.repos.d/neverwrite.repo
+                      sed -i "s|gpgkey=.*|gpgkey=file:///repo/neverwrite-archive-keyring.asc|" /etc/yum.repos.d/neverwrite.repo
+                      dnf -y makecache
+                      dnf info neverwrite
+                      dnf info neverwrite | grep -F "$VERSION"
+                      dnf install -y --downloadonly neverwrite
+                      echo "DNF repository validated successfully."
                     '
 
             - name: Upload APT repository metadata to GitHub release
@@ -958,7 +1066,7 @@ jobs:
                       grep -F "NeverWrite-${VERSION}-amd64.deb" /tmp/neverwrite-uris.txt
                     '
 
-            - name: Publish APT source example to gh-pages
+            - name: Publish Linux repository entrypoints to gh-pages
               shell: bash
               env:
                   PAGES_DIR: ${{ runner.temp }}/gh-pages
@@ -968,15 +1076,20 @@ jobs:
                   rm -rf "$PAGES_DIR/apt/dists" "$PAGES_DIR/apt/pool"
                   cp "$APT_RELEASE_DIR/neverwrite-archive-keyring.asc" "$PAGES_DIR/apt/"
                   cp "$APT_RELEASE_DIR/neverwrite.sources.example" "$PAGES_DIR/apt/"
+                  package_asset="$(find "$PAGES_DIR/apt" "$PAGES_DIR/dnf" -type f \( -name '*.deb' -o -name '*.rpm' \) -print -quit)"
+                  if [[ -n "$package_asset" ]]; then
+                    echo "Package asset must stay on GitHub Releases, not gh-pages: $package_asset" >&2
+                    exit 1
+                  fi
                   (
                     cd "$PAGES_DIR"
                     git config user.name "github-actions[bot]"
                     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                    git add apt .nojekyll
+                    git add apt dnf .nojekyll
                     if git diff --cached --quiet; then
-                      echo "No APT source example changes to publish."
+                      echo "No Linux repository entrypoint changes to publish."
                     else
-                      git commit -m "Publish APT source example for ${{ needs.prepare.outputs.tag }}"
+                      git commit -m "Publish Linux repository entrypoints for ${{ needs.prepare.outputs.tag }}"
                       git push origin HEAD:gh-pages
                     fi
                   )

@@ -121,12 +121,17 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
                 target: [{ target: "nsis" }],
             },
             linux: {
-                target: [{ target: "AppImage" }, { target: "deb" }],
+                target: [{ target: "AppImage" }, { target: "deb" }, { target: "rpm" }],
             },
             deb: {
                 packageName: "neverwrite",
                 artifactName: "${productName}-${version}-${arch}.deb",
                 priority: "optional",
+                publish: null,
+            },
+            rpm: {
+                packageName: "neverwrite",
+                artifactName: "${productName}-${version}-${arch}.rpm",
                 publish: null,
             },
         }),
@@ -158,11 +163,12 @@ test("collectElectronBuildIssues validates the Electron release contract", () =>
             'electron-builder.config.mjs mac.target must include "zip".',
             'electron-builder.config.mjs win.target must include "nsis".',
             'electron-builder.config.mjs linux.target must include "deb".',
+            'electron-builder.config.mjs linux.target must include "rpm".',
         ],
     );
 });
 
-test("collectElectronBuildIssues validates Debian package metadata", () => {
+test("collectElectronBuildIssues validates Debian and RPM package metadata", () => {
     assert.deepEqual(
         collectElectronBuildIssues({
             artifactName: "${productName}-${version}-${os}-${arch}.${ext}",
@@ -182,7 +188,37 @@ test("collectElectronBuildIssues validates Debian package metadata", () => {
                 target: ["nsis"],
             },
             linux: {
-                target: ["AppImage", "deb"],
+                target: ["AppImage", "deb", "rpm"],
+            },
+            deb: {
+                packageName: "neverwrite",
+                artifactName: "${productName}-${version}-${arch}.deb",
+                priority: "optional",
+                publish: null,
+            },
+            rpm: {
+                packageName: "neverwrite",
+                artifactName: "${productName}-${version}-${arch}.rpm",
+                publish: null,
+            },
+        }),
+        [],
+    );
+
+    assert.deepEqual(
+        collectElectronBuildIssues({
+            artifactName: "${productName}-${version}.${ext}",
+            protocols: [],
+            extraResources: [],
+            mac: {
+                minimumSystemVersion: "11.0",
+                target: ["dmg"],
+            },
+            win: {
+                target: [],
+            },
+            linux: {
+                target: ["AppImage"],
             },
             deb: {
                 packageName: "NeverWrite",
@@ -192,6 +228,15 @@ test("collectElectronBuildIssues validates Debian package metadata", () => {
             },
         }),
         [
+            'electron-builder.config.mjs must register the "neverwrite" protocol.',
+            'electron-builder.config.mjs must stage "out/native-backend" into the packaged "native-backend" resources directory.',
+            'electron-builder.config.mjs mac.minimumSystemVersion must be "12.0".',
+            'electron-builder.config.mjs artifactName must include "${arch}" to avoid multi-architecture asset collisions.',
+            "electron-builder.config.mjs must configure afterPack bundle verification.",
+            'electron-builder.config.mjs mac.target must include "zip".',
+            'electron-builder.config.mjs win.target must include "nsis".',
+            'electron-builder.config.mjs linux.target must include "deb".',
+            'electron-builder.config.mjs linux.target must include "rpm".',
             'electron-builder.config.mjs deb.packageName must be "neverwrite".',
             'electron-builder.config.mjs deb.artifactName must include "${arch}" and end with ".deb".',
             'electron-builder.config.mjs deb.priority must be "optional".',

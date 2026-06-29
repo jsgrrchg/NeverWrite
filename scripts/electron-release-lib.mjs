@@ -4,9 +4,12 @@ import {
     buildDebianPackageAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    buildRpmPackageAssetName,
     debianArchForBuildTarget,
+    describeRpmPackage,
     normalizeAppcastChannel,
     normalizeReleaseVersion,
+    rpmArchForBuildTarget,
 } from "./appcast-lib.mjs";
 
 export {
@@ -15,9 +18,12 @@ export {
     buildDebianPackageAssetName,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
+    buildRpmPackageAssetName,
     debianArchForBuildTarget,
+    describeRpmPackage,
     normalizeAppcastChannel,
     normalizeReleaseVersion,
+    rpmArchForBuildTarget,
 };
 
 export const ELECTRON_BUILD_TARGETS = [

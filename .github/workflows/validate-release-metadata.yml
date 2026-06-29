@@ -17,6 +17,7 @@ on:
             - apps/desktop/scripts/stage-electron-release-assets.test.mjs
             - apps/desktop/scripts/stage-electron-sidecar.mjs
             - apps/desktop/scripts/validate-linux-deb-package.mjs
+            - apps/desktop/scripts/validate-linux-rpm-package.mjs
             - apps/desktop/scripts/verify-electron-bundle.mjs
             - apps/desktop/src-electron/**
             - apps/desktop/src/features/settings/SettingsPanel.test.tsx
@@ -29,8 +30,11 @@ on:
             - scripts/build-apt-repository.mjs
             - scripts/build-appcast-manifest.mjs
             - scripts/build-appcast-from-target-metadata.mjs
+            - scripts/build-dnf-repository.mjs
             - scripts/build-platform-validation-pack.mjs
             - scripts/build-release-body.mjs
+            - scripts/dnf-repo-lib.mjs
+            - scripts/dnf-repo.test.mjs
             - scripts/electron-release-lib.mjs
             - scripts/platform-validation-lib.mjs
             - scripts/platform-validation.test.mjs
@@ -40,11 +44,15 @@ on:
             - scripts/release-assets.test.mjs
             - scripts/release-metadata.test.mjs
             - scripts/sign-apt-repository.mjs
+            - scripts/sign-dnf-repository.mjs
+            - scripts/sign-rpm-packages.mjs
             - scripts/validate-appcast-manifest.mjs
             - scripts/validate-apt-repository.mjs
+            - scripts/validate-dnf-repository.mjs
             - scripts/validate-release-metadata.mjs
             - release/appcast/README.md
             - release/apt/README.md
+            - release/dnf/README.md
             - .github/workflows/electron-package-smoke.yml
             - .github/workflows/release-desktop.yml
             - .github/workflows/validate-release-metadata.yml
@@ -85,11 +93,20 @@ jobs:
             - name: Check APT repository scripts
               run: node --check scripts/build-apt-repository.mjs && node --check scripts/sign-apt-repository.mjs && node --check scripts/validate-apt-repository.mjs
 
+            - name: Run DNF repository tests
+              run: node --test scripts/dnf-repo.test.mjs
+
+            - name: Check DNF repository scripts
+              run: node --check scripts/build-dnf-repository.mjs && node --check scripts/sign-dnf-repository.mjs && node --check scripts/sign-rpm-packages.mjs && node --check scripts/validate-dnf-repository.mjs
+
             - name: Run Electron release helper tests
               run: node --test apps/desktop/scripts/electron-builder-config.test.mjs apps/desktop/scripts/stage-electron-release-assets.test.mjs
 
             - name: Check Debian package validation script
               run: node --check apps/desktop/scripts/validate-linux-deb-package.mjs
+
+            - name: Check RPM package validation script
+              run: node --check apps/desktop/scripts/validate-linux-rpm-package.mjs
 
             - name: Run platform validation tests
               run: node --test scripts/platform-validation.test.mjs

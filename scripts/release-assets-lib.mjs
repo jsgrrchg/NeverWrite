@@ -4,8 +4,10 @@ import path from "node:path";
 import {
     BUILD_TARGET_TO_APPCAST_KEY,
     buildDebianPackageAssetName,
+    buildRpmPackageAssetName,
     buildUpdaterReleaseAssetName,
     debianArchForBuildTarget,
+    rpmArchForBuildTarget,
     buildGitHubReleaseAssetUrl,
     buildPublicReleaseAssetName,
     getCanonicalAppBundleName,
@@ -42,6 +44,16 @@ export const PUBLIC_DOWNLOAD_VARIANTS = [
     {
         buildTarget: "x86_64-unknown-linux-gnu",
         platformLabel: "Linux",
+        architectureLabel: "x64",
+    },
+    {
+        buildTarget: "aarch64-unknown-linux-gnu",
+        platformLabel: "Linux Fedora/RHEL",
+        architectureLabel: "ARM64",
+    },
+    {
+        buildTarget: "x86_64-unknown-linux-gnu",
+        platformLabel: "Linux Fedora/RHEL",
         architectureLabel: "x64",
     },
 ];
@@ -248,28 +260,39 @@ export function buildManualDownloadRows(version) {
     const normalizedVersion = normalizeReleaseVersion(version);
     return PUBLIC_DOWNLOAD_VARIANTS.map((variant) => ({
         ...variant,
-        ...(targetPlatformFamily(variant.buildTarget) === "linux"
+        ...(variant.platformLabel === "Linux Fedora/RHEL"
             ? {
-                  platformLabel: "Linux Ubuntu/Debian",
-                  architectureLabel: debianArchForBuildTarget(
+                  architectureLabel: rpmArchForBuildTarget(
                       variant.buildTarget,
                   ),
-                  recommendedAssetName: buildDebianPackageAssetName(
-                      normalizedVersion,
-                      variant.buildTarget,
-                  ),
-                  portableAssetName: buildPublicReleaseAssetName(
-                      normalizedVersion,
-                      variant.buildTarget,
-                  ),
-              }
-            : {
-                  recommendedAssetName: buildPublicReleaseAssetName(
+                  recommendedAssetName: buildRpmPackageAssetName(
                       normalizedVersion,
                       variant.buildTarget,
                   ),
                   portableAssetName: null,
-              }),
+              }
+            : targetPlatformFamily(variant.buildTarget) === "linux"
+              ? {
+                    platformLabel: "Linux Ubuntu/Debian",
+                    architectureLabel: debianArchForBuildTarget(
+                        variant.buildTarget,
+                    ),
+                    recommendedAssetName: buildDebianPackageAssetName(
+                        normalizedVersion,
+                        variant.buildTarget,
+                    ),
+                    portableAssetName: buildPublicReleaseAssetName(
+                        normalizedVersion,
+                        variant.buildTarget,
+                    ),
+                }
+              : {
+                    recommendedAssetName: buildPublicReleaseAssetName(
+                        normalizedVersion,
+                        variant.buildTarget,
+                    ),
+                    portableAssetName: null,
+                }),
     }));
 }
 
@@ -319,6 +342,23 @@ export function buildReleaseBody(version, releaseNotes) {
         "EOF",
         "sudo apt update",
         "sudo apt install neverwrite",
+        "```",
+        "",
+        "For Fedora/RHEL, use the `.rpm` package directly or configure the NeverWrite DNF repository for future system updates.",
+        "DNF repository setup:",
+        "",
+        "```bash",
+        "sudo tee /etc/yum.repos.d/neverwrite.repo >/dev/null <<'EOF'",
+        "[neverwrite]",
+        "name=NeverWrite",
+        "baseurl=https://jsgrrchg.github.io/NeverWrite/dnf",
+        "enabled=1",
+        "gpgcheck=1",
+        "repo_gpgcheck=1",
+        "gpgkey=https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite-archive-keyring.asc",
+        "EOF",
+        "sudo rpm --import https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite-archive-keyring.asc",
+        "sudo dnf install neverwrite",
         "```",
         "",
         "For other Linux distributions or portable use, download the AppImage.",

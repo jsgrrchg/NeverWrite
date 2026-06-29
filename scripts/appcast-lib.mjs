@@ -143,6 +143,28 @@ export function buildDebianPackageAssetName(version, buildTarget) {
     return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-${debianArchForBuildTarget(buildTarget)}.deb`;
 }
 
+export function rpmArchForBuildTarget(buildTarget) {
+    switch (buildTarget) {
+        case "aarch64-unknown-linux-gnu":
+            return "aarch64";
+        case "x86_64-unknown-linux-gnu":
+            return "x86_64";
+        default:
+            throw new Error(
+                `RPM packages are only supported for Linux build targets, received "${buildTarget}".`,
+            );
+    }
+}
+
+export function buildRpmPackageAssetName(version, buildTarget) {
+    const normalizedVersion = normalizeReleaseVersion(version);
+    return `${PUBLIC_PRODUCT_NAME}-${normalizedVersion}-${rpmArchForBuildTarget(buildTarget)}.rpm`;
+}
+
+export function describeRpmPackage(buildTarget) {
+    return `RPM package (.rpm) for ${rpmArchForBuildTarget(buildTarget)}`;
+}
+
 export function getCanonicalAppBundleName() {
     return `${PUBLIC_PRODUCT_NAME}.app`;
 }

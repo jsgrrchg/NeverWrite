@@ -105,6 +105,20 @@ test("buildManualDownloadRows exposes the public installer set for humans", () =
             recommendedAssetName: "NeverWrite-0.2.0-amd64.deb",
             portableAssetName: "NeverWrite-0.2.0-x64.AppImage",
         },
+        {
+            buildTarget: "aarch64-unknown-linux-gnu",
+            platformLabel: "Linux Fedora/RHEL",
+            architectureLabel: "aarch64",
+            recommendedAssetName: "NeverWrite-0.2.0-aarch64.rpm",
+            portableAssetName: null,
+        },
+        {
+            buildTarget: "x86_64-unknown-linux-gnu",
+            platformLabel: "Linux Fedora/RHEL",
+            architectureLabel: "x86_64",
+            recommendedAssetName: "NeverWrite-0.2.0-x86_64.rpm",
+            portableAssetName: null,
+        },
     ]);
 });
 
@@ -118,6 +132,10 @@ test("buildReleaseBody distinguishes manual installers from internal updater ass
     assert.match(body, /NeverWrite_0.2.0_Windows_x64_Setup\.exe/);
     assert.match(body, /NeverWrite-0.2.0-amd64\.deb/);
     assert.match(body, /NeverWrite-0.2.0-x64\.AppImage/);
+    assert.match(body, /NeverWrite-0\.2\.0-x86_64\.rpm/);
+    assert.match(body, /configure the NeverWrite DNF repository/);
+    assert.match(body, /sudo tee \/etc\/yum\.repos\.d\/neverwrite\.repo/);
+    assert.match(body, /repo_gpgcheck=1/);
     assert.match(body, /configure the NeverWrite APT repository/);
     assert.match(body, /neverwrite-archive-keyring\.asc/);
     assert.match(body, /internal updater assets/i);

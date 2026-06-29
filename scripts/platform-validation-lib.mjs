@@ -7,6 +7,7 @@ import {
     ELECTRON_BUILD_TARGETS,
     buildPublishedFeedUrl,
     buildDebianPackageAssetName,
+    buildRpmPackageAssetName,
     describeBuildTarget,
     describeUpdaterArtifactKind,
     feedTargetForBuildTarget,
@@ -158,6 +159,19 @@ function validateAdditionalManualAssets(entry, resolved) {
         if (!hasDebAsset) {
             throw new Error(
                 `Target metadata for ${resolved.buildTarget} must include Debian package ${expectedDebAssetName} in additionalManualAssets.`,
+            );
+        }
+
+        const expectedRpmAssetName = buildRpmPackageAssetName(
+            entry.version,
+            resolved.buildTarget,
+        );
+        const hasRpmAsset = assets.some(
+            (asset) => asset.kind === "rpm" && asset.assetName === expectedRpmAssetName,
+        );
+        if (!hasRpmAsset) {
+            throw new Error(
+                `Target metadata for ${resolved.buildTarget} must include RPM package ${expectedRpmAssetName} in additionalManualAssets.`,
             );
         }
     }
