@@ -1,8 +1,16 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { useEditorStore } from "../../app/store/editorStore";
-import { renderComponent, setEditorTabs } from "../../test/test-utils";
+import {
+    flushPromises,
+    renderComponent,
+    setEditorTabs,
+    setVaultNotes,
+} from "../../test/test-utils";
+import { AIChatComposer } from "../ai/components/AIChatComposer";
+import type { AIComposerPart } from "../ai/types";
 import { EditorPaneContent } from "./EditorPaneContent";
 
 function enableStackedOnFocusedPane() {
@@ -15,7 +23,12 @@ function enableStackedOnFocusedPane() {
 
 function defineElementMetric(
     element: HTMLElement,
-    property: "clientWidth" | "scrollLeft",
+    property:
+        | "clientWidth"
+        | "offsetLeft"
+        | "offsetWidth"
+        | "scrollLeft"
+        | "scrollWidth",
     initialValue: number,
 ) {
     let value = initialValue;
@@ -26,6 +39,63 @@ function defineElementMetric(
             value = next;
         },
     });
+}
+
+function rect({
+    left,
+    top,
+    width,
+    height,
+}: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}) {
+    return {
+        x: left,
+        y: top,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        toJSON: () => ({}),
+    } as DOMRect;
+}
+
+function dispatchPointerEvent(
+    target: EventTarget,
+    type: "pointerdown" | "pointermove" | "pointerup",
+    init: {
+        pointerId: number;
+        button?: number;
+        buttons: number;
+        clientX: number;
+        clientY: number;
+        screenX: number;
+        screenY: number;
+    },
+) {
+    const event = new Event(type, {
+        bubbles: true,
+        cancelable: true,
+    });
+
+    Object.defineProperties(event, {
+        pointerId: { value: init.pointerId },
+        pointerType: { value: "mouse" },
+        isPrimary: { value: true },
+        button: { value: init.button ?? 0 },
+        buttons: { value: init.buttons },
+        clientX: { value: init.clientX },
+        clientY: { value: init.clientY },
+        screenX: { value: init.screenX },
+        screenY: { value: init.screenY },
+    });
+
+    fireEvent(target, event);
 }
 
 async function flushAnimationFrame() {
@@ -60,6 +130,7 @@ function getEditorViewInColumn(tabId: string) {
 
 describe("StackedPaneContent", () => {
     afterEach(() => {
+        vi.useRealTimers();
         vi.restoreAllMocks();
     });
 
@@ -319,5 +390,177 @@ describe("StackedPaneContent", () => {
         betaView = getEditorViewInColumn("n2");
         expect(betaView.scrollDOM.scrollTop).toBe(420);
         expect(betaView.scrollDOM.scrollLeft).toBe(12);
+    });
+
+    it("drops a stacked note tab into the AI composer without moving the tab", async () => {
+        setVaultNotes([
+            {
+                id: "notes/alpha.md",
+                title: "Alpha",
+                path: "/vault/notes/alpha.md",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+            ],
+            "tab-a",
+        );
+        enableStackedOnFocusedPane();
+
+        function ComposerHarness() {
+            const [parts, setParts] = useState<AIComposerPart[]>([]);
+
+            return (
+                <>
+                    <EditorPaneContent />
+                    <AIChatComposer
+                        parts={parts}
+                        notes={[
+                            {
+                                id: "notes/alpha.md",
+                                title: "Alpha",
+                                path: "/vault/notes/alpha.md",
+                            },
+                        ]}
+                        status="idle"
+                        runtimeName="Assistant"
+                        onChange={setParts}
+                        onMentionAttach={vi.fn()}
+                        onFolderAttach={vi.fn()}
+                        onSubmit={vi.fn()}
+                        onStop={vi.fn()}
+                    />
+                </>
+            );
+        }
+
+        const { container } = renderComponent(<ComposerHarness />);
+        await flushPromises();
+
+        const tablist = screen.getByRole("tablist", {
+            name: /stacked tabs/i,
+        });
+        const sourceColumn = container.querySelector(
+            '[data-stacked-column-id="tab-a"]',
+        ) as HTMLElement | null;
+        const secondColumn = container.querySelector(
+            '[data-stacked-column-id="tab-b"]',
+        ) as HTMLElement | null;
+        const sourceSpine = sourceColumn?.querySelector(
+            '[role="tab"][title="Alpha"]',
+        ) as HTMLElement | null;
+        const composerDropZone = container.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        ) as HTMLElement | null;
+        const composerShell = composerDropZone?.querySelector(
+            '[data-testid="chat-composer-shell"]',
+        ) as HTMLElement | null;
+
+        expect(sourceColumn).not.toBeNull();
+        expect(secondColumn).not.toBeNull();
+        expect(sourceSpine).not.toBeNull();
+        expect(composerDropZone).not.toBeNull();
+        expect(composerShell).not.toBeNull();
+
+        vi.spyOn(tablist, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(sourceColumn!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(secondColumn!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 700, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(sourceSpine!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 32, height: 300 }),
+        );
+        vi.spyOn(composerDropZone!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 120, top: 360, width: 520, height: 140 }),
+        );
+
+        defineElementMetric(tablist, "scrollLeft", 0);
+        defineElementMetric(tablist, "clientWidth", 600);
+        defineElementMetric(tablist, "scrollWidth", 1200);
+        defineElementMetric(sourceColumn!, "offsetLeft", 0);
+        defineElementMetric(sourceColumn!, "offsetWidth", 600);
+        defineElementMetric(secondColumn!, "offsetLeft", 600);
+        defineElementMetric(secondColumn!, "offsetWidth", 600);
+
+        await act(async () => {
+            dispatchPointerEvent(sourceSpine!, "pointerdown", {
+                pointerId: 1,
+                button: 0,
+                buttons: 1,
+                clientX: 116,
+                clientY: 64,
+                screenX: 116,
+                screenY: 64,
+            });
+        });
+
+        await flushPromises();
+
+        await act(async () => {
+            dispatchPointerEvent(sourceSpine!, "pointermove", {
+                pointerId: 1,
+                buttons: 1,
+                clientX: 220,
+                clientY: 404,
+                screenX: 220,
+                screenY: 404,
+            });
+            dispatchPointerEvent(window, "pointermove", {
+                pointerId: 1,
+                buttons: 1,
+                clientX: 220,
+                clientY: 404,
+                screenX: 220,
+                screenY: 404,
+            });
+        });
+
+        await waitFor(() => {
+            expect(sourceColumn).toHaveStyle({ opacity: "0.5" });
+        });
+        expect(composerShell!.style.boxShadow).toContain("color-mix");
+
+        await act(async () => {
+            dispatchPointerEvent(window, "pointerup", {
+                pointerId: 1,
+                buttons: 0,
+                clientX: 220,
+                clientY: 404,
+                screenX: 220,
+                screenY: 404,
+            });
+        });
+
+        await flushPromises();
+
+        expect(useEditorStore.getState().tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+        ]);
+        expect(
+            composerDropZone!.querySelector(
+                '[data-kind="mention"][data-note-id="notes/alpha.md"]',
+            ),
+        ).not.toBeNull();
     });
 });
