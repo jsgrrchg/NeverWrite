@@ -8297,10 +8297,12 @@ fn build_prompt_blocks_with_attachments(
                         &mut text_context_parts,
                         attachment,
                         file_path,
-                        vault_root,
-                        additional_roots,
-                        capabilities,
-                        &image_limits,
+                        FileAttachmentBuildContext {
+                            vault_root,
+                            additional_roots,
+                            capabilities,
+                            image_limits: &image_limits,
+                        },
                     )?;
                 }
             }
@@ -8375,6 +8377,13 @@ struct NativeImageAttachmentLimits {
     max_bytes: u64,
     max_images_per_message: usize,
     allowed_mime_types: &'static [&'static str],
+}
+
+struct FileAttachmentBuildContext<'a> {
+    vault_root: Option<&'a Path>,
+    additional_roots: &'a [PathBuf],
+    capabilities: AcpPromptCapabilities,
+    image_limits: &'a NativeImageAttachmentLimits,
 }
 
 const DEFAULT_NATIVE_IMAGE_MIME_TYPES: &[&str] =
@@ -8471,17 +8480,14 @@ fn append_file_attachment_blocks(
     text_context_parts: &mut Vec<String>,
     attachment: &AiAttachmentInput,
     file_path: &str,
-    vault_root: Option<&Path>,
-    additional_roots: &[PathBuf],
-    capabilities: AcpPromptCapabilities,
-    image_limits: &NativeImageAttachmentLimits,
+    context: FileAttachmentBuildContext<'_>,
 ) -> Result<(), String> {
-    let path = allowed_attachment_path(file_path, vault_root, additional_roots)?;
+    let path = allowed_attachment_path(file_path, context.vault_root, context.additional_roots)?;
     let mime = attachment
         .mime_type
         .as_deref()
         .unwrap_or("application/octet-stream");
-    let rel_path = display_attachment_path(&path, vault_root);
+    let rel_path = display_attachment_path(&path, context.vault_root);
 
     if mime == "application/pdf" {
         text_context_parts.push(format!(
@@ -8489,7 +8495,7 @@ fn append_file_attachment_blocks(
             attachment.label, rel_path
         ));
     } else if mime.starts_with("text/") || mime == "application/json" {
-        if capabilities.embedded_context {
+        if context.capabilities.embedded_context {
             match std::fs::read_to_string(&path) {
                 Ok(text) => blocks.push(embedded_text_resource_block(
                     &text,
@@ -8515,11 +8521,11 @@ fn append_file_attachment_blocks(
         }
     } else if mime.starts_with("image/") {
         let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-        if capabilities.image {
-            if size > image_limits.max_bytes {
+        if context.capabilities.image {
+            if size > context.image_limits.max_bytes {
                 return Err(format!(
                     "Image attachment is too large for {}: {} exceeds the {} byte limit.",
-                    image_limits.runtime_label, rel_path, image_limits.max_bytes
+                    context.image_limits.runtime_label, rel_path, context.image_limits.max_bytes
                 ));
             }
             match std::fs::read(&path) {
