@@ -17,6 +17,8 @@ import {
     type Tab,
     type TerminalTab,
 } from "../../app/store/editorStore";
+import { getWindowMode } from "../../app/detachedWindows";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import {
     findActiveSessionsAffectedByClose,
@@ -34,6 +36,8 @@ import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { resolveEditorPanelView } from "./editorPanelView";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
+import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
+import { createWorkspaceTabExternalDragHandlers } from "./tabDragAttachments";
 
 const LazyExcalidrawTabView = React.lazy(() =>
     import("../maps/ExcalidrawTabView").then((m) => ({
@@ -107,6 +111,8 @@ export function StackedPaneContent({
     const moveTabToPaneDropTarget = useEditorStore(
         (state) => state.moveTabToPaneDropTarget,
     );
+    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const windowMode = getWindowMode();
 
     const tabs = pane.tabs;
     const tabCount = tabs.length;
@@ -241,6 +247,23 @@ export function StackedPaneContent({
         recomputeStack();
     }, [activeIndex, tabCount, recomputeStack]);
 
+    const detachedTabWindowDrop = useDetachedTabWindowDrop({
+        vaultPath,
+        windowMode,
+        getTabById: (tabId) =>
+            selectEditorWorkspaceTabs(useEditorStore.getState()).find(
+                (candidate) => candidate.id === tabId,
+            ) ?? null,
+        getWorkspaceTabCount: () =>
+            selectEditorWorkspaceTabs(useEditorStore.getState()).length,
+        closeTab,
+    });
+    const externalTabDrag = createWorkspaceTabExternalDragHandlers({
+        getTabById: (tabId) =>
+            tabs.find((candidate) => candidate.id === tabId) ?? null,
+        resolveDetachDropTarget: detachedTabWindowDrop.resolveDetachDropTarget,
+    });
+
     // Pointer-based drag shared with the normal tab strip: lets a column be
     // reordered within the pane AND dragged out to other panes / new splits,
     // using the same drop-target resolution as the classic strip.
@@ -277,6 +300,18 @@ export function StackedPaneContent({
         },
         onActivate: switchTab,
         liveReorder: false,
+        resolveExternalDropTarget: externalTabDrag.resolveExternalDropTarget,
+        onCommitExternalDrop: (tabId, target, coords) => {
+            if (target.type !== "detach-window") {
+                return;
+            }
+
+            return detachedTabWindowDrop.commitDetachDrop(tabId, coords);
+        },
+        onDetachStart: detachedTabWindowDrop.handleDetachStart,
+        onDetachMove: detachedTabWindowDrop.handleDetachMove,
+        onDetachCancel: detachedTabWindowDrop.handleDetachCancel,
+        buildAttachmentDetail: externalTabDrag.buildAttachmentDetail,
     });
 
     // The horizontal column row is both the stack scroll container and the drag
