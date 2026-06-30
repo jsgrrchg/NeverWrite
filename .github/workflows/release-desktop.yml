@@ -369,11 +369,11 @@ jobs:
                   chmod 700 "$GNUPGHOME"
                   printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   gpg --batch --armor --export "$APT_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
-                  sudo rpm --import "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
 
                   node scripts/sign-rpm-packages.mjs \
                     --rpm-dir "$RUNNER_TEMP/electron-dist" \
-                    --key-id "$APT_REPO_GPG_KEY_ID"
+                    --key-id "$APT_REPO_GPG_KEY_ID" \
+                    --public-key "$RUNNER_TEMP/neverwrite-rpm-signing-key.asc"
 
             - name: Stage release assets and target metadata
               shell: bash

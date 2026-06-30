@@ -7,6 +7,7 @@ function parseArgs(argv) {
     const args = {
         rpmDir: null,
         keyId: null,
+        publicKeyPath: null,
     };
 
     for (let index = 0; index < argv.length; index += 1) {
@@ -23,11 +24,17 @@ function parseArgs(argv) {
             index += 1;
             continue;
         }
+        if (arg === "--public-key") {
+            args.publicKeyPath = path.resolve(next);
+            index += 1;
+            continue;
+        }
         throw new Error(`Unknown argument "${arg}".`);
     }
 
     if (!args.rpmDir) throw new Error("Missing --rpm-dir");
     if (!args.keyId) throw new Error("Missing --key-id");
+    if (!args.publicKeyPath) throw new Error("Missing --public-key");
 
     return args;
 }
@@ -119,6 +126,13 @@ function main() {
     if (!process.env.GNUPGHOME) {
         throw new Error("GNUPGHOME must point to the imported release signing keyring.");
     }
+    if (!fs.existsSync(args.publicKeyPath)) {
+        throw new Error(`RPM public signing key not found: ${args.publicKeyPath}`);
+    }
+
+    // Import the public key as the current user so rpm -Kv can trust the
+    // signature in both this script and later workflow steps.
+    runCommand("rpm", ["--import", args.publicKeyPath]);
 
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "neverwrite-rpm-sign-"));
     try {
