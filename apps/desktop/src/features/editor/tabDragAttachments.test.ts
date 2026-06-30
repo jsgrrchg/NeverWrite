@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     buildTabFileDragDetail,
     createWorkspaceTabExternalDragHandlers,
@@ -348,5 +348,29 @@ describe("createWorkspaceTabExternalDragHandlers", () => {
                 clientY: 32,
             }),
         ).toBeNull();
+    });
+
+    it("commits only detach-window external drops", () => {
+        const commitDetachDrop = vi.fn();
+        const handlers = createWorkspaceTabExternalDragHandlers({
+            getTabById: () => null,
+            commitDetachDrop,
+        });
+        const coords = {
+            clientX: -80,
+            clientY: 12,
+            screenX: 400,
+            screenY: 120,
+        };
+
+        handlers.onCommitExternalDrop("note-1", { type: "composer" }, coords);
+        expect(commitDetachDrop).not.toHaveBeenCalled();
+
+        handlers.onCommitExternalDrop(
+            "note-1",
+            { type: "detach-window" },
+            coords,
+        );
+        expect(commitDetachDrop).toHaveBeenCalledWith("note-1", coords);
     });
 });

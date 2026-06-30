@@ -262,6 +262,7 @@ export function StackedPaneContent({
         getTabById: (tabId) =>
             tabs.find((candidate) => candidate.id === tabId) ?? null,
         resolveDetachDropTarget: detachedTabWindowDrop.resolveDetachDropTarget,
+        commitDetachDrop: detachedTabWindowDrop.commitDetachDrop,
     });
 
     // Pointer-based drag shared with the normal tab strip: lets a column be
@@ -301,13 +302,7 @@ export function StackedPaneContent({
         onActivate: switchTab,
         liveReorder: false,
         resolveExternalDropTarget: externalTabDrag.resolveExternalDropTarget,
-        onCommitExternalDrop: (tabId, target, coords) => {
-            if (target.type !== "detach-window") {
-                return;
-            }
-
-            return detachedTabWindowDrop.commitDetachDrop(tabId, coords);
-        },
+        onCommitExternalDrop: externalTabDrag.onCommitExternalDrop,
         onDetachStart: detachedTabWindowDrop.handleDetachStart,
         onDetachMove: detachedTabWindowDrop.handleDetachMove,
         onDetachCancel: detachedTabWindowDrop.handleDetachCancel,

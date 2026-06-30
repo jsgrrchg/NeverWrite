@@ -20,6 +20,11 @@ export interface TabDragCoordinates {
     clientY: number;
 }
 
+export interface TabDragCommitCoordinates extends TabDragCoordinates {
+    screenX: number;
+    screenY: number;
+}
+
 interface BuildTabFileDragDetailOptions {
     resolveNotePath?: (noteId: string) => string | null;
 }
@@ -35,6 +40,10 @@ export interface WorkspaceTabExternalDragOptions {
         tabId: string,
         coords: TabDragCoordinates,
     ) => Extract<WorkspaceDropTarget, { type: "detach-window" | "none" }>;
+    commitDetachDrop?: (
+        tabId: string,
+        coords: TabDragCommitCoordinates,
+    ) => Promise<void> | void;
 }
 
 export interface WorkspaceTabExternalDragHandlers {
@@ -47,6 +56,11 @@ export interface WorkspaceTabExternalDragHandlers {
         phase: FileTreeNoteDragPhase,
         coords: TabDragCoordinates,
     ) => FileTreeNoteDragDetail | null;
+    onCommitExternalDrop: (
+        tabId: string,
+        target: WorkspaceTabExternalDropTarget,
+        coords: TabDragCommitCoordinates,
+    ) => Promise<void> | void;
 }
 
 function buildDraggedFiles(tab: Tab): FileTreeDraggedFile[] | null {
@@ -174,6 +188,7 @@ function resolveVaultNotePath(noteId: string) {
 export function createWorkspaceTabExternalDragHandlers({
     getTabById,
     resolveDetachDropTarget,
+    commitDetachDrop,
 }: WorkspaceTabExternalDragOptions): WorkspaceTabExternalDragHandlers {
     return {
         resolveExternalDropTarget: (tabId, coords) => {
@@ -198,6 +213,13 @@ export function createWorkspaceTabExternalDragHandlers({
             return buildTabFileDragDetail(tab, phase, coords, {
                 resolveNotePath: resolveVaultNotePath,
             });
+        },
+        onCommitExternalDrop: (tabId, target, coords) => {
+            if (target.type !== "detach-window") {
+                return;
+            }
+
+            return commitDetachDrop?.(tabId, coords);
         },
     };
 }

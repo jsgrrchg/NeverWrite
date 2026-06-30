@@ -204,6 +204,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         getTabById: (tabId) =>
             pane.tabs.find((candidate) => candidate.id === tabId) ?? null,
         resolveDetachDropTarget: detachedTabWindowDrop.resolveDetachDropTarget,
+        commitDetachDrop: detachedTabWindowDrop.commitDetachDrop,
     });
 
     const {
@@ -242,13 +243,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         onActivate: switchTab,
         liveReorder: false,
         resolveExternalDropTarget: externalTabDrag.resolveExternalDropTarget,
-        onCommitExternalDrop: (tabId, target, coords) => {
-            if (target.type !== "detach-window") {
-                return;
-            }
-
-            return detachedTabWindowDrop.commitDetachDrop(tabId, coords);
-        },
+        onCommitExternalDrop: externalTabDrag.onCommitExternalDrop,
         onDetachStart: detachedTabWindowDrop.handleDetachStart,
         onDetachMove: detachedTabWindowDrop.handleDetachMove,
         onDetachCancel: detachedTabWindowDrop.handleDetachCancel,
