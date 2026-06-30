@@ -55,6 +55,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - File tree modes for curated writing/media files, all vault files, or an explicit extension allowlist
 - Persistent bookmarks per vault
 - Persistent tabs and window session restore
+- Per-pane tab display modes, including stacked tabs for scanning several open documents in one pane
 - Detached note windows and separate vault windows
 - First-class terminal tabs with themed xterm rendering, persistent workspace state, search, and Claude Code integration in the Agents sidebar
 
