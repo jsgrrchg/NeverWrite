@@ -968,6 +968,25 @@ struct AuthTerminalLaunchConfig {
     method_id: String,
 }
 
+#[derive(Clone)]
+struct AuthTerminalContext {
+    snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
+    closed: Arc<AtomicBool>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    setup_store: RuntimeSetupStore,
+    runtime_id: String,
+    method_id: String,
+    event_tx: Sender<RpcOutput>,
+}
+
+#[derive(Clone)]
+struct AuthTerminalProcessHandles {
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
+    child: Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
+    killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
+}
+
 struct AuthTerminalHandle {
     snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
     master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
@@ -2154,29 +2173,24 @@ impl NativeAi {
             closed: Arc::new(AtomicBool::new(false)),
         };
 
-        spawn_auth_terminal_output_reader(
-            reader,
-            Arc::clone(&handle.snapshot),
-            Arc::clone(&handle.closed),
-            Arc::clone(&self.inner),
-            self.setup_store.clone(),
-            launch_config.runtime_id.clone(),
-            launch_config.method_id.clone(),
-            self.event_tx.clone(),
-        );
-        spawn_auth_terminal_exit_monitor(
-            Arc::clone(&handle.master),
-            Arc::clone(&handle.writer),
-            Arc::clone(&handle.child),
-            Arc::clone(&handle.killer),
-            Arc::clone(&handle.snapshot),
-            Arc::clone(&handle.closed),
-            Arc::clone(&self.inner),
-            self.setup_store.clone(),
-            launch_config.runtime_id.clone(),
-            launch_config.method_id.clone(),
-            self.event_tx.clone(),
-        );
+        let terminal_context = AuthTerminalContext {
+            snapshot: Arc::clone(&handle.snapshot),
+            closed: Arc::clone(&handle.closed),
+            session_state: Arc::clone(&self.inner),
+            setup_store: self.setup_store.clone(),
+            runtime_id: launch_config.runtime_id.clone(),
+            method_id: launch_config.method_id.clone(),
+            event_tx: self.event_tx.clone(),
+        };
+        let process_handles = AuthTerminalProcessHandles {
+            master: Arc::clone(&handle.master),
+            writer: Arc::clone(&handle.writer),
+            child: Arc::clone(&handle.child),
+            killer: Arc::clone(&handle.killer),
+        };
+
+        spawn_auth_terminal_output_reader(reader, terminal_context.clone());
+        spawn_auth_terminal_exit_monitor(process_handles, terminal_context);
 
         let created_snapshot = handle.snapshot()?;
         emit_auth_terminal_started(&self.event_tx, &created_snapshot);
@@ -8931,42 +8945,36 @@ fn release_auth_terminal_runtime_resources(
 
 fn spawn_auth_terminal_output_reader(
     mut reader: Box<dyn Read + Send>,
-    snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
-    closed: Arc<AtomicBool>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    setup_store: RuntimeSetupStore,
-    runtime_id: String,
-    method_id: String,
-    event_tx: Sender<RpcOutput>,
+    context: AuthTerminalContext,
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; AUTH_TERMINAL_OUTPUT_CHUNK_SIZE];
         let mut verified_auth = false;
         loop {
-            if closed.load(Ordering::Relaxed) {
+            if context.closed.load(Ordering::Relaxed) {
                 break;
             }
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
-                    if closed.load(Ordering::Relaxed) {
+                    if context.closed.load(Ordering::Relaxed) {
                         break;
                     }
                     let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
-                    let session_id = match snapshot.lock() {
+                    let session_id = match context.snapshot.lock() {
                         Ok(mut snapshot) => {
                             append_auth_terminal_buffer(&mut snapshot.buffer, &chunk);
                             if !verified_auth
                                 && auth_terminal_output_indicates_success(
-                                    &runtime_id,
+                                    &context.runtime_id,
                                     &snapshot.buffer,
                                 )
                             {
                                 mark_runtime_auth_verified(
-                                    &session_state,
-                                    Some(&setup_store),
-                                    &runtime_id,
-                                    &method_id,
+                                    &context.session_state,
+                                    Some(&context.setup_store),
+                                    &context.runtime_id,
+                                    &context.method_id,
                                 );
                                 verified_auth = true;
                             }
@@ -8974,11 +8982,11 @@ fn spawn_auth_terminal_output_reader(
                         }
                         Err(_) => break,
                     };
-                    emit_auth_terminal_output(&event_tx, &session_id, chunk);
+                    emit_auth_terminal_output(&context.event_tx, &session_id, chunk);
                 }
                 Err(error) => {
-                    if !closed.load(Ordering::Relaxed) {
-                        let (session_id, message) = match snapshot.lock() {
+                    if !context.closed.load(Ordering::Relaxed) {
+                        let (session_id, message) = match context.snapshot.lock() {
                             Ok(mut snapshot) => {
                                 snapshot.status = AiAuthTerminalStatus::Error;
                                 snapshot.error_message =
@@ -8990,7 +8998,7 @@ fn spawn_auth_terminal_output_reader(
                             }
                             Err(_) => break,
                         };
-                        emit_auth_terminal_error(&event_tx, &session_id, message);
+                        emit_auth_terminal_error(&context.event_tx, &session_id, message);
                     }
                     break;
                 }
@@ -9034,25 +9042,16 @@ fn acp_process_launch_cwd(_runtime_id: &str, cwd: &Path) -> PathBuf {
 }
 
 fn spawn_auth_terminal_exit_monitor(
-    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
-    writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
-    child: Arc<Mutex<Option<Box<dyn PtyChild + Send + Sync>>>>,
-    killer: Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
-    snapshot: Arc<Mutex<AiAuthTerminalSessionSnapshot>>,
-    closed: Arc<AtomicBool>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    setup_store: RuntimeSetupStore,
-    runtime_id: String,
-    method_id: String,
-    event_tx: Sender<RpcOutput>,
+    handles: AuthTerminalProcessHandles,
+    context: AuthTerminalContext,
 ) {
     thread::spawn(move || loop {
-        if closed.load(Ordering::Relaxed) {
+        if context.closed.load(Ordering::Relaxed) {
             break;
         }
 
         let exit_status = {
-            let mut child_guard = match child.lock() {
+            let mut child_guard = match handles.child.lock() {
                 Ok(child_guard) => child_guard,
                 Err(_) => break,
             };
@@ -9064,7 +9063,7 @@ fn spawn_auth_terminal_exit_monitor(
                 Ok(status) => status,
                 Err(error) => {
                     let (session_id, message) = {
-                        let mut snapshot_guard = match snapshot.lock() {
+                        let mut snapshot_guard = match context.snapshot.lock() {
                             Ok(snapshot_guard) => snapshot_guard,
                             Err(_) => break,
                         };
@@ -9080,9 +9079,13 @@ fn spawn_auth_terminal_exit_monitor(
                         )
                     };
                     release_auth_terminal_runtime_resources(
-                        &master, &writer, &child, &killer, false,
+                        &handles.master,
+                        &handles.writer,
+                        &handles.child,
+                        &handles.killer,
+                        false,
                     );
-                    emit_auth_terminal_error(&event_tx, &session_id, message);
+                    emit_auth_terminal_error(&context.event_tx, &session_id, message);
                     break;
                 }
             }
@@ -9092,14 +9095,14 @@ fn spawn_auth_terminal_exit_monitor(
             let exit_code = i32::try_from(exit_status.exit_code()).ok();
             if exit_code == Some(0) {
                 mark_runtime_auth_verified(
-                    &session_state,
-                    Some(&setup_store),
-                    &runtime_id,
-                    &method_id,
+                    &context.session_state,
+                    Some(&context.setup_store),
+                    &context.runtime_id,
+                    &context.method_id,
                 );
             }
             let snapshot = {
-                let mut snapshot_guard = match snapshot.lock() {
+                let mut snapshot_guard = match context.snapshot.lock() {
                     Ok(snapshot_guard) => snapshot_guard,
                     Err(_) => break,
                 };
@@ -9108,8 +9111,14 @@ fn spawn_auth_terminal_exit_monitor(
                 snapshot_guard.error_message = None;
                 snapshot_guard.clone()
             };
-            release_auth_terminal_runtime_resources(&master, &writer, &child, &killer, false);
-            emit_auth_terminal_exited(&event_tx, &snapshot);
+            release_auth_terminal_runtime_resources(
+                &handles.master,
+                &handles.writer,
+                &handles.child,
+                &handles.killer,
+                false,
+            );
+            emit_auth_terminal_exited(&context.event_tx, &snapshot);
             break;
         }
 
