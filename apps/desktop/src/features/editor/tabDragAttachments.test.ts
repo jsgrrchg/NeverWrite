@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
     buildTabFileDragDetail,
+    createWorkspaceTabExternalDragHandlers,
     resolveComposerDropTarget,
 } from "./tabDragAttachments";
 import type {
@@ -234,5 +235,142 @@ describe("resolveComposerDropTarget", () => {
         expect(resolveComposerDropTarget(24, 48)).toEqual({
             type: "none",
         });
+    });
+});
+
+describe("createWorkspaceTabExternalDragHandlers", () => {
+    it("resolves composer before delegating to detach targets", () => {
+        document.body.innerHTML =
+            '<div data-ai-composer-drop-zone="true"></div>';
+        const dropZone = document.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        ) as HTMLElement;
+        let detachResolverCalled = false;
+
+        dropZone.getBoundingClientRect = () =>
+            ({
+                left: 100,
+                top: 200,
+                right: 340,
+                bottom: 320,
+                width: 240,
+                height: 120,
+                x: 100,
+                y: 200,
+                toJSON: () => ({}),
+            }) as DOMRect;
+
+        const handlers = createWorkspaceTabExternalDragHandlers({
+            getTabById: () => null,
+            resolveDetachDropTarget: () => {
+                detachResolverCalled = true;
+                return { type: "detach-window" };
+            },
+        });
+
+        expect(
+            handlers.resolveExternalDropTarget("note-1", {
+                clientX: 180,
+                clientY: 240,
+            }),
+        ).toEqual({ type: "composer" });
+        expect(detachResolverCalled).toBe(false);
+    });
+
+    it("falls back to detach resolution outside composer zones", () => {
+        document.body.innerHTML = "";
+        const handlers = createWorkspaceTabExternalDragHandlers({
+            getTabById: () => null,
+            resolveDetachDropTarget: () => ({ type: "detach-window" }),
+        });
+
+        expect(
+            handlers.resolveExternalDropTarget("note-1", {
+                clientX: -80,
+                clientY: 12,
+            }),
+        ).toEqual({ type: "detach-window" });
+    });
+
+    it("builds attachment details from a tab id and resolved vault note path", () => {
+        const tab: NoteTab = {
+            id: "note-1",
+            kind: "note",
+            noteId: "notes/daily.md",
+            title: "Daily",
+            content: "",
+            history: [],
+            historyIndex: 0,
+        };
+        useVaultStore.setState({
+            notes: [
+                {
+                    id: "notes/daily.md",
+                    title: "Daily",
+                    path: "/vault/notes/daily.md",
+                    modified_at: 1,
+                    created_at: 1,
+                },
+            ],
+        });
+
+        const handlers = createWorkspaceTabExternalDragHandlers({
+            getTabById: (tabId) => (tabId === tab.id ? tab : null),
+        });
+
+        expect(
+            handlers.buildAttachmentDetail("note-1", "end", {
+                clientX: 16,
+                clientY: 32,
+            }),
+        ).toEqual({
+            phase: "end",
+            x: 16,
+            y: 32,
+            notes: [
+                {
+                    id: "notes/daily.md",
+                    title: "Daily",
+                    path: "/vault/notes/daily.md",
+                },
+            ],
+        });
+    });
+
+    it("returns null attachment details for missing tabs", () => {
+        const handlers = createWorkspaceTabExternalDragHandlers({
+            getTabById: () => null,
+        });
+
+        expect(
+            handlers.buildAttachmentDetail("missing", "end", {
+                clientX: 16,
+                clientY: 32,
+            }),
+        ).toBeNull();
+    });
+
+    it("commits only detach-window external drops", () => {
+        const commitDetachDrop = vi.fn();
+        const handlers = createWorkspaceTabExternalDragHandlers({
+            getTabById: () => null,
+            commitDetachDrop,
+        });
+        const coords = {
+            clientX: -80,
+            clientY: 12,
+            screenX: 400,
+            screenY: 120,
+        };
+
+        handlers.onCommitExternalDrop("note-1", { type: "composer" }, coords);
+        expect(commitDetachDrop).not.toHaveBeenCalled();
+
+        handlers.onCommitExternalDrop(
+            "note-1",
+            { type: "detach-window" },
+            coords,
+        );
+        expect(commitDetachDrop).toHaveBeenCalledWith("note-1", coords);
     });
 });

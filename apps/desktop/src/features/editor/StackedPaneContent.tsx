@@ -17,6 +17,8 @@ import {
     type Tab,
     type TerminalTab,
 } from "../../app/store/editorStore";
+import { getWindowMode } from "../../app/detachedWindows";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import {
     findActiveSessionsAffectedByClose,
@@ -34,6 +36,8 @@ import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 import { resolveEditorPanelView } from "./editorPanelView";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useWorkspaceTabDrag } from "./useWorkspaceTabDrag";
+import { useDetachedTabWindowDrop } from "./useDetachedTabWindowDrop";
+import { createWorkspaceTabExternalDragHandlers } from "./tabDragAttachments";
 
 const LazyExcalidrawTabView = React.lazy(() =>
     import("../maps/ExcalidrawTabView").then((m) => ({
@@ -107,6 +111,8 @@ export function StackedPaneContent({
     const moveTabToPaneDropTarget = useEditorStore(
         (state) => state.moveTabToPaneDropTarget,
     );
+    const vaultPath = useVaultStore((state) => state.vaultPath);
+    const windowMode = getWindowMode();
 
     const tabs = pane.tabs;
     const tabCount = tabs.length;
@@ -241,6 +247,24 @@ export function StackedPaneContent({
         recomputeStack();
     }, [activeIndex, tabCount, recomputeStack]);
 
+    const detachedTabWindowDrop = useDetachedTabWindowDrop({
+        vaultPath,
+        windowMode,
+        getTabById: (tabId) =>
+            selectEditorWorkspaceTabs(useEditorStore.getState()).find(
+                (candidate) => candidate.id === tabId,
+            ) ?? null,
+        getWorkspaceTabCount: () =>
+            selectEditorWorkspaceTabs(useEditorStore.getState()).length,
+        closeTab,
+    });
+    const externalTabDrag = createWorkspaceTabExternalDragHandlers({
+        getTabById: (tabId) =>
+            tabs.find((candidate) => candidate.id === tabId) ?? null,
+        resolveDetachDropTarget: detachedTabWindowDrop.resolveDetachDropTarget,
+        commitDetachDrop: detachedTabWindowDrop.commitDetachDrop,
+    });
+
     // Pointer-based drag shared with the normal tab strip: lets a column be
     // reordered within the pane AND dragged out to other panes / new splits,
     // using the same drop-target resolution as the classic strip.
@@ -277,6 +301,12 @@ export function StackedPaneContent({
         },
         onActivate: switchTab,
         liveReorder: false,
+        resolveExternalDropTarget: externalTabDrag.resolveExternalDropTarget,
+        onCommitExternalDrop: externalTabDrag.onCommitExternalDrop,
+        onDetachStart: detachedTabWindowDrop.handleDetachStart,
+        onDetachMove: detachedTabWindowDrop.handleDetachMove,
+        onDetachCancel: detachedTabWindowDrop.handleDetachCancel,
+        buildAttachmentDetail: externalTabDrag.buildAttachmentDetail,
     });
 
     // The horizontal column row is both the stack scroll container and the drag
@@ -457,17 +487,22 @@ export function StackedPaneContent({
             {/* Left spine rail: a zero-width sticky anchor whose opaque spines
                 cover panels that have scrolled underneath it. */}
             <SpineRail side="left" count={stack.left}>
-                {leftStackTabs.map((tab) => (
+                {leftStackTabs.map((tab, index) => (
                     <SpineButton
                         key={tab.id}
                         tab={tab}
+                        index={index}
                         isActive={tab.id === activeTabId}
                         icon={renderEditorTabLeadingIcon(
                             tab,
                             chatSessionsById,
                         )}
-                        onClick={() => switchTab(tab.id)}
+                        onClick={() => handleSpineClick(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onLostPointerCapture={handleLostPointerCapture}
                     />
                 ))}
             </SpineRail>
@@ -507,17 +542,22 @@ export function StackedPaneContent({
             })}
 
             <SpineRail side="right" count={stack.right}>
-                {rightStackTabs.map((tab) => (
+                {rightStackTabs.map((tab, index) => (
                     <SpineButton
                         key={tab.id}
                         tab={tab}
+                        index={lastContent + 1 + index}
                         isActive={tab.id === activeTabId}
                         icon={renderEditorTabLeadingIcon(
                             tab,
                             chatSessionsById,
                         )}
-                        onClick={() => switchTab(tab.id)}
+                        onClick={() => handleSpineClick(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onLostPointerCapture={handleLostPointerCapture}
                     />
                 ))}
             </SpineRail>
@@ -687,17 +727,36 @@ function SpineTitle({ title }: { title: string }) {
 
 function SpineButton({
     tab,
+    index,
     isActive,
     icon,
     onClick,
     onRequestClose,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onLostPointerCapture,
 }: {
     tab: Tab;
+    index: number;
     isActive: boolean;
     icon: ReactNode;
     onClick: () => void;
     onRequestClose: () => void;
+    onPointerDown: (
+        tabId: string,
+        index: number,
+        event: React.PointerEvent<HTMLDivElement>,
+    ) => void;
+    onPointerMove: (
+        tabId: string,
+        event: React.PointerEvent<HTMLDivElement>,
+    ) => void;
+    onPointerUp: (pointerId?: number, coords?: DragCoords) => void;
+    onLostPointerCapture: (pointerId: number) => void;
 }) {
+    const tabId = tab.id;
+
     return (
         <div
             role="tab"
@@ -710,12 +769,33 @@ function SpineButton({
                     onClick();
                 }
             }}
+            onPointerDown={(event) => onPointerDown(tabId, index, event)}
+            onPointerMove={(event) => onPointerMove(tabId, event)}
+            onPointerUp={(event) =>
+                onPointerUp(event.pointerId, {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                })
+            }
+            onPointerCancel={(event) =>
+                onPointerUp(event.pointerId, {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                })
+            }
+            onLostPointerCapture={(event) =>
+                onLostPointerCapture(event.pointerId)
+            }
             title={tab.title}
             className="group pointer-events-auto flex h-full flex-col items-center py-2"
             style={{
                 width: SPINE_WIDTH,
                 flexShrink: 0,
-                cursor: "pointer",
+                cursor: "grab",
                 background: isActive
                     ? "var(--bg-primary)"
                     : "var(--bg-secondary)",
