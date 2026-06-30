@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+    getFrameNavigationAction,
     resolveRendererDevUrl,
     resolveWindowIconPath,
     shouldOpenInSystemBrowser,
@@ -85,5 +86,72 @@ describe("shouldOpenInSystemBrowser", () => {
             false,
         );
         expect(shouldOpenInSystemBrowser("not a url")).toBe(false);
+    });
+});
+
+describe("getFrameNavigationAction", () => {
+    it("opens external website and email navigations from HTML previews in the system browser", () => {
+        expect(
+            getFrameNavigationAction({
+                url: "https://example.com/docs",
+                isMainFrame: false,
+                frameUrl:
+                    "neverwrite-file://localhost/assets/dmF1bHQ/docs/preview.html",
+            }),
+        ).toBe("open-external");
+        expect(
+            getFrameNavigationAction({
+                url: "mailto:team@example.com",
+                isMainFrame: false,
+                initiatorUrl:
+                    "neverwrite-file://localhost/assets/dmF1bHQ/docs/preview.html",
+            }),
+        ).toBe("open-external");
+    });
+
+    it("allows HTML preview navigations that stay inside the vault preview protocol", () => {
+        expect(
+            getFrameNavigationAction({
+                url: "neverwrite-file://localhost/assets/dmF1bHQ/docs/related.html",
+                isMainFrame: false,
+                frameUrl:
+                    "neverwrite-file://localhost/assets/dmF1bHQ/docs/preview.html",
+            }),
+        ).toBe("allow");
+    });
+
+    it("blocks unsafe or malformed navigations from HTML previews", () => {
+        expect(
+            getFrameNavigationAction({
+                url: "file:///Users/test/secret.html",
+                isMainFrame: false,
+                frameUrl:
+                    "neverwrite-file://localhost/assets/dmF1bHQ/docs/preview.html",
+            }),
+        ).toBe("deny");
+        expect(
+            getFrameNavigationAction({
+                url: "not a url",
+                isMainFrame: false,
+                frameUrl:
+                    "neverwrite-file://localhost/assets/dmF1bHQ/docs/preview.html",
+            }),
+        ).toBe("deny");
+    });
+
+    it("does not interfere with main frame navigations or unrelated iframes", () => {
+        expect(
+            getFrameNavigationAction({
+                url: "https://example.com/app",
+                isMainFrame: true,
+            }),
+        ).toBe("allow");
+        expect(
+            getFrameNavigationAction({
+                url: "https://www.youtube.com/watch?v=test",
+                isMainFrame: false,
+                frameUrl: "https://www.youtube.com/embed/test",
+            }),
+        ).toBe("allow");
     });
 });

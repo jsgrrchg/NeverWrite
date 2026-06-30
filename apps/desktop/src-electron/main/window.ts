@@ -45,6 +45,8 @@ function readTrafficLightPosition(
 const windowsByLabel = new Map<string, BrowserWindow>();
 const labelsByWebContentsId = new Map<number, string>();
 const SYSTEM_BROWSER_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
+const FILE_PREVIEW_PROTOCOL = "neverwrite-file:";
+type FrameNavigationAction = "allow" | "open-external" | "deny";
 
 function preloadPath() {
     return fileURLToPath(
@@ -183,19 +185,73 @@ export function shouldOpenInSystemBrowser(url: string) {
     }
 }
 
+function isFilePreviewUrl(url: string | null | undefined) {
+    if (!url) return false;
+    try {
+        return new URL(url).protocol === FILE_PREVIEW_PROTOCOL;
+    } catch {
+        return false;
+    }
+}
+
+export function getFrameNavigationAction({
+    url,
+    isMainFrame,
+    frameUrl,
+    initiatorUrl,
+}: {
+    url: string;
+    isMainFrame: boolean;
+    frameUrl?: string | null;
+    initiatorUrl?: string | null;
+}): FrameNavigationAction {
+    if (isMainFrame) return "allow";
+
+    const isPreviewFrameNavigation =
+        isFilePreviewUrl(url) ||
+        isFilePreviewUrl(frameUrl) ||
+        isFilePreviewUrl(initiatorUrl);
+
+    if (!isPreviewFrameNavigation) return "allow";
+    if (shouldOpenInSystemBrowser(url)) return "open-external";
+    if (isFilePreviewUrl(url)) return "allow";
+    return "deny";
+}
+
+function openExternalLink(url: string) {
+    void shell.openExternal(url).catch((error: unknown) => {
+        writeAppLog("main", "error", "Failed to open external link", {
+            url,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    });
+}
+
 function bindExternalWindowOpenHandler(window: BrowserWindow) {
     window.webContents.setWindowOpenHandler(({ url }) => {
         if (shouldOpenInSystemBrowser(url)) {
-            void shell.openExternal(url).catch((error: unknown) => {
-                writeAppLog("main", "error", "Failed to open external link", {
-                    url,
-                    error:
-                        error instanceof Error ? error.message : String(error),
-                });
-            });
+            openExternalLink(url);
         }
 
         return { action: "deny" };
+    });
+}
+
+function bindExternalFrameNavigationHandler(window: BrowserWindow) {
+    window.webContents.on("will-frame-navigate", (event) => {
+        const action = getFrameNavigationAction({
+            url: event.url,
+            isMainFrame: event.isMainFrame,
+            frameUrl: event.frame?.url,
+            initiatorUrl: event.initiator?.url,
+        });
+
+        if (action === "allow") return;
+
+        event.preventDefault();
+        if (action === "open-external") {
+            openExternalLink(event.url);
+        }
     });
 }
 
@@ -410,6 +466,7 @@ export function createAppWindow(
     });
 
     bindExternalWindowOpenHandler(window);
+    bindExternalFrameNavigationHandler(window);
     bindWindowLifecycle(label, window);
 
     const rendererEntry = resolveRendererEntry(search);
