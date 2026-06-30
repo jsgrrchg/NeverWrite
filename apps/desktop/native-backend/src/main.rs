@@ -1095,18 +1095,19 @@ impl NativeBackend {
                     previous_note_id.as_deref(),
                 )
                 .max(1);
-                build_vault_note_change_with_origin(
-                    &vault_path,
-                    "upsert",
-                    Some(note_document_to_dto(&note)),
-                    Some(note.id.0.clone()),
-                    None,
-                    Some(final_relative_path),
-                    VAULT_CHANGE_ORIGIN_AGENT,
-                    op_id,
-                    revision,
-                    Some(note_content_hash(&note.raw_markdown)),
-                    state.graph_revision.max(1),
+                build_vault_note_change(
+                    VaultNoteChangeInput::new(
+                        &vault_path,
+                        "upsert",
+                        revision,
+                        state.graph_revision.max(1),
+                    )
+                    .with_origin(VAULT_CHANGE_ORIGIN_AGENT)
+                    .with_note(note_document_to_dto(&note))
+                    .with_note_id(note.id.0.clone())
+                    .with_relative_path(final_relative_path)
+                    .with_op_id(op_id)
+                    .with_content_hash(Some(note_content_hash(&note.raw_markdown))),
                 )
             } else {
                 let entry = state.vault.read_vault_entry_from_path(&final_path).ok();
@@ -1119,18 +1120,18 @@ impl NativeBackend {
                     previous_key,
                 )
                 .max(1);
-                build_vault_note_change_with_origin(
-                    &vault_path,
-                    "upsert",
-                    None,
-                    None,
-                    entry,
-                    Some(final_relative_path),
-                    VAULT_CHANGE_ORIGIN_AGENT,
-                    op_id,
-                    revision,
-                    Some(note_content_hash(&text)),
-                    state.graph_revision.max(1),
+                build_vault_note_change(
+                    VaultNoteChangeInput::new(
+                        &vault_path,
+                        "upsert",
+                        revision,
+                        state.graph_revision.max(1),
+                    )
+                    .with_origin(VAULT_CHANGE_ORIGIN_AGENT)
+                    .with_optional_entry(entry)
+                    .with_relative_path(final_relative_path)
+                    .with_op_id(op_id)
+                    .with_content_hash(Some(note_content_hash(&text))),
                 )
             }
         } else {
@@ -1151,18 +1152,17 @@ impl NativeBackend {
                 let note_id = markdown_note_id_from_relative_path(&current_relative_path)
                     .unwrap_or_else(|| state.vault.path_to_id(&current_path));
                 let revision = advance_revision(&mut state.note_revisions, &note_id, None).max(1);
-                build_vault_note_change_with_origin(
-                    &vault_path,
-                    "delete",
-                    None,
-                    Some(note_id),
-                    None,
-                    Some(current_relative_path),
-                    VAULT_CHANGE_ORIGIN_AGENT,
-                    op_id,
-                    revision,
-                    None,
-                    state.graph_revision.max(1),
+                build_vault_note_change(
+                    VaultNoteChangeInput::new(
+                        &vault_path,
+                        "delete",
+                        revision,
+                        state.graph_revision.max(1),
+                    )
+                    .with_origin(VAULT_CHANGE_ORIGIN_AGENT)
+                    .with_note_id(note_id)
+                    .with_relative_path(current_relative_path)
+                    .with_op_id(op_id),
                 )
             } else {
                 let revision = advance_revision(
@@ -1171,18 +1171,16 @@ impl NativeBackend {
                     target_relative_path.as_deref(),
                 )
                 .max(1);
-                build_vault_note_change_with_origin(
-                    &vault_path,
-                    "delete",
-                    None,
-                    None,
-                    None,
-                    Some(current_relative_path),
-                    VAULT_CHANGE_ORIGIN_AGENT,
-                    op_id,
-                    revision,
-                    None,
-                    state.graph_revision.max(1),
+                build_vault_note_change(
+                    VaultNoteChangeInput::new(
+                        &vault_path,
+                        "delete",
+                        revision,
+                        state.graph_revision.max(1),
+                    )
+                    .with_origin(VAULT_CHANGE_ORIGIN_AGENT)
+                    .with_relative_path(current_relative_path)
+                    .with_op_id(op_id),
                 )
             }
         };
@@ -1276,18 +1274,20 @@ impl NativeBackend {
                 .read_vault_entry_from_path(&note.path.0)
                 .map_err(|error| error.to_string())?;
             let revision = advance_revision(&mut state.note_revisions, &note.id.0, None).max(1);
-            let change = build_vault_note_change_with_origin(
-                &vault_key,
-                "upsert",
-                Some(note_document_to_dto(&note)),
-                Some(note.id.0.clone()),
-                Some(entry),
-                Some(relative_path.clone()),
-                VAULT_CHANGE_ORIGIN_EXTERNAL,
-                op_id,
-                revision,
-                Some(note_content_hash(&content)),
-                state.graph_revision.max(1),
+            let change = build_vault_note_change(
+                VaultNoteChangeInput::new(
+                    &vault_key,
+                    "upsert",
+                    revision,
+                    state.graph_revision.max(1),
+                )
+                .with_origin(VAULT_CHANGE_ORIGIN_EXTERNAL)
+                .with_note(note_document_to_dto(&note))
+                .with_note_id(note.id.0.clone())
+                .with_entry(entry)
+                .with_relative_path(relative_path.clone())
+                .with_op_id(op_id)
+                .with_content_hash(Some(note_content_hash(&content))),
             );
             Self::refresh_vault_state(state)?;
             (note, relative_path, change)
@@ -1407,16 +1407,11 @@ impl NativeBackend {
         let revision =
             advance_revision(&mut state.file_revisions, &entry.relative_path, None).max(1);
         let change = build_vault_note_change(
-            &vault_path,
-            "upsert",
-            None,
-            None,
-            Some(entry),
-            Some(detail.relative_path.clone()),
-            op_id,
-            revision,
-            Some(note_content_hash(&content)),
-            state.graph_revision.max(1),
+            VaultNoteChangeInput::new(&vault_path, "upsert", revision, state.graph_revision.max(1))
+                .with_entry(entry)
+                .with_relative_path(detail.relative_path.clone())
+                .with_op_id(op_id)
+                .with_content_hash(Some(note_content_hash(&content))),
         );
         Self::refresh_vault_state(state)?;
         self.emit_vault_change(change);
@@ -1449,16 +1444,10 @@ impl NativeBackend {
             advance_revision(&mut state.file_revisions, &entry.relative_path, None).max(1);
         Self::refresh_vault_state(state)?;
         let change = build_vault_note_change(
-            &vault_path,
-            "upsert",
-            None,
-            None,
-            Some(entry),
-            Some(detail.relative_path.clone()),
-            op_id,
-            revision,
-            None,
-            state.graph_revision.max(1),
+            VaultNoteChangeInput::new(&vault_path, "upsert", revision, state.graph_revision.max(1))
+                .with_entry(entry)
+                .with_relative_path(detail.relative_path.clone())
+                .with_op_id(op_id),
         );
         self.emit_vault_change(change);
         Ok(json!(detail))
@@ -1519,16 +1508,14 @@ impl NativeBackend {
             let revision =
                 advance_revision(&mut state.file_revisions, &entry.relative_path, None).max(1);
             build_vault_note_change(
-                &vault_path,
-                "upsert",
-                None,
-                None,
-                Some(entry),
-                Some(detail.relative_path.clone()),
-                None,
-                revision,
-                None,
-                state.graph_revision.max(1),
+                VaultNoteChangeInput::new(
+                    &vault_path,
+                    "upsert",
+                    revision,
+                    state.graph_revision.max(1),
+                )
+                .with_entry(entry)
+                .with_relative_path(detail.relative_path.clone()),
             )
         };
         self.emit_vault_change(change);
@@ -1648,16 +1635,9 @@ impl NativeBackend {
         let relative_path = format!("{note_id}.md");
         let revision = advance_revision(&mut state.note_revisions, &note_id, None).max(1);
         let change = build_vault_note_change(
-            &vault_path,
-            "delete",
-            None,
-            Some(note_id.clone()),
-            None,
-            Some(relative_path),
-            None,
-            revision,
-            None,
-            state.graph_revision.max(1),
+            VaultNoteChangeInput::new(&vault_path, "delete", revision, state.graph_revision.max(1))
+                .with_note_id(note_id.clone())
+                .with_relative_path(relative_path),
         );
         Self::refresh_vault_state(state)?;
         self.emit_vault_change(change);
@@ -1767,28 +1747,14 @@ impl NativeBackend {
             advance_revision(&mut state.file_revisions, &entry.relative_path, None).max(1);
         let graph_revision = state.graph_revision.max(1);
         let delete_change = build_vault_note_change(
-            &vault_path,
-            "delete",
-            None,
-            Some(note_id.clone()),
-            None,
-            Some(format!("{note_id}.md")),
-            None,
-            delete_revision,
-            None,
-            graph_revision,
+            VaultNoteChangeInput::new(&vault_path, "delete", delete_revision, graph_revision)
+                .with_note_id(note_id.clone())
+                .with_relative_path(format!("{note_id}.md")),
         );
         let upsert_change = build_vault_note_change(
-            &vault_path,
-            "upsert",
-            None,
-            None,
-            Some(entry.clone()),
-            Some(entry.relative_path.clone()),
-            None,
-            upsert_revision,
-            None,
-            graph_revision,
+            VaultNoteChangeInput::new(&vault_path, "upsert", upsert_revision, graph_revision)
+                .with_entry(entry.clone())
+                .with_relative_path(entry.relative_path.clone()),
         );
         Self::refresh_vault_state(state)?;
         self.emit_vault_change(delete_change);
@@ -2395,18 +2361,11 @@ impl NativeBackend {
         .max(1);
         Self::refresh_vault_state(state)?;
         let graph_revision = state.graph_revision.max(1);
-        let change = build_vault_note_change_with_origin(
-            vault_path,
-            "delete",
-            None,
-            note_id,
-            None,
-            Some(relative_path),
-            origin,
-            None,
-            revision,
-            None,
-            graph_revision,
+        let change = build_vault_note_change(
+            VaultNoteChangeInput::new(vault_path, "delete", revision, graph_revision)
+                .with_origin(origin)
+                .with_optional_note_id(note_id)
+                .with_relative_path(relative_path),
         );
         self.emit_vault_change(change);
         Ok(())
@@ -2436,18 +2395,11 @@ impl NativeBackend {
                 .find(|entry| entry.relative_path == relative_path)
                 .cloned();
             let revision = advance_revision(&mut state.file_revisions, &relative_path, None).max(1);
-            let change = build_vault_note_change_with_origin(
-                vault_path,
-                "upsert",
-                None,
-                None,
-                entry,
-                Some(relative_path),
-                origin,
-                None,
-                revision,
-                None,
-                graph_revision,
+            let change = build_vault_note_change(
+                VaultNoteChangeInput::new(vault_path, "upsert", revision, graph_revision)
+                    .with_origin(origin)
+                    .with_optional_entry(entry)
+                    .with_relative_path(relative_path),
             );
             self.emit_vault_change(change);
             return Ok(());
@@ -2464,18 +2416,13 @@ impl NativeBackend {
             };
             let content_hash = lossy_text_file_content_hash(&path);
             let revision = advance_revision(&mut state.note_revisions, &note_id, None).max(1);
-            let change = build_vault_note_change_with_origin(
-                vault_path,
-                "upsert",
-                Some(note),
-                Some(note_id),
-                None,
-                Some(relative_path),
-                origin,
-                None,
-                revision,
-                content_hash,
-                graph_revision,
+            let change = build_vault_note_change(
+                VaultNoteChangeInput::new(vault_path, "upsert", revision, graph_revision)
+                    .with_origin(origin)
+                    .with_note(note)
+                    .with_note_id(note_id)
+                    .with_relative_path(relative_path)
+                    .with_content_hash(content_hash),
             );
             self.emit_vault_change(change);
             return Ok(());
@@ -2488,18 +2435,12 @@ impl NativeBackend {
             .cloned();
         let revision = advance_revision(&mut state.file_revisions, &relative_path, None).max(1);
         let content_hash = lossy_text_file_content_hash(&path);
-        let change = build_vault_note_change_with_origin(
-            vault_path,
-            "upsert",
-            None,
-            None,
-            entry,
-            Some(relative_path),
-            origin,
-            None,
-            revision,
-            content_hash,
-            graph_revision,
+        let change = build_vault_note_change(
+            VaultNoteChangeInput::new(vault_path, "upsert", revision, graph_revision)
+                .with_origin(origin)
+                .with_optional_entry(entry)
+                .with_relative_path(relative_path)
+                .with_content_hash(content_hash),
         );
         self.emit_vault_change(change);
         Ok(())
@@ -2942,58 +2883,96 @@ fn advance_revision(
     next_revision
 }
 
-fn build_vault_note_change(
-    vault_path: &str,
-    kind: &str,
+struct VaultNoteChangeInput {
+    vault_path: String,
+    kind: String,
     note: Option<NoteDto>,
     note_id: Option<String>,
     entry: Option<VaultEntryDto>,
     relative_path: Option<String>,
+    origin: String,
     op_id: Option<String>,
     revision: u64,
     content_hash: Option<String>,
     graph_revision: u64,
-) -> VaultNoteChangeDto {
-    build_vault_note_change_with_origin(
-        vault_path,
-        kind,
-        note,
-        note_id,
-        entry,
-        relative_path,
-        VAULT_CHANGE_ORIGIN_USER,
-        op_id,
-        revision,
-        content_hash,
-        graph_revision,
-    )
 }
 
-fn build_vault_note_change_with_origin(
-    vault_path: &str,
-    kind: &str,
-    note: Option<NoteDto>,
-    note_id: Option<String>,
-    entry: Option<VaultEntryDto>,
-    relative_path: Option<String>,
-    origin: &str,
-    op_id: Option<String>,
-    revision: u64,
-    content_hash: Option<String>,
-    graph_revision: u64,
-) -> VaultNoteChangeDto {
+impl VaultNoteChangeInput {
+    fn new(vault_path: &str, kind: &str, revision: u64, graph_revision: u64) -> Self {
+        Self {
+            vault_path: vault_path.to_string(),
+            kind: kind.to_string(),
+            note: None,
+            note_id: None,
+            entry: None,
+            relative_path: None,
+            origin: VAULT_CHANGE_ORIGIN_USER.to_string(),
+            op_id: None,
+            revision,
+            content_hash: None,
+            graph_revision,
+        }
+    }
+
+    fn with_origin(mut self, origin: &str) -> Self {
+        self.origin = origin.to_string();
+        self
+    }
+
+    fn with_note(mut self, note: NoteDto) -> Self {
+        self.note = Some(note);
+        self
+    }
+
+    fn with_note_id(mut self, note_id: String) -> Self {
+        self.note_id = Some(note_id);
+        self
+    }
+
+    fn with_optional_note_id(mut self, note_id: Option<String>) -> Self {
+        self.note_id = note_id;
+        self
+    }
+
+    fn with_entry(mut self, entry: VaultEntryDto) -> Self {
+        self.entry = Some(entry);
+        self
+    }
+
+    fn with_optional_entry(mut self, entry: Option<VaultEntryDto>) -> Self {
+        self.entry = entry;
+        self
+    }
+
+    fn with_relative_path(mut self, relative_path: String) -> Self {
+        self.relative_path = Some(relative_path);
+        self
+    }
+
+    fn with_op_id(mut self, op_id: Option<String>) -> Self {
+        self.op_id = op_id;
+        self
+    }
+
+    fn with_content_hash(mut self, content_hash: Option<String>) -> Self {
+        self.content_hash = content_hash;
+        self
+    }
+}
+
+fn build_vault_note_change(input: VaultNoteChangeInput) -> VaultNoteChangeDto {
     VaultNoteChangeDto {
-        vault_path: vault_path.to_string(),
-        kind: kind.to_string(),
-        note,
-        note_id,
-        entry,
-        relative_path,
-        origin: origin.to_string(),
-        op_id,
-        revision,
-        content_hash,
-        graph_revision,
+        vault_path: input.vault_path,
+        kind: input.kind,
+        note: input.note,
+        note_id: input.note_id,
+        entry: input.entry,
+        relative_path: input.relative_path,
+        origin: input.origin,
+        op_id: input.op_id,
+        revision: input.revision,
+        content_hash: input.content_hash,
+        graph_revision: input.graph_revision,
     }
 }
 
@@ -3006,16 +2985,12 @@ fn note_change_from_document(
     graph_revision: u64,
 ) -> VaultNoteChangeDto {
     build_vault_note_change(
-        vault_path,
-        "upsert",
-        Some(note_document_to_dto(note)),
-        Some(note.id.0.clone()),
-        None,
-        Some(relative_path),
-        op_id,
-        revision,
-        Some(note_content_hash(&note.raw_markdown)),
-        graph_revision,
+        VaultNoteChangeInput::new(vault_path, "upsert", revision, graph_revision)
+            .with_note(note_document_to_dto(note))
+            .with_note_id(note.id.0.clone())
+            .with_relative_path(relative_path)
+            .with_op_id(op_id)
+            .with_content_hash(Some(note_content_hash(&note.raw_markdown))),
     )
 }
 
