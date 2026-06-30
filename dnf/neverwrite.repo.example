@@ -1,0 +1,7 @@
+[neverwrite]
+name=NeverWrite
+baseurl=https://jsgrrchg.github.io/NeverWrite/dnf
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://jsgrrchg.github.io/NeverWrite/dnf/neverwrite-archive-keyring.asc
