@@ -66,7 +66,7 @@ function rect({
 }
 
 function dispatchPointerEvent(
-    target: EventTarget,
+    target: Window | Document | Node | Element,
     type: "pointerdown" | "pointermove" | "pointerup",
     init: {
         pointerId: number;
