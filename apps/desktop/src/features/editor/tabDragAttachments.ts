@@ -15,13 +15,38 @@ import type {
     FileTreeNoteDragPhase,
 } from "../ai/dragEvents";
 
-interface TabDragCoordinates {
+export interface TabDragCoordinates {
     clientX: number;
     clientY: number;
 }
 
 interface BuildTabFileDragDetailOptions {
     resolveNotePath?: (noteId: string) => string | null;
+}
+
+export type WorkspaceTabExternalDropTarget = Extract<
+    WorkspaceDropTarget,
+    { type: "composer" | "detach-window" | "none" }
+>;
+
+export interface WorkspaceTabExternalDragOptions {
+    getTabById: (tabId: string) => Tab | null;
+    resolveDetachDropTarget?: (
+        tabId: string,
+        coords: TabDragCoordinates,
+    ) => Extract<WorkspaceDropTarget, { type: "detach-window" | "none" }>;
+}
+
+export interface WorkspaceTabExternalDragHandlers {
+    resolveExternalDropTarget: (
+        tabId: string,
+        coords: TabDragCoordinates,
+    ) => WorkspaceTabExternalDropTarget;
+    buildAttachmentDetail: (
+        tabId: string,
+        phase: FileTreeNoteDragPhase,
+        coords: TabDragCoordinates,
+    ) => FileTreeNoteDragDetail | null;
 }
 
 function buildDraggedFiles(tab: Tab): FileTreeDraggedFile[] | null {
@@ -136,4 +161,43 @@ export function resolveComposerDropTarget(
     }
 
     return { type: "none" };
+}
+
+function resolveVaultNotePath(noteId: string) {
+    return (
+        useVaultStore
+            .getState()
+            .notes.find((note) => note.id === noteId)?.path ?? null
+    );
+}
+
+export function createWorkspaceTabExternalDragHandlers({
+    getTabById,
+    resolveDetachDropTarget,
+}: WorkspaceTabExternalDragOptions): WorkspaceTabExternalDragHandlers {
+    return {
+        resolveExternalDropTarget: (tabId, coords) => {
+            const composerTarget = resolveComposerDropTarget(
+                coords.clientX,
+                coords.clientY,
+            );
+            if (composerTarget.type !== "none") {
+                return composerTarget;
+            }
+
+            return (
+                resolveDetachDropTarget?.(tabId, coords) ?? { type: "none" }
+            );
+        },
+        buildAttachmentDetail: (tabId, phase, coords) => {
+            const tab = getTabById(tabId);
+            if (!tab) {
+                return null;
+            }
+
+            return buildTabFileDragDetail(tab, phase, coords, {
+                resolveNotePath: resolveVaultNotePath,
+            });
+        },
+    };
 }
