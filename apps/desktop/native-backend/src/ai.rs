@@ -7652,10 +7652,10 @@ fn should_run_acp_logout(runtime_id: &str, setup: &RuntimeSetupState) -> bool {
     match (runtime_id, setup.auth_method.as_deref()) {
         (CODEX_RUNTIME_ID, Some("chatgpt")) => true,
         (CLAUDE_RUNTIME_ID, Some("claude-ai-login" | "claude-login")) => true,
-        (CLAUDE_RUNTIME_ID, Some("console-login")) => !setup
+        (CLAUDE_RUNTIME_ID, Some("console-login")) => setup
             .env
             .get("ANTHROPIC_AUTH_TOKEN")
-            .is_some_and(|value| !value.trim().is_empty()),
+            .is_none_or(|value| value.trim().is_empty()),
         _ => false,
     }
 }
