@@ -249,10 +249,19 @@ than resolving against old tracked-file state.
 ## Multi-Pane And Detached Windows
 
 Workspace panes are first-class owners of tab order, active tab, pinned tabs,
-activation history, and navigation history. Most editor code should use
-pane-aware selectors such as `selectEditorPaneState`,
+activation history, navigation history, and tab display mode. Most editor code
+should use pane-aware selectors such as `selectEditorPaneState`,
 `selectEditorPaneActiveTab`, `selectEditorWorkspaceTabs`, and
 `selectFocusedEditorTab`.
+
+Each pane can render tabs in the classic `"default"` mode or in `"stacked"`
+mode, where open tabs are shown as side-by-side columns for scanning several
+documents within one pane. The mode is stored as `tabDisplayMode` on
+`EditorPaneState`, normalized through `normalizeTabDisplayMode()`, toggled by
+`setPaneTabDisplayMode()` / `togglePaneTabDisplayMode()`, and rendered through
+`StackedPaneContent` when active. Treat it as pane-owned workspace state: it
+must persist with session restore, detach payloads, and cross-window hydration,
+but it should not become a property of individual tabs.
 
 `EditorPaneContent` keeps the note CodeMirror editor mounted behind non-editor
 tabs when an editable note exists in the pane. This preserves note-local scroll,
