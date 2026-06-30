@@ -34,6 +34,23 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.1] - 2026-06-30
+
+### Added
+
+- Added RPM packages for Fedora and other RPM-based Linux distributions, including DNF repository metadata for release distribution.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.53.0`.
+- Improved Claude chat titles so automatic thread rename and title updates are consumed automatically, while runtime-provided title information is ignored after the user manually renames a thread.
+
+### Fixed
+
+- Fixed stacked tabs so their horizontal scroll position is preserved when switching between tabs and panes.
+- Fixed dragging stacked tabs into the AI composer so stacked pane tabs behave consistently with regular workspace tabs.
+- Fixed HTML preview links so external URLs open outside the app instead of navigating the preview window.
+
 ## [0.4.0] - 2026-06-26
 
 ### Added
