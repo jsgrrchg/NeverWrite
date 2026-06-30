@@ -38,10 +38,7 @@ import { useTerminalRuntimeStore } from "../terminal/terminalRuntimeStore";
 import { getWindowMode } from "../../app/detachedWindows";
 import { buildNewTabContextMenuEntries } from "./newTabMenuActions";
 import { useCommandStore } from "../command-palette/store/commandStore";
-import {
-    buildTabFileDragDetail,
-    resolveComposerDropTarget,
-} from "./tabDragAttachments";
+import { createWorkspaceTabExternalDragHandlers } from "./tabDragAttachments";
 import { renderEditorTabActivityIndicator } from "./EditorTabActivityIndicator";
 import { renderEditorTabLeadingIcon } from "./editorTabIcons";
 import { useResponsiveEditorTabLayout } from "./editorTabStripLayout";
@@ -203,6 +200,11 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
             selectEditorWorkspaceTabs(useEditorStore.getState()).length,
         closeTab,
     });
+    const externalTabDrag = createWorkspaceTabExternalDragHandlers({
+        getTabById: (tabId) =>
+            pane.tabs.find((candidate) => candidate.id === tabId) ?? null,
+        resolveDetachDropTarget: detachedTabWindowDrop.resolveDetachDropTarget,
+    });
 
     const {
         dragPreviewNodeRef,
@@ -239,17 +241,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         },
         onActivate: switchTab,
         liveReorder: false,
-        resolveExternalDropTarget: (tabId, coords) => {
-            const composerTarget = resolveComposerDropTarget(
-                coords.clientX,
-                coords.clientY,
-            );
-            if (composerTarget.type !== "none") {
-                return composerTarget;
-            }
-
-            return detachedTabWindowDrop.resolveDetachDropTarget(tabId, coords);
-        },
+        resolveExternalDropTarget: externalTabDrag.resolveExternalDropTarget,
         onCommitExternalDrop: (tabId, target, coords) => {
             if (target.type !== "detach-window") {
                 return;
@@ -260,20 +252,7 @@ export function EditorPaneBar({ paneId, isFocused }: EditorPaneBarProps) {
         onDetachStart: detachedTabWindowDrop.handleDetachStart,
         onDetachMove: detachedTabWindowDrop.handleDetachMove,
         onDetachCancel: detachedTabWindowDrop.handleDetachCancel,
-        buildAttachmentDetail: (tabId, phase, coords) => {
-            const tab =
-                pane.tabs.find((candidate) => candidate.id === tabId) ?? null;
-            if (!tab) {
-                return null;
-            }
-
-            return buildTabFileDragDetail(tab, phase, coords, {
-                resolveNotePath: (noteId) =>
-                    useVaultStore
-                        .getState()
-                        .notes.find((note) => note.id === noteId)?.path ?? null,
-            });
-        },
+        buildAttachmentDetail: externalTabDrag.buildAttachmentDetail,
     });
     const tabLayout = useResponsiveEditorTabLayout({
         stripRef: tabStripRef,
