@@ -37,6 +37,9 @@ jobs:
       - name: Cache Rust build outputs
         uses: Swatinem/rust-cache@v2
 
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Run workspace tests
         run: cargo test
 
