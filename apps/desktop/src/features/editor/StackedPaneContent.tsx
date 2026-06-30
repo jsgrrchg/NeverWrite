@@ -487,17 +487,22 @@ export function StackedPaneContent({
             {/* Left spine rail: a zero-width sticky anchor whose opaque spines
                 cover panels that have scrolled underneath it. */}
             <SpineRail side="left" count={stack.left}>
-                {leftStackTabs.map((tab) => (
+                {leftStackTabs.map((tab, index) => (
                     <SpineButton
                         key={tab.id}
                         tab={tab}
+                        index={index}
                         isActive={tab.id === activeTabId}
                         icon={renderEditorTabLeadingIcon(
                             tab,
                             chatSessionsById,
                         )}
-                        onClick={() => switchTab(tab.id)}
+                        onClick={() => handleSpineClick(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onLostPointerCapture={handleLostPointerCapture}
                     />
                 ))}
             </SpineRail>
@@ -537,17 +542,22 @@ export function StackedPaneContent({
             })}
 
             <SpineRail side="right" count={stack.right}>
-                {rightStackTabs.map((tab) => (
+                {rightStackTabs.map((tab, index) => (
                     <SpineButton
                         key={tab.id}
                         tab={tab}
+                        index={lastContent + 1 + index}
                         isActive={tab.id === activeTabId}
                         icon={renderEditorTabLeadingIcon(
                             tab,
                             chatSessionsById,
                         )}
-                        onClick={() => switchTab(tab.id)}
+                        onClick={() => handleSpineClick(tab.id)}
                         onRequestClose={() => void requestCloseTab(tab.id)}
+                        onPointerDown={handlePointerDown}
+                        onPointerMove={handlePointerMove}
+                        onPointerUp={handlePointerUp}
+                        onLostPointerCapture={handleLostPointerCapture}
                     />
                 ))}
             </SpineRail>
@@ -717,17 +727,36 @@ function SpineTitle({ title }: { title: string }) {
 
 function SpineButton({
     tab,
+    index,
     isActive,
     icon,
     onClick,
     onRequestClose,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onLostPointerCapture,
 }: {
     tab: Tab;
+    index: number;
     isActive: boolean;
     icon: ReactNode;
     onClick: () => void;
     onRequestClose: () => void;
+    onPointerDown: (
+        tabId: string,
+        index: number,
+        event: React.PointerEvent<HTMLDivElement>,
+    ) => void;
+    onPointerMove: (
+        tabId: string,
+        event: React.PointerEvent<HTMLDivElement>,
+    ) => void;
+    onPointerUp: (pointerId?: number, coords?: DragCoords) => void;
+    onLostPointerCapture: (pointerId: number) => void;
 }) {
+    const tabId = tab.id;
+
     return (
         <div
             role="tab"
@@ -740,12 +769,33 @@ function SpineButton({
                     onClick();
                 }
             }}
+            onPointerDown={(event) => onPointerDown(tabId, index, event)}
+            onPointerMove={(event) => onPointerMove(tabId, event)}
+            onPointerUp={(event) =>
+                onPointerUp(event.pointerId, {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                })
+            }
+            onPointerCancel={(event) =>
+                onPointerUp(event.pointerId, {
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    screenX: event.screenX,
+                    screenY: event.screenY,
+                })
+            }
+            onLostPointerCapture={(event) =>
+                onLostPointerCapture(event.pointerId)
+            }
             title={tab.title}
             className="group pointer-events-auto flex h-full flex-col items-center py-2"
             style={{
                 width: SPINE_WIDTH,
                 flexShrink: 0,
-                cursor: "pointer",
+                cursor: "grab",
                 background: isActive
                     ? "var(--bg-primary)"
                     : "var(--bg-secondary)",

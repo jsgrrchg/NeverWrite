@@ -128,6 +128,33 @@ function getEditorViewInColumn(tabId: string) {
     return view!;
 }
 
+interface ComposerHarnessNote {
+    id: string;
+    title: string;
+    path: string;
+}
+
+function StackedComposerHarness({ notes }: { notes: ComposerHarnessNote[] }) {
+    const [parts, setParts] = useState<AIComposerPart[]>([]);
+
+    return (
+        <>
+            <EditorPaneContent />
+            <AIChatComposer
+                parts={parts}
+                notes={notes}
+                status="idle"
+                runtimeName="Assistant"
+                onChange={setParts}
+                onMentionAttach={vi.fn()}
+                onFolderAttach={vi.fn()}
+                onSubmit={vi.fn()}
+                onStop={vi.fn()}
+            />
+        </>
+    );
+}
+
 describe("StackedPaneContent", () => {
     afterEach(() => {
         vi.useRealTimers();
@@ -423,34 +450,17 @@ describe("StackedPaneContent", () => {
         );
         enableStackedOnFocusedPane();
 
-        function ComposerHarness() {
-            const [parts, setParts] = useState<AIComposerPart[]>([]);
-
-            return (
-                <>
-                    <EditorPaneContent />
-                    <AIChatComposer
-                        parts={parts}
-                        notes={[
-                            {
-                                id: "notes/alpha.md",
-                                title: "Alpha",
-                                path: "/vault/notes/alpha.md",
-                            },
-                        ]}
-                        status="idle"
-                        runtimeName="Assistant"
-                        onChange={setParts}
-                        onMentionAttach={vi.fn()}
-                        onFolderAttach={vi.fn()}
-                        onSubmit={vi.fn()}
-                        onStop={vi.fn()}
-                    />
-                </>
-            );
-        }
-
-        const { container } = renderComponent(<ComposerHarness />);
+        const { container } = renderComponent(
+            <StackedComposerHarness
+                notes={[
+                    {
+                        id: "notes/alpha.md",
+                        title: "Alpha",
+                        path: "/vault/notes/alpha.md",
+                    },
+                ]}
+            />,
+        );
         await flushPromises();
 
         const tablist = screen.getByRole("tablist", {
@@ -557,6 +567,186 @@ describe("StackedPaneContent", () => {
             "tab-a",
             "tab-b",
         ]);
+        expect(
+            composerDropZone!.querySelector(
+                '[data-kind="mention"][data-note-id="notes/alpha.md"]',
+            ),
+        ).not.toBeNull();
+    });
+
+    it("drops an inactive rail tab into the AI composer without activating it", async () => {
+        vi.useFakeTimers();
+        setVaultNotes([
+            {
+                id: "notes/alpha.md",
+                title: "Alpha",
+                path: "/vault/notes/alpha.md",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+        setEditorTabs(
+            [
+                {
+                    id: "tab-a",
+                    kind: "note",
+                    noteId: "notes/alpha.md",
+                    title: "Alpha",
+                    content: "alpha",
+                },
+                {
+                    id: "tab-b",
+                    kind: "note",
+                    noteId: "notes/beta.md",
+                    title: "Beta",
+                    content: "beta",
+                },
+                {
+                    id: "tab-c",
+                    kind: "note",
+                    noteId: "notes/gamma.md",
+                    title: "Gamma",
+                    content: "gamma",
+                },
+            ],
+            "tab-b",
+        );
+        enableStackedOnFocusedPane();
+
+        const { container } = renderComponent(
+            <StackedComposerHarness
+                notes={[
+                    {
+                        id: "notes/alpha.md",
+                        title: "Alpha",
+                        path: "/vault/notes/alpha.md",
+                    },
+                ]}
+            />,
+        );
+        await flushPromises();
+
+        const tablist = screen.getByRole("tablist", {
+            name: /stacked tabs/i,
+        });
+        const sourceColumn = container.querySelector(
+            '[data-stacked-column-id="tab-a"]',
+        ) as HTMLElement | null;
+        const activeColumn = container.querySelector(
+            '[data-stacked-column-id="tab-b"]',
+        ) as HTMLElement | null;
+        const rightColumn = container.querySelector(
+            '[data-stacked-column-id="tab-c"]',
+        ) as HTMLElement | null;
+        const composerDropZone = container.querySelector(
+            '[data-ai-composer-drop-zone="true"]',
+        ) as HTMLElement | null;
+        const composerShell = composerDropZone?.querySelector(
+            '[data-testid="chat-composer-shell"]',
+        ) as HTMLElement | null;
+
+        expect(sourceColumn).not.toBeNull();
+        expect(activeColumn).not.toBeNull();
+        expect(rightColumn).not.toBeNull();
+        expect(composerDropZone).not.toBeNull();
+        expect(composerShell).not.toBeNull();
+
+        vi.spyOn(tablist, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(sourceColumn!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(activeColumn!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 700, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(rightColumn!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 1300, top: 10, width: 600, height: 300 }),
+        );
+        vi.spyOn(composerDropZone!, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 120, top: 360, width: 520, height: 140 }),
+        );
+
+        defineElementMetric(tablist, "scrollLeft", 568);
+        defineElementMetric(tablist, "clientWidth", 600);
+        defineElementMetric(tablist, "scrollWidth", 1800);
+        defineElementMetric(sourceColumn!, "offsetLeft", 0);
+        defineElementMetric(sourceColumn!, "offsetWidth", 600);
+        defineElementMetric(activeColumn!, "offsetLeft", 600);
+        defineElementMetric(activeColumn!, "offsetWidth", 600);
+        defineElementMetric(rightColumn!, "offsetLeft", 1200);
+        defineElementMetric(rightColumn!, "offsetWidth", 600);
+
+        fireEvent.scroll(tablist);
+        await flushAnimationFrame();
+        vi.useRealTimers();
+
+        const railSpine = screen.getByRole("tab", { name: /alpha/i });
+        expect(railSpine).toHaveAttribute("aria-selected", "false");
+        defineElementMetric(railSpine, "offsetLeft", 0);
+        defineElementMetric(railSpine, "offsetWidth", 32);
+        vi.spyOn(railSpine, "getBoundingClientRect").mockReturnValue(
+            rect({ left: 100, top: 10, width: 32, height: 300 }),
+        );
+
+        await act(async () => {
+            dispatchPointerEvent(railSpine, "pointerdown", {
+                pointerId: 1,
+                button: 0,
+                buttons: 1,
+                clientX: 116,
+                clientY: 64,
+                screenX: 116,
+                screenY: 64,
+            });
+        });
+
+        await flushPromises();
+
+        await act(async () => {
+            dispatchPointerEvent(railSpine, "pointermove", {
+                pointerId: 1,
+                buttons: 1,
+                clientX: 220,
+                clientY: 404,
+                screenX: 220,
+                screenY: 404,
+            });
+            dispatchPointerEvent(window, "pointermove", {
+                pointerId: 1,
+                buttons: 1,
+                clientX: 220,
+                clientY: 404,
+                screenX: 220,
+                screenY: 404,
+            });
+        });
+
+        await waitFor(() => {
+            expect(sourceColumn).toHaveStyle({ opacity: "0.5" });
+        });
+        expect(composerShell!.style.boxShadow).toContain("color-mix");
+
+        await act(async () => {
+            dispatchPointerEvent(window, "pointerup", {
+                pointerId: 1,
+                buttons: 0,
+                clientX: 220,
+                clientY: 404,
+                screenX: 220,
+                screenY: 404,
+            });
+        });
+
+        await flushPromises();
+
+        const editorState = useEditorStore.getState();
+        expect(editorState.tabs.map((tab) => tab.id)).toEqual([
+            "tab-a",
+            "tab-b",
+            "tab-c",
+        ]);
+        expect(editorState.activeTabId).toBe("tab-b");
         expect(
             composerDropZone!.querySelector(
                 '[data-kind="mention"][data-note-id="notes/alpha.md"]',
