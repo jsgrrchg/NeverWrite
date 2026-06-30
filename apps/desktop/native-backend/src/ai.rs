@@ -878,6 +878,28 @@ struct AcpPromptCapabilities {
     embedded_context: bool,
 }
 
+#[derive(Clone)]
+struct AcpActorSharedState {
+    event_tx: Sender<RpcOutput>,
+    session_state: Arc<Mutex<NativeAiInner>>,
+    tool_diffs: ToolDiffState,
+    agent_writes: AgentWriteTracker,
+}
+
+#[derive(Clone)]
+struct AcpElicitationState {
+    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
+    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
+    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+}
+
+#[derive(Clone)]
+struct AcpActorContext {
+    shared: AcpActorSharedState,
+    elicitations: AcpElicitationState,
+    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+}
+
 struct ElicitationWaiter {
     session_id: String,
     fields: HashMap<String, ElicitationFieldSpec>,
@@ -1059,6 +1081,23 @@ impl NativeAi {
             completed_url_elicitations: Arc::new(Mutex::new(VecDeque::new())),
             auth_terminal_sessions: Arc::new(Mutex::new(HashMap::new())),
             auth_terminal_counter: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
+    fn acp_actor_context(&self) -> AcpActorContext {
+        AcpActorContext {
+            shared: AcpActorSharedState {
+                event_tx: self.event_tx.clone(),
+                session_state: Arc::clone(&self.inner),
+                tool_diffs: self.tool_diffs.clone(),
+                agent_writes: self.agent_writes.clone(),
+            },
+            elicitations: AcpElicitationState {
+                user_input_waiters: Arc::clone(&self.user_input_waiters),
+                url_elicitation_waiters: Arc::clone(&self.url_elicitation_waiters),
+                completed_url_elicitations: Arc::clone(&self.completed_url_elicitations),
+            },
+            prompt_capabilities: Arc::new(Mutex::new(AcpPromptCapabilities::default())),
         }
     }
 
@@ -1350,13 +1389,7 @@ impl NativeAi {
             AcpSessionStartMode::New {
                 additional_directories: normalized.kept.clone(),
             },
-            self.event_tx.clone(),
-            Arc::clone(&self.inner),
-            self.tool_diffs.clone(),
-            self.agent_writes.clone(),
-            Arc::clone(&self.user_input_waiters),
-            Arc::clone(&self.url_elicitation_waiters),
-            Arc::clone(&self.completed_url_elicitations),
+            self.acp_actor_context(),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -1463,13 +1496,7 @@ impl NativeAi {
                 session_id: input.session_id,
                 additional_directories: normalized.kept.clone(),
             },
-            self.event_tx.clone(),
-            Arc::clone(&self.inner),
-            self.tool_diffs.clone(),
-            self.agent_writes.clone(),
-            Arc::clone(&self.user_input_waiters),
-            Arc::clone(&self.url_elicitation_waiters),
-            Arc::clone(&self.completed_url_elicitations),
+            self.acp_actor_context(),
         ) {
             Ok(created) => created,
             Err(error) => {
@@ -3628,21 +3655,14 @@ fn neverwrite_acp12_client_capabilities(_runtime_id: &str) -> acp12::schema::Cli
 fn start_acp_session(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
-    event_tx: Sender<RpcOutput>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    tool_diffs: ToolDiffState,
-    agent_writes: AgentWriteTracker,
-    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
-    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
-    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
+    context: AcpActorContext,
 ) -> Result<CreatedAcpSession, String> {
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<AcpCommand>();
     let (created_tx, created_rx) = mpsc::channel();
     let flavor = acp_protocol_flavor(&spec.runtime_id);
-    let prompt_capabilities = Arc::new(Mutex::new(AcpPromptCapabilities::default()));
     let handle = AcpSessionHandle {
         command_tx: command_tx.clone(),
-        prompt_capabilities: Arc::clone(&prompt_capabilities),
+        prompt_capabilities: Arc::clone(&context.prompt_capabilities),
     };
     thread::spawn(move || {
         let runtime = match Builder::new_current_thread().enable_all().build() {
@@ -3655,38 +3675,10 @@ fn start_acp_session(
         runtime.block_on(async move {
             match flavor {
                 AcpProtocolFlavor::Current14 => {
-                    run_acp_actor(
-                        spec,
-                        start_mode,
-                        event_tx,
-                        session_state,
-                        tool_diffs,
-                        agent_writes,
-                        user_input_waiters,
-                        url_elicitation_waiters,
-                        completed_url_elicitations,
-                        prompt_capabilities,
-                        command_rx,
-                        created_tx,
-                    )
-                    .await;
+                    run_acp_actor(spec, start_mode, context, command_rx, created_tx).await;
                 }
                 AcpProtocolFlavor::Legacy12 => {
-                    run_acp12_actor(
-                        spec,
-                        start_mode,
-                        event_tx,
-                        session_state,
-                        tool_diffs,
-                        agent_writes,
-                        user_input_waiters,
-                        url_elicitation_waiters,
-                        completed_url_elicitations,
-                        prompt_capabilities,
-                        command_rx,
-                        created_tx,
-                    )
-                    .await;
+                    run_acp12_actor(spec, start_mode, context, command_rx, created_tx).await;
                 }
             }
         });
@@ -4029,28 +4021,14 @@ async fn run_acp12_auth_inner(
 async fn run_acp_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
-    event_tx: Sender<RpcOutput>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    tool_diffs: ToolDiffState,
-    agent_writes: AgentWriteTracker,
-    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
-    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
-    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
-    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    context: AcpActorContext,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
     let result = run_acp_actor_inner(
         spec,
         start_mode,
-        event_tx,
-        session_state,
-        tool_diffs,
-        agent_writes,
-        user_input_waiters,
-        url_elicitation_waiters,
-        completed_url_elicitations,
-        prompt_capabilities,
+        context,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -4063,28 +4041,14 @@ async fn run_acp_actor(
 async fn run_acp12_actor(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
-    event_tx: Sender<RpcOutput>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    tool_diffs: ToolDiffState,
-    agent_writes: AgentWriteTracker,
-    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
-    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
-    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
-    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    context: AcpActorContext,
     mut command_rx: tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) {
     let result = run_acp12_actor_inner(
         spec,
         start_mode,
-        event_tx,
-        session_state,
-        tool_diffs,
-        agent_writes,
-        user_input_waiters,
-        url_elicitation_waiters,
-        completed_url_elicitations,
-        prompt_capabilities,
+        context,
         &mut command_rx,
         created_tx.clone(),
     )
@@ -4097,14 +4061,7 @@ async fn run_acp12_actor(
 async fn run_acp12_actor_inner(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
-    event_tx: Sender<RpcOutput>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    tool_diffs: ToolDiffState,
-    agent_writes: AgentWriteTracker,
-    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
-    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
-    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
-    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    context: AcpActorContext,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -4130,18 +4087,19 @@ async fn run_acp12_actor_inner(
         .stdout
         .take()
         .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let event_tx = context.shared.event_tx.clone();
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
-        session_state,
+        session_state: Arc::clone(&context.shared.session_state),
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
-        user_input_waiters,
-        url_elicitation_waiters,
-        completed_url_elicitations,
+        user_input_waiters: Arc::clone(&context.elicitations.user_input_waiters),
+        url_elicitation_waiters: Arc::clone(&context.elicitations.url_elicitation_waiters),
+        completed_url_elicitations: Arc::clone(&context.elicitations.completed_url_elicitations),
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
-        tool_diffs,
-        agent_writes,
+        tool_diffs: context.shared.tool_diffs.clone(),
+        agent_writes: context.shared.agent_writes.clone(),
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -4151,6 +4109,7 @@ async fn run_acp12_actor_inner(
     let session_created_for_connection = Arc::clone(&session_created);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
+    let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
     let client_for_shutdown = client.clone();
 
     let result = acp12::Client
@@ -4299,14 +4258,7 @@ async fn run_acp12_actor_inner(
 async fn run_acp_actor_inner(
     spec: AcpProcessSpec,
     start_mode: AcpSessionStartMode,
-    event_tx: Sender<RpcOutput>,
-    session_state: Arc<Mutex<NativeAiInner>>,
-    tool_diffs: ToolDiffState,
-    agent_writes: AgentWriteTracker,
-    user_input_waiters: Arc<Mutex<HashMap<String, ElicitationWaiter>>>,
-    url_elicitation_waiters: Arc<Mutex<HashMap<String, UrlElicitationWaiter>>>,
-    completed_url_elicitations: Arc<Mutex<VecDeque<String>>>,
-    prompt_capabilities: Arc<Mutex<AcpPromptCapabilities>>,
+    context: AcpActorContext,
     command_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AcpCommand>,
     created_tx: mpsc::Sender<Result<AiSession, String>>,
 ) -> Result<(), String> {
@@ -4332,18 +4284,19 @@ async fn run_acp_actor_inner(
         .stdout
         .take()
         .ok_or_else(|| "Failed to acquire ACP stdout".to_string())?;
+    let event_tx = context.shared.event_tx.clone();
     let client = NativeAcpClient {
         event_tx: event_tx.clone(),
-        session_state,
+        session_state: Arc::clone(&context.shared.session_state),
         message_ids: Arc::new(Mutex::new(HashMap::new())),
         thinking_ids: Arc::new(Mutex::new(HashMap::new())),
         permission_waiters: Arc::new(Mutex::new(HashMap::new())),
-        user_input_waiters,
-        url_elicitation_waiters,
-        completed_url_elicitations,
+        user_input_waiters: Arc::clone(&context.elicitations.user_input_waiters),
+        url_elicitation_waiters: Arc::clone(&context.elicitations.url_elicitation_waiters),
+        completed_url_elicitations: Arc::clone(&context.elicitations.completed_url_elicitations),
         suppressed_status_tool_calls: Arc::new(Mutex::new(HashSet::new())),
-        tool_diffs,
-        agent_writes,
+        tool_diffs: context.shared.tool_diffs.clone(),
+        agent_writes: context.shared.agent_writes.clone(),
         terminal_output: Arc::new(Mutex::new(HashMap::new())),
         terminal_exit: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -4353,6 +4306,7 @@ async fn run_acp_actor_inner(
     let session_created_for_connection = Arc::clone(&session_created);
     let disconnect_runtime_id = spec.runtime_id.clone();
     let event_tx_for_connection = event_tx.clone();
+    let prompt_capabilities = Arc::clone(&context.prompt_capabilities);
     let client_for_shutdown = client.clone();
 
     let result = Client
