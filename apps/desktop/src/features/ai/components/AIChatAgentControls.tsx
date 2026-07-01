@@ -40,6 +40,8 @@ const SEARCHABLE_MODEL_RUNTIME_IDS = new Set([
     "opencode-acp",
 ]);
 const GROK_RUNTIME_ID = "grok-acp";
+const CLAUDE_RUNTIME_ID = "claude-acp";
+const CLAUDE_FAST_OPTION_ID = "fast";
 
 function shouldUseSearchableModelMenu(runtimeId?: string) {
     return (
@@ -380,6 +382,35 @@ function filterConfigOptions(
     }));
 }
 
+function normalizeExtraConfigPresentation(
+    runtimeId: string | undefined,
+    option: AIConfigOption,
+    options: DropdownOption[],
+) {
+    if (
+        runtimeId !== CLAUDE_RUNTIME_ID ||
+        option.id !== CLAUDE_FAST_OPTION_ID
+    ) {
+        return {
+            label: option.label,
+            options,
+        };
+    }
+
+    return {
+        label: "Fast Mode",
+        options: options.map((item) => {
+            if (item.value === "on") {
+                return { ...item, label: "Fast" };
+            }
+            if (item.value === "off") {
+                return { ...item, label: "Off" };
+            }
+            return item;
+        }),
+    };
+}
+
 export function AIChatAgentControls({
     disabled = false,
     runtimeId,
@@ -446,14 +477,18 @@ export function AIChatAgentControls({
             extraConfigs
                 .map((option) => ({
                     option,
-                    options: filterConfigOptions(
+                    ...normalizeExtraConfigPresentation(
+                        runtimeId,
                         option,
-                        selectedModelId,
-                        effortsByModel,
+                        filterConfigOptions(
+                            option,
+                            selectedModelId,
+                            effortsByModel,
+                        ),
                     ),
                 }))
                 .filter(({ options }) => options.length > 0),
-        [effortsByModel, extraConfigs, selectedModelId],
+        [effortsByModel, extraConfigs, runtimeId, selectedModelId],
     );
 
     return (
@@ -488,11 +523,11 @@ export function AIChatAgentControls({
                     }
                 />
             ) : null}
-            {visibleExtraConfigs.map(({ option, options }) => (
+            {visibleExtraConfigs.map(({ option, label, options }) => (
                 <DropdownField
                     key={option.id}
                     disabled={disabled}
-                    label={option.label}
+                    label={label}
                     value={option.value}
                     options={options}
                     onChange={(value) => onConfigOptionChange(option.id, value)}
