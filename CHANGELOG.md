@@ -34,6 +34,20 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.2] - 2026-07-01
+
+### Added
+
+- Added Claude Fast Mode support in chat controls, presented as a clear Off/Fast toggle while preserving the underlying ACP values.
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.54.1`, including Claude Sonnet 5 SDK support.
+
+### Fixed
+
+- Fixed Claude model availability when runtime model overrides are used.
+
 ## [0.4.1] - 2026-06-30
 
 ### Added
