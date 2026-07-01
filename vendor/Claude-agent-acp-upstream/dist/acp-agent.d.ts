@@ -1,5 +1,5 @@
 import { AuthenticateRequest, CancelNotification, ClientCapabilities, CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse, ForkSessionRequest, ForkSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutRequest, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, ReadTextFileResponse, RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption, SessionModeState, SessionNotification, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, WriteTextFileRequest, WriteTextFileResponse } from "@agentclientprotocol/sdk";
-import { AgentInfo, CanUseTool, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { AgentInfo, CanUseTool, FastModeState, ModelInfo, Options, PermissionMode, PermissionUpdate, Query, SDKMessageOrigin, SDKPartialAssistantMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { BetaContentBlock, BetaRawContentBlockDelta } from "@anthropic-ai/sdk/resources/beta.mjs";
 import { SettingsManager } from "./settings.js";
@@ -97,6 +97,10 @@ type Session = {
     /** The currently selected main-thread agent name, or "default" for the
      *  standard Claude Code agent (no `agent` flag applied). */
     currentAgent: string;
+    /** Whether Fast mode is currently enabled for this session. Tracked as the
+     *  user's intent so it persists across model switches; the Fast mode config
+     *  option is only surfaced while the selected model supports it. */
+    fastModeEnabled: boolean;
     abortController: AbortController;
     /** Signal the consumer races `query.next()` against. Aborted by cancel()
      *  (after a grace period) to force the active turn to settle "cancelled" when
@@ -383,6 +387,33 @@ export declare class ClaudeAcpAgent {
     private sendAvailableCommandsUpdate;
     private updateConfigOption;
     private applyConfigOptionValue;
+    /** Replace the Fast mode option in `session.configOptions` so it reflects
+     *  `enabled` (and the client's current boolean-capability). A no-op when the
+     *  option isn't present, so callers must confirm the current model surfaces
+     *  it first. */
+    private refreshFastModeOption;
+    /** Toggle Fast mode for a session: push the SDK flag, record the user's
+     *  intent, and refresh the Fast mode config option in place. Only reached
+     *  once the option exists (i.e. the current model supports fast mode), so the
+     *  option is guaranteed to be present in `configOptions`. */
+    private applyFastMode;
+    /** Reconcile the session's Fast mode toggle with an SDK-reported
+     *  `fast_mode_state` (delivered on `system`/init and on user-turn `result`s).
+     *  The SDK can flip fast mode independently of the user — e.g. back to `on`
+     *  once a rate-limit `cooldown` clears — so we mirror definitive on/off
+     *  changes into the config option and notify the client.
+     *
+     *  Guards, in order:
+     *   - absent state: nothing to reconcile.
+     *   - no Fast mode option: the current model doesn't support fast mode, so the
+     *     reported state reflects capability, not the user's intent. Leave the
+     *     retained setting untouched so it's correct when a supporting model is
+     *     reselected (the source of the earlier intent-clobber bug was mutating it
+     *     here).
+     *   - `cooldown`: a transient suspension of an already-enabled fast mode.
+     *     Leave the toggle as-is rather than flapping it — and never let a stray
+     *     cooldown spuriously enable a toggle the user has off. */
+    private syncFastModeState;
     private getOrCreateSession;
     /**
      * Ensures the requested `cwd` is an absolute path that points at an existing
@@ -400,7 +431,65 @@ export declare const DEFAULT_AGENT_ID = "default";
  *  list if discovery fails so a flaky control request never blocks session
  *  creation. */
 export declare function discoverCustomAgents(q: Query): Promise<AgentInfo[]>;
-export declare function buildConfigOptions(modes: SessionModeState, models: SessionModelState, modelInfos: ModelInfo[], currentEffortLevel?: string, agents?: AgentInfo[], currentAgent?: string): SessionConfigOption[];
+/** Stable ids for the session config options surfaced via `configOptions`.
+ *  Centralized so the option declarations in `buildConfigOptions` and the
+ *  handlers in `setSessionConfigOption`/`applyConfigOptionValue` reference the
+ *  same identifiers and can't drift apart. */
+export declare const MODE_CONFIG_ID = "mode";
+export declare const MODEL_CONFIG_ID = "model";
+export declare const EFFORT_CONFIG_ID = "effort";
+export declare const AGENT_CONFIG_ID = "agent";
+export declare const FAST_MODE_CONFIG_ID = "fast";
+/** Select-fallback values used when the client has not opted into boolean
+ *  config options (see {@link createFastModeConfigOption}). */
+export declare const FAST_MODE_ON = "on";
+export declare const FAST_MODE_OFF = "off";
+/** Map the SDK's tri-state `fast_mode_state` onto the boolean config toggle.
+ *  `cooldown` (fast mode temporarily suspended after a rate limit, per the SDK
+ *  docs) keeps the toggle on so it reflects the user's intent — only an
+ *  explicit `off` clears it. */
+export declare function fastModeStateEnabled(state: FastModeState): boolean;
+/** Whether the Client advertised support for boolean session config options
+ *  (`session.configOptions.boolean`). Agents MUST only send `type: "boolean"`
+ *  config options to Clients that opt in; otherwise we fall back to a `select`.
+ *  See https://agentclientprotocol.com/rfds/boolean-config-option. */
+export declare function clientSupportsBooleanConfigOptions(clientCapabilities?: ClientCapabilities | null): boolean;
+/** Build the Fast mode config option. When the Client supports boolean config
+ *  options we expose a native `type: "boolean"` toggle; otherwise we degrade to
+ *  a two-value `select` ("on"/"off") so older Clients still get a usable
+ *  control. */
+export declare function createFastModeConfigOption(enabled: boolean, useBooleanOption: boolean): SessionConfigOption;
+/** Resolve the requested Fast mode value from a `session/set_config_option`
+ *  request. Accepts a native boolean (boolean-capable Clients) or the
+ *  "on"/"off" select-fallback strings. */
+export declare function resolveFastModeEnabled(params: SetSessionConfigOptionRequest): boolean;
+/** Per-model Fast mode state threaded into {@link buildConfigOptions}. The
+ *  option is only surfaced when the current model `supported`s fast mode. */
+export type FastModeOptionState = {
+    supported: boolean;
+    enabled: boolean;
+    /** Whether the Client opted into boolean config options. */
+    useBooleanOption: boolean;
+};
+export declare function buildConfigOptions(modes: SessionModeState, models: SessionModelState, modelInfos: ModelInfo[], currentEffortLevel?: string, agents?: AgentInfo[], currentAgent?: string, fastMode?: FastModeOptionState): SessionConfigOption[];
+export declare function resolveModelPreference(models: ModelInfo[], preference: string): ModelInfo | null;
+/**
+ * Restrict the SDK's model list to the user's `availableModels` allowlist
+ * (already merged-and-deduped across settings sources by `SettingsManager`).
+ * The user's exact entries become the model IDs surfaced via configOptions
+ * and passed to `setModel`, which prevents Claude Code from silently
+ * substituting a date-pinned variant (e.g. `haiku` →
+ * `claude-haiku-4-5-20251001`) that the user may not have access to.
+ *
+ * Display info and capability flags are copied from the closest SDK match so
+ * the UI still renders sensible names and effort levels.
+ *
+ * Semantics from https://code.claude.com/docs/en/model-config#restrict-model-selection:
+ * - `undefined` is handled by the caller (no allowlist applied).
+ * - The Default option is unaffected by `availableModels` — it always remains
+ *   available, even when the allowlist is `[]`.
+ */
+export declare function applyAvailableModelsAllowlist(sdkModels: ModelInfo[], allowlist: string[], settingsModelOverrides?: Record<string, string>): ModelInfo[];
 export declare function promptToClaude(prompt: PromptRequest): SDKUserMessage;
 /**
  * Resolves the ACP `messageId` for a Claude SDK message (live) or a persisted

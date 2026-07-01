@@ -234,6 +234,23 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
                 content: [],
             };
         }
+        case "ReportFindings": {
+            const input = toolUse.input;
+            const findings = input?.findings ?? [];
+            return {
+                title: findings.length === 0
+                    ? "Report findings: none found"
+                    : `Report ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+                kind: "think",
+                content: findings.map((finding) => ({
+                    type: "content",
+                    content: {
+                        type: "text",
+                        text: `**${finding.file}${finding.line ? `:${finding.line}` : ""}** — ${finding.summary}`,
+                    },
+                })),
+            };
+        }
         case "TaskCreate": {
             const input = toolUse.input;
             return {
