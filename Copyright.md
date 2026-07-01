@@ -125,11 +125,11 @@ dictionary licenses.
 
 | Package                                 | Version | License / Terms                 |
 | --------------------------------------- | ------- | ------------------------------- |
-| @agentclientprotocol/claude-agent-acp   | 0.53.0  | Apache-2.0                      |
-| @agentclientprotocol/sdk                | 1.0.0   | Apache-2.0                      |
-| @anthropic-ai/claude-agent-sdk          | 0.3.195 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/claude-agent-sdk-*        | 0.3.195 | Anthropic SDK terms in LICENSE.md |
-| @anthropic-ai/sdk                       | 0.106.0 | MIT                             |
+| @agentclientprotocol/claude-agent-acp   | 0.54.1  | Apache-2.0                      |
+| @agentclientprotocol/sdk                | 1.1.0   | Apache-2.0                      |
+| @anthropic-ai/claude-agent-sdk          | 0.3.197 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/claude-agent-sdk-*        | 0.3.197 | Anthropic SDK terms in LICENSE.md |
+| @anthropic-ai/sdk                       | 0.108.0 | MIT                             |
 | @modelcontextprotocol/sdk               | 1.29.0  | MIT                             |
 | zod                                     | 4.4.3   | MIT                             |
 
@@ -285,7 +285,7 @@ Original source: https://github.com/zed-industries/codex
 
 | File                  | Nature of changes                                              |
 | --------------------- | -------------------------------------------------------------- |
-| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.53.0` (`47fee477096f9edd4aeb994679658fb0914cc0c0`) with generated `dist/` runtime files required by desktop packaging |
+| Vendored snapshot     | Based on upstream `@agentclientprotocol/claude-agent-acp` `0.54.1` (`15ec9ab0dcd79b417674b11748bfeace629c085d`) with generated `dist/` runtime files required by desktop packaging |
 | `.gitignore`          | Keeps generated `dist/` files visible to Git so new runtime outputs are tracked for packaging |
 
 > All original copyright notices and license headers have been preserved.

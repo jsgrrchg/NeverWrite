@@ -120,6 +120,47 @@ describe("AIChatAgentControls", () => {
         expect(screen.queryByText("Medium")).not.toBeInTheDocument();
     });
 
+    it("presents Claude fast mode as Off/Fast while preserving ACP values", () => {
+        const onConfigOptionChange = vi.fn();
+
+        renderComponent(
+            <AIChatAgentControls
+                runtimeId="claude-acp"
+                modelId="claude-sonnet-5"
+                modeId="default"
+                effortsByModel={{}}
+                models={[]}
+                modes={[]}
+                configOptions={[
+                    {
+                        id: "fast",
+                        runtimeId: "claude-acp",
+                        category: "other",
+                        label: "Fast mode",
+                        type: "select",
+                        value: "off",
+                        options: [
+                            { value: "on", label: "On" },
+                            { value: "off", label: "Off" },
+                        ],
+                    },
+                ]}
+                onModelChange={() => {}}
+                onModeChange={() => {}}
+                onConfigOptionChange={onConfigOptionChange}
+            />,
+        );
+
+        fireEvent.click(screen.getByTitle("Fast Mode"));
+
+        expect(screen.getByRole("button", { name: "Fast" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "On" })).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "Fast" }));
+
+        expect(onConfigOptionChange).toHaveBeenCalledWith("fast", "on");
+    });
+
     it("uses the ACP model config option as the source of truth", () => {
         const onConfigOptionChange = vi.fn();
 
