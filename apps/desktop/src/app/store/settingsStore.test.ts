@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
     disposeSettingsStoreRuntime,
     initializeSettingsStore,
+    resolvePdfInitialZoom,
     useSettingsStore,
 } from "./settingsStore";
 import { useVaultStore } from "./vaultStore";
@@ -39,6 +40,7 @@ describe("settingsStore", () => {
         );
         expect(useSettingsStore.getState().inlineReviewEnabled).toBe(true);
         expect(useSettingsStore.getState().pdfFilter).toBe("none");
+        expect(useSettingsStore.getState().pdfDefaultZoom).toBe("fit-width");
         expect(useSettingsStore.getState().editorSpellcheck).toBe(false);
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
@@ -47,6 +49,17 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([]);
         expect(useSettingsStore.getState().vimModeEnabled).toBe(false);
         expect(useSettingsStore.getState().vimRelativeLineNumbers).toBe(false);
+    });
+
+    it("resolves the default PDF zoom into initial tab state", () => {
+        expect(resolvePdfInitialZoom()).toEqual({ zoom: 1, fitWidth: true });
+
+        useSettingsStore.getState().setSetting("pdfDefaultZoom", 2);
+        expect(useSettingsStore.getState().pdfDefaultZoom).toBe(2);
+        expect(resolvePdfInitialZoom()).toEqual({ zoom: 2, fitWidth: false });
+
+        useSettingsStore.getState().setSetting("pdfDefaultZoom", "fit-width");
+        expect(resolvePdfInitialZoom()).toEqual({ zoom: 1, fitWidth: true });
     });
 
     it("persists vim settings globally across vaults", () => {

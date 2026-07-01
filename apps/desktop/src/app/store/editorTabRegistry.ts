@@ -31,6 +31,7 @@ import {
     type PdfTabInput,
     type TabHistoryEntry,
 } from "./editorTabs";
+import { resolvePdfInitialZoom } from "./settingsStore";
 
 interface HistoryTabByKindMap {
     note: NoteTab;
@@ -140,6 +141,7 @@ function serializePdfTabForSession(tab: PdfTab) {
         path: tab.path,
         page: tab.page,
         zoom: tab.zoom,
+        fitWidth: tab.fitWidth,
         viewMode: tab.viewMode,
         scrollTop: tab.scrollTop,
         scrollLeft: tab.scrollLeft,
@@ -151,6 +153,7 @@ function serializePdfTabForSession(tab: PdfTab) {
                 path: entry.path,
                 page: entry.page,
                 zoom: entry.zoom,
+                fitWidth: entry.fitWidth,
                 viewMode: entry.viewMode,
                 scrollTop: entry.scrollTop,
                 scrollLeft: entry.scrollLeft,
@@ -238,16 +241,26 @@ const pdfTabHandler: HistoryTabHandler<"pdf"> = {
     kind: "pdf",
     normalizeTab: (input) => ensurePdfTabDefaults(input),
     createInitialTab: (payload) =>
-        createPdfTab(payload.entryId, payload.title, payload.path),
-    createOpenEntry: (payload) =>
-        createPdfHistoryEntry(
+        createPdfTab(
+            payload.entryId,
+            payload.title,
+            payload.path,
+            resolvePdfInitialZoom(),
+        ),
+    createOpenEntry: (payload) => {
+        const { zoom, fitWidth } = resolvePdfInitialZoom();
+        return createPdfHistoryEntry(
             payload.entryId,
             payload.title,
             payload.path,
             1,
-            1,
+            zoom,
             "continuous",
-        ),
+            0,
+            0,
+            fitWidth,
+        );
+    },
     entryFromTab: (tab) => createHistoryEntryFromTab(tab) as PdfHistoryEntry,
     buildFromHistory: (id, history, historyIndex) =>
         buildTabFromHistory(id, history, historyIndex) as PdfTab,

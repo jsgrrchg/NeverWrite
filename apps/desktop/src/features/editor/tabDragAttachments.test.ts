@@ -88,6 +88,7 @@ describe("buildTabFileDragDetail", () => {
             path: "/vault/docs/spec.pdf",
             page: 1,
             zoom: 1,
+            fitWidth: false,
             viewMode: "continuous",
             scrollTop: 0,
             scrollLeft: 0,

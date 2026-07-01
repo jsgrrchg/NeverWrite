@@ -5,6 +5,7 @@ import { getCurrentWebviewWindow } from "@neverwrite/runtime";
 import { openPath, openUrl, revealItemInDir } from "@neverwrite/runtime";
 import {
     EDITOR_FONT_FAMILY_OPTIONS,
+    PDF_DEFAULT_ZOOM_STEPS,
     useSettingsStore,
     type EditorFontFamily,
     type SpellcheckLanguage,
@@ -1094,6 +1095,14 @@ function AppearanceSettings({
     );
 }
 
+const PDF_DEFAULT_ZOOM_OPTIONS: { value: string; label: string }[] = [
+    { value: "fit-width", label: "Fit width" },
+    ...PDF_DEFAULT_ZOOM_STEPS.map((zoom) => ({
+        value: String(zoom),
+        label: `${Math.round(zoom * 100)}%`,
+    })),
+];
+
 function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const {
         editorFontSize,
@@ -1107,6 +1116,7 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         tabSize,
         hoverPreviewEnabled,
         hoverPreviewDelayMs,
+        pdfDefaultZoom,
         vimModeEnabled,
         vimRelativeLineNumbers,
         setSetting,
@@ -1181,13 +1191,21 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const showLayout = sectionHasSettingsSearchMatches(searchQuery, "Layout", [
         ["Text width", "Maximum width of the editor content, in pixels."],
     ]);
+    const showPdf = sectionHasSettingsSearchMatches(searchQuery, "PDF", [
+        [
+            "Default zoom",
+            "Zoom level applied when a PDF is opened. Fit width scales the page to the viewport.",
+            ...PDF_DEFAULT_ZOOM_OPTIONS.map((option) => option.label),
+        ],
+    ]);
 
     if (
         !showTypography &&
         !showFormatting &&
         !showPreview &&
         !showVim &&
-        !showLayout
+        !showLayout &&
+        !showPdf
     ) {
         return <EmptyPanelSearchResult />;
     }
@@ -1399,6 +1417,31 @@ function EditorSettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                         step={10}
                         onChange={(v) => setSetting("editorContentWidth", v)}
                         formatValue={(value) => `${value}px`}
+                    />
+                }
+            />
+
+            {showPdf ? <SectionLabel>PDF</SectionLabel> : null}
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="PDF"
+                label="Default zoom"
+                description="Zoom level applied when a PDF is opened. Fit width scales the page to the viewport."
+                keywords={PDF_DEFAULT_ZOOM_OPTIONS.map((option) => option.label)}
+                control={
+                    <SelectField
+                        value={
+                            typeof pdfDefaultZoom === "number"
+                                ? String(pdfDefaultZoom)
+                                : "fit-width"
+                        }
+                        options={PDF_DEFAULT_ZOOM_OPTIONS}
+                        onChange={(v) =>
+                            setSetting(
+                                "pdfDefaultZoom",
+                                v === "fit-width" ? "fit-width" : Number(v),
+                            )
+                        }
                     />
                 }
             />

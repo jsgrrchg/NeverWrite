@@ -85,12 +85,14 @@ function makePdfTab(overrides: {
     path: string;
     page?: number;
     zoom?: number;
+    fitWidth?: boolean;
     viewMode?: "single" | "continuous";
     scrollTop?: number;
     scrollLeft?: number;
 }) {
     const page = overrides.page ?? 1;
     const zoom = overrides.zoom ?? 1;
+    const fitWidth = overrides.fitWidth ?? false;
     const viewMode = overrides.viewMode ?? "continuous";
     const scrollTop = overrides.scrollTop ?? 0;
     const scrollLeft = overrides.scrollLeft ?? 0;
@@ -100,6 +102,7 @@ function makePdfTab(overrides: {
         kind: "pdf" as const,
         page,
         zoom,
+        fitWidth,
         viewMode,
         scrollTop,
         scrollLeft,
@@ -111,6 +114,7 @@ function makePdfTab(overrides: {
                 path: overrides.path,
                 page,
                 zoom,
+                fitWidth,
                 viewMode,
                 scrollTop,
                 scrollLeft,
@@ -3165,6 +3169,41 @@ describe("editorStore tab management", () => {
             scrollTop: 1249,
             scrollLeft: 319,
         });
+    });
+
+    it("toggles pdf fit-width and clears it when an explicit zoom is set", () => {
+        useEditorStore.setState({
+            tabs: [
+                makePdfTab({
+                    id: "pdf-fit",
+                    entryId: "docs/wide",
+                    title: "wide.pdf",
+                    path: "/vault/docs/wide.pdf",
+                    zoom: 1,
+                    fitWidth: false,
+                }),
+            ],
+            activeTabId: "pdf-fit",
+        });
+
+        useEditorStore.getState().updatePdfFitWidth("pdf-fit", true);
+        let pdfTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === "pdf-fit");
+        expect(isPdfTab(pdfTab) ? pdfTab.fitWidth : null).toBe(true);
+
+        // Setting an explicit zoom leaves fit mode.
+        useEditorStore.getState().updatePdfZoom("pdf-fit", 1.5);
+        pdfTab = useEditorStore
+            .getState()
+            .tabs.find((tab) => tab.id === "pdf-fit");
+        expect(isPdfTab(pdfTab) ? pdfTab : null).toMatchObject({
+            zoom: 1.5,
+            fitWidth: false,
+        });
+        expect(
+            isPdfTab(pdfTab) ? pdfTab.history[pdfTab.historyIndex] : null,
+        ).toMatchObject({ kind: "pdf", zoom: 1.5, fitWidth: false });
     });
 
     it("hydrates pane workspaces while mirroring the focused pane into legacy fields", () => {

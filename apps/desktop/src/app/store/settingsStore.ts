@@ -25,6 +25,7 @@ export interface Settings {
     hoverPreviewEnabled: boolean;
     hoverPreviewDelayMs: number; // 0–2000
     pdfFilter: PdfFilterMode;
+    pdfDefaultZoom: PdfDefaultZoom;
     tabSize: 2 | 4;
     editorSpellcheck: boolean;
     spellcheckPrimaryLanguage: SpellcheckLanguage;
@@ -100,6 +101,15 @@ export type TabOpenBehavior = "history" | "new_tab";
 export type SpellcheckLanguage = "system" | string;
 export type SpellcheckSecondaryLanguage = string | null;
 export type PdfFilterMode = "none" | "dark" | "sepia" | "grayscale";
+
+/**
+ * Initial zoom applied when a PDF is opened. "fit-width" scales the page so
+ * its width fills the viewport; a number is a fixed zoom factor (1 = 100%).
+ */
+export type PdfDefaultZoom = "fit-width" | number;
+
+// Fixed zoom factors offered as a default, mirroring the PDF viewer's steps.
+export const PDF_DEFAULT_ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 
 const VALID_EDITOR_FONT_FAMILIES: EditorFontFamily[] = [
     "system",
@@ -187,6 +197,7 @@ const defaults: Settings = {
     hoverPreviewEnabled: true,
     hoverPreviewDelayMs: 300,
     pdfFilter: "none",
+    pdfDefaultZoom: "fit-width",
     tabSize: 2,
     editorSpellcheck: false,
     spellcheckPrimaryLanguage: "system",
@@ -264,6 +275,41 @@ function normalizePdfFilterMode(value: unknown): PdfFilterMode {
     return VALID_PDF_FILTER_MODES.includes(value as PdfFilterMode)
         ? (value as PdfFilterMode)
         : defaults.pdfFilter;
+}
+
+function normalizePdfDefaultZoom(value: unknown): PdfDefaultZoom {
+    if (value === "fit-width") {
+        return "fit-width";
+    }
+
+    const parsed =
+        typeof value === "number"
+            ? value
+            : typeof value === "string"
+              ? Number(value)
+              : NaN;
+
+    if (!Number.isFinite(parsed)) {
+        return defaults.pdfDefaultZoom;
+    }
+
+    const match = PDF_DEFAULT_ZOOM_STEPS.find(
+        (step) => Math.abs(step - parsed) < 0.001,
+    );
+    return match ?? defaults.pdfDefaultZoom;
+}
+
+/**
+ * Resolves the configured default PDF zoom into the concrete state a new PDF
+ * tab should start with. Read at tab-creation time so the setting applies to
+ * newly opened PDFs without disturbing already-open tabs.
+ */
+export function resolvePdfInitialZoom(): { zoom: number; fitWidth: boolean } {
+    const value = useSettingsStore.getState().pdfDefaultZoom;
+    if (value === "fit-width") {
+        return { zoom: 1, fitWidth: true };
+    }
+    return { zoom: value, fitWidth: false };
 }
 
 function normalizeSpellcheckLanguageTag(value: string) {
@@ -447,6 +493,9 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
                 2000,
             ),
             pdfFilter: normalizePdfFilterMode(parsed.state.pdfFilter),
+            pdfDefaultZoom: normalizePdfDefaultZoom(
+                parsed.state.pdfDefaultZoom,
+            ),
             tabSize: normalizeTabSize(parsed.state.tabSize),
             editorSpellcheck:
                 parsed.state.editorSpellcheck ?? defaults.editorSpellcheck,
@@ -570,6 +619,7 @@ function pickSettings(state: SettingsStore): Settings {
         hoverPreviewEnabled: state.hoverPreviewEnabled,
         hoverPreviewDelayMs: state.hoverPreviewDelayMs,
         pdfFilter: state.pdfFilter,
+        pdfDefaultZoom: state.pdfDefaultZoom,
         tabSize: state.tabSize,
         editorSpellcheck: state.editorSpellcheck,
         spellcheckPrimaryLanguage: state.spellcheckPrimaryLanguage,

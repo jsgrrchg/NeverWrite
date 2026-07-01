@@ -34,6 +34,9 @@ export interface PdfHistoryEntry {
     path: string;
     page: number;
     zoom: number;
+    // When true, the viewer ignores `zoom` and fits the page width to the
+    // viewport, recomputing as the viewport resizes.
+    fitWidth: boolean;
     viewMode: PdfViewMode;
     scrollTop: number;
     scrollLeft: number;
@@ -74,11 +77,18 @@ export type NoteHistoryEntryInput = Omit<
 
 export type PdfHistoryEntryInput = Omit<
     PdfHistoryEntry,
-    "kind" | "page" | "zoom" | "viewMode" | "scrollTop" | "scrollLeft"
+    | "kind"
+    | "page"
+    | "zoom"
+    | "fitWidth"
+    | "viewMode"
+    | "scrollTop"
+    | "scrollLeft"
 > & {
     kind?: "pdf";
     page?: number;
     zoom?: number;
+    fitWidth?: boolean;
     viewMode?: PdfViewMode;
     scrollTop?: number;
     scrollLeft?: number;
@@ -129,6 +139,7 @@ export interface PdfTab {
     path: string;
     page: number;
     zoom: number;
+    fitWidth: boolean;
     viewMode: PdfViewMode;
     scrollTop: number;
     scrollLeft: number;
@@ -222,6 +233,7 @@ export type PdfTabInput = Omit<
     | "historyIndex"
     | "page"
     | "zoom"
+    | "fitWidth"
     | "viewMode"
     | "scrollTop"
     | "scrollLeft"
@@ -229,6 +241,7 @@ export type PdfTabInput = Omit<
     kind?: "pdf";
     page?: number;
     zoom?: number;
+    fitWidth?: boolean;
     viewMode?: PdfViewMode;
     scrollTop?: number;
     scrollLeft?: number;
@@ -491,6 +504,7 @@ export function createPdfHistoryEntry(
     viewMode: PdfViewMode,
     scrollTop = 0,
     scrollLeft = 0,
+    fitWidth = false,
 ): PdfHistoryEntry {
     return {
         kind: "pdf",
@@ -499,6 +513,7 @@ export function createPdfHistoryEntry(
         path,
         page,
         zoom,
+        fitWidth,
         viewMode,
         scrollTop,
         scrollLeft,
@@ -581,6 +596,7 @@ export function normalizeHistoryEntry(
                 : "continuous",
             "scrollTop" in entry ? (entry.scrollTop ?? 0) : 0,
             "scrollLeft" in entry ? (entry.scrollLeft ?? 0) : 0,
+            "fitWidth" in entry ? Boolean(entry.fitWidth) : false,
         );
     }
 
@@ -629,6 +645,7 @@ export function createHistoryEntryFromTab(tab: HistoryTab): TabHistoryEntry {
             tab.viewMode,
             tab.scrollTop,
             tab.scrollLeft,
+            tab.fitWidth,
         );
     }
 
@@ -671,6 +688,7 @@ export function buildTabFromHistory(
             path: entry.path,
             page: entry.page,
             zoom: entry.zoom,
+            fitWidth: entry.fitWidth,
             viewMode: entry.viewMode,
             scrollTop: entry.scrollTop,
             scrollLeft: entry.scrollLeft,
@@ -740,7 +758,12 @@ export function createPdfTab(
     entryId: string,
     title: string,
     path: string,
+    initialZoom: { zoom: number; fitWidth: boolean } = {
+        zoom: 1,
+        fitWidth: false,
+    },
 ): PdfTab {
+    const { zoom, fitWidth } = initialZoom;
     return {
         id: crypto.randomUUID(),
         kind: "pdf",
@@ -748,12 +771,23 @@ export function createPdfTab(
         title,
         path,
         page: 1,
-        zoom: 1,
+        zoom,
+        fitWidth,
         viewMode: "continuous",
         scrollTop: 0,
         scrollLeft: 0,
         history: [
-            createPdfHistoryEntry(entryId, title, path, 1, 1, "continuous"),
+            createPdfHistoryEntry(
+                entryId,
+                title,
+                path,
+                1,
+                zoom,
+                "continuous",
+                0,
+                0,
+                fitWidth,
+            ),
         ],
         historyIndex: 0,
     };
@@ -906,6 +940,7 @@ export function ensurePdfTabDefaults(tab: PdfTabInput): PdfTab {
             tab.viewMode ?? "continuous",
             tab.scrollTop ?? 0,
             tab.scrollLeft ?? 0,
+            tab.fitWidth ?? false,
         );
         return buildTabFromHistory(tab.id, history, historyIndex) as PdfTab;
     }
@@ -922,6 +957,7 @@ export function ensurePdfTabDefaults(tab: PdfTabInput): PdfTab {
                 tab.viewMode ?? "continuous",
                 tab.scrollTop ?? 0,
                 tab.scrollLeft ?? 0,
+                tab.fitWidth ?? false,
             ),
         ],
         0,

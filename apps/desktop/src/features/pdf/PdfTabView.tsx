@@ -36,6 +36,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+// Bounds for the zoom derived by fit-to-width, so an unusual page size can't
+// push the render to an absurd scale.
+const FIT_WIDTH_MIN_ZOOM = 0.1;
+const FIT_WIDTH_MAX_ZOOM = 5;
 const CONTINUOUS_PAGE_GAP = 20;
 const CONTINUOUS_OVERSCAN_PX = 1200;
 const CONTINUOUS_MAX_RENDERED_PAGES = 15;
@@ -374,11 +378,15 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const [viewportWidth, setViewportWidth] = useState(0);
     const [singlePageSize, setSinglePageSize] =
         useState<PdfRenderedPageSize | null>(null);
+    const [currentPageNaturalWidth, setCurrentPageNaturalWidth] = useState<
+        number | null
+    >(null);
     const [isPanModifierActive, setIsPanModifierActive] = useState(false);
     const [isDraggingToPan, setIsDraggingToPan] = useState(false);
 
     const updatePdfPage = useEditorStore((s) => s.updatePdfPage);
     const updatePdfZoom = useEditorStore((s) => s.updatePdfZoom);
+    const updatePdfFitWidth = useEditorStore((s) => s.updatePdfFitWidth);
     const updatePdfViewMode = useEditorStore((s) => s.updatePdfViewMode);
     const updatePdfScrollPosition = useEditorStore(
         (s) => s.updatePdfScrollPosition,
@@ -399,7 +407,29 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const loading = !error && !activePdf;
     const pdf = activePdf?.pdf ?? null;
     const numPages = activePdf?.numPages ?? 0;
-    const effectiveZoom = tab.zoom;
+    const fitWidthZoom = useMemo(() => {
+        if (!tab.fitWidth) return null;
+        const naturalWidth =
+            (tab.viewMode === "continuous"
+                ? pageMetrics?.find((m) => m.pageNumber === tab.page)?.width
+                : undefined) ?? currentPageNaturalWidth;
+        if (!naturalWidth || naturalWidth <= 0) return null;
+        const available = viewportWidth - PDF_SURFACE_PADDING_PX * 2;
+        if (available <= 0) return null;
+        return Math.min(
+            FIT_WIDTH_MAX_ZOOM,
+            Math.max(FIT_WIDTH_MIN_ZOOM, available / naturalWidth),
+        );
+    }, [
+        currentPageNaturalWidth,
+        pageMetrics,
+        tab.fitWidth,
+        tab.page,
+        tab.viewMode,
+        viewportWidth,
+    ]);
+    const effectiveZoom =
+        tab.fitWidth && fitWidthZoom != null ? fitWidthZoom : tab.zoom;
     const continuousLayouts = useMemo(
         () => (pageMetrics ? buildPageLayouts(pageMetrics, effectiveZoom) : []),
         [effectiveZoom, pageMetrics],
@@ -853,6 +883,33 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         };
     }, [pageMetrics, pdf, setPdfError, tab.viewMode]);
 
+    // Track the current page's unscaled width so fit-to-width can be computed
+    // in either view mode (continuous relies on pageMetrics, single-page does
+    // not). A failed lookup just leaves fit-width falling back to tab.zoom.
+    useEffect(() => {
+        if (!pdf) {
+            setCurrentPageNaturalWidth(null);
+            return;
+        }
+
+        let cancelled = false;
+        pdf.getPage(tab.page)
+            .then((page) => {
+                const viewport = page.getViewport({ scale: 1 });
+                page.cleanup?.();
+                if (!cancelled) {
+                    setCurrentPageNaturalWidth(viewport.width);
+                }
+            })
+            .catch(() => {
+                /* fit-width falls back to the stored zoom */
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [pdf, tab.page]);
+
     useEffect(() => {
         if (tab.viewMode !== "continuous" || continuousLayouts.length === 0) {
             return;
@@ -925,6 +982,16 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
     const zoomOut = useCallback(() => {
         updatePdfZoom(tab.id, clampZoom(effectiveZoom, "out"));
     }, [effectiveZoom, tab.id, updatePdfZoom]);
+
+    const toggleFitWidth = useCallback(() => {
+        if (tab.fitWidth) {
+            // Leaving fit mode: keep the current visual size by pinning the
+            // resolved zoom, so the page does not jump.
+            updatePdfZoom(tab.id, effectiveZoom);
+            return;
+        }
+        updatePdfFitWidth(tab.id, true);
+    }, [effectiveZoom, tab.fitWidth, tab.id, updatePdfFitWidth, updatePdfZoom]);
 
     const toggleViewMode = useCallback(() => {
         const nextViewMode =
@@ -1463,6 +1530,19 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     <PlusIcon />
                 </ToolbarButton>
 
+                <ToolbarButton
+                    onClick={toggleFitWidth}
+                    active={tab.fitWidth}
+                    title={
+                        tab.fitWidth
+                            ? "Fit width (on)"
+                            : "Fit page width to the window"
+                    }
+                >
+                    <FitWidthIcon />
+                    <span>Fit Width</span>
+                </ToolbarButton>
+
                 <div
                     style={{
                         width: 1,
@@ -1908,6 +1988,25 @@ function PlusIcon() {
             strokeLinecap="round"
         >
             <path d="M8 4v8M4 8h8" />
+        </svg>
+    );
+}
+
+function FitWidthIcon() {
+    return (
+        <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        >
+            <path d="M5 3.5h6a1 1 0 011 1v7a1 1 0 01-1 1H5a1 1 0 01-1-1v-7a1 1 0 011-1z" />
+            <path d="M1 8h2.5M3 6.5 1.5 8 3 9.5" />
+            <path d="M15 8h-2.5M13 6.5 14.5 8 13 9.5" />
         </svg>
     );
 }
