@@ -1,0 +1,34 @@
+name: Watch Claude Agent ACP Upstream
+
+on:
+    schedule:
+        - cron: "0 9 * * *"
+    workflow_dispatch:
+
+concurrency:
+    group: watch-claude-agent-acp-upstream
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+    issues: write
+
+jobs:
+    watch:
+        name: Check upstream tag
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+
+            - name: Check upstream tag
+              run: node scripts/watch-claude-agent-acp-upstream.mjs
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
