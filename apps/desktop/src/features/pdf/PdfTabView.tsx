@@ -46,6 +46,7 @@ const CONTINUOUS_OVERSCAN_PX = 1200;
 const CONTINUOUS_MAX_RENDERED_PAGES = 15;
 const VIEWPORT_HEIGHT_FALLBACK = 800;
 const PDF_SURFACE_PADDING_PX = 24;
+const PDF_TOOLBAR_COMPACT_WIDTH_PX = 600;
 const SCROLL_PERSIST_THRESHOLD_PX = 24;
 const SCROLL_EDGE_EPSILON_PX = 2;
 const KEYBOARD_HORIZONTAL_PAN_PX = 120;
@@ -540,6 +541,8 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
         tab.viewMode === "continuous"
             ? continuousLayouts.length > 0 && continuousContentWidth > 0
             : Boolean(singlePageSize && singlePageContentWidth > 0);
+    const compactToolbar =
+        viewportWidth > 0 && viewportWidth < PDF_TOOLBAR_COMPACT_WIDTH_PX;
 
     const setPdfError = useCallback(
         (message: string) => {
@@ -1660,7 +1663,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     }
                 >
                     <FitWidthIcon />
-                    <span>Fit Width</span>
+                    {!compactToolbar && <span>Fit Width</span>}
                 </ToolbarButton>
 
                 <div
@@ -1682,11 +1685,13 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     }
                 >
                     <StackPagesIcon />
-                    <span>
-                        {tab.viewMode === "continuous"
-                            ? "Continuous"
-                            : "Single Page"}
-                    </span>
+                    {!compactToolbar && (
+                        <span>
+                            {tab.viewMode === "continuous"
+                                ? "Continuous"
+                                : "Single Page"}
+                        </span>
+                    )}
                 </ToolbarButton>
 
                 <div
@@ -1704,14 +1709,14 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                     title={`Filter: ${activeFilter.label}`}
                 >
                     <FilterIcon />
-                    <span>{activeFilter.label}</span>
+                    {!compactToolbar && <span>{activeFilter.label}</span>}
                 </ToolbarButton>
 
                 <div style={{ flex: 1 }} />
 
                 <ToolbarButton onClick={openExternally} title="Open externally">
                     <ExternalLinkIcon />
-                    <span>Open Externally</span>
+                    {!compactToolbar && <span>Open Externally</span>}
                 </ToolbarButton>
             </div>
 
@@ -2019,6 +2024,7 @@ function ToolbarButton({
                 boxShadow: active
                     ? "inset 0 1px 2px rgba(0,0,0,0.12)"
                     : "0 1px 2px rgba(0,0,0,0.05)",
+                whiteSpace: "nowrap",
             }}
             onMouseEnter={(event) => {
                 if (!disabled) {
