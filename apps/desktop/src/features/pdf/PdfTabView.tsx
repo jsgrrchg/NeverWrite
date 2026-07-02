@@ -1605,7 +1605,7 @@ function PdfViewer({ tab }: { tab: PdfTab }) {
                         fontVariantNumeric: "tabular-nums",
                     }}
                 >
-                    Page {tab.page} / {numPages}
+                    {tab.page} / {numPages}
                 </span>
 
                 <ToolbarButton
