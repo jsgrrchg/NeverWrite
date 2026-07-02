@@ -16200,6 +16200,32 @@ describe("chatStore", () => {
         ).toBe("wide-model");
     });
 
+    it("keeps the selector aligned when a runtime fallback switches to an unlisted model", async () => {
+        await useChatStore.getState().initialize();
+
+        const sessionId = getActiveSessionId();
+        const existing = useChatStore.getState().sessionsById[sessionId]!;
+        const fallbackModelId = "claude-opus-fallback";
+
+        useChatStore.getState().upsertSession({
+            ...existing,
+            modelId: fallbackModelId,
+            configOptions: existing.configOptions.map((option) =>
+                option.category === "model"
+                    ? { ...option, value: fallbackModelId }
+                    : option,
+            ),
+        });
+
+        const merged = useChatStore.getState().sessionsById[sessionId]!;
+
+        expect(merged.modelId).toBe(fallbackModelId);
+        expect(
+            merged.configOptions.find((option) => option.category === "model")
+                ?.value,
+        ).toBe(fallbackModelId);
+    });
+
     it("refreshes the agent catalog when loading an existing live session with empty options", async () => {
         await useChatStore.getState().initialize();
 
