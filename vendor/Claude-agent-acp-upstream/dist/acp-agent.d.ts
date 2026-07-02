@@ -384,9 +384,25 @@ export declare class ClaudeAcpAgent {
      * `canUseTool` since that is where the SDK routes the tool's permission check.
      */
     private handleAskUserQuestion;
+    /**
+     * Handle `request_user_dialog` control requests — blocking dialogs the CLI
+     * asks the host to render. Only kinds declared in `supportedDialogKinds`
+     * are ever emitted; everything unexpected is answered `cancelled` (the
+     * required answer for unrecognized kinds), which applies the dialog's
+     * default behavior CLI-side. Today the only declared kind is the
+     * refusal-fallback consent prompt, rendered as an ACP form elicitation.
+     */
+    private handleUserDialog;
     private sendAvailableCommandsUpdate;
     private updateConfigOption;
     private applyConfigOptionValue;
+    /** Reconcile adapter model state after the SDK persistently swapped the
+     *  session's model out from under us (refusal fallback). The SDK already
+     *  made the switch, so this must NOT call `query.setModel` — it only
+     *  updates our bookkeeping (currentModelId, context window, mode clamping,
+     *  effort/Fast-mode options) via the same `applyConfigOptionValue` path a
+     *  user-driven model change takes, then notifies the client. */
+    private syncModelAfterRefusalFallback;
     /** Replace the Fast mode option in `session.configOptions` so it reflects
      *  `enabled` (and the client's current boolean-capability). A no-op when the
      *  option isn't present, so callers must confirm the current model surfaces
