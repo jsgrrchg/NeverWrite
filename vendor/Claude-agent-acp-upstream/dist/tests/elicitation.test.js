@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyAskElicitationResponse, askUserQuestionsToCreateRequest, createElicitationResponseToElicitResult, extractAskUserQuestions, mcpElicitationToCreateRequest, } from "../elicitation.js";
+import { applyAskElicitationResponse, askUserQuestionsToCreateRequest, createElicitationResponseToElicitResult, extractAskUserQuestions, extractRefusalFallbackPrompt, mcpElicitationToCreateRequest, refusalFallbackResultFromResponse, refusalFallbackToCreateRequest, } from "../elicitation.js";
 const SESSION_ID = "session-1";
 /**
  * Build a question matching the SDK's (strict) AskUserQuestion schema while
@@ -307,5 +307,79 @@ describe("applyAskElicitationResponse", () => {
         const result = applyAskElicitationResponse(response, toolInput, questions);
         expect(result.action).toBe("answered");
         expect(result.updatedInput.answers).toEqual({ "Single?": "B" });
+    });
+});
+describe("extractRefusalFallbackPrompt", () => {
+    it("extracts required and optional fields", () => {
+        expect(extractRefusalFallbackPrompt({
+            originalModel: "claude-fable-5",
+            fallbackModel: "claude-opus-4-8",
+            apiRefusalCategory: "cyber",
+            guidanceText: "You can retry with the fallback model.",
+            retractedMessageUuids: ["u1"],
+        })).toEqual({
+            originalModel: "claude-fable-5",
+            fallbackModel: "claude-opus-4-8",
+            apiRefusalCategory: "cyber",
+            guidanceText: "You can retry with the fallback model.",
+        });
+    });
+    it("returns null when a required model field is missing or mistyped", () => {
+        expect(extractRefusalFallbackPrompt({ fallbackModel: "claude-opus-4-8" })).toBeNull();
+        expect(extractRefusalFallbackPrompt({ originalModel: 5, fallbackModel: "claude-opus-4-8" })).toBeNull();
+    });
+    it("normalizes a non-string category to null and drops empty guidance", () => {
+        expect(extractRefusalFallbackPrompt({
+            originalModel: "a",
+            fallbackModel: "b",
+            apiRefusalCategory: null,
+            guidanceText: "",
+        })).toEqual({ originalModel: "a", fallbackModel: "b", apiRefusalCategory: null });
+    });
+});
+describe("refusalFallbackToCreateRequest", () => {
+    const prompt = {
+        originalModel: "claude-fable-5",
+        fallbackModel: "claude-opus-4-8",
+        apiRefusalCategory: "cyber",
+    };
+    it("builds a single-choice form whose enum consts are the dialog's wire results", () => {
+        const request = refusalFallbackToCreateRequest(prompt, SESSION_ID);
+        expect(request.mode).toBe("form");
+        expect(request).toMatchObject({ sessionId: SESSION_ID });
+        expect(request.message).toContain("claude-fable-5");
+        expect(request.message).toContain("(cyber)");
+        expect(request.message).toContain("claude-opus-4-8");
+        const choice = request.requestedSchema.properties?.choice;
+        expect(choice.type).toBe("string");
+        expect(choice.oneOf.map((o) => o.const)).toEqual(["retry_fallback", "cancelled"]);
+        expect(choice.oneOf[0].title).toContain("claude-opus-4-8");
+    });
+    it("omits the category marker and appends guidance when provided", () => {
+        const request = refusalFallbackToCreateRequest({ ...prompt, apiRefusalCategory: null, guidanceText: "Consider rephrasing." }, SESSION_ID);
+        expect(request.message).not.toContain("(");
+        expect(request.message).toContain("Consider rephrasing.");
+    });
+});
+describe("refusalFallbackResultFromResponse", () => {
+    it("maps an accepted retry choice to retry_fallback", () => {
+        const response = {
+            action: "accept",
+            content: { choice: "retry_fallback" },
+        };
+        expect(refusalFallbackResultFromResponse(response)).toBe("retry_fallback");
+    });
+    it("keeps the refusal for every other outcome", () => {
+        const cases = [
+            { action: "accept", content: { choice: "cancelled" } },
+            { action: "accept", content: {} },
+            { action: "accept", content: { choice: "something-new" } },
+            { action: "accept" },
+            { action: "decline" },
+            { action: "cancel" },
+        ];
+        for (const response of cases) {
+            expect(refusalFallbackResultFromResponse(response)).toBe("cancelled");
+        }
     });
 });

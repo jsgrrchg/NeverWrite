@@ -2732,6 +2732,378 @@ describe("stop reason propagation", () => {
   });
 });
 
+describe("model refusal fallback handling", () => {
+  /** Session overrides with a populated model picker: Fable selected,
+   *  Opus available as the refusal-fallback target. `modes` mirrors a real
+   *  session (never empty), so the mode-clamp logic in applyConfigOptionValue
+   *  sees realistic state. */
+  const modelStateOverrides = {
+    models: {
+      currentModelId: "claude-fable-5",
+      availableModels: [
+        { modelId: "claude-fable-5", name: "Claude Fable 5" },
+        { modelId: "claude-opus-4-8", name: "Claude Opus 4.8" },
+      ],
+    },
+    modelInfos: [
+      { value: "claude-fable-5", displayName: "Claude Fable 5", description: "" },
+      { value: "claude-opus-4-8", displayName: "Claude Opus 4.8", description: "" },
+    ],
+    modes: {
+      currentModeId: "default",
+      availableModes: [
+        { id: "auto", name: "Auto", description: "" },
+        { id: "default", name: "Default", description: "" },
+      ],
+    },
+  };
+
+  function refusalFallbackMessage(overrides: Record<string, unknown> = {}) {
+    return {
+      type: "system",
+      subtype: "model_refusal_fallback",
+      trigger: "refusal",
+      direction: "retry",
+      original_model: "claude-fable-5",
+      fallback_model: "claude-opus-4-8",
+      request_id: "req_1",
+      api_refusal_category: "cyber",
+      content: "banner",
+      uuid: randomUUID(),
+      session_id: "test-session",
+      ...overrides,
+    };
+  }
+
+  function successResult() {
+    return {
+      type: "result" as const,
+      subtype: "success" as const,
+      stop_reason: null,
+      is_error: false,
+      result: "",
+      errors: [],
+      duration_ms: 0,
+      duration_api_ms: 0,
+      num_turns: 1,
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: "test-session",
+    };
+  }
+
+  /** Replays the prompt's user echo (so the turn activates), then the given
+   *  messages, then settles the turn. */
+  function makeGenerator(messages: unknown[]) {
+    return async function* (input: Pushable<any>) {
+      const iter = input[Symbol.asyncIterator]();
+      const { value: userMessage, done } = await iter.next();
+      if (!done && userMessage) {
+        yield {
+          type: "user",
+          message: userMessage.message,
+          parent_tool_use_id: null,
+          uuid: userMessage.uuid,
+          session_id: "test-session",
+          isReplay: true,
+        };
+      }
+      yield* messages as any;
+      yield { type: "system", subtype: "session_state_changed", state: "idle" };
+    };
+  }
+
+  function createCapturingAgent() {
+    const sessionUpdate = vi.fn(async () => {});
+    const agent = new ClaudeAcpAgent({ sessionUpdate } as unknown as AcpClient, {
+      log: () => {},
+      error: () => {},
+    });
+    return { agent, sessionUpdate };
+  }
+
+  it("notifies the user and reconciles model state on model_refusal_fallback", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([refusalFallbackMessage(), successResult()]),
+      modelStateOverrides,
+    );
+
+    const response = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "test" }],
+    });
+    expect(response.stopReason).toBe("end_turn");
+
+    const session = agent.sessions["test-session"];
+    // The swap is persistent — our bookkeeping must follow it.
+    expect(session.models.currentModelId).toBe("claude-opus-4-8");
+    // The SDK made the switch itself; a setModel round-trip would be wrong.
+    expect(session.query.setModel).not.toHaveBeenCalled();
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    const notice = updates.find(
+      (u) => u.sessionUpdate === "agent_message_chunk" && u.content.text.includes("Model fallback"),
+    );
+    expect(notice).toBeDefined();
+    expect(notice.content.text).toContain("claude-fable-5");
+    expect(notice.content.text).toContain("claude-opus-4-8");
+    expect(notice.content.text).toContain("(cyber)");
+
+    const configUpdate = updates.find((u) => u.sessionUpdate === "config_option_update");
+    expect(configUpdate).toBeDefined();
+    const modelOption = configUpdate.configOptions.find((o: { id: string }) => o.id === "model");
+    expect(modelOption.currentValue).toBe("claude-opus-4-8");
+  });
+
+  it("includes the refusal explanation in the fallback notice when present", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        refusalFallbackMessage({
+          api_refusal_explanation: "This request tripped a safety classifier.",
+        }),
+        successResult(),
+      ]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    const notice = updates.find(
+      (u) => u.sessionUpdate === "agent_message_chunk" && u.content.text.includes("Model fallback"),
+    );
+    expect(notice.content.text).toContain("This request tripped a safety classifier.");
+  });
+
+  it("tracks the raw model id when the fallback model is not among the options", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        refusalFallbackMessage({ fallback_model: "claude-mystery-9" }),
+        successResult(),
+      ]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const session = agent.sessions["test-session"];
+    // Not resolvable to an option — keep the truthful raw id anyway so
+    // model-dependent bookkeeping doesn't keep advertising the refused model.
+    expect(session.models.currentModelId).toBe("claude-mystery-9");
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    expect(updates.some((u) => u.sessionUpdate === "config_option_update")).toBe(true);
+  });
+
+  it("skips the config update when the fallback equals the tracked model", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        refusalFallbackMessage({ fallback_model: "claude-fable-5" }),
+        successResult(),
+      ]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    // Notice still shown, but no state churn.
+    expect(updates.some((u) => u.sessionUpdate === "agent_message_chunk")).toBe(true);
+    expect(updates.some((u) => u.sessionUpdate === "config_option_update")).toBe(false);
+  });
+
+  it("surfaces the structured explanation when a refusal has no fallback", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        {
+          type: "system",
+          subtype: "model_refusal_no_fallback",
+          original_model: "claude-fable-5",
+          request_id: "req_1",
+          api_refusal_category: "cyber",
+          api_refusal_explanation: "Declined by safety classifiers.",
+          content: "banner",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        { ...successResult(), stop_reason: "refusal" },
+      ]),
+      modelStateOverrides,
+    );
+
+    const response = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "test" }],
+    });
+    expect(response.stopReason).toBe("refusal");
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    const chunk = updates.find((u) => u.sessionUpdate === "agent_message_chunk");
+    expect(chunk.content.text).toBe("Declined by safety classifiers.");
+    // No model reconciliation on the no-fallback path.
+    expect(updates.some((u) => u.sessionUpdate === "config_option_update")).toBe(false);
+  });
+
+  it("does not persist the swap for a turn-only fallback (direction revert)", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([refusalFallbackMessage({ direction: "revert" }), successResult()]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const session = agent.sessions["test-session"];
+    // Older-CLI "revert" means the session stays on the original model.
+    expect(session.models.currentModelId).toBe("claude-fable-5");
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    const notice = updates.find(
+      (u) => u.sessionUpdate === "agent_message_chunk" && u.content.text.includes("Model fallback"),
+    );
+    expect(notice.content.text).toContain("stays on claude-fable-5");
+    expect(updates.some((u) => u.sessionUpdate === "config_option_update")).toBe(false);
+  });
+
+  it("keeps the current permission modes when the fallback model is unknown", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        refusalFallbackMessage({ fallback_model: "claude-mystery-9" }),
+        successResult(),
+      ]),
+      {
+        ...modelStateOverrides,
+        // Session is running in auto mode; the unknown fallback model's
+        // capabilities are unknowable, so the mode must NOT be clamped.
+        modes: {
+          currentModeId: "auto",
+          availableModes: [
+            { id: "auto", name: "Auto", description: "" },
+            { id: "default", name: "Default", description: "" },
+          ],
+        },
+      },
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const session = agent.sessions["test-session"];
+    expect(session.models.currentModelId).toBe("claude-mystery-9");
+    expect(session.modes.currentModeId).toBe("auto");
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    expect(updates.some((u) => u.sessionUpdate === "current_mode_update")).toBe(false);
+  });
+
+  it("keeps the banner explanation when the refusal frame arrives after it without stop_details", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        {
+          type: "system",
+          subtype: "model_refusal_no_fallback",
+          original_model: "claude-fable-5",
+          request_id: "req_1",
+          api_refusal_explanation: "Declined by safety classifiers.",
+          content: "banner",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        // The consolidated refusal frame from a gateway that dropped
+        // stop_details — it must not clobber the banner's explanation.
+        {
+          type: "assistant",
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: "test-session",
+          message: {
+            role: "assistant",
+            model: "claude-fable-5",
+            stop_reason: "refusal",
+            content: [],
+            usage: {
+              input_tokens: 10,
+              output_tokens: 0,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          },
+        },
+        { ...successResult(), stop_reason: "refusal" },
+      ]),
+      modelStateOverrides,
+    );
+
+    const response = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "test" }],
+    });
+    expect(response.stopReason).toBe("refusal");
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    const chunk = updates.find(
+      (u) =>
+        u.sessionUpdate === "agent_message_chunk" &&
+        u.content.text === "Declined by safety classifiers.",
+    );
+    expect(chunk).toBeDefined();
+  });
+
+  it("ignores a non-human-authored refusal banner (refused_user_message_uuid null)", async () => {
+    const { agent, sessionUpdate } = createCapturingAgent();
+    injectGeneratorSession(
+      agent,
+      makeGenerator([
+        {
+          type: "system",
+          subtype: "model_refusal_no_fallback",
+          original_model: "claude-fable-5",
+          request_id: "req_1",
+          api_refusal_explanation: "Background task declined.",
+          refused_user_message_uuid: null,
+          content: "banner",
+          uuid: randomUUID(),
+          session_id: "test-session",
+        },
+        { ...successResult(), stop_reason: "refusal" },
+      ]),
+      modelStateOverrides,
+    );
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const updates = sessionUpdate.mock.calls.map((c: any[]) => (c[0] as { update: any }).update);
+    // The background followup's explanation must not be attributed to the
+    // user's turn.
+    expect(
+      updates.some(
+        (u) =>
+          u.sessionUpdate === "agent_message_chunk" &&
+          u.content.text.includes("Background task declined."),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("logout", () => {
   function createMockAgent() {
     const mockClient = {
@@ -4053,9 +4425,11 @@ describe("usage_update computation", () => {
 
   it("compact_boundary uses authoritative getContextUsage for used, keeps session window for size", async () => {
     const { agent, updates } = createMockAgentWithCapture();
+    // No trailing idle: an idle with no preceding result now fails the turn as
+    // abandoned (issue #825), and a real compaction turn always produces a
+    // result. Here the stream simply ends, settling the prompt end_turn.
     injectSession(agent, [
       { type: "system", subtype: "compact_boundary", session_id: "test-session" },
-      { type: "system", subtype: "session_state_changed", state: "idle" },
     ]);
     const session = agent.sessions["test-session"];
     // A 1M window learned earlier (e.g. from modelUsage) must survive compaction
@@ -4077,9 +4451,9 @@ describe("usage_update computation", () => {
 
   it("compact_boundary falls back to used:0 when getContextUsage fails", async () => {
     const { agent, updates } = createMockAgentWithCapture();
+    // No trailing idle — see the sibling test above (issue #825).
     injectSession(agent, [
       { type: "system", subtype: "compact_boundary", session_id: "test-session" },
-      { type: "system", subtype: "session_state_changed", state: "idle" },
     ]);
     const session = agent.sessions["test-session"];
     session.contextWindowSize = 200000;
@@ -5876,6 +6250,264 @@ describe("session/cancel wedge recovery (issue #680)", () => {
 
     await expect(promptPromise).resolves.toEqual({ stopReason: "cancelled" });
     expect(agent.sessions["test-session"]).toBeUndefined();
+  });
+});
+
+describe("turn abandoned by the SDK (issue #825)", () => {
+  function createMockAgent() {
+    const mockClient = {
+      sessionUpdate: async () => {},
+    } as unknown as AcpClient;
+    return new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+  }
+
+  function createResultMessage() {
+    return {
+      type: "result" as const,
+      subtype: "success",
+      stop_reason: "end_turn",
+      is_error: false,
+      result: "",
+      errors: [],
+      duration_ms: 0,
+      duration_api_ms: 0,
+      num_turns: 1,
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      modelUsage: {},
+      permission_denials: [],
+      uuid: randomUUID(),
+      session_id: "test-session",
+    };
+  }
+
+  // Deterministic wait for the consumer to reach a state (e.g. a turn became
+  // active), instead of a timing-based sleep that can pass vacuously on a
+  // slow machine while exercising the wrong code path.
+  const waitFor = async (cond: () => boolean) => {
+    for (let i = 0; i < 200; i++) {
+      if (cond()) return;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    throw new Error("waitFor timed out");
+  };
+
+  it("fails the in-flight prompt when the SDK goes idle without emitting a result", async () => {
+    // The issue #825 signature: the model stream drops mid-turn, the SDK's
+    // turn loop exits (trailing `session_state_changed: idle` — its
+    // authoritative turn-over signal) but the turn's `result` never arrives.
+    // The prompt must fail at that idle instead of hanging until the next
+    // prompt drains the stale state.
+    const agent = createMockAgent();
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        const u1 = await iter.next();
+        yield userEcho(u1.value); // turn 1 active
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+        // Parked awaiting the next prompt's input, like the real wedged SDK.
+        const u2 = await iter.next();
+        yield userEcho(u2.value);
+        yield createResultMessage();
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      }
+      return messageGenerator();
+    });
+
+    await expect(
+      agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "first" }] }),
+    ).rejects.toThrow(/without a result/);
+
+    // The session recovers: the next prompt runs normally on the same stream.
+    const second = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "second" }],
+    });
+    expect(second.stopReason).toBe("end_turn");
+    expect(second.usage?.inputTokens).toBe(10);
+  });
+
+  it("absorbs a cancelled turn's lagged trailing idle without failing the next turn", async () => {
+    // Cancel turn 1; turn 2's echo arrives BEFORE turn 1's trailing idle, so
+    // the hand-off settles turn 1 "cancelled" (recording the owed idle). The
+    // lagged idle then lands while healthy turn 2 is active — it must be
+    // absorbed as turn 1's trailer, not read as turn 2 ending without a
+    // result (which would reject turn 2 here).
+    const agent = createMockAgent();
+    agent.forceCancelGraceMs = 60_000; // hand-off must settle turn 1, not the backstop
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        const u1 = await iter.next();
+        yield userEcho(u1.value); // turn 1 active
+        // Parks until the test (after cancelling turn 1) sends turn 2.
+        const u2 = await iter.next();
+        yield userEcho(u2.value); // hand-off: turn 1 settles cancelled
+        yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1's lagged trailer
+        yield createResultMessage();
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      }
+      return messageGenerator();
+    });
+
+    const first = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "first" }],
+    });
+    await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+    await agent.cancel({ sessionId: "test-session" });
+    const second = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "second" }],
+    });
+
+    await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+    const secondResult = await second;
+    expect(secondResult.stopReason).toBe("end_turn");
+    expect(secondResult.usage?.inputTokens).toBe(10);
+  });
+
+  it("counts an orphaned queued turn's trailer so it cannot false-fail a later prompt", async () => {
+    // Turn 1 active, turn 2 queued. cancel() settles+removes turn 2, but its
+    // message was already pushed, so the SDK still runs it and emits a result
+    // (the orphan) plus a trailing idle. The orphan result arrives while
+    // session.cancelled is still true and must record the owed trailer —
+    // otherwise the orphan's idle, lagging past turn 3's echo, would be read
+    // as turn 3 ending without a result and reject the healthy prompt.
+    const agent = createMockAgent();
+    let releaseAfterCancel!: () => void;
+    const afterCancel = new Promise<void>((resolve) => (releaseAfterCancel = resolve));
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        const u1 = await iter.next();
+        yield userEcho(u1.value); // turn 1 active
+        await iter.next(); // turn 2's pushed message (cancelled + removed)
+        await afterCancel; // test cancels (orphaning turn 2)
+        yield { type: "system", subtype: "session_state_changed", state: "idle" }; // settles turn 1 cancelled
+        yield createResultMessage(); // turn 2's orphan result — skipped; trailer now owed
+        const u3 = await iter.next();
+        yield userEcho(u3.value); // turn 3 activates (clears cancelled)
+        yield { type: "system", subtype: "session_state_changed", state: "idle" }; // orphan's lagged trailer — absorbed
+        yield createResultMessage();
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      }
+      return messageGenerator();
+    });
+
+    const first = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "first" }],
+    });
+    await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+    const second = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "second" }],
+    });
+    await agent.cancel({ sessionId: "test-session" });
+    releaseAfterCancel();
+
+    await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+    await expect(second).resolves.toEqual({ stopReason: "cancelled" });
+    const third = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "third" }],
+    });
+    expect(third.stopReason).toBe("end_turn");
+    expect(third.usage?.inputTokens).toBe(10);
+  });
+
+  it("skips a force-cancelled turn's late result and absorbs its trailer after recovery", async () => {
+    // A wedged turn is settled "cancelled" by the force-cancel backstop; the
+    // SDK later recovers from the wedge and still emits that turn's result
+    // and trailing idle. The late result must be skipped as an orphan — not
+    // promoted onto the next queued prompt (which would settle it with the
+    // stale turn's stop reason and usage) — and its trailer absorbed, not
+    // read as the next turn being abandoned.
+    const agent = createMockAgent();
+    agent.forceCancelGraceMs = 10;
+    let releaseRecovery!: () => void;
+    const recovery = new Promise<void>((resolve) => (releaseRecovery = resolve));
+    const staleResult = createResultMessage();
+    staleResult.usage.input_tokens = 999;
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        const u1 = await iter.next();
+        yield userEcho(u1.value); // turn 1 active
+        await recovery; // wedged: interrupt is a no-op; the backstop settles turn 1
+        yield staleResult; // turn 1's late result — orphan-skipped; trailer now owed
+        const u2 = await iter.next();
+        yield userEcho(u2.value); // turn 2 activates (clears cancelled)
+        yield { type: "system", subtype: "session_state_changed", state: "idle" }; // turn 1's lagged trailer — absorbed
+        yield createResultMessage();
+        yield { type: "system", subtype: "session_state_changed", state: "idle" };
+      }
+      return messageGenerator();
+    });
+
+    const first = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "first" }],
+    });
+    await waitFor(() => !!agent.sessions["test-session"]?.activeTurn);
+    await agent.cancel({ sessionId: "test-session" }); // backstop (10ms) settles turn 1
+    await expect(first).resolves.toEqual({ stopReason: "cancelled" });
+
+    // Queue turn 2 BEFORE the SDK recovers, so the stale result races it.
+    const second = agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "second" }],
+    });
+    releaseRecovery();
+
+    const secondResult = await second;
+    expect(secondResult.stopReason).toBe("end_turn");
+    // Turn 2 settles with its OWN result's usage — not the stale 999.
+    expect(secondResult.usage?.inputTokens).toBe(10);
+  });
+
+  it("does not leak the owed idle when a cancel lands between a result and its trailer", async () => {
+    // Turn 1's result settles it (debt recorded); the user cancels before the
+    // lagged trailing idle arrives. That idle must still be absorbed via the
+    // debt — otherwise it leaks and a future genuine abandoned-turn idle
+    // would be absorbed instead of detected. Turn 2 then wedges (idle, no
+    // result) and must still be failed.
+    const agent = createMockAgent();
+    let releaseAfterCancel!: () => void;
+    const afterCancel = new Promise<void>((resolve) => (releaseAfterCancel = resolve));
+    injectGeneratorSession(agent, (input) => {
+      async function* messageGenerator() {
+        const iter = input[Symbol.asyncIterator]();
+        const u1 = await iter.next();
+        yield userEcho(u1.value);
+        yield createResultMessage(); // turn 1 settles here; trailer now owed
+        await afterCancel; // test cancels with no active turn
+        yield { type: "system", subtype: "session_state_changed", state: "idle" }; // absorbed via debt
+        const u2 = await iter.next();
+        yield userEcho(u2.value); // turn 2 active
+        yield { type: "system", subtype: "session_state_changed", state: "idle" }; // un-owed → turn 2 abandoned
+      }
+      return messageGenerator();
+    });
+
+    const first = await agent.prompt({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "first" }],
+    });
+    expect(first.stopReason).toBe("end_turn");
+
+    await agent.cancel({ sessionId: "test-session" });
+    releaseAfterCancel();
+
+    await expect(
+      agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "second" }] }),
+    ).rejects.toThrow(/without a result/);
   });
 });
 
