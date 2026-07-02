@@ -34,6 +34,24 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.3] - 2026-07-02
+
+### Added
+
+- Added a configurable default PDF zoom setting under Settings > Editor > PDF, including a new Fit width mode that opens PDFs scaled to the current viewport width.
+- Added a Fit Width toggle to the PDF toolbar, with session-aware PDF tab state so fit-width mode is restored consistently across reopened tabs and history entries.
+
+### Changed
+
+- Changed the default PDF opening zoom from 100% to Fit width, making documents easier to read on larger screens by default. Thanks to @spamsch.
+- Updated the embedded Claude ACP runtime to `0.55.0`.
+- Polished the PDF toolbar with a simpler page counter, refined navigation controls, and a more compact layout in narrow panes.
+
+### Fixed
+
+- Fixed PDF fit-width behavior across resize, reopen, and alternate opening paths so the computed zoom remains stable and explicit zoom actions cleanly leave fit-width mode.
+- Fixed Claude runtime model fallback coverage for the updated ACP runtime.
+
 ## [0.4.2] - 2026-07-01
 
 ### Added
