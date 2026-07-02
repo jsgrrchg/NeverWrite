@@ -79,4 +79,49 @@ export type AskUserQuestionOutcome = {
  * rather than the turn aborting); cancel aborts the tool call.
  */
 export declare function applyAskElicitationResponse(response: CreateElicitationResponse, toolInput: Record<string, unknown>, questions: AskUserQuestion[]): AskUserQuestionOutcome;
+/**
+ * The `request_user_dialog` kind the CLI emits when a model refusal has a
+ * fallback available but needs user consent before retrying (e.g. Claude Fable
+ * declining a request with Opus available as the fallback). Declaring this
+ * kind in `supportedDialogKinds` is the opt-in: the CLI fails closed and never
+ * emits an undeclared kind — the flow degrades to the classic refusal error
+ * ending the turn.
+ */
+export declare const REFUSAL_FALLBACK_DIALOG_KIND = "refusal_fallback_prompt";
+/**
+ * Payload of the `refusal_fallback_prompt` dialog. The dialog protocol
+ * transports payloads opaquely, so this shape is recovered from the CLI's own
+ * schema (v2.1.177): `originalModel`/`fallbackModel` are required strings;
+ * `apiRefusalCategory` (nullable), `guidanceText`, and
+ * `retractedMessageUuids` are optional. We ignore `retractedMessageUuids` —
+ * ACP has no way to retract already-streamed chunks.
+ */
+export type RefusalFallbackPrompt = {
+    originalModel: string;
+    fallbackModel: string;
+    apiRefusalCategory: string | null;
+    guidanceText?: string;
+};
+/**
+ * Validate the opaque dialog payload into a {@link RefusalFallbackPrompt}.
+ * Returns `null` when the required fields are missing or mistyped (a newer CLI
+ * may reshape the payload), so the caller can cancel the dialog and let the
+ * CLI apply its default behavior instead of rendering something misleading.
+ */
+export declare function extractRefusalFallbackPrompt(payload: Record<string, unknown>): RefusalFallbackPrompt | null;
+/**
+ * Render the refusal-fallback consent prompt as an ACP form elicitation: a
+ * single-select between retrying on the fallback model and keeping the
+ * refusal. The enum `const`s are the dialog's wire result values, so the
+ * response maps back without a translation table.
+ */
+export declare function refusalFallbackToCreateRequest(prompt: RefusalFallbackPrompt, sessionId: string): CreateElicitationRequest;
+/**
+ * Map the elicitation response back to the dialog's result enum. Only an
+ * explicit accept-with-retry resolves to `retry_fallback`; decline, cancel, a
+ * skipped field, or an unrecognized value all keep the refusal — the dialog's
+ * own default — so a dismissed or half-filled form can never trigger a model
+ * switch the user didn't ask for.
+ */
+export declare function refusalFallbackResultFromResponse(response: CreateElicitationResponse): string;
 //# sourceMappingURL=elicitation.d.ts.map
