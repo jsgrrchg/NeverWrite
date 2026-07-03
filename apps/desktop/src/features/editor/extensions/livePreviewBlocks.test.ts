@@ -39,6 +39,16 @@ function flushPromises() {
     return new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
+function createDeferredRender() {
+    let resolve!: (value: Awaited<ReturnType<typeof renderMermaidDiagram>>) => void;
+    const promise = new Promise<Awaited<ReturnType<typeof renderMermaidDiagram>>>(
+        (resolver) => {
+            resolve = resolver;
+        },
+    );
+    return { promise, resolve };
+}
+
 beforeEach(() => {
     mockedRenderMermaidDiagram.mockReset();
 });
@@ -208,6 +218,108 @@ describe("code block live preview", () => {
             view.dom.querySelector(".cm-mermaid-preview svg text")?.textContent,
         ).toBe("Diagram");
         expect(view.dom.querySelector(".cm-mermaid-preview-error")).toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("renders multiple Mermaid diagrams independently", async () => {
+        mockedRenderMermaidDiagram
+            .mockResolvedValueOnce({
+                status: "ok",
+                svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>First</text></svg>',
+            })
+            .mockResolvedValueOnce({
+                status: "ok",
+                svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Second</text></svg>',
+            });
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const first = ["```mermaid", "flowchart TD", "  A --> B", "```"].join(
+            "\n",
+        );
+        const second = [
+            "```mermaid",
+            "sequenceDiagram",
+            "  Alice->>Bob: Hi",
+            "```",
+        ].join("\n");
+        const view = new EditorView({
+            state: createLivePreviewState(`${first}\n\n${second}`),
+            parent,
+        });
+
+        await flushPromises();
+
+        const renderedLabels = [
+            ...view.dom.querySelectorAll(".cm-mermaid-preview svg text"),
+        ].map((node) => node.textContent);
+
+        expect(renderedLabels).toEqual(["First", "Second"]);
+        expect(mockedRenderMermaidDiagram).toHaveBeenNthCalledWith(
+            1,
+            "flowchart TD\n  A --> B",
+            expect.stringMatching(/^mermaid-\d+-0-[a-z0-9]+$/),
+        );
+        expect(mockedRenderMermaidDiagram).toHaveBeenNthCalledWith(
+            2,
+            "sequenceDiagram\n  Alice->>Bob: Hi",
+            expect.stringMatching(/^mermaid-\d+-\d+-[a-z0-9]+$/),
+        );
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("ignores stale Mermaid renders after rapid edits", async () => {
+        const firstRender = createDeferredRender();
+        mockedRenderMermaidDiagram
+            .mockReturnValueOnce(firstRender.promise)
+            .mockResolvedValueOnce({
+                status: "ok",
+                svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Updated</text></svg>',
+            });
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const initialDoc = [
+            "```mermaid",
+            "flowchart TD",
+            "  A --> B",
+            "```",
+        ].join("\n");
+        const view = new EditorView({
+            state: createLivePreviewState(initialDoc),
+            parent,
+        });
+
+        const updatedDoc = [
+            "```mermaid",
+            "flowchart TD",
+            "  A --> C",
+            "```",
+        ].join("\n");
+        view.dispatch({
+            changes: {
+                from: 0,
+                to: view.state.doc.length,
+                insert: updatedDoc,
+            },
+        });
+
+        await flushPromises();
+
+        firstRender.resolve({
+            status: "ok",
+            svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Stale</text></svg>',
+        });
+        await flushPromises();
+
+        expect(
+            view.dom.querySelector(".cm-mermaid-preview svg text")?.textContent,
+        ).toBe("Updated");
+        expect(view.dom.textContent).not.toContain("Stale");
 
         view.destroy();
         parent.remove();
