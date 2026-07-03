@@ -53,6 +53,7 @@ import {
     changeAuthorAnnotation,
     userEditNotifier,
 } from "./extensions/changeAuthor";
+import { MermaidFilePreview } from "./MermaidFilePreview";
 
 function FileTabStripButton({
     onClick,
@@ -106,6 +107,7 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
     const contextMenuCleanupRef = useRef<(() => void) | null>(null);
     const applyingExternalUpdateRef = useRef(false);
     const [, setEditorView] = useState<EditorView | null>(null);
+    const [mermaidSource, setMermaidSource] = useState("");
     const [editorContextMenu, setEditorContextMenu] =
         useState<ContextMenuState<{
             hasSelection: boolean;
@@ -154,6 +156,7 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
             annotations: [changeAuthorAnnotation.of("agent")],
         });
         applyingExternalUpdateRef.current = false;
+        setMermaidSource(nextContent);
     }, []);
 
     const {
@@ -399,6 +402,7 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
                         }
 
                         handleLocalContentChange(update.state.doc.toString());
+                        setMermaidSource(update.state.doc.toString());
                     }),
                     userEditNotifier(
                         () => tabRef.current?.path ?? null,
@@ -529,6 +533,14 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
 
     const tabPath = tab?.path ?? null;
     const tabContent = tab?.content ?? null;
+
+    useEffect(() => {
+        if (tab?.viewer !== "mermaid") {
+            setMermaidSource("");
+            return;
+        }
+        setMermaidSource(tab.content);
+    }, [tab?.content, tab?.id, tab?.viewer]);
 
     useEffect(() => {
         if (!tabPath || tabContent == null) {
@@ -713,6 +725,14 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
                             className="h-full relative z-1"
                         />
                     </div>
+                    {tab.viewer === "mermaid" ? (
+                        <div className="hidden min-w-[280px] flex-[0_0_45%] md:block">
+                            <MermaidFilePreview
+                                source={mermaidSource}
+                                tabId={tab.id}
+                            />
+                        </div>
+                    ) : null}
                 </div>
             </div>
             {editorContextMenu && (

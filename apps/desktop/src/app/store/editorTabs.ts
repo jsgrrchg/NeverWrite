@@ -2,7 +2,7 @@ import { toVaultRelativePath } from "../utils/vaultPaths";
 import { useVaultStore } from "./vaultStore";
 
 export type PdfViewMode = "single" | "continuous";
-export type FileViewerMode = "text" | "image" | "csv" | "html";
+export type FileViewerMode = "text" | "image" | "csv" | "html" | "mermaid";
 
 const IMAGE_FILE_EXTENSIONS = new Set([
     "png",
@@ -19,6 +19,7 @@ const IMAGE_FILE_EXTENSIONS = new Set([
 ]);
 
 const CSV_FILE_EXTENSIONS = new Set(["csv"]);
+const MERMAID_FILE_EXTENSIONS = new Set(["mermaid", "mmd"]);
 
 export interface NoteHistoryEntry {
     kind: "note";
@@ -1040,7 +1041,8 @@ export function isFileViewerMode(value: unknown): value is FileViewerMode {
         value === "text" ||
         value === "image" ||
         value === "csv" ||
-        value === "html"
+        value === "html" ||
+        value === "mermaid"
     );
 }
 
@@ -1052,6 +1054,7 @@ export function inferFileViewer(
     if (mimeType?.startsWith("image/")) return "image";
     if (mimeType?.startsWith("text/csv")) return "csv";
     if (CSV_FILE_EXTENSIONS.has(extension)) return "csv";
+    if (MERMAID_FILE_EXTENSIONS.has(extension)) return "mermaid";
     if (IMAGE_FILE_EXTENSIONS.has(extension)) {
         return "image";
     }

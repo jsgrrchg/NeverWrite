@@ -5,7 +5,7 @@ import {
     getEditorSessionKey,
     restorePersistedSession,
 } from "./editorSession";
-import type { Tab } from "./editorTabs";
+import { inferFileViewer, type Tab } from "./editorTabs";
 import { normalizeHistoryTab } from "./editorTabRegistry";
 import { safeStorageClear } from "../utils/safeStorage";
 import { useLayoutStore } from "./layoutStore";
@@ -24,6 +24,15 @@ describe("editorSession", () => {
         vi.restoreAllMocks();
         safeStorageClear();
         localStorage.clear();
+    });
+
+    it("infers Mermaid files as the dedicated Mermaid viewer", () => {
+        expect(inferFileViewer("/vault/diagrams/flow.mmd", null)).toBe(
+            "mermaid",
+        );
+        expect(inferFileViewer("/vault/diagrams/flow.mermaid", null)).toBe(
+            "mermaid",
+        );
     });
 
     it("serializes persisted session state without review tab payloads", () => {
