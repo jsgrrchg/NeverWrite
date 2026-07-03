@@ -11,6 +11,10 @@ describe("mermaidRenderer", () => {
     beforeEach(() => {
         vi.resetModules();
         vi.clearAllMocks();
+        document.documentElement.style.setProperty("--bg-primary", "#101014");
+        document.documentElement.style.setProperty("--bg-secondary", "#181820");
+        document.documentElement.style.setProperty("--text-primary", "#f4f4f5");
+        document.documentElement.style.setProperty("--accent", "#60a5fa");
     });
 
     it("initializes Mermaid with safe preview defaults once", async () => {
@@ -49,6 +53,19 @@ describe("mermaidRenderer", () => {
         expect(mockedMermaid.render).toHaveBeenCalledWith(
             "mermaid-test",
             "flowchart TD\nA --> B",
+        );
+        expect(mockedMermaid.initialize).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                startOnLoad: false,
+                securityLevel: "strict",
+                theme: "base",
+                themeVariables: expect.objectContaining({
+                    background: "#101014",
+                    primaryColor: "#181820",
+                    primaryTextColor: "#f4f4f5",
+                    c0: "#60a5fa",
+                }),
+            }),
         );
     });
 

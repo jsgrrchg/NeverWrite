@@ -905,17 +905,17 @@ export const livePreviewTheme = EditorView.baseTheme({
         paddingBottom: "8px !important",
     },
     ".cm-mermaid-preview": {
-        margin: "10px 0",
+        margin: "12px 0",
         maxWidth: "100%",
         overflowX: "auto",
-        border: "1px solid var(--border)",
-        borderRadius: "8px",
+        borderTop: "1px solid var(--border)",
+        borderBottom: "1px solid var(--border)",
         background:
-            "color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary))",
+            "color-mix(in srgb, var(--bg-secondary) 52%, var(--bg-primary))",
     },
     ".cm-mermaid-preview-body": {
         minHeight: "72px",
-        padding: "14px",
+        padding: "16px 10px",
         color: "var(--text-secondary)",
         fontSize: "0.9em",
     },
@@ -930,8 +930,7 @@ export const livePreviewTheme = EditorView.baseTheme({
     },
     ".cm-mermaid-preview-error": {
         color: "var(--text-secondary)",
-        background:
-            "color-mix(in srgb, #ef4444 9%, var(--bg-secondary))",
+        background: "transparent",
     },
     ".cm-mermaid-preview-error-title": {
         marginBottom: "6px",
@@ -940,11 +939,17 @@ export const livePreviewTheme = EditorView.baseTheme({
     },
     ".cm-mermaid-preview-error-message": {
         margin: "0",
+        padding: "8px 10px",
         whiteSpace: "pre-wrap",
         overflowWrap: "anywhere",
         fontFamily:
             "ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace",
         fontSize: "0.86em",
+        color: "var(--text-primary)",
+        background:
+            "color-mix(in srgb, #ef4444 8%, var(--bg-secondary))",
+        border: "1px solid color-mix(in srgb, #ef4444 24%, var(--border))",
+        borderRadius: "6px",
     },
     ".cm-link-tooltip": {
         position: "fixed",
