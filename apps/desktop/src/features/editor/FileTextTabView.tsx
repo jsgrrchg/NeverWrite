@@ -65,13 +65,20 @@ function FileTabStripButton({
     children: string;
 }) {
     const [hovered, setHovered] = useState(false);
+    const [pressed, setPressed] = useState(false);
     return (
         <button
             type="button"
             onClick={onClick}
             onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
-            className="rounded-sm px-2 py-0.5 transition-colors uppercase"
+            onMouseLeave={() => {
+                setHovered(false);
+                setPressed(false);
+            }}
+            onMouseDown={() => setPressed(true)}
+            onMouseUp={() => setPressed(false)}
+            onBlur={() => setPressed(false)}
+            className="rounded-sm px-2 py-0.5 uppercase"
             style={{
                 fontSize: "10px",
                 fontWeight: 600,
@@ -80,11 +87,17 @@ function FileTabStripButton({
                     ? "var(--text-primary)"
                     : "var(--text-secondary)",
                 backgroundColor: hovered
-                    ? "color-mix(in srgb, var(--text-primary) 7%, transparent)"
-                    : "transparent",
+                    ? "color-mix(in srgb, var(--bg-tertiary) 78%, transparent)"
+                    : "var(--bg-primary)",
                 border: `1px solid color-mix(in srgb, var(--border) ${
-                    hovered ? "70%" : "0%"
+                    hovered ? "78%" : "62%"
                 }, transparent)`,
+                boxShadow: pressed
+                    ? "inset 0 1px 2px color-mix(in srgb, black 22%, transparent)"
+                    : "0 1px 1px color-mix(in srgb, black 8%, transparent), inset 0 1px 0 color-mix(in srgb, white 14%, transparent)",
+                transform: hovered && !pressed ? "translateY(-1px)" : "none",
+                transition:
+                    "background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease, color 100ms ease, transform 100ms ease",
                 cursor: "pointer",
             }}
         >
@@ -102,22 +115,43 @@ function FileTabModeButton({
     onClick: () => void;
     children: string;
 }) {
+    const [hovered, setHovered] = useState(false);
+    const [pressed, setPressed] = useState(false);
+    const isPressed = active || pressed;
+
     return (
         <button
             type="button"
+            aria-pressed={active}
             onClick={onClick}
-            className="rounded-sm px-2 py-0.5 transition-colors uppercase"
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => {
+                setHovered(false);
+                setPressed(false);
+            }}
+            onMouseDown={() => setPressed(true)}
+            onMouseUp={() => setPressed(false)}
+            onBlur={() => setPressed(false)}
+            className="rounded-sm px-2 py-0.5 uppercase"
             style={{
                 fontSize: "10px",
                 fontWeight: 600,
                 letterSpacing: "0.04em",
                 color: active ? "var(--text-primary)" : "var(--text-secondary)",
                 backgroundColor: active
-                    ? "color-mix(in srgb, var(--accent) 18%, transparent)"
-                    : "transparent",
+                    ? "color-mix(in srgb, var(--accent) 16%, var(--bg-primary))"
+                    : hovered
+                      ? "color-mix(in srgb, var(--bg-tertiary) 78%, transparent)"
+                      : "var(--bg-primary)",
                 border: active
-                    ? "1px solid color-mix(in srgb, var(--accent) 42%, var(--border))"
-                    : "1px solid transparent",
+                    ? "1px solid color-mix(in srgb, var(--accent) 48%, var(--border))"
+                    : "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
+                boxShadow: isPressed
+                    ? "inset 0 1px 2px color-mix(in srgb, black 22%, transparent)"
+                    : "0 1px 1px color-mix(in srgb, black 10%, transparent), inset 0 1px 0 color-mix(in srgb, white 16%, transparent)",
+                transform: hovered && !isPressed ? "translateY(-1px)" : "none",
+                transition:
+                    "background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease, color 100ms ease, transform 100ms ease",
                 cursor: "pointer",
             }}
         >
@@ -746,10 +780,11 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
                 <div className="flex items-center gap-0.5 shrink-0">
                     {tab.viewer === "mermaid" ? (
                         <div
-                            className="mr-1 flex items-center rounded-sm p-0.5"
+                            className="mr-1 flex items-center gap-0.5 rounded-sm p-0.5"
                             style={{
                                 border: "1px solid var(--border)",
-                                backgroundColor: "var(--bg-primary)",
+                                backgroundColor:
+                                    "color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary))",
                             }}
                             aria-label="Mermaid file mode"
                         >
