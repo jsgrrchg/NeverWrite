@@ -298,7 +298,7 @@ If a vault appears corrupt or a file cannot be opened/saved:
   case-insensitive filesystems.
 - Look for permission errors in `native-backend.log`.
 - If the issue involves a specific file type, include the file extension and
-  whether it is Markdown, CSV, PDF, image, text/code, or `.excalidraw`.
+  whether it is Markdown, Mermaid, CSV, PDF, image, text/code, or `.excalidraw`.
 
 ## AI Session History And Recovery
 

@@ -45,12 +45,12 @@ run outside Electron, its fallback app data path is platform-dependent.
 
 The vault is the user's source of truth. NeverWrite reads and writes normal files
 inside the selected vault, including Markdown notes, text/code files, CSV files,
-PDFs, images, and `.excalidraw` concept maps.
+Mermaid diagram files, PDFs, images, and `.excalidraw` concept maps.
 
 Vault content is stored in the original file formats. It is plaintext when the
-file format is plaintext, for example Markdown, CSV, JSON, source code, and
-Excalidraw JSON. Binary files such as PDFs and images remain their original
-binary files. NeverWrite does not add encryption to vault files.
+file format is plaintext, for example Markdown, CSV, JSON, source code,
+Mermaid source, or Excalidraw JSON. Binary files such as PDFs and images remain
+their original binary files. NeverWrite does not add encryption to vault files.
 
 Vault file paths, titles, tags, links, and content can be shown in the UI,
 indexed for search, sent to AI providers when attached or included as context,

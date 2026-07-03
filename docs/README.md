@@ -26,7 +26,7 @@ remain reviewable.
 
 ## Editor And Workspace
 
-- [Editor Architecture](editor-architecture.md): CodeMirror, live preview, wikilinks, frontmatter/properties, autosave, dirty tabs, merge view, inline review overlays, and power-user invariants.
+- [Editor Architecture](editor-architecture.md): CodeMirror, live preview, Mermaid rendering, wikilinks, frontmatter/properties, autosave, dirty tabs, merge view, inline review overlays, and power-user invariants.
 - [Terminal Architecture](terminal-integration.md): PTY sidecar boundary, xterm rendering, terminal persistence, Claude Code integration, and validation notes.
 - [Subagents Working State Map](concept-maps/codex-subagents-working-state-map.excalidraw): visual working map for subagent state and coordination.
 
@@ -52,4 +52,4 @@ tokens, provider credentials, or personally sensitive paths.
 These currently live next to their implementation/release artifacts because
 they are tightly coupled to package-specific workflows.
 
-Last updated: June 2, 2026.
+Last updated: July 3, 2026.

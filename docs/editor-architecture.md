@@ -2,8 +2,9 @@
 
 This document is a maintainer guide for changing NeverWrite's editor without
 breaking the power-user experience. It focuses on the desktop editor stack:
-CodeMirror 6, live preview, wikilinks, frontmatter/properties, autosave/dirty
-state, inline review/merge view, and workspace tab boundaries.
+CodeMirror 6, live preview, Mermaid rendering, wikilinks,
+frontmatter/properties, autosave/dirty state, inline review/merge view, and
+workspace tab boundaries.
 
 For test-command conventions, also see [Testing and Validation](./testing.md).
 
@@ -25,7 +26,7 @@ The main renderer boundary is
 
 Notes and text-like files are intentionally different editor surfaces. Do not
 assume behavior added to `Editor.tsx` automatically applies to arbitrary files,
-CSV files, PDFs, or images.
+CSV files, Mermaid diagram files, PDFs, or images.
 
 ## Tab Model
 
@@ -35,7 +36,7 @@ resource-backed tab kinds are:
 
 - `NoteTab`: Markdown note content keyed by `noteId`.
 - `FileTab`: vault file content keyed by `relativePath`, with `viewer` set to
-  `text`, `csv`, or `image`.
+  `text`, `csv`, `mermaid`, or `image`.
 - `PdfTab`: PDF state, including page, zoom, view mode, and scroll position.
 
 Only `note`, `pdf`, `file`, and `map` participate in the history-tab registry
@@ -48,6 +49,9 @@ history model.
 - `viewer === "image"` uses a custom image viewer. Image tabs do not need text
   content and use vault preview URLs.
 - `viewer === "csv"` uses [`CsvFileTabView.tsx`](../apps/desktop/src/features/editor/CsvFileTabView.tsx).
+- `viewer === "mermaid"` uses [`FileTextTabView.tsx`](../apps/desktop/src/features/editor/FileTextTabView.tsx)
+  with a Source/Preview switch and [`MermaidFilePreview.tsx`](../apps/desktop/src/features/editor/MermaidFilePreview.tsx)
+  for rendered diagrams.
 - other text-like file viewers use [`FileTextTabView.tsx`](../apps/desktop/src/features/editor/FileTextTabView.tsx).
 
 `fileViewerNeedsTextContent(viewer)` returns `viewer !== "image"`, so adding a
@@ -93,7 +97,7 @@ The live preview system is split by concern:
   builds inline and line decorations for Markdown presentation.
 - [`livePreviewBlocks.ts`](../apps/desktop/src/features/editor/extensions/livePreviewBlocks.ts)
   handles heavier block widgets such as code blocks, images, tables, math,
-  embeds, and note previews.
+  Mermaid diagrams, embeds, and note previews.
 - [`livePreviewHelpers.ts`](../apps/desktop/src/features/editor/extensions/livePreviewHelpers.ts)
   centralizes cursor-awareness and Markdown parsing helpers.
 - [`livePreviewTheme.ts`](../apps/desktop/src/features/editor/extensions/livePreviewTheme.ts)
@@ -113,6 +117,11 @@ the user is editing an ambiguous Markdown structure.
 Leading frontmatter and the leading H1 are collapsed by
 `createLeadingContentCollapseField()` in live preview, but only when the
 selection is not on those lines. Source mode keeps raw Markdown visible.
+
+Mermaid rendering is shared between Markdown fences and standalone Mermaid
+files through [`mermaidRenderer.ts`](../apps/desktop/src/features/editor/mermaid/mermaidRenderer.ts).
+Keep asynchronous render calls stale-safe so older renders cannot replace newer
+diagram source after quick edits.
 
 ## Wikilinks
 
