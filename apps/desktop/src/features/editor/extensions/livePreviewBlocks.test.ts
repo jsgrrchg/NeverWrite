@@ -325,6 +325,53 @@ describe("code block live preview", () => {
         parent.remove();
     });
 
+    it("rerenders Mermaid blocks after text-only edits inside the diagram", async () => {
+        mockedRenderMermaidDiagram
+            .mockResolvedValueOnce({
+                status: "ok",
+                svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Original</text></svg>',
+            })
+            .mockResolvedValueOnce({
+                status: "ok",
+                svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Updated</text></svg>',
+            });
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc = ["```mermaid", "flowchart TD", "  A --> B", "```"].join(
+            "\n",
+        );
+        const view = new EditorView({
+            state: createLivePreviewState(doc),
+            parent,
+        });
+
+        await flushPromises();
+
+        const from = doc.indexOf("B");
+        view.dispatch({
+            changes: {
+                from,
+                to: from + 1,
+                insert: "C",
+            },
+        });
+
+        await flushPromises();
+
+        expect(
+            view.dom.querySelector(".cm-mermaid-preview svg text")?.textContent,
+        ).toBe("Updated");
+        expect(mockedRenderMermaidDiagram).toHaveBeenNthCalledWith(
+            2,
+            "flowchart TD\n  A --> C",
+            expect.stringMatching(/^mermaid-\d+-0-[a-z0-9]+$/),
+        );
+
+        view.destroy();
+        parent.remove();
+    });
+
     it("shows Mermaid render errors inline", async () => {
         mockedRenderMermaidDiagram.mockResolvedValueOnce({
             status: "error",

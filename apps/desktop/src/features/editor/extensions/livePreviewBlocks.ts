@@ -1233,6 +1233,37 @@ function buildCodeBlockDecorations(
  */
 const BLOCK_MARKER_RE = /(?:[`$!|\n#]|\[)/;
 
+function rangesOverlap(fromA: number, toA: number, fromB: number, toB: number) {
+    return fromA <= toB && toA >= fromB;
+}
+
+function transactionTouchesMermaidBlock(tr: Transaction): boolean {
+    if (!tr.docChanged) return false;
+
+    let touchesMermaid = false;
+
+    syntaxTree(tr.startState).iterate({
+        enter(node) {
+            if (touchesMermaid || node.name !== "FencedCode") return;
+
+            const previewBlock = getFencedCodeBlockPreview(
+                tr.startState,
+                node.node,
+            );
+            if (previewBlock?.kind !== "mermaid") return;
+
+            tr.changes.iterChangedRanges((fromA, toA) => {
+                if (touchesMermaid) return;
+                if (rangesOverlap(fromA, toA, node.from, node.to)) {
+                    touchesMermaid = true;
+                }
+            });
+        },
+    });
+
+    return touchesMermaid;
+}
+
 /** Returns true when a transaction requires block decorations to be rebuilt. */
 function needsBlockRebuild(tr: Transaction): boolean {
     if (tr.docChanged) {
@@ -1275,6 +1306,9 @@ function needsSyntaxBackedBlockRebuild(tr: Transaction): boolean {
     // transaction with no document or selection change. Syntax-backed widgets
     // must rebuild when new nodes become available.
     if (!tr.docChanged && syntaxTree(tr.startState) !== syntaxTree(tr.state)) {
+        return true;
+    }
+    if (transactionTouchesMermaidBlock(tr)) {
         return true;
     }
     return needsBlockRebuild(tr);
