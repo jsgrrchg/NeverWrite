@@ -6,7 +6,10 @@ import { forceParsing } from "@codemirror/language";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
-import { resolvePreviewAssetPath } from "./livePreviewBlocks";
+import {
+    getFencedCodeBlockKind,
+    resolvePreviewAssetPath,
+} from "./livePreviewBlocks";
 import { livePreviewExtension } from "./livePreview";
 
 describe("resolvePreviewAssetPath", () => {
@@ -42,6 +45,15 @@ describe("resolvePreviewAssetPath", () => {
 });
 
 describe("code block live preview", () => {
+    it("classifies Mermaid info strings separately from regular code blocks", () => {
+        expect(getFencedCodeBlockKind("mermaid")).toBe("mermaid");
+        expect(getFencedCodeBlockKind(" mermaid")).toBe("mermaid");
+        expect(getFencedCodeBlockKind('mermaid title="Flow"')).toBe("mermaid");
+        expect(getFencedCodeBlockKind("Mermaid")).toBe("mermaid");
+        expect(getFencedCodeBlockKind("typescript")).toBe("code");
+        expect(getFencedCodeBlockKind("")).toBe("code");
+    });
+
     it("compacts inactive blank lines around rendered tables", () => {
         const parent = document.createElement("div");
         document.body.appendChild(parent);
@@ -81,6 +93,80 @@ describe("code block live preview", () => {
                 line.classList.contains("cm-lp-block-gap-hidden"),
             ),
         ).toBe(true);
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("marks Mermaid fenced code blocks without affecting regular fences", () => {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc = [
+            "```mermaid",
+            "flowchart TD",
+            "  A --> B",
+            "```",
+            "",
+            "```ts",
+            "const value = 1;",
+            "```",
+        ].join("\n");
+        const state = EditorState.create({
+            doc,
+            selection: EditorSelection.cursor(doc.length),
+            extensions: [
+                markdown({ base: markdownLanguage }),
+                livePreviewExtension(null, {
+                    resolveWikilink: () => false,
+                    navigateWikilink: () => {},
+                    getNoteLinkTarget: () => null,
+                    openLinkContextMenu: () => {},
+                }),
+            ],
+        });
+
+        const view = new EditorView({ state, parent });
+        const headers = [
+            ...view.dom.querySelectorAll<HTMLElement>(".cm-code-block-header"),
+        ];
+
+        expect(headers).toHaveLength(2);
+        expect(headers[0].dataset.codeBlockKind).toBe("mermaid");
+        expect(headers[0].textContent).toContain("mermaid");
+        expect(headers[1].dataset.codeBlockKind).toBe("code");
+        expect(headers[1].textContent).toContain("ts");
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("does not mark incomplete Mermaid fences as rendered blocks", () => {
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc = ["```mermaid", "flowchart TD", "  A --> B"].join("\n");
+        const state = EditorState.create({
+            doc,
+            selection: EditorSelection.cursor(doc.length),
+            extensions: [
+                markdown({ base: markdownLanguage }),
+                livePreviewExtension(null, {
+                    resolveWikilink: () => false,
+                    navigateWikilink: () => {},
+                    getNoteLinkTarget: () => null,
+                    openLinkContextMenu: () => {},
+                }),
+            ],
+        });
+
+        const view = new EditorView({ state, parent });
+
+        expect(
+            view.dom.querySelector(
+                '.cm-code-block-header[data-code-block-kind="mermaid"]',
+            ),
+        ).toBeNull();
 
         view.destroy();
         parent.remove();
