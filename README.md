@@ -9,6 +9,8 @@
 **Gemini ACP support has been removed from NeverWrite.** Google redirected Gemini CLI subscription usage toward Antigravity, which is closed source and does not expose ACP support for third-party apps. You can still use Antigravity manually from a terminal, but NeverWrite no longer registers a Gemini ACP runtime. If you have a Gemini API key, you can still use Gemini models through Kilo or OpenCode.
 For more information, please read this discussion: [https://github.com/jsgrrchg/NeverWrite/discussions/241]
 
+<a href="https://trendshift.io/repositories/27680?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-27680" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/27680/daily?language=TypeScript" alt="jsgrrchg%2FNeverWrite | Trendshift" width="250" height="55"/></a>
+
 ----
 
 NeverWrite is a local-first knowledge workspace for people who need to handle workflows with multiple parallel agents and subagents. Built like a code editor, but for markdown. It has inline review changes, like Cursor and others. Please help me test it!
@@ -257,6 +259,16 @@ The areas with the highest product sensitivity right now are:
 - Session persistence and multi-window workflows
 - Desktop-to-clipper integration
 - Using the 3D graph on large vaults has memory leaks; after using it, prefer restarting the application.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=jsgrrchg%2FNeverWrite&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jsgrrchg/NeverWrite&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 
