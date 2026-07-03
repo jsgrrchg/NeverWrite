@@ -67,6 +67,7 @@
         "@xterm/xterm": "^6.0.0",
         "electron-updater": "^6.8.3",
         "katex": "^0.16.45",
+        "mermaid": "^11.16.0",
         "papaparse": "^5.5.3",
         "pdfjs-dist": "^5.6.205",
         "react": "19.2.5",
