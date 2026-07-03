@@ -359,6 +359,9 @@ function guessMimeType(fileName: string) {
             return "text/css";
         case "csv":
             return "text/csv";
+        case "mermaid":
+        case "mmd":
+            return "text/plain";
         case "svg":
             return "image/svg+xml";
         case "png":
@@ -436,6 +439,9 @@ function classifyEntry(fileName: string, kind: VaultEntryKind) {
     }
     if (extension === "excalidraw") {
         return { mimeType, isTextLike, isImageLike, openInApp: true, viewerKind: "map" };
+    }
+    if (extension === "mermaid" || extension === "mmd") {
+        return { mimeType, isTextLike, isImageLike, openInApp: true, viewerKind: "mermaid" };
     }
     if (isImageLike) {
         return { mimeType, isTextLike, isImageLike, openInApp: true, viewerKind: "image" };

@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { ElectronVaultBackend } from "./vaultBackend";
 import type { NativeBackendBridge } from "./nativeBackend";
 import type { AppUpdaterBackend } from "./updater";
+
+type VaultEntryForTest = {
+    file_name: string;
+    kind: string;
+    mime_type: string | null;
+    is_text_like: boolean | null;
+    open_in_app: boolean | null;
+    viewer_kind: string | null;
+};
 
 const electronAppMock = vi.hoisted(() => ({
     isPackaged: true,
@@ -109,5 +121,48 @@ describe("ElectronVaultBackend updater routing", () => {
             "check_for_app_update",
         );
         expect(nativeBackend.invoke).not.toHaveBeenCalled();
+    });
+});
+
+describe("ElectronVaultBackend vault classification", () => {
+    it("classifies Mermaid files as in-app diagram files in the fallback backend", async () => {
+        const vaultPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-mermaid-"),
+        );
+        await fs.writeFile(
+            path.join(vaultPath, "flow.mmd"),
+            "flowchart TD\nA --> B\n",
+            "utf8",
+        );
+        await fs.writeFile(
+            path.join(vaultPath, "sequence.mermaid"),
+            "sequenceDiagram\nA->>B: hello\n",
+            "utf8",
+        );
+
+        const backend = new ElectronVaultBackend(
+            vi.fn(),
+            createUpdater(),
+            null,
+        );
+
+        await backend.invoke("start_open_vault", { path: vaultPath });
+        const entries = (await backend.invoke("list_vault_entries", {
+            vaultPath,
+        })) as VaultEntryForTest[];
+
+        for (const fileName of ["flow.mmd", "sequence.mermaid"]) {
+            const entry = entries.find(
+                (candidate) => candidate.file_name === fileName,
+            );
+
+            expect(entry).toMatchObject({
+                kind: "file",
+                mime_type: "text/plain",
+                is_text_like: true,
+                open_in_app: true,
+                viewer_kind: "mermaid",
+            });
+        }
     });
 });

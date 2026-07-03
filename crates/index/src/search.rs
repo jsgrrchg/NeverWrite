@@ -637,7 +637,8 @@ fn score_file_search_fields(
     best
 }
 
-const CURATED_SEARCH_ENTRY_EXTENSIONS: &[&str] = &["csv", "excalidraw", "txt", "html", "htm"];
+const CURATED_SEARCH_ENTRY_EXTENSIONS: &[&str] =
+    &["csv", "excalidraw", "txt", "html", "htm", "mmd", "mermaid"];
 const CURATED_SEARCH_PDF_EXTENSION: &str = "pdf";
 
 #[derive(Clone, Copy, PartialEq, Eq)]

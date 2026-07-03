@@ -638,6 +638,33 @@ fn discover_vault_entries_guesses_text_mime_types_for_common_config_files() {
 }
 
 #[test]
+fn discover_vault_entries_classifies_mermaid_files_as_in_app_diagrams() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("flow.mmd"), "flowchart TD\nA --> B\n").unwrap();
+    fs::write(
+        dir.path().join("sequence.mermaid"),
+        "sequenceDiagram\nA->>B: hello\n",
+    )
+    .unwrap();
+
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    let entries = vault.discover_vault_entries().unwrap();
+
+    for file_name in ["flow.mmd", "sequence.mermaid"] {
+        let entry = entries
+            .iter()
+            .find(|entry| entry.file_name == file_name)
+            .unwrap();
+
+        assert_eq!(entry.kind, "file");
+        assert_eq!(entry.mime_type.as_deref(), Some("text/plain"));
+        assert_eq!(entry.is_text_like, Some(true));
+        assert_eq!(entry.open_in_app, Some(true));
+        assert_eq!(entry.viewer_kind.as_deref(), Some("mermaid"));
+    }
+}
+
+#[test]
 fn discover_vault_entries_uses_file_name_as_title_for_dotfiles_without_stem() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();

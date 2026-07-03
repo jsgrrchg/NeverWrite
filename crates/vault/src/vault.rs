@@ -689,6 +689,12 @@ fn is_html_path(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
 }
 
+fn is_mermaid_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("mmd") || ext.eq_ignore_ascii_case("mermaid"))
+}
+
 fn is_text_like_mime_type(mime_type: &str) -> bool {
     mime_type.starts_with("text/")
         || matches!(
@@ -719,6 +725,7 @@ fn classify_vault_entry_path(path: &Path, kind: &str) -> VaultEntryClassificatio
         "pdf" => (true, "pdf"),
         _ if is_excalidraw_path(path) => (true, "map"),
         _ if is_html_path(path) => (true, "html"),
+        _ if is_mermaid_path(path) => (true, "mermaid"),
         _ if is_image_like => (true, "image"),
         _ if is_text_like => (true, "text"),
         _ => (false, "external"),
@@ -980,6 +987,7 @@ fn guess_mime_type(path: &Path) -> Option<String> {
                 "html" | "htm" => "text/html",
                 "css" => "text/css",
                 "csv" => "text/csv",
+                "mmd" | "mermaid" => "text/plain",
                 "astro" | "bat" | "bash" | "c" | "cc" | "clj" | "cljs" | "cmake" | "cpp" | "cs"
                 | "d" | "dart" | "diff" | "elm" | "env" | "erl" | "ex" | "exs" | "fish" | "go"
                 | "gradle" | "graphql" | "groovy" | "h" | "hpp" | "hs" | "java" | "jl"
