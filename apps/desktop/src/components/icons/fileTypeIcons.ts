@@ -145,6 +145,8 @@ const EXTENSION_TO_ICON: Record<string, IconCandidates> = {
     lock: "lock",
     md: "markdown",
     mdx: "markdown-mdx",
+    mermaid: "mermaid",
+    mmd: "mermaid",
     pdf: "pdf",
     prisma: "prisma",
     ppt: "file",

@@ -64,7 +64,9 @@ const TEXT_EXTENSIONS = new Set([
     "m",
     "md",
     "mdx",
+    "mermaid",
     "mjs",
+    "mmd",
     "mts",
     "mk",
     "nim",
@@ -169,6 +171,8 @@ const CURATED_VAULT_ENTRY_EXTENSIONS = new Set([
     "excalidraw",
     "htm",
     "html",
+    "mermaid",
+    "mmd",
     "txt",
 ]);
 

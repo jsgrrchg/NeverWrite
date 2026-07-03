@@ -104,6 +104,20 @@ describe("vaultEntries", () => {
                 mime_type: null,
             }),
         ).toBe(true);
+        expect(
+            isTextLikeVaultEntry({
+                extension: "mmd",
+                file_name: "flow.mmd",
+                mime_type: null,
+            }),
+        ).toBe(true);
+        expect(
+            isTextLikeVaultEntry({
+                extension: "mermaid",
+                file_name: "flow.mermaid",
+                mime_type: null,
+            }),
+        ).toBe(true);
     });
 
     it("identifies the curated default vault entry set", () => {
@@ -126,6 +140,10 @@ describe("vaultEntries", () => {
                 }),
             ),
         ).toBe(true);
+        expect(isCuratedVaultEntry(buildEntry("docs/flow.mmd"))).toBe(true);
+        expect(isCuratedVaultEntry(buildEntry("docs/flow.mermaid"))).toBe(
+            true,
+        );
         expect(
             isCuratedVaultEntry(buildEntry("docs/readme.txt", { mimeType: "text/plain" })),
         ).toBe(true);
@@ -161,6 +179,7 @@ describe("vaultEntries", () => {
         const toml = buildEntry("docs/config.toml", {
             mimeType: "application/toml",
         });
+        const mermaid = buildEntry("docs/flow.mmd");
 
         expect(
             shouldShowVaultEntryInFileTree(folder, {
@@ -176,6 +195,12 @@ describe("vaultEntries", () => {
         ).toBe(false);
         expect(
             shouldShowVaultEntryInFileTree(csv, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldShowVaultEntryInFileTree(mermaid, {
                 contentMode: "notes_only",
                 extensionFilter: [],
             }),
@@ -238,9 +263,20 @@ describe("vaultEntries", () => {
             relativePath: "docs/photo.png",
             mimeType: "image/png",
         };
+        const mermaid = {
+            fileName: "flow.mermaid",
+            relativePath: "docs/flow.mermaid",
+            mimeType: null,
+        };
 
         expect(
             shouldIncludeFileSummaryInFileScope(csv, {
+                contentMode: "notes_only",
+                extensionFilter: [],
+            }),
+        ).toBe(true);
+        expect(
+            shouldIncludeFileSummaryInFileScope(mermaid, {
                 contentMode: "notes_only",
                 extensionFilter: [],
             }),

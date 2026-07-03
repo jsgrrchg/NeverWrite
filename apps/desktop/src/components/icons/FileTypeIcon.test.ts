@@ -55,6 +55,8 @@ describe("resolveCatppuccinFileIcon", () => {
     it.each([
         ["notes/draft.md", "markdown"],
         ["docs/intro.mdx", "markdown-mdx"],
+        ["diagrams/flow.mmd", "mermaid"],
+        ["diagrams/flow.mermaid", "mermaid"],
         ["src/App.tsx", "typescript-react"],
         ["src/App.jsx", "javascript-react"],
         ["src/index.ts", "typescript"],
