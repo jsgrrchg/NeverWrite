@@ -55,6 +55,8 @@ import {
 } from "./extensions/changeAuthor";
 import { MermaidFilePreview } from "./MermaidFilePreview";
 
+type MermaidFileMode = "source" | "preview";
+
 function FileTabStripButton({
     onClick,
     children,
@@ -91,6 +93,39 @@ function FileTabStripButton({
     );
 }
 
+function FileTabModeButton({
+    active,
+    onClick,
+    children,
+}: {
+    active: boolean;
+    onClick: () => void;
+    children: string;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className="rounded-sm px-2 py-0.5 transition-colors uppercase"
+            style={{
+                fontSize: "10px",
+                fontWeight: 600,
+                letterSpacing: "0.04em",
+                color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                backgroundColor: active
+                    ? "color-mix(in srgb, var(--accent) 18%, transparent)"
+                    : "transparent",
+                border: active
+                    ? "1px solid color-mix(in srgb, var(--accent) 42%, var(--border))"
+                    : "1px solid transparent",
+                cursor: "pointer",
+            }}
+        >
+            {children}
+        </button>
+    );
+}
+
 interface FileTextTabViewProps {
     paneId?: string;
     tabId?: string;
@@ -108,6 +143,8 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
     const applyingExternalUpdateRef = useRef(false);
     const [, setEditorView] = useState<EditorView | null>(null);
     const [mermaidSource, setMermaidSource] = useState("");
+    const [mermaidMode, setMermaidMode] =
+        useState<MermaidFileMode>("source");
     const [editorContextMenu, setEditorContextMenu] =
         useState<ContextMenuState<{
             hasSelection: boolean;
@@ -537,6 +574,7 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
     useEffect(() => {
         if (tab?.viewer !== "mermaid") {
             setMermaidSource("");
+            setMermaidMode("source");
             return;
         }
         setMermaidSource(tab.content);
@@ -706,6 +744,29 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
                     </span>
                 </div>
                 <div className="flex items-center gap-0.5 shrink-0">
+                    {tab.viewer === "mermaid" ? (
+                        <div
+                            className="mr-1 flex items-center rounded-sm p-0.5"
+                            style={{
+                                border: "1px solid var(--border)",
+                                backgroundColor: "var(--bg-primary)",
+                            }}
+                            aria-label="Mermaid file mode"
+                        >
+                            <FileTabModeButton
+                                active={mermaidMode === "source"}
+                                onClick={() => setMermaidMode("source")}
+                            >
+                                Source
+                            </FileTabModeButton>
+                            <FileTabModeButton
+                                active={mermaidMode === "preview"}
+                                onClick={() => setMermaidMode("preview")}
+                            >
+                                Preview
+                            </FileTabModeButton>
+                        </div>
+                    ) : null}
                     <FileTabStripButton onClick={() => void openPath(tab.path)}>
                         Open Externally
                     </FileTabStripButton>
@@ -719,14 +780,23 @@ export function FileTextTabView({ paneId, tabId }: FileTextTabViewProps) {
 
             <div className="min-h-0 flex-1 relative">
                 <div className="flex h-full min-w-0">
-                    <div className="min-w-0 flex-1 relative">
+                    <div
+                        className="min-w-0 flex-1 relative"
+                        style={{
+                            display:
+                                tab.viewer === "mermaid" &&
+                                mermaidMode === "preview"
+                                    ? "none"
+                                    : undefined,
+                        }}
+                    >
                         <div
                             ref={containerRef}
                             className="h-full relative z-1"
                         />
                     </div>
-                    {tab.viewer === "mermaid" ? (
-                        <div className="hidden min-w-[280px] flex-[0_0_45%] md:block">
+                    {tab.viewer === "mermaid" && mermaidMode === "preview" ? (
+                        <div className="min-w-0 flex-1">
                             <MermaidFilePreview
                                 source={mermaidSource}
                                 tabId={tab.id}
