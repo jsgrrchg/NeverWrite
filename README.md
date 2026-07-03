@@ -18,7 +18,7 @@ NeverWrite is a local-first knowledge workspace for people who need to handle wo
 Today the repository combines:
 
 - An Electron desktop app with a Rust sidecar that opens a local vault and keeps working state on disk.
-- A Markdown, CSV, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking.
+- A Markdown, CSV, Mermaid, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking.
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view.
 - An ACP-based AI layer with Codex, Claude, Grok, Kilo, and OpenCode runtimes.
 - An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
@@ -30,7 +30,7 @@ The current product already includes:
 
 - Local vault opening with progress reporting, persisted snapshots, filesystem watching, and incremental re-sync
 - A desktop workspace with tabs, sidebars, command palette, quick switcher, detached windows, and first-class terminal tabs
-- Native-feeling editing for Markdown notes, CSV files, PDFs, images, HTML previews, and generic text/code files
+- Native-feeling editing for Markdown notes, Mermaid diagrams, CSV files, PDFs, images, HTML previews, and generic text/code files
 - Embedded Excalidraw-based concept maps stored as `.excalidraw` files in the vault. The map format is visible and editable by agents.
 - A graph view with global, local, and overview modes plus 2D and 3D rendering
 - AI chat sessions with attachments from the vault, slash commands, transcript persistence, and runtime-specific capabilities
@@ -66,8 +66,9 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - Markdown editing with CodeMirror 6
 - Optional Vim key bindings for modal editing, with Vim-style ex commands and relative line numbers
 - Wikilink suggestions, resolution, and navigation
-- Live preview with tasks, tables, embeds, math, and YouTube previews
+- Live preview with tasks, tables, embeds, math, Mermaid diagrams, and YouTube previews
 - Frontmatter/properties editing
+- Mermaid diagram files with source editing and preview switching
 - CSV editing with table and raw fallback views
 - Editable text/code files with syntax highlighting and autosave
 - Sandboxed in-app HTML viewing for `.html` and `.htm` files
