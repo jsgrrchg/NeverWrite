@@ -52,6 +52,7 @@ import {
     getNotePreviewContentState,
     renderEmbedPreview,
 } from "./notePreviewSource";
+import { renderMermaidDiagram } from "../mermaid/mermaidRenderer";
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|svg|webp|bmp|ico|avif)([?#].*)?$/i;
 const PDF_EXTENSION = /\.pdf([?#].*)?$/i;
@@ -60,6 +61,7 @@ const TABLE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
 const TABLE_URL_RE = /https?:\/\/[^\s<>()"\]]+/g;
 const TABLE_BOLD_RE = /\*\*(?=\S)(.+?\S)\*\*/g;
 const STANDALONE_URL_RE = /^https?:\/\/[^\s<>()"\]]+$/i;
+let nextMermaidPreviewInstanceId = 0;
 type TableAlignment = "left" | "center" | "right";
 export interface TableInteractionHandlers {
     resolveWikilink: (target: string) => boolean;
@@ -916,6 +918,75 @@ class CodeBlockHeaderWidget extends WidgetType {
     }
 }
 
+class MermaidDiagramWidget extends WidgetType {
+    private source: string;
+    private diagramId: string;
+
+    constructor(source: string, diagramId: string) {
+        super();
+        this.source = source;
+        this.diagramId = diagramId;
+    }
+
+    eq(other: MermaidDiagramWidget) {
+        return (
+            this.source === other.source && this.diagramId === other.diagramId
+        );
+    }
+
+    toDOM() {
+        const outer = document.createElement("div");
+        outer.className = "cm-mermaid-preview";
+        outer.dataset.mermaidId = this.diagramId;
+        outer.dataset.mermaidSource = this.source;
+        outer.setAttribute("contenteditable", "false");
+
+        const body = document.createElement("div");
+        body.className = "cm-mermaid-preview-body";
+        body.textContent = "Rendering Mermaid diagram...";
+        outer.appendChild(body);
+
+        const expectedId = this.diagramId;
+        const expectedSource = this.source;
+
+        void renderMermaidDiagram(this.source, this.diagramId).then(
+            (result) => {
+                if (
+                    !outer.isConnected ||
+                    outer.dataset.mermaidId !== expectedId ||
+                    outer.dataset.mermaidSource !== expectedSource
+                ) {
+                    return;
+                }
+
+                body.replaceChildren();
+                if (result.status === "ok") {
+                    body.className =
+                        "cm-mermaid-preview-body cm-mermaid-preview-body-rendered";
+                    const svg = parseMermaidSvg(result.svg);
+                    if (svg) {
+                        body.appendChild(svg);
+                    } else {
+                        renderMermaidError(
+                            body,
+                            "Unable to read Mermaid SVG output.",
+                        );
+                    }
+                    return;
+                }
+
+                renderMermaidError(body, result.message);
+            },
+        );
+
+        return outer;
+    }
+
+    ignoreEvent() {
+        return true;
+    }
+}
+
 const codeBlockFenceHidden = Decoration.line({
     class: "cm-code-block-fence-hidden",
 });
@@ -929,11 +1000,52 @@ const codeBlockLineLast = Decoration.line({
 const codeBlockLineOnly = Decoration.line({
     class: "cm-code-block-line cm-code-block-line-first cm-code-block-line-last",
 });
+const mermaidBlockSourceHidden = Decoration.line({
+    class: "cm-code-block-fence-hidden cm-mermaid-source-hidden",
+});
+
+function parseMermaidSvg(svg: string): SVGElement | null {
+    const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+    const root = parsed.documentElement;
+    if (root.nodeName.toLowerCase() !== "svg") return null;
+    return document.importNode(root, true) as unknown as SVGElement;
+}
+
+function renderMermaidError(container: HTMLElement, message: string) {
+    container.className = "cm-mermaid-preview-body cm-mermaid-preview-error";
+
+    const title = document.createElement("div");
+    title.className = "cm-mermaid-preview-error-title";
+    title.textContent = "Mermaid diagram error";
+
+    const detail = document.createElement("pre");
+    detail.className = "cm-mermaid-preview-error-message";
+    detail.textContent = message;
+
+    container.appendChild(title);
+    container.appendChild(detail);
+}
 
 export function getFencedCodeBlockKind(info: string): FencedCodeBlockKind {
     return info.trimStart().split(/\s+/, 1)[0]?.toLowerCase() === "mermaid"
         ? "mermaid"
         : "code";
+}
+
+function buildMermaidDiagramId(
+    previewInstanceId: number,
+    source: string,
+    from: number,
+) {
+    return `mermaid-${previewInstanceId}-${from}-${hashString(source)}`;
+}
+
+function hashString(value: string) {
+    let hash = 5381;
+    for (let index = 0; index < value.length; index++) {
+        hash = (hash * 33) ^ value.charCodeAt(index);
+    }
+    return (hash >>> 0).toString(36);
 }
 
 function getFencedCodeBlockPreview(
@@ -989,7 +1101,10 @@ function getFencedCodeBlockPreview(
     };
 }
 
-function buildCodeBlockDecorations(state: EditorState): DecorationSet {
+function buildCodeBlockDecorations(
+    state: EditorState,
+    mermaidPreviewInstanceId: number,
+): DecorationSet {
     const decos: DecoEntry[] = [];
 
     syntaxTree(state).iterate({
@@ -1008,6 +1123,42 @@ function buildCodeBlockDecorations(state: EditorState): DecorationSet {
             const showHeader = true;
 
             const openLine = state.doc.lineAt(node.from);
+
+            if (previewBlock.kind === "mermaid") {
+                decos.push({
+                    from: node.from,
+                    to: node.from,
+                    deco: Decoration.widget({
+                        widget: new MermaidDiagramWidget(
+                            previewBlock.code,
+                            buildMermaidDiagramId(
+                                mermaidPreviewInstanceId,
+                                previewBlock.code,
+                                node.from,
+                            ),
+                        ),
+                        block: true,
+                        side: -1,
+                    }),
+                });
+
+                for (
+                    let lineNum = openLine.number;
+                    lineNum <=
+                    (previewBlock.closeFrom >= 0
+                        ? state.doc.lineAt(previewBlock.closeFrom).number
+                        : previewBlock.lastContentLineNumber);
+                    lineNum++
+                ) {
+                    const line = state.doc.line(lineNum);
+                    decos.push({
+                        from: line.from,
+                        to: line.from,
+                        deco: mermaidBlockSourceHidden,
+                    });
+                }
+                return;
+            }
 
             if (showHeader) {
                 decos.push({
@@ -1130,9 +1281,11 @@ function needsSyntaxBackedBlockRebuild(tr: Transaction): boolean {
 }
 
 export function createCodeBlockLivePreviewExtension() {
+    const mermaidPreviewInstanceId = nextMermaidPreviewInstanceId++;
+
     return StateField.define<DecorationSet>({
         create(state) {
-            return buildCodeBlockDecorations(state);
+            return buildCodeBlockDecorations(state, mermaidPreviewInstanceId);
         },
         update(decorations, transaction) {
             if (!needsSyntaxBackedBlockRebuild(transaction)) {
@@ -1140,7 +1293,10 @@ export function createCodeBlockLivePreviewExtension() {
                     ? decorations.map(transaction.changes)
                     : decorations;
             }
-            return buildCodeBlockDecorations(transaction.state);
+            return buildCodeBlockDecorations(
+                transaction.state,
+                mermaidPreviewInstanceId,
+            );
         },
         provide(field) {
             return EditorView.decorations.from(field);

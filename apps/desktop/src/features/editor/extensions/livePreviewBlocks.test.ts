@@ -5,12 +5,43 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { forceParsing } from "@codemirror/language";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     getFencedCodeBlockKind,
     resolvePreviewAssetPath,
 } from "./livePreviewBlocks";
 import { livePreviewExtension } from "./livePreview";
+import { renderMermaidDiagram } from "../mermaid/mermaidRenderer";
+
+vi.mock("../mermaid/mermaidRenderer", () => ({
+    renderMermaidDiagram: vi.fn(),
+}));
+
+const mockedRenderMermaidDiagram = vi.mocked(renderMermaidDiagram);
+
+function createLivePreviewState(doc: string, cursor = doc.length) {
+    return EditorState.create({
+        doc,
+        selection: EditorSelection.cursor(cursor),
+        extensions: [
+            markdown({ base: markdownLanguage }),
+            livePreviewExtension(null, {
+                resolveWikilink: () => false,
+                navigateWikilink: () => {},
+                getNoteLinkTarget: () => null,
+                openLinkContextMenu: () => {},
+            }),
+        ],
+    });
+}
+
+function flushPromises() {
+    return new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
+beforeEach(() => {
+    mockedRenderMermaidDiagram.mockReset();
+});
 
 describe("resolvePreviewAssetPath", () => {
     it("resolves note-relative assets against the current note path", () => {
@@ -99,6 +130,10 @@ describe("code block live preview", () => {
     });
 
     it("marks Mermaid fenced code blocks without affecting regular fences", () => {
+        mockedRenderMermaidDiagram.mockResolvedValue({
+            status: "ok",
+            svg: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+        });
         const parent = document.createElement("div");
         document.body.appendChild(parent);
 
@@ -112,30 +147,17 @@ describe("code block live preview", () => {
             "const value = 1;",
             "```",
         ].join("\n");
-        const state = EditorState.create({
-            doc,
-            selection: EditorSelection.cursor(doc.length),
-            extensions: [
-                markdown({ base: markdownLanguage }),
-                livePreviewExtension(null, {
-                    resolveWikilink: () => false,
-                    navigateWikilink: () => {},
-                    getNoteLinkTarget: () => null,
-                    openLinkContextMenu: () => {},
-                }),
-            ],
-        });
+        const state = createLivePreviewState(doc);
 
         const view = new EditorView({ state, parent });
         const headers = [
             ...view.dom.querySelectorAll<HTMLElement>(".cm-code-block-header"),
         ];
 
-        expect(headers).toHaveLength(2);
-        expect(headers[0].dataset.codeBlockKind).toBe("mermaid");
-        expect(headers[0].textContent).toContain("mermaid");
-        expect(headers[1].dataset.codeBlockKind).toBe("code");
-        expect(headers[1].textContent).toContain("ts");
+        expect(view.dom.querySelector(".cm-mermaid-preview")).not.toBeNull();
+        expect(headers).toHaveLength(1);
+        expect(headers[0].dataset.codeBlockKind).toBe("code");
+        expect(headers[0].textContent).toContain("ts");
 
         view.destroy();
         parent.remove();
@@ -146,27 +168,75 @@ describe("code block live preview", () => {
         document.body.appendChild(parent);
 
         const doc = ["```mermaid", "flowchart TD", "  A --> B"].join("\n");
-        const state = EditorState.create({
-            doc,
-            selection: EditorSelection.cursor(doc.length),
-            extensions: [
-                markdown({ base: markdownLanguage }),
-                livePreviewExtension(null, {
-                    resolveWikilink: () => false,
-                    navigateWikilink: () => {},
-                    getNoteLinkTarget: () => null,
-                    openLinkContextMenu: () => {},
-                }),
-            ],
-        });
+        const state = createLivePreviewState(doc);
 
         const view = new EditorView({ state, parent });
 
+        expect(view.dom.querySelector(".cm-mermaid-preview")).toBeNull();
+        expect(mockedRenderMermaidDiagram).not.toHaveBeenCalled();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("renders Mermaid SVG blocks asynchronously", async () => {
+        mockedRenderMermaidDiagram.mockResolvedValueOnce({
+            status: "ok",
+            svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>Diagram</text></svg>',
+        });
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc = ["```mermaid", "flowchart TD", "  A --> B", "```"].join(
+            "\n",
+        );
+        const view = new EditorView({
+            state: createLivePreviewState(doc),
+            parent,
+        });
+
+        const preview = view.dom.querySelector(".cm-mermaid-preview");
+        expect(preview?.textContent).toContain("Rendering Mermaid diagram...");
+        expect(mockedRenderMermaidDiagram).toHaveBeenCalledWith(
+            "flowchart TD\n  A --> B",
+            expect.stringMatching(/^mermaid-\d+-0-[a-z0-9]+$/),
+        );
+
+        await flushPromises();
+
         expect(
-            view.dom.querySelector(
-                '.cm-code-block-header[data-code-block-kind="mermaid"]',
-            ),
-        ).toBeNull();
+            view.dom.querySelector(".cm-mermaid-preview svg text")?.textContent,
+        ).toBe("Diagram");
+        expect(view.dom.querySelector(".cm-mermaid-preview-error")).toBeNull();
+
+        view.destroy();
+        parent.remove();
+    });
+
+    it("shows Mermaid render errors inline", async () => {
+        mockedRenderMermaidDiagram.mockResolvedValueOnce({
+            status: "error",
+            message: "Parse error",
+        });
+        const parent = document.createElement("div");
+        document.body.appendChild(parent);
+
+        const doc = ["```mermaid", "not a diagram", "```"].join("\n");
+        const view = new EditorView({
+            state: createLivePreviewState(doc),
+            parent,
+        });
+
+        await flushPromises();
+
+        expect(
+            view.dom.querySelector(".cm-mermaid-preview-error-title")
+                ?.textContent,
+        ).toBe("Mermaid diagram error");
+        expect(
+            view.dom.querySelector(".cm-mermaid-preview-error-message")
+                ?.textContent,
+        ).toBe("Parse error");
 
         view.destroy();
         parent.remove();
