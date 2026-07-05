@@ -2450,7 +2450,7 @@ export function FileTree() {
                 if (row.kind !== "folder" || row.depth !== depth) continue;
 
                 const rowTop = i * metrics.rowHeight;
-                if (rowTop > scrollTop + stickyPosition) break;
+                if (rowTop >= scrollTop + stickyPosition) break;
 
                 const lastIdx = folderLastDescendant.get(i) ?? i;
                 const sectionBottom = (lastIdx + 1) * metrics.rowHeight;

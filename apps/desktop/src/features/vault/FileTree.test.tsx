@@ -339,6 +339,60 @@ describe("FileTree", () => {
         );
     });
 
+    it("does not render sticky folders while the tree is scrolled to the top", async () => {
+        const user = userEvent.setup();
+
+        setVaultNotes([
+            {
+                id: "root/folder/alpha",
+                path: "/vault/root/folder/alpha.md",
+                title: "Alpha",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "root/folder/beta",
+                path: "/vault/root/folder/beta.md",
+                title: "Beta",
+                modified_at: 1,
+                created_at: 1,
+            },
+            {
+                id: "root/folder/gamma",
+                path: "/vault/root/folder/gamma.md",
+                title: "Gamma",
+                modified_at: 1,
+                created_at: 1,
+            },
+        ]);
+
+        renderComponent(<FileTree />);
+        await expandFolder(user, "root");
+        await expandFolder(user, "folder");
+
+        const viewport = screen.getByTestId("file-tree-viewport");
+        Object.defineProperty(viewport, "clientHeight", {
+            configurable: true,
+            value: 48,
+        });
+
+        viewport.scrollTop = 0;
+        fireEvent.scroll(viewport);
+        fireEvent(window, new Event("resize"));
+        expect(screen.queryByTestId("file-tree-sticky-layer")).toBeNull();
+
+        viewport.scrollTop = 1;
+        fireEvent.scroll(viewport);
+        expect(
+            await screen.findByTestId("file-tree-sticky-layer"),
+        ).toBeInTheDocument();
+        expect(
+            within(screen.getByTestId("file-tree-sticky-layer")).getByText(
+                "root",
+            ),
+        ).toBeInTheDocument();
+    });
+
     it("does not render sticky folders when the appearance setting is disabled", async () => {
         const user = userEvent.setup();
 
