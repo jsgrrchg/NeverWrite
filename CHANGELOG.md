@@ -34,6 +34,16 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.4] - 2026-07-05
+
+### Added
+
+- Added Mermaid diagram previews for Markdown code fences and standalone Mermaid diagram files, including a source/preview toggle for diagram tabs.
+
+### Fixed
+
+- Fixed sticky folders in the file tree so nested directories stay aligned with their parent scope instead of sticking to the top of the entire tree.
+
 ## [0.4.3] - 2026-07-02
 
 ### Added
