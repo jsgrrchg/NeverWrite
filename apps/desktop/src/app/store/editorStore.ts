@@ -98,6 +98,12 @@ export interface PendingSelectionReveal {
     head: number;
 }
 
+export interface PendingLineReveal {
+    noteId: string;
+    line: number;
+    endLine: number | null;
+}
+
 export interface EditorSelectionContext {
     noteId: string | null;
     path: string | null;
@@ -111,11 +117,14 @@ export interface EditorSelectionContext {
 export interface EditorStore extends EditorWorkspaceStore {
     pendingReveal: PendingReveal | null;
     pendingSelectionReveal: PendingSelectionReveal | null;
+    pendingLineReveal: PendingLineReveal | null;
     currentSelection: EditorSelectionContext | null;
     queueReveal: (reveal: PendingReveal) => void;
     clearPendingReveal: () => void;
     queueSelectionReveal: (reveal: PendingSelectionReveal) => void;
     clearPendingSelectionReveal: () => void;
+    queueLineReveal: (reveal: PendingLineReveal) => void;
+    clearPendingLineReveal: () => void;
     setCurrentSelection: (selection: EditorSelectionContext) => void;
     clearCurrentSelection: () => void;
 }
@@ -124,6 +133,7 @@ export const useEditorStore = create<EditorStore>((set, get, api) => ({
     ...createEditorWorkspaceSlice<EditorStore>(set, get, api),
     pendingReveal: null,
     pendingSelectionReveal: null,
+    pendingLineReveal: null,
     currentSelection: null,
 
     queueReveal: (pendingReveal) => set({ pendingReveal }),
@@ -134,6 +144,10 @@ export const useEditorStore = create<EditorStore>((set, get, api) => ({
         set({ pendingSelectionReveal }),
 
     clearPendingSelectionReveal: () => set({ pendingSelectionReveal: null }),
+
+    queueLineReveal: (pendingLineReveal) => set({ pendingLineReveal }),
+
+    clearPendingLineReveal: () => set({ pendingLineReveal: null }),
 
     setCurrentSelection: (currentSelection) => set({ currentSelection }),
 

@@ -53,10 +53,6 @@ export function installWebClipperRuntime(
     }
 }
 
-export function extractWebClipperDeepLinksFromArgv(argv: string[]) {
-    return argv.filter((arg) => arg.startsWith("neverwrite://clip"));
-}
-
 export function handleWebClipperDeepLink(rawUrl: string) {
     if (!runtime) {
         pendingDeepLinks.push(rawUrl);

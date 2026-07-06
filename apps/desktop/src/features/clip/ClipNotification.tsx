@@ -46,7 +46,7 @@ export function ClipNotification() {
                     color: "var(--text-secondary)",
                 }}
             >
-                Web clip saved
+                {notice.heading ?? "Web clip saved"}
             </div>
             <div
                 style={{
@@ -68,17 +68,19 @@ export function ClipNotification() {
             >
                 {notice.message}
             </div>
-            <div
-                style={{
-                    marginTop: 8,
-                    fontSize: 12,
-                    lineHeight: 1.4,
-                    color: "var(--text-secondary)",
-                    wordBreak: "break-word",
-                }}
-            >
-                {notice.relativePath}
-            </div>
+            {notice.relativePath ? (
+                <div
+                    style={{
+                        marginTop: 8,
+                        fontSize: 12,
+                        lineHeight: 1.4,
+                        color: "var(--text-secondary)",
+                        wordBreak: "break-word",
+                    }}
+                >
+                    {notice.relativePath}
+                </div>
+            ) : null}
         </div>
     );
 }
