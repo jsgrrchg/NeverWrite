@@ -34,6 +34,18 @@ refactors, dependency updates, CI changes, and code cleanup do not belong here.
 
 ---
 
+## [0.4.5] - 2026-07-06
+
+### Added
+
+- Added OKF v0.1 document status support, including status indicators in the file tree, editor header status and type badges, trust banners for non-published documents, and a Settings toggle for file tree status dots.
+- Added quick document status changes from the editor header, preserving existing frontmatter and recording the local user in `status_by` when available. Thanks to @spamsch
+- Added `neverwrite://open` deep links for opening and revealing files inside the current vault, including optional line fragments such as `#L10` and `#L10-L20`. Thanks to @spamsch
+
+### Changed
+
+- Updated the embedded Claude ACP runtime to `0.56.0`.
+
 ## [0.4.4] - 2026-07-05
 
 ### Added
