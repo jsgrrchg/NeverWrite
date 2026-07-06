@@ -490,6 +490,10 @@ export function Editor({
     const clearPendingSelectionReveal = useEditorStore(
         (s) => s.clearPendingSelectionReveal,
     );
+    const pendingLineReveal = useEditorStore((s) => s.pendingLineReveal);
+    const clearPendingLineReveal = useEditorStore(
+        (s) => s.clearPendingLineReveal,
+    );
     const updateTabContent = useEditorStore((s) => s.updateTabContent);
     const updateTabTitle = useEditorStore((s) => s.updateTabTitle);
     const clearNoteExternalConflict = useEditorStore(
@@ -3890,6 +3894,34 @@ export function Editor({
         view.focus();
         clearPendingSelectionReveal();
     }, [activeTab, pendingSelectionReveal, clearPendingSelectionReveal]);
+
+    // Jump to a 1-based line (optionally selecting through an end line) after a
+    // deep link like `neverwrite://open?path=note.md#L10-L20` opens the note.
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view || !activeTab || !pendingLineReveal) return;
+        if (pendingLineReveal.noteId !== activeTab.noteId) return;
+
+        const lineCount = view.state.doc.lines;
+        const startLineNumber = Math.max(
+            1,
+            Math.min(pendingLineReveal.line, lineCount),
+        );
+        const endLineNumber = Math.max(
+            startLineNumber,
+            Math.min(pendingLineReveal.endLine ?? startLineNumber, lineCount),
+        );
+        const startLine = view.state.doc.line(startLineNumber);
+        const endLine = view.state.doc.line(endLineNumber);
+
+        view.dispatch({
+            selection: { anchor: startLine.from, head: endLine.to },
+            effects: EditorView.scrollIntoView(startLine.from, { y: "center" }),
+        });
+        flashLine(view, startLine.from);
+        view.focus();
+        clearPendingLineReveal();
+    }, [activeTab, pendingLineReveal, clearPendingLineReveal]);
 
     // Keyboard shortcuts
     useEffect(() => {

@@ -27,6 +27,7 @@ import { createNativeBackendSidecar } from "./nativeBackend";
 import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
+import { installDeepLinkRuntime } from "./deepLink";
 
 function asRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object"
@@ -216,6 +217,7 @@ function registerInvokeHandler() {
         nativeBackend,
     );
     installWebClipperRuntime(backend, emitRuntimeEvent);
+    installDeepLinkRuntime(emitRuntimeEvent);
 
     ipcMain.handle(ELECTRON_IPC.invoke, async (_event, rawEnvelope) => {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;

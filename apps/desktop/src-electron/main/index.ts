@@ -1,10 +1,7 @@
 import { app, BrowserWindow, protocol, session } from "electron";
 import { installNativeMenus, refreshDockMenu } from "./menu";
 import { createAppWindow, getWindowByLabel } from "./window";
-import {
-    extractWebClipperDeepLinksFromArgv,
-    handleWebClipperDeepLink,
-} from "./webClipper";
+import { extractDeepLinksFromArgv, handleDeepLink } from "./deepLink";
 import {
     registerIpcHandlers,
     registerPreviewProtocolHandler,
@@ -67,7 +64,7 @@ app.on("child-process-gone", (_event, details) => {
 app.on("open-url", (event, url) => {
     event.preventDefault();
     focusOrCreateMainWindow();
-    handleWebClipperDeepLink(url);
+    handleDeepLink(url);
 });
 
 function focusOrCreateMainWindow() {
@@ -93,8 +90,8 @@ if (!hasLock) {
 } else {
     app.on("second-instance", (_event, argv) => {
         focusOrCreateMainWindow();
-        for (const url of extractWebClipperDeepLinksFromArgv(argv)) {
-            handleWebClipperDeepLink(url);
+        for (const url of extractDeepLinksFromArgv(argv)) {
+            handleDeepLink(url);
         }
     });
 
@@ -105,8 +102,8 @@ if (!hasLock) {
         registerIpcHandlers();
         void installNativeMenus();
         createAppWindow("main");
-        for (const url of extractWebClipperDeepLinksFromArgv(process.argv)) {
-            handleWebClipperDeepLink(url);
+        for (const url of extractDeepLinksFromArgv(process.argv)) {
+            handleDeepLink(url);
         }
 
         app.on("activate", () => {

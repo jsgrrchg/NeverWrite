@@ -4,7 +4,10 @@ export interface ClipImportNotice {
     id: string;
     title: string;
     message: string;
-    relativePath: string;
+    // Optional uppercase eyebrow shown above the title. Defaults to the
+    // web-clipper wording so existing callers keep their look.
+    heading?: string;
+    relativePath?: string;
 }
 
 interface ClipImportStore {

@@ -126,6 +126,62 @@ NEVERWRITE_ELECTRON_DIST_ARCH=x64
 
 For custom paths, use `NEVERWRITE_PACKAGED_APP_EXECUTABLE` or `NEVERWRITE_PACKAGED_SIDECAR_PATH`.
 
+## Deep Link QA
+
+Use this checklist when changing Electron app identity, URI registration,
+deep-link dispatch, web clipper fallback behavior, vault path resolution, or
+editor reveal behavior. See [Deep Links](deep-links.md) for the full contract.
+
+Deep-link QA should use a packaged app, not a pure `npm run dev` session. On
+macOS, Launch Services can keep stale `neverwrite://` registrations, so force
+the exact app under test:
+
+```bash
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=notes/todo.md'
+```
+
+If the wrong app opens, re-register the app:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /path/to/NeverWrite.app
+```
+
+With a known test vault open, validate successful opens:
+
+```bash
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=notes/todo.md'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=Daily%20Notes%2F2026-07-06.md'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=projects/spec.md'
+open -a /path/to/NeverWrite.app 'neverwrite:open?path=notes/todo.md'
+```
+
+Validate line reveal and range selection:
+
+```bash
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=notes/todo.md#L20'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=notes/todo.md#L10-L20'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=projects/spec.md#L30-L45'
+```
+
+Validate absolute paths inside the vault and traversal that stays inside:
+
+```bash
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=/path/to/vault/notes/todo.md'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=projects/drafts/../../notes/todo.md#L5'
+```
+
+Validate blocked requests. These should show a notice and must not open
+external files:
+
+```bash
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=missing.md'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=../secret.txt'
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=/etc/passwd'
+```
+
+Also verify that `neverwrite://clip` still routes to the existing web clipper
+fallback flow when the extension cannot use the loopback desktop API.
+
 ## Web Clipper
 
 The web clipper is an isolated WXT app. Do not run `npm install` here.
@@ -209,4 +265,4 @@ Desktop release validation lives in [`.github/workflows/release-desktop.yml`](..
 - If a packaged sidecar smoke fails after packaging changes, verify that the native backend was staged into the expected `resources/native-backend` location and has executable permissions on macOS/Linux.
 - If local web clipper requests are blocked, confirm the desktop app is running, the extension is calling `127.0.0.1:32145`, and `NEVERWRITE_WEB_CLIPPER_DEV_ORIGINS` contains the exact unpacked extension origin.
 
-Last updated: June 12, 2026.
+Last updated: July 6, 2026.

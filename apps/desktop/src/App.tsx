@@ -111,6 +111,10 @@ import { shouldAllowNativeContextMenu } from "./features/spellcheck/contextMenu"
 import { YouTubeModalHost } from "./features/editor/YouTubeModalHost";
 import { ClipNotification } from "./features/clip/ClipNotification";
 import { useClipImportStore } from "./features/clip/clipImportStore";
+import {
+    openDeepLinkFile,
+    type DeepLinkOpenFilePayload,
+} from "./features/deep-link/openDeepLinkFile";
 import { useAppUpdateStore } from "./features/updates/store";
 import {
     buildWindowOperationalState,
@@ -130,6 +134,7 @@ interface WebClipperSavedPayload {
 
 const WEB_CLIPPER_CLIP_SAVED_EVENT = "neverwrite:web-clipper/clip-saved";
 const WEB_CLIPPER_ROUTE_CLIP_EVENT = "neverwrite:web-clipper/route-clip";
+const DEEP_LINK_OPEN_FILE_EVENT = "neverwrite:deep-link/open-file";
 const MENU_ACTION_EVENT = "menu-action";
 const DOCK_OPEN_VAULT_EVENT = "dock-open-vault";
 const EXCALIDRAW_RUNTIME_SUPPORTED = canUseExcalidrawRuntime();
@@ -1408,6 +1413,30 @@ export default function App() {
         [showWebClipperSavedNotice],
     );
 
+    const handleDeepLinkOpenFile = useCallback(
+        async (payload: DeepLinkOpenFilePayload) => {
+            const result = await openDeepLinkFile(payload);
+            if (result === "opened") return;
+
+            const message =
+                result === "no-vault"
+                    ? "Open a vault first, then try the link again."
+                    : result === "outside-vault"
+                      ? "This file is outside the currently open vault."
+                      : result === "invalid"
+                        ? "The link is missing a valid file path."
+                        : "That file could not be found in the current vault.";
+
+            useClipImportStore.getState().showNotice({
+                id: crypto.randomUUID(),
+                heading: "Couldn't open link",
+                title: payload.path,
+                message,
+            });
+        },
+        [],
+    );
+
     useRegisterCommands(openSettings, windowMode === "main");
     useGlobalShortcuts(openSettings);
     useAppWebviewZoom();
@@ -2131,6 +2160,34 @@ export default function App() {
             unlisten?.();
         };
     }, [routeWebClipperClip, windowMode]);
+
+    useEffect(() => {
+        if (windowMode !== "main") return;
+
+        let disposed = false;
+        let unlisten: (() => void) | null = null;
+
+        resolveDeferredUnlisten(
+            listen<DeepLinkOpenFilePayload>(
+                DEEP_LINK_OPEN_FILE_EVENT,
+                (event) => {
+                    if (disposed) return;
+                    void handleDeepLinkOpenFile(event.payload);
+                },
+            ),
+            {
+                isDisposed: () => disposed,
+                onResolved: (cleanup) => {
+                    unlisten = cleanup;
+                },
+            },
+        );
+
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
+    }, [handleDeepLinkOpenFile, windowMode]);
 
     if (windowMode === "ghost") {
         const title = readSearchParam("title") ?? "Tab";
