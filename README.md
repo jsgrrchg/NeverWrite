@@ -18,7 +18,7 @@ NeverWrite is a local-first knowledge workspace for people who need to handle wo
 Today the repository combines:
 
 - An Electron desktop app with a Rust sidecar that opens a local vault and keeps working state on disk.
-- A Markdown, CSV, Mermaid, and text/code editing workflow with wikilinks, live preview, frontmatter editing, spellcheck, and grammar checking.
+- A Markdown, CSV, Mermaid, and text/code editing workflow with wikilinks, live preview, frontmatter editing, OKF document status hints, spellcheck, and grammar checking.
 - Knowledge navigation tools such as backlinks, tags, advanced search, bookmarks, concept maps, and a 2D/3D graph view.
 - An ACP-based AI layer with Codex, Claude, Grok, Kilo, and OpenCode runtimes.
 - An explicit AI change-review system with inline review inside the editor and a dedicated surface in chat and a tab with changes pending approval.
@@ -39,6 +39,7 @@ The current product already includes:
 Saved AI conversations are stored locally under each vault's hidden `.neverwrite/sessions/` directory.
 See [AI session history and crash recovery](docs/ai-session-history.md) for the disk layout and recovery flow.
 NeverWrite also writes local diagnostic logs under the app data `logs/` directory; see [App logs](docs/app-logs.md) for platform-specific paths and privacy notes.
+NeverWrite has partial Open Knowledge Format support for `status`, `type`, and vault-level `okf_version`; see [Open Knowledge Format (OKF)](docs/okf.md).
 
 ## Why It Is Different
 
@@ -68,6 +69,7 @@ NeverWrite also writes local diagnostic logs under the app data `logs/` director
 - Wikilink suggestions, resolution, and navigation
 - Live preview with tasks, tables, embeds, math, Mermaid diagrams, and YouTube previews
 - Frontmatter/properties editing
+- OKF-style document status support with editor badges, trust banners, and file tree dots
 - Mermaid diagram files with source editing and preview switching
 - CSV editing with table and raw fallback views
 - Editable text/code files with syntax highlighting and autosave
