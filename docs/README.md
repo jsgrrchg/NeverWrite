@@ -11,6 +11,7 @@ polish and hardening.
 - [Contributing](../CONTRIBUTING.md): contributor workflow, code style, testing expectations, versioning, and release preparation.
 - [Project Architecture](project-architecture.md): high-level map of the monorepo, Electron runtime, IPC boundaries, Rust sidecar, shared crates, web clipper, ACP runtimes, and major data flows.
 - [Testing and Validation](testing.md): the command matrix for Rust, desktop, Electron smoke tests, web clipper checks, CI parity, and area-specific validation.
+- [Deep Links](deep-links.md): `neverwrite://open` and `neverwrite://clip` behavior, path safety boundaries, line fragments, platform delivery, and manual QA notes.
 - [Settings Scope](settings-scope.md): inventory of global, per-vault, and mixed-scope settings, preferences, local UI state, migrations, and storage keys.
 
 ## AI And Change Control
@@ -52,4 +53,4 @@ tokens, provider credentials, or personally sensitive paths.
 These currently live next to their implementation/release artifacts because
 they are tightly coupled to package-specific workflows.
 
-Last updated: July 3, 2026.
+Last updated: July 6, 2026.

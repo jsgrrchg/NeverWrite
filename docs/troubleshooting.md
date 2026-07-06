@@ -9,6 +9,7 @@ or updater.
 Related references:
 
 - [App logs](app-logs.md)
+- [Deep Links](deep-links.md)
 - [AI runtime setup](ai-runtime-setup.md)
 - [AI session history and crash recovery](ai-session-history.md)
 - [Data and privacy](data-and-privacy.md)
@@ -246,20 +247,58 @@ pnpm run check
 
 ## Custom URI And Deep Links
 
-When the desktop API is unavailable, the extension can fall back to
-`neverwrite://clip` deep links. Current limitations:
+NeverWrite supports `neverwrite://clip` for web clipper fallback and
+`neverwrite://open?path=...` for opening an existing file in the currently open
+vault. See [Deep Links](deep-links.md) for the full behavior and security
+boundary.
 
-- Deep links require the installed app to have registered the `neverwrite://`
-  scheme with the OS.
-- On macOS, `npm run dev` does not register custom URI schemes, so browser
-  fallback cannot be validated end-to-end against a pure dev session there.
-- The desktop handler only supports `neverwrite://clip` with required
-  `requestId`, `title`, `folder`, and `mode` parameters.
-- Supported modes are `inline` and `clipboard`.
-- Clipboard mode uses the system clipboard as a temporary handoff, so clipped
-  content may briefly be visible to clipboard managers.
+Deep links require the installed app to have registered the `neverwrite://`
+scheme with the OS. On macOS, `npm run dev` does not reliably validate custom
+URI handling because Launch Services may route `neverwrite://` to another
+installed build or to Electron itself.
 
-Prefer the direct desktop API while debugging save behavior; use deep links only
+If a deep link opens Electron's default welcome screen, the scheme is registered
+to the generic Electron binary or another stale handler. Re-register the
+packaged app:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /path/to/NeverWrite.app
+```
+
+For local QA, force the app explicitly:
+
+```bash
+open -a /path/to/NeverWrite.app 'neverwrite://open?path=notes/todo.md'
+```
+
+If the app shows:
+
+```text
+That file could not be found in the current vault.
+```
+
+the deep link reached NeverWrite, but the currently open vault does not contain
+that path or the vault index cannot resolve it yet. Confirm that the intended
+vault is open, wait for indexing to finish, then try a path visible in the file
+tree.
+
+If the app shows:
+
+```text
+This file is outside the currently open vault.
+```
+
+the safety boundary is working. The path resolved outside the active vault root,
+usually because the link used an absolute path for another vault or a `..`
+traversal escaped the vault.
+
+For `neverwrite://clip`, the handler still expects the web clipper fallback
+parameters, including `requestId`, `title`, `folder`, and `mode`. Supported
+modes are `inline` and `clipboard`. Clipboard mode uses the system clipboard as
+a temporary handoff, so clipped content may briefly be visible to clipboard
+managers.
+
+Prefer the direct desktop API while debugging clip-save behavior; use deep links
 to isolate fallback and OS registration issues.
 
 ## Vault Opening, Indexing, And Filesystem Issues
