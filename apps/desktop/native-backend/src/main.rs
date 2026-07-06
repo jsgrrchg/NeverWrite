@@ -25,7 +25,8 @@ use neverwrite_types::{
     VaultOpenStateDto, WikilinkSuggestionDto,
 };
 use neverwrite_vault::{
-    normalize_existing_vault_path, start_watcher, ScopedPathIntent, Vault, VaultEvent, WriteTracker,
+    normalize_existing_vault_path, parser::frontmatter_string_field, start_watcher,
+    ScopedPathIntent, Vault, VaultEvent, WriteTracker,
 };
 use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
@@ -1339,6 +1340,7 @@ impl NativeBackend {
         let scan_ms = now_ms().saturating_sub(scan_started_at);
         let note_count = index.metadata.len();
         let entry_count = entries.len();
+        let okf_version = vault.detect_okf_version();
         let write_tracker = WriteTracker::new();
         let watcher = start_vault_watcher(&root, write_tracker.clone(), backend_ref)?;
 
@@ -1367,6 +1369,7 @@ impl NativeBackend {
                         snapshot_save_ms: 0,
                     },
                     error: None,
+                    okf_version,
                 },
                 graph_revision: 1,
                 note_revisions: HashMap::new(),
@@ -2475,6 +2478,7 @@ fn cancelled_placeholder_state(root: String) -> VaultRuntimeState {
             finished_at_ms: Some(now_ms()),
             metrics: empty_metrics(),
             error: None,
+            okf_version: None,
         },
         graph_revision: 1,
         note_revisions: HashMap::new(),
@@ -2498,6 +2502,7 @@ fn idle_open_state() -> VaultOpenStateDto {
         finished_at_ms: None,
         metrics: empty_metrics(),
         error: None,
+        okf_version: None,
     }
 }
 
@@ -2782,6 +2787,8 @@ fn note_to_dto(note: &NoteMetadata) -> NoteDto {
         title: note.title.clone(),
         modified_at: note.modified_at,
         created_at: note.created_at,
+        status: note.status.clone(),
+        okf_type: note.okf_type.clone(),
     }
 }
 
@@ -2793,6 +2800,8 @@ fn note_document_to_dto(note: &NoteDocument) -> NoteDto {
         title: note.title.clone(),
         modified_at,
         created_at,
+        status: frontmatter_string_field(note.frontmatter.as_ref(), "status"),
+        okf_type: frontmatter_string_field(note.frontmatter.as_ref(), "type"),
     }
 }
 
@@ -2805,6 +2814,8 @@ fn note_to_detail(note: &NoteDocument) -> NoteDetailDto {
         tags: note.tags.clone(),
         links: note.links.iter().map(|link| link.target.clone()).collect(),
         frontmatter: note.frontmatter.clone(),
+        status: frontmatter_string_field(note.frontmatter.as_ref(), "status"),
+        okf_type: frontmatter_string_field(note.frontmatter.as_ref(), "type"),
     }
 }
 
@@ -2961,6 +2972,10 @@ impl VaultNoteChangeInput {
 }
 
 fn build_vault_note_change(input: VaultNoteChangeInput) -> VaultNoteChangeDto {
+    // Mirror the changed note's frontmatter-derived fields at the top level so
+    // the file tree can react to status/type changes without inspecting `note`.
+    let status = input.note.as_ref().and_then(|note| note.status.clone());
+    let okf_type = input.note.as_ref().and_then(|note| note.okf_type.clone());
     VaultNoteChangeDto {
         vault_path: input.vault_path,
         kind: input.kind,
@@ -2968,6 +2983,8 @@ fn build_vault_note_change(input: VaultNoteChangeInput) -> VaultNoteChangeDto {
         note_id: input.note_id,
         entry: input.entry,
         relative_path: input.relative_path,
+        status,
+        okf_type,
         origin: input.origin,
         op_id: input.op_id,
         revision: input.revision,
@@ -3491,6 +3508,7 @@ mod tests {
                     finished_at_ms: None,
                     metrics: empty_metrics(),
                     error: None,
+                    okf_version: None,
                 },
                 graph_revision: 1,
                 note_revisions: HashMap::new(),
@@ -3524,6 +3542,85 @@ mod tests {
         assert_eq!(
             text_change.get("content_hash").and_then(Value::as_str),
             Some(expected_text_hash.as_str())
+        );
+    }
+
+    #[test]
+    fn exposes_status_okf_type_and_okf_version() {
+        let (event_tx, event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        // Bundle-root index.md declaring the OKF version.
+        fs::write(
+            vault_dir.path().join("index.md"),
+            "---\nokf_version: \"0.1\"\n---\n# Root\n",
+        )
+        .unwrap();
+        let notes_dir = vault_dir.path().join("Notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        fs::write(
+            notes_dir.join("A.md"),
+            "---\nstatus: draft\ntype: article\n---\n# Alpha\n",
+        )
+        .unwrap();
+
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        // okf_version surfaces on the vault-open state DTO.
+        let open_state = invoke(
+            &backend,
+            "get_vault_open_state",
+            json!({ "vaultPath": vault_path }),
+        )
+        .unwrap();
+        assert_eq!(
+            open_state.get("okf_version").and_then(Value::as_str),
+            Some("0.1")
+        );
+
+        // list_notes carries status + okf_type per note.
+        let notes = invoke(&backend, "list_notes", json!({ "vaultPath": vault_path })).unwrap();
+        let note_a = notes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|note| note.get("id").and_then(Value::as_str) == Some("Notes/A"))
+            .expect("note A present");
+        assert_eq!(note_a.get("status").and_then(Value::as_str), Some("draft"));
+        assert_eq!(note_a.get("okf_type").and_then(Value::as_str), Some("article"));
+
+        // Editing the status produces a change event carrying the new value,
+        // and the save_note RESPONSE carries it too. The response matters
+        // because the renderer ignores user-origin change events and updates
+        // its store from the response instead (Editor.tsx saveNow).
+        let detail = invoke(
+            &backend,
+            "save_note",
+            json!({
+                "vaultPath": vault_path,
+                "noteId": "Notes/A",
+                "content": "---\nstatus: published\ntype: article\n---\n# Alpha\n",
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            detail.get("status").and_then(Value::as_str),
+            Some("published")
+        );
+        assert_eq!(
+            detail.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
+        let change = recv_vault_change(&event_rx);
+        assert_eq!(change.get("status").and_then(Value::as_str), Some("published"));
+        assert_eq!(change.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            change
+                .get("note")
+                .and_then(|note| note.get("status"))
+                .and_then(Value::as_str),
+            Some("published")
         );
     }
 }

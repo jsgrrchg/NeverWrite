@@ -220,6 +220,10 @@ type SavedNoteDetail = {
     path: string;
     title: string;
     content: string;
+    // Optional so older backends that don't emit the fields still type-check;
+    // absent means "no status/type".
+    status?: string | null;
+    okf_type?: string | null;
 };
 type ReloadedNoteMetadata = {
     origin?: "user" | "agent" | "external" | "system" | "unknown";
@@ -808,6 +812,11 @@ export function Editor({
                     title: detail.title,
                     path: detail.path,
                     modified_at: Math.floor(Date.now() / 1000),
+                    // User-origin change events are ignored by the renderer
+                    // (vaultChangeSync), so the save response is the only live
+                    // path for status/type into the vault store and file tree.
+                    status: detail.status ?? null,
+                    okf_type: detail.okf_type ?? null,
                 });
                 if (activeTabRef.current?.id === tab.id) {
                     setActiveFrontmatter(

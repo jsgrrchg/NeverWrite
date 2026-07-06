@@ -766,3 +766,55 @@ fn pdf_cache_works_on_second_extraction() {
     }
     // If extraction failed (minimal PDF not parseable), that's OK — we tested error path above
 }
+
+#[test]
+fn detect_okf_version_present() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("index.md"),
+        "---\nokf_version: \"0.1\"\ntype: bundle\n---\n# Root\n",
+    )
+    .unwrap();
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(vault.detect_okf_version().as_deref(), Some("0.1"));
+}
+
+#[test]
+fn detect_okf_version_absent_key() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("index.md"),
+        "---\ntype: bundle\n---\n# Root\n",
+    )
+    .unwrap();
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(vault.detect_okf_version(), None);
+}
+
+#[test]
+fn detect_okf_version_missing_index() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("other.md"), "# No index\n").unwrap();
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(vault.detect_okf_version(), None);
+}
+
+#[test]
+fn detect_okf_version_non_string() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("index.md"),
+        "---\nokf_version: [0.1]\n---\n# Root\n",
+    )
+    .unwrap();
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(vault.detect_okf_version(), None);
+}
+
+#[test]
+fn detect_okf_version_no_frontmatter() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("index.md"), "# Plain index, no frontmatter\n").unwrap();
+    let vault = Vault::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(vault.detect_okf_version(), None);
+}

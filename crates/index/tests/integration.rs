@@ -829,3 +829,87 @@ fn pdf_metadata_empty_by_default() {
     assert!(index.pdf_metadata.is_empty());
     assert!(index.pdf_search_index.is_empty());
 }
+
+fn make_note_with_frontmatter(
+    id: &str,
+    title: &str,
+    frontmatter: serde_json::Value,
+) -> NoteDocument {
+    NoteDocument {
+        id: NoteId(id.to_string()),
+        path: NotePath(PathBuf::from(format!("{}.md", id))),
+        title: title.to_string(),
+        raw_markdown: String::new(),
+        links: Vec::new(),
+        tags: Vec::new(),
+        frontmatter: Some(frontmatter),
+    }
+}
+
+#[test]
+fn build_populates_status_and_okf_type() {
+    let index = VaultIndex::build(vec![
+        make_note_with_frontmatter(
+            "a",
+            "Note A",
+            serde_json::json!({ "status": "draft", "type": "article" }),
+        ),
+        make_note_with_frontmatter("b", "Note B", serde_json::json!({ "title": "Note B" })),
+        make_note_with_frontmatter(
+            "c",
+            "Note C",
+            // Non-string values must be ignored.
+            serde_json::json!({ "status": ["x", "y"], "type": 42 }),
+        ),
+    ]);
+
+    let a = &index.metadata[&NoteId("a".into())];
+    assert_eq!(a.status.as_deref(), Some("draft"));
+    assert_eq!(a.okf_type.as_deref(), Some("article"));
+
+    let b = &index.metadata[&NoteId("b".into())];
+    assert_eq!(b.status, None);
+    assert_eq!(b.okf_type, None);
+
+    let c = &index.metadata[&NoteId("c".into())];
+    assert_eq!(c.status, None);
+    assert_eq!(c.okf_type, None);
+}
+
+#[test]
+fn reindex_updates_status() {
+    let mut index = VaultIndex::build(vec![make_note_with_frontmatter(
+        "a",
+        "Note A",
+        serde_json::json!({ "status": "draft", "type": "article" }),
+    )]);
+    assert_eq!(index.metadata[&NoteId("a".into())].status.as_deref(), Some("draft"));
+
+    index.reindex_note(make_note_with_frontmatter(
+        "a",
+        "Note A",
+        serde_json::json!({ "status": "published", "type": "article" }),
+    ));
+
+    let a = &index.metadata[&NoteId("a".into())];
+    assert_eq!(a.status.as_deref(), Some("published"));
+    assert_eq!(a.okf_type.as_deref(), Some("article"));
+}
+
+#[test]
+fn reindex_clears_removed_status() {
+    let mut index = VaultIndex::build(vec![make_note_with_frontmatter(
+        "a",
+        "Note A",
+        serde_json::json!({ "status": "draft" }),
+    )]);
+    assert_eq!(index.metadata[&NoteId("a".into())].status.as_deref(), Some("draft"));
+
+    index.reindex_note(make_note_with_frontmatter(
+        "a",
+        "Note A",
+        serde_json::json!({ "title": "Note A" }),
+    ));
+
+    assert_eq!(index.metadata[&NoteId("a".into())].status, None);
+}

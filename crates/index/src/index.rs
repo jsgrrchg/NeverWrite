@@ -6,6 +6,7 @@ use std::sync::{
 use std::thread;
 
 use neverwrite_types::{IndexedNote, NoteDocument, NoteId, NoteMetadata, PdfDocument, PdfMetadata};
+use neverwrite_vault::parser::frontmatter_string_field;
 
 const PROGRESS_REPORT_EVERY: usize = 256;
 const MAX_SUGGESTION_PREFIX_CHARS: usize = 64;
@@ -458,6 +459,8 @@ impl VaultIndex {
                 modified_at: note.modified_at,
                 created_at: note.created_at,
                 size: note.size,
+                status: note.status.clone(),
+                okf_type: note.okf_type.clone(),
             },
         );
     }
@@ -889,6 +892,8 @@ struct PreparedNote {
     modified_at: u64,
     created_at: u64,
     size: u64,
+    status: Option<String>,
+    okf_type: Option<String>,
 }
 
 impl PreparedNote {
@@ -906,6 +911,8 @@ impl PreparedNote {
             .unwrap_or_default()
             .to_string();
         let (modified_at, created_at, size) = read_note_file_stats(&note.path.0);
+        let status = frontmatter_string_field(note.frontmatter.as_ref(), "status");
+        let okf_type = frontmatter_string_field(note.frontmatter.as_ref(), "type");
 
         Self {
             normalized_id: normalize_alias(&note.id.0),
@@ -922,6 +929,8 @@ impl PreparedNote {
             modified_at,
             created_at,
             size,
+            status,
+            okf_type,
         }
     }
 }

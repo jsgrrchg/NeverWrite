@@ -3674,6 +3674,7 @@ function FileTreeSettings({
     const {
         fileTreeContentMode,
         fileTreeShowExtensions,
+        fileTreeShowDocumentStatus,
         fileTreeExtensionFilter,
         setSetting,
     } = useSettingsStore();
@@ -3692,6 +3693,10 @@ function FileTreeSettings({
             [
                 "Show file extensions",
                 "Display full file names with their extensions in the vault tree.",
+            ],
+            [
+                "Show document status",
+                "Show a colored dot for the frontmatter status of each note.",
             ],
             [
                 "File extension filter",
@@ -3742,6 +3747,20 @@ function FileTreeSettings({
                         value={fileTreeShowExtensions}
                         onChange={(value) =>
                             setSetting("fileTreeShowExtensions", value)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="File Tree"
+                label="Show document status"
+                description="Show a colored dot for the frontmatter status of each note."
+                control={
+                    <Toggle
+                        value={fileTreeShowDocumentStatus}
+                        onChange={(value) =>
+                            setSetting("fileTreeShowDocumentStatus", value)
                         }
                     />
                 }

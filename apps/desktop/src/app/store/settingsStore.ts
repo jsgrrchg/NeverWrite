@@ -52,6 +52,7 @@ export interface Settings {
     // Developers
     fileTreeContentMode: "notes_only" | "all_files";
     fileTreeShowExtensions: boolean;
+    fileTreeShowDocumentStatus: boolean;
     fileTreeExtensionFilter: string[];
 }
 
@@ -218,6 +219,7 @@ const defaults: Settings = {
     claudeCodeContinueSession: false,
     fileTreeContentMode: "notes_only",
     fileTreeShowExtensions: false,
+    fileTreeShowDocumentStatus: true,
     fileTreeExtensionFilter: [],
 };
 
@@ -561,6 +563,9 @@ function extractSettingsFromStorage(raw: string | null): Settings | null {
             fileTreeShowExtensions:
                 parsed.state.fileTreeShowExtensions ??
                 defaults.fileTreeShowExtensions,
+            fileTreeShowDocumentStatus:
+                parsed.state.fileTreeShowDocumentStatus ??
+                defaults.fileTreeShowDocumentStatus,
             fileTreeExtensionFilter: normalizeFileTreeExtensionFilter(
                 parsed.state.fileTreeExtensionFilter,
             ),
@@ -640,6 +645,7 @@ function pickSettings(state: SettingsStore): Settings {
         claudeCodeContinueSession: state.claudeCodeContinueSession,
         fileTreeContentMode: state.fileTreeContentMode,
         fileTreeShowExtensions: state.fileTreeShowExtensions,
+        fileTreeShowDocumentStatus: state.fileTreeShowDocumentStatus,
         fileTreeExtensionFilter: state.fileTreeExtensionFilter,
     };
 }

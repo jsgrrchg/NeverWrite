@@ -23,6 +23,10 @@ export interface NoteDto {
     title: string;
     modified_at: number;
     created_at: number;
+    /** OKF document status from frontmatter (`status`), verbatim string or null. */
+    status?: string | null;
+    /** OKF document type from frontmatter (`type`), verbatim string or null. */
+    okf_type?: string | null;
 }
 
 export interface VaultEntryDto {
@@ -80,6 +84,8 @@ export interface VaultOpenState {
     finished_at_ms: number | null;
     metrics: VaultOpenMetrics;
     error: string | null;
+    /** OKF version detected in the vault root index.md (null when not an OKF vault). */
+    okf_version: string | null;
 }
 
 export type VaultChangeOrigin =
@@ -101,6 +107,8 @@ export interface VaultNoteChange {
     revision: number;
     content_hash: string | null;
     graph_revision: number;
+    status?: string | null;
+    okf_type?: string | null;
 }
 
 function didResolverStructureChange(
@@ -134,6 +142,37 @@ function didStructureMetadataChange(
     );
 }
 
+function didMetadataStatusOrTypeChange(
+    previousNotes: NoteDto[],
+    noteId: string,
+    patch: Partial<Pick<NoteDto, "status" | "okf_type">>,
+) {
+    const previous = previousNotes.find((note) => note.id === noteId);
+    if (!previous) return false;
+
+    return (
+        (patch.status !== undefined &&
+            (patch.status ?? null) !== (previous.status ?? null)) ||
+        (patch.okf_type !== undefined &&
+            (patch.okf_type ?? null) !== (previous.okf_type ?? null))
+    );
+}
+
+function didNoteStatusOrTypeChange(
+    previousNotes: NoteDto[],
+    change: VaultNoteChange,
+) {
+    if (change.kind === "delete" || !change.note) return false;
+
+    const previous = previousNotes.find((note) => note.id === change.note!.id);
+    if (!previous) return change.note.status != null || change.note.okf_type != null;
+
+    return (
+        (previous.status ?? null) !== (change.note.status ?? null) ||
+        (previous.okf_type ?? null) !== (change.note.okf_type ?? null)
+    );
+}
+
 function hasMarkdownExtension(path: string) {
     return path.toLowerCase().endsWith(".md");
 }
@@ -162,6 +201,7 @@ const IDLE_OPEN_STATE: VaultOpenState = {
         snapshot_save_ms: 0,
     },
     error: null,
+    okf_version: null,
 };
 
 let openVaultSequence = 0;
@@ -303,6 +343,7 @@ function normalizeOpenState(
             snapshot_save_ms: state?.metrics?.snapshot_save_ms ?? 0,
         },
         error: state?.error ?? null,
+        okf_version: state?.okf_version ?? null,
     };
 }
 
@@ -410,6 +451,8 @@ interface VaultStore {
     vaultPath: string | null;
     notes: NoteDto[];
     entries: VaultEntryDto[];
+    /** OKF version detected in the vault root index.md; null for non-OKF vaults. */
+    okfVersion: string | null;
     vaultRevision: number;
     contentRevision: number;
     structureRevision: number;
@@ -442,7 +485,15 @@ interface VaultStore {
     updateNoteMetadata: (
         noteId: string,
         patch: Partial<
-            Pick<NoteDto, "title" | "path" | "modified_at" | "created_at">
+            Pick<
+                NoteDto,
+                | "title"
+                | "path"
+                | "modified_at"
+                | "created_at"
+                | "status"
+                | "okf_type"
+            >
         >,
     ) => void;
 }
@@ -451,6 +502,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
     vaultPath: null,
     notes: [],
     entries: [],
+    okfVersion: null,
     vaultRevision: 0,
     contentRevision: 0,
     structureRevision: 0,
@@ -467,6 +519,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
         set({
             isLoading: true,
             error: null,
+            okfVersion: null,
             vaultOpenState: {
                 ...IDLE_OPEN_STATE,
                 path,
@@ -513,6 +566,7 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                         vaultPath: path,
                         notes: normalizeVaultNotes(notes),
                         entries: normalizeVaultEntries(entries),
+                        okfVersion: openState.okf_version,
                         isLoading: false,
                         error: null,
                         vaultOpenState: openState,
@@ -650,6 +704,13 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 state.notes,
                 normalizedChange,
             );
+            // A status/type-only change is not a resolver/graph structure
+            // change, but the file tree still needs to rebuild so its status
+            // dot updates live. Fold it into the structure revision only.
+            const statusOrTypeChanged = didNoteStatusOrTypeChange(
+                state.notes,
+                normalizedChange,
+            );
             perfCount(`vault.applyNoteChange.${normalizedChange.kind}`);
             perfMeasure(
                 `vault.applyNoteChange.${normalizedChange.kind}.duration`,
@@ -669,9 +730,10 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                     change.kind === "upsert"
                         ? state.contentRevision + 1
                         : state.contentRevision,
-                structureRevision: structureChanged
-                    ? state.structureRevision + 1
-                    : state.structureRevision,
+                structureRevision:
+                    structureChanged || statusOrTypeChanged
+                        ? state.structureRevision + 1
+                        : state.structureRevision,
                 resolverRevision: structureChanged
                     ? state.resolverRevision + 1
                     : state.resolverRevision,
@@ -1045,14 +1107,23 @@ export const useVaultStore = create<VaultStore>((set, get) => ({
                 noteId,
                 patch,
             );
+            // Status/type changes only affect presentation (file tree dot),
+            // so they bump structureRevision — which the tree rebuild is keyed
+            // on — but not the resolver/graph revisions.
+            const statusOrTypeChanged = didMetadataStatusOrTypeChange(
+                s.notes,
+                noteId,
+                patch,
+            );
 
             return {
                 notes: s.notes.map((n) =>
                     n.id === noteId ? { ...n, ...patch } : n,
                 ),
-                structureRevision: structureChanged
-                    ? s.structureRevision + 1
-                    : s.structureRevision,
+                structureRevision:
+                    structureChanged || statusOrTypeChanged
+                        ? s.structureRevision + 1
+                        : s.structureRevision,
                 resolverRevision: structureChanged
                     ? s.resolverRevision + 1
                     : s.resolverRevision,

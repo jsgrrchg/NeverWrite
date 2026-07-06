@@ -44,6 +44,12 @@ pub struct NoteMetadata {
     pub modified_at: u64,
     pub created_at: u64,
     pub size: u64,
+    /// Raw `status` frontmatter extension field (trimmed non-empty string, else None).
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Raw OKF `type` frontmatter field (trimmed non-empty string, else None).
+    #[serde(default)]
+    pub okf_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

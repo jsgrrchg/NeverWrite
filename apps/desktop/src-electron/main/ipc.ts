@@ -24,6 +24,7 @@ import {
     resolvePreviewFilePath,
 } from "./vaultBackend";
 import { createNativeBackendSidecar } from "./nativeBackend";
+import { getSystemUsername } from "./systemUser";
 import { ElectronAppUpdater } from "./updater";
 import { installWebClipperRuntime } from "./webClipper";
 import { installDeepLinkRuntime } from "./deepLink";
@@ -222,6 +223,12 @@ function registerInvokeHandler() {
         const envelope = asRecord(rawEnvelope) as Partial<IpcInvokeEnvelope>;
         if (typeof envelope.command !== "string" || !envelope.command) {
             throw new Error("Invalid invoke envelope.");
+        }
+        // System info commands are answered here at the IPC layer so they
+        // work identically whether a vault uses the native sidecar or the
+        // pure TS backend.
+        if (envelope.command === "get_system_username") {
+            return getSystemUsername();
         }
         return backend.invoke(envelope.command, asRecord(envelope.args));
     });

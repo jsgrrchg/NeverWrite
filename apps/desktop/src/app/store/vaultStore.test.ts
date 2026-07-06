@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { mockInvoke, setEditorTabs } from "../../test/test-utils";
 import { useBookmarkStore } from "./bookmarkStore";
 import { useEditorStore } from "./editorStore";
-import { useVaultStore, type VaultEntryDto } from "./vaultStore";
+import {
+    useVaultStore,
+    type VaultEntryDto,
+    type VaultNoteChange,
+} from "./vaultStore";
 
 function folderEntry(path: string): VaultEntryDto {
     const name = path.split("/").pop() ?? path;
@@ -39,7 +43,150 @@ function fileEntry(path: string): VaultEntryDto {
     };
 }
 
+function upsertChange(
+    note: {
+        id: string;
+        path: string;
+        title: string;
+        status?: string | null;
+        okf_type?: string | null;
+    },
+): VaultNoteChange {
+    return {
+        vault_path: "/vault",
+        kind: "upsert",
+        note: {
+            modified_at: 1,
+            created_at: 1,
+            ...note,
+        },
+        note_id: note.id,
+        entry: null,
+        relative_path: `${note.id}.md`,
+        origin: "external",
+        op_id: null,
+        revision: 1,
+        content_hash: null,
+        graph_revision: 0,
+        status: note.status ?? null,
+        okf_type: note.okf_type ?? null,
+    };
+}
+
 describe("vaultStore", () => {
+    it("updates a note's status and okf_type when a change event arrives", () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/alpha",
+                    path: "/vault/notes/alpha.md",
+                    title: "Alpha",
+                    modified_at: 1,
+                    created_at: 1,
+                },
+            ],
+        });
+
+        const before = useVaultStore.getState().structureRevision;
+
+        useVaultStore.getState().applyVaultNoteChange(
+            upsertChange({
+                id: "notes/alpha",
+                path: "/vault/notes/alpha.md",
+                title: "Alpha",
+                status: "published",
+                okf_type: "runbook",
+            }),
+        );
+
+        const note = useVaultStore
+            .getState()
+            .notes.find((n) => n.id === "notes/alpha");
+        expect(note?.status).toBe("published");
+        expect(note?.okf_type).toBe("runbook");
+        // A status/type change must bump structureRevision so the tree
+        // rebuilds and its status dot updates live.
+        expect(useVaultStore.getState().structureRevision).toBe(before + 1);
+    });
+
+    it("updates status via updateNoteMetadata and bumps only the structure revision", () => {
+        // Runtime sequence for an app-initiated save: the backend's change
+        // event has origin "user" and is ignored by the renderer, so the
+        // editor pushes status/okf_type from the save_note response through
+        // updateNoteMetadata. The tree rebuild is keyed on structureRevision;
+        // resolver/graph revisions must stay untouched for a status-only edit.
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [
+                {
+                    id: "notes/alpha",
+                    path: "/vault/notes/alpha.md",
+                    title: "Alpha",
+                    modified_at: 1,
+                    created_at: 1,
+                    status: "draft",
+                    okf_type: "runbook",
+                },
+            ],
+        });
+
+        const before = useVaultStore.getState();
+
+        useVaultStore.getState().updateNoteMetadata("notes/alpha", {
+            title: "Alpha",
+            path: "/vault/notes/alpha.md",
+            modified_at: 2,
+            status: "published",
+            okf_type: "runbook",
+        });
+
+        const after = useVaultStore.getState();
+        const note = after.notes.find((n) => n.id === "notes/alpha");
+        expect(note?.status).toBe("published");
+        expect(after.structureRevision).toBe(before.structureRevision + 1);
+        expect(after.resolverRevision).toBe(before.resolverRevision);
+        expect(after.graphRevision).toBe(before.graphRevision);
+
+        // Unchanged status must not churn the structure revision.
+        useVaultStore.getState().updateNoteMetadata("notes/alpha", {
+            modified_at: 3,
+            status: "published",
+            okf_type: "runbook",
+        });
+        expect(useVaultStore.getState().structureRevision).toBe(
+            before.structureRevision + 1,
+        );
+    });
+
+    it("sets okfVersion from the open state and resets it when switching vaults", async () => {
+        const invokeMock = mockInvoke();
+
+        const openStateFor = (okfVersion: string | null) =>
+            async (command: string) => {
+                if (command === "start_open_vault") return null;
+                if (command === "get_vault_open_state") {
+                    return {
+                        stage: "ready",
+                        message: "Vault ready",
+                        okf_version: okfVersion,
+                    };
+                }
+                if (command === "list_notes") return [];
+                if (command === "list_vault_entries") return [];
+                if (command === "get_graph_revision") return 1;
+                throw new Error(`Unexpected command: ${command}`);
+            };
+
+        invokeMock.mockImplementation(openStateFor("0.1.0"));
+        await useVaultStore.getState().openVault("/vault-okf");
+        expect(useVaultStore.getState().okfVersion).toBe("0.1.0");
+
+        invokeMock.mockImplementation(openStateFor(null));
+        await useVaultStore.getState().openVault("/vault-plain");
+        expect(useVaultStore.getState().okfVersion).toBeNull();
+    });
+
     it("normalizes Windows-style vault DTO paths when opening a vault", async () => {
         const invokeMock = mockInvoke();
 

@@ -62,6 +62,20 @@ impl Vault {
         Ok(Vault { root: path })
     }
 
+    /// Detects the OKF (Open Knowledge Format) version declared by the vault-root
+    /// `index.md`. Per the OKF spec the bundle-root `index.md` may declare
+    /// `okf_version` in its frontmatter. Only the vault-root file is inspected;
+    /// nested `index.md` files are ignored.
+    ///
+    /// Returns `None` when the root `index.md` is missing, has no parseable
+    /// frontmatter, or `okf_version` is absent / not a string.
+    pub fn detect_okf_version(&self) -> Option<String> {
+        let index_path = self.root.join("index.md");
+        let content = std::fs::read_to_string(&index_path).ok()?;
+        let frontmatter = crate::parser::extract_frontmatter(&content);
+        crate::parser::frontmatter_string_field(frontmatter.as_ref(), "okf_version")
+    }
+
     /// Discovers all `.md` files in the vault and returns lightweight metadata for each file.
     pub fn discover_markdown_files(&self) -> Result<Vec<DiscoveredNoteFile>, VaultError> {
         let mut discovered = Vec::new();

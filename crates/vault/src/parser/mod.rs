@@ -5,7 +5,7 @@ pub mod wikilinks;
 
 use neverwrite_types::NoteDocument;
 
-pub use frontmatter::extract_frontmatter;
+pub use frontmatter::{extract_frontmatter, frontmatter_string_field};
 pub use tags::extract_tags;
 pub use wikilinks::extract_wikilinks;
 

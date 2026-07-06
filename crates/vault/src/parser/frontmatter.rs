@@ -16,6 +16,20 @@ pub fn extract_frontmatter(text: &str) -> Option<Value> {
     serde_json::to_value(yaml_value).ok()
 }
 
+/// Reads a frontmatter field as a trimmed, non-empty string.
+///
+/// Returns `None` when the frontmatter is absent, the key is missing, the value
+/// is not a YAML string, or the value is empty/whitespace-only after trimming.
+pub fn frontmatter_string_field(frontmatter: Option<&Value>, key: &str) -> Option<String> {
+    let value = frontmatter?.get(key)?.as_str()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +62,64 @@ mod tests {
         let text = "---\ndate: 2024-01-15\ndraft: true\n---\nContenido";
         let fm = extract_frontmatter(text).unwrap();
         assert_eq!(fm["draft"], true);
+    }
+
+    #[test]
+    fn string_field_present() {
+        let text = "---\nstatus: draft\ntype: article\n---\n# Body";
+        let fm = extract_frontmatter(text);
+        assert_eq!(
+            frontmatter_string_field(fm.as_ref(), "status"),
+            Some("draft".to_string())
+        );
+        assert_eq!(
+            frontmatter_string_field(fm.as_ref(), "type"),
+            Some("article".to_string())
+        );
+    }
+
+    #[test]
+    fn string_field_missing() {
+        let text = "---\ntitle: Only Title\n---\n# Body";
+        let fm = extract_frontmatter(text);
+        assert_eq!(frontmatter_string_field(fm.as_ref(), "status"), None);
+        assert_eq!(frontmatter_string_field(fm.as_ref(), "type"), None);
+    }
+
+    #[test]
+    fn string_field_no_frontmatter() {
+        assert_eq!(frontmatter_string_field(None, "status"), None);
+    }
+
+    #[test]
+    fn string_field_non_string() {
+        let text = "---\nstatus:\n  - a\n  - b\ntype: 42\n---\n# Body";
+        let fm = extract_frontmatter(text);
+        assert_eq!(frontmatter_string_field(fm.as_ref(), "status"), None);
+        assert_eq!(frontmatter_string_field(fm.as_ref(), "type"), None);
+    }
+
+    #[test]
+    fn string_field_empty_string() {
+        let text = "---\nstatus: \"\"\n---\n# Body";
+        let fm = extract_frontmatter(text);
+        assert_eq!(frontmatter_string_field(fm.as_ref(), "status"), None);
+    }
+
+    #[test]
+    fn string_field_whitespace_only_is_trimmed_to_none() {
+        let text = "---\nstatus: \"   \"\n---\n# Body";
+        let fm = extract_frontmatter(text);
+        assert_eq!(frontmatter_string_field(fm.as_ref(), "status"), None);
+    }
+
+    #[test]
+    fn string_field_trims_surrounding_whitespace() {
+        let text = "---\nstatus: \"  in_review  \"\n---\n# Body";
+        let fm = extract_frontmatter(text);
+        assert_eq!(
+            frontmatter_string_field(fm.as_ref(), "status"),
+            Some("in_review".to_string())
+        );
     }
 }

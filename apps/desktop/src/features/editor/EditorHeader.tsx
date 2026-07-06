@@ -9,9 +9,17 @@ import {
 export function MetaBadge({
     label,
     tone = "muted",
+    leading,
+    onClick,
+    title,
 }: {
     label: string;
-    tone?: "muted" | "accent" | "success";
+    tone?: "muted" | "accent" | "success" | "warning";
+    /** Optional element rendered before the label (e.g. a status dot). */
+    leading?: React.ReactNode;
+    /** When provided, the badge renders as a button. */
+    onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+    title?: string;
 }) {
     const palette =
         tone === "accent"
@@ -28,15 +36,58 @@ export function MetaBadge({
                         "color-mix(in srgb, #22c55e 10%, var(--bg-primary))",
                     border: "color-mix(in srgb, #22c55e 22%, var(--border))",
                 }
-              : {
-                    color: "var(--text-secondary)",
-                    background:
-                        "color-mix(in srgb, var(--bg-secondary) 82%, transparent)",
-                    border: "var(--border)",
-                };
+              : tone === "warning"
+                ? {
+                      color: "#b45309",
+                      background:
+                          "color-mix(in srgb, #f97316 12%, var(--bg-primary))",
+                      border: "color-mix(in srgb, #f97316 26%, var(--border))",
+                  }
+                : {
+                      color: "var(--text-secondary)",
+                      background:
+                          "color-mix(in srgb, var(--bg-secondary) 82%, transparent)",
+                      border: "var(--border)",
+                  };
+
+    const content = (
+        <>
+            {leading}
+            {label}
+        </>
+    );
+
+    if (onClick) {
+        return (
+            <button
+                type="button"
+                onClick={onClick}
+                title={title}
+                style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    maxWidth: "100%",
+                    height: 24,
+                    padding: "0 8px",
+                    borderRadius: 2,
+                    border: `1px solid ${palette.border}`,
+                    background: palette.background,
+                    color: palette.color,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.04em",
+                    cursor: "pointer",
+                }}
+            >
+                {content}
+            </button>
+        );
+    }
 
     return (
         <span
+            title={title}
             style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -53,7 +104,7 @@ export function MetaBadge({
                 letterSpacing: "0.04em",
             }}
         >
-            {label}
+            {content}
         </span>
     );
 }

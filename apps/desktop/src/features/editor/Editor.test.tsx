@@ -8,6 +8,7 @@ import { EditorView, keymap } from "@codemirror/view";
 import { describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../app/store/editorStore";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useCommandStore } from "../command-palette/store/commandStore";
 import { useChatStore } from "../ai/store/chatStore";
 import {
@@ -1827,6 +1828,96 @@ describe("Editor", () => {
                 vaultPath: "/vault",
                 opId: expect.any(String),
             }),
+        );
+    });
+
+    it("updates the note's status in the vault store from the save_note response", async () => {
+        // App-initiated saves emit a `vault://note-changed` event with origin
+        // "user", which the renderer ignores by design (vaultChangeSync). The
+        // only live path into the vault store for a user save is therefore the
+        // save_note response, so it must carry status/okf_type through to the
+        // store or the file tree's status dot goes stale.
+        mockInvoke().mockImplementation(async (command) => {
+            if (command === "save_note") {
+                return {
+                    id: "notes/current",
+                    path: "/vault/notes/current.md",
+                    title: "Current",
+                    content:
+                        "---\nstatus: published\ntype: runbook\n---\nBody",
+                    status: "published",
+                    okf_type: "runbook",
+                };
+            }
+            return undefined;
+        });
+
+        setEditorTabs(
+            [
+                {
+                    id: "tab-1",
+                    noteId: "notes/current",
+                    title: "Current",
+                    content: "---\nstatus: draft\ntype: runbook\n---\nBody",
+                },
+                {
+                    id: "tab-2",
+                    noteId: "notes/other",
+                    title: "Other",
+                    content: "Other body",
+                },
+            ],
+            "tab-1",
+        );
+        setVaultNotes([
+            {
+                id: "notes/current",
+                title: "Current",
+                path: "/vault/notes/current.md",
+                modified_at: 0,
+                created_at: 0,
+                status: "draft",
+                okf_type: "runbook",
+            },
+            {
+                id: "notes/other",
+                title: "Other",
+                path: "/vault/notes/other.md",
+                modified_at: 0,
+                created_at: 0,
+            },
+        ]);
+
+        const structureRevisionBefore =
+            useVaultStore.getState().structureRevision;
+
+        renderComponent(<Editor />);
+        const view = getEditorView();
+
+        await act(async () => {
+            view.dispatch({
+                changes: {
+                    from: 0,
+                    to: view.state.doc.length,
+                    insert: "---\nstatus: published\ntype: runbook\n---\nBody",
+                },
+            });
+        });
+
+        await act(async () => {
+            useEditorStore.getState().switchTab("tab-2");
+        });
+        await flushPromises();
+
+        const note = useVaultStore
+            .getState()
+            .notes.find((candidate) => candidate.id === "notes/current");
+        expect(note?.status).toBe("published");
+        expect(note?.okf_type).toBe("runbook");
+        // The file tree rebuilds on structureRevision; a stale revision means
+        // the dot keeps its old color even though the note changed.
+        expect(useVaultStore.getState().structureRevision).toBeGreaterThan(
+            structureRevisionBefore,
         );
     });
 

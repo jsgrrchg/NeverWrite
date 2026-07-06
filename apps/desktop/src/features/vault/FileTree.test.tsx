@@ -3776,3 +3776,102 @@ describe("FileTree", () => {
         expect(elementsFromPoint).toHaveBeenCalled();
     });
 });
+
+describe("FileTree — document status dot", () => {
+    function statusNote(
+        overrides: Partial<{
+            status: string | null;
+            okf_type: string | null;
+        }> = {},
+    ) {
+        return {
+            id: "notes/alpha",
+            path: "/vault/notes/alpha.md",
+            title: "Alpha",
+            modified_at: 1,
+            created_at: 1,
+            status: null,
+            okf_type: null,
+            ...overrides,
+        };
+    }
+
+    it("renders a colored status dot with a tooltip that includes the type", async () => {
+        const user = userEvent.setup();
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({ fileTreeShowDocumentStatus: true });
+        });
+        setVaultNotes([statusNote({ status: "published", okf_type: "Runbook" })]);
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "notes");
+
+            const row = getNoteRow("Alpha");
+            const dot = row.querySelector("[data-document-status]");
+            expect(dot).not.toBeNull();
+            expect(dot).toHaveAttribute("data-document-status", "published");
+            expect(dot).toHaveAttribute("title", "Published · Runbook");
+        } finally {
+            act(() => useSettingsStore.getState().reset());
+        }
+    });
+
+    it("does not render a dot when the setting is off", async () => {
+        const user = userEvent.setup();
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({ fileTreeShowDocumentStatus: false });
+        });
+        setVaultNotes([statusNote({ status: "published" })]);
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "notes");
+            expect(
+                getNoteRow("Alpha").querySelector("[data-document-status]"),
+            ).toBeNull();
+        } finally {
+            act(() => useSettingsStore.getState().reset());
+        }
+    });
+
+    it("does not render a dot when the note has no status", async () => {
+        const user = userEvent.setup();
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({ fileTreeShowDocumentStatus: true });
+        });
+        setVaultNotes([statusNote()]);
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "notes");
+            expect(
+                getNoteRow("Alpha").querySelector("[data-document-status]"),
+            ).toBeNull();
+        } finally {
+            act(() => useSettingsStore.getState().reset());
+        }
+    });
+
+    it("dims the label for archived notes", async () => {
+        const user = userEvent.setup();
+        act(() => {
+            useSettingsStore.getState().reset();
+            useSettingsStore.setState({ fileTreeShowDocumentStatus: true });
+        });
+        setVaultNotes([statusNote({ status: "archived" })]);
+
+        try {
+            renderComponent(<FileTree />);
+            await expandFolder(user, "notes");
+
+            const label = screen.getByText("Alpha");
+            expect(label).toHaveStyle({ opacity: "0.55" });
+        } finally {
+            act(() => useSettingsStore.getState().reset());
+        }
+    });
+});

@@ -28,6 +28,7 @@ remain reviewable.
 ## Editor And Workspace
 
 - [Editor Architecture](editor-architecture.md): CodeMirror, live preview, Mermaid rendering, wikilinks, frontmatter/properties, autosave, dirty tabs, merge view, inline review overlays, and power-user invariants.
+- [Open Knowledge Format (OKF)](okf.md): the `status` and `type` frontmatter fields, canonical status values, where status appears (file tree dot, editor badge/banner), the "Show document status" setting, and `okf_version` vault detection.
 - [Terminal Architecture](terminal-integration.md): PTY sidecar boundary, xterm rendering, terminal persistence, Claude Code integration, and validation notes.
 - [Subagents Working State Map](concept-maps/codex-subagents-working-state-map.excalidraw): visual working map for subagent state and coordination.
 

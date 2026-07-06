@@ -45,6 +45,9 @@ describe("settingsStore", () => {
         expect(useSettingsStore.getState().fileTreeScale).toBe(114);
         expect(useSettingsStore.getState().agentsSidebarScale).toBe(100);
         expect(useSettingsStore.getState().fileTreeStickyFolders).toBe(true);
+        expect(useSettingsStore.getState().fileTreeShowDocumentStatus).toBe(
+            true,
+        );
         expect(useSettingsStore.getState().editorAutosaveDelayMs).toBe(300);
         expect(useSettingsStore.getState().fileTreeExtensionFilter).toEqual([]);
         expect(useSettingsStore.getState().vimModeEnabled).toBe(false);
@@ -149,6 +152,25 @@ describe("settingsStore", () => {
                 agentsSidebarScale: 125,
                 editorAutosaveDelayMs: 750,
             },
+        });
+    });
+
+    it("persists the document status toggle per vault", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/okf" });
+
+        useSettingsStore
+            .getState()
+            .setSetting("fileTreeShowDocumentStatus", false);
+
+        expect(
+            useSettingsStore.getState().fileTreeShowDocumentStatus,
+        ).toBe(false);
+        expect(
+            JSON.parse(
+                localStorage.getItem("neverwrite:settings:/vaults/okf") ?? "",
+            ),
+        ).toMatchObject({
+            state: { fileTreeShowDocumentStatus: false },
         });
     });
 

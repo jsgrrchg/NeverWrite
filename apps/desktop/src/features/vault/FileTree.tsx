@@ -65,6 +65,11 @@ import {
 import { FileTypeIcon } from "../../components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "../../components/icons/FolderTypeIcon";
 import {
+    normalizeDocumentStatus,
+    statusDotColor,
+    statusLabel,
+} from "../okf/status";
+import {
     EXTERNAL_FILE_TREE_DRAG_EVENT,
     emitFileTreeAttachToNewChat,
     emitFileTreeNoteDrag,
@@ -938,6 +943,7 @@ interface FlatTreeRowViewProps {
     onRenameEntryConfirm: (entry: VaultEntryDto, newName: string) => void;
     onRenameCancel: () => void;
     showExtensions: boolean;
+    showDocumentStatus: boolean;
     stickyContentOffsetX?: number;
 }
 
@@ -984,6 +990,7 @@ const FlatTreeRowView = memo(
         onRenameEntryConfirm,
         onRenameCancel,
         showExtensions,
+        showDocumentStatus,
         stickyContentOffsetX = 0,
     }: FlatTreeRowViewProps) {
         const renameInputRef = useRef<HTMLInputElement>(null);
@@ -1440,6 +1447,16 @@ const FlatTreeRowView = memo(
         const isActive = note.id === activeNoteId;
         const isSelected = selectedNoteIds.has(note.id);
         const isDraggingThis = draggingNoteIds.has(note.id);
+        const documentStatus = showDocumentStatus
+            ? normalizeDocumentStatus(note.status)
+            : null;
+        const statusIsDimmed =
+            documentStatus === "archived" || documentStatus === "deprecated";
+        const statusDotTitle = documentStatus
+            ? note.okf_type
+                ? `${statusLabel(documentStatus)} · ${note.okf_type}`
+                : statusLabel(documentStatus)
+            : undefined;
 
         if (isRenamingNote) {
             return (
@@ -1555,9 +1572,26 @@ const FlatTreeRowView = memo(
                     kind="note"
                     size={metrics.smallIcon}
                 />
-                <span className={TREE_LABEL_CLASSNAME}>
+                <span
+                    className={TREE_LABEL_CLASSNAME}
+                    style={statusIsDimmed ? { opacity: 0.55 } : undefined}
+                >
                     {getNoteDisplayName(note, showExtensions)}
                 </span>
+                {documentStatus && (
+                    <span
+                        data-document-status={documentStatus}
+                        title={statusDotTitle}
+                        style={{
+                            flexShrink: 0,
+                            width: 6,
+                            height: 6,
+                            marginLeft: 2,
+                            borderRadius: "50%",
+                            background: statusDotColor(documentStatus),
+                        }}
+                    />
+                )}
             </div>
         );
     },
@@ -1581,6 +1615,7 @@ const FlatTreeRowView = memo(
         if (prev.creatingMode !== next.creatingMode) return false;
         if (prev.newItemName !== next.newItemName) return false;
         if (prev.showExtensions !== next.showExtensions) return false;
+        if (prev.showDocumentStatus !== next.showDocumentStatus) return false;
 
         const path = prev.row.path;
 
@@ -2106,6 +2141,9 @@ export function FileTree() {
     const fileTreeContentMode = useSettingsStore((s) => s.fileTreeContentMode);
     const fileTreeShowExtensions = useSettingsStore(
         (s) => s.fileTreeShowExtensions,
+    );
+    const fileTreeShowDocumentStatus = useSettingsStore(
+        (s) => s.fileTreeShowDocumentStatus,
     );
     const fileTreeExtensionFilter = useSettingsStore(
         (s) => s.fileTreeExtensionFilter,
@@ -3982,6 +4020,8 @@ export function FileTree() {
             const detail = await vaultInvoke<{
                 title: string;
                 path: string;
+                status?: string | null;
+                okf_type?: string | null;
             }>("save_note", {
                 noteId: created.id,
                 content,
@@ -3991,6 +4031,8 @@ export function FileTree() {
                 title: detail.title,
                 path: detail.path,
                 modified_at: Math.floor(Date.now() / 1000),
+                status: detail.status ?? null,
+                okf_type: detail.okf_type ?? null,
             });
             touchContent();
             return created;
@@ -4360,6 +4402,8 @@ export function FileTree() {
                 const detail = await vaultInvoke<{
                     title: string;
                     path: string;
+                    status?: string | null;
+                    okf_type?: string | null;
                 }>("save_note", {
                     noteId: created.id,
                     content,
@@ -4369,6 +4413,8 @@ export function FileTree() {
                     title: detail.title,
                     path: detail.path,
                     modified_at: Math.floor(Date.now() / 1000),
+                    status: detail.status ?? null,
+                    okf_type: detail.okf_type ?? null,
                 });
                 touchContent();
             } catch (error) {
@@ -5806,6 +5852,9 @@ export function FileTree() {
                                             showExtensions={
                                                 fileTreeShowExtensions
                                             }
+                                            showDocumentStatus={
+                                                fileTreeShowDocumentStatus
+                                            }
                                         />
                                     </div>
                                 ))}
@@ -5938,6 +5987,9 @@ export function FileTree() {
                                             onRenameCancel={handleRenameCancel}
                                             showExtensions={
                                                 fileTreeShowExtensions
+                                            }
+                                            showDocumentStatus={
+                                                fileTreeShowDocumentStatus
                                             }
                                         />
                                     );
