@@ -5549,7 +5549,13 @@ fn elicitation_question_parts(
                 .map(|items| {
                     items
                         .iter()
-                        .map(|item| elicitation_titled_option(&item.value, &item.title))
+                        .map(|item| {
+                            elicitation_described_option(
+                                &item.value,
+                                &item.title,
+                                item.description.as_deref(),
+                            )
+                        })
                         .collect::<Vec<_>>()
                 })
                 .or_else(|| {
@@ -5634,7 +5640,13 @@ fn elicitation_question_parts(
                 MultiSelectItems::Titled(items) => items
                     .options
                     .iter()
-                    .map(|item| elicitation_titled_option(&item.value, &item.title))
+                    .map(|item| {
+                        elicitation_described_option(
+                            &item.value,
+                            &item.title,
+                            item.description.as_deref(),
+                        )
+                    })
                     .collect(),
                 _ => Vec::new(),
             };
@@ -5669,9 +5681,14 @@ fn elicitation_plain_option(value: &str) -> AiUserInputQuestionOptionPayload {
     }
 }
 
-fn elicitation_titled_option(value: &str, title: &str) -> AiUserInputQuestionOptionPayload {
-    let (label, description) = elicitation_option_label_and_description(value, title)
+fn elicitation_described_option(
+    value: &str,
+    title: &str,
+    description: Option<&str>,
+) -> AiUserInputQuestionOptionPayload {
+    let (label, fallback_description) = elicitation_option_label_and_description(value, title)
         .unwrap_or_else(|| (title.to_string(), None));
+    let description = description.map(str::to_string).or(fallback_description);
 
     AiUserInputQuestionOptionPayload {
         label,
@@ -9253,11 +9270,11 @@ mod tests {
         AgentCapabilities, AuthMethod, AuthMethodAgent, AvailableCommandInput,
         AvailableCommandsUpdate, BooleanPropertySchema, CompleteElicitationNotification,
         ConfigOptionUpdate, Content, ElicitationFormMode, ElicitationSchema,
-        ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta, PermissionOptionKind,
-        PlanEntry, PromptCapabilities, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
-        StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
-        ToolKind, UnstructuredCommandInput,
+        ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta, MultiSelectPropertySchema,
+        PermissionOptionKind, PlanEntry, PromptCapabilities, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
+        SessionNotification, SessionUpdate, StringPropertySchema, ToolCallContent, ToolCallId,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -12377,7 +12394,7 @@ mod tests {
                             .title("Scope")
                             .description("Choose a scope")
                             .one_of(vec![
-                                EnumOption::new("safe", "Safe"),
+                                EnumOption::new("safe", "Safe").description("Keep changes narrow"),
                                 EnumOption::new("wide", "Wide"),
                             ]),
                         true,
@@ -12430,7 +12447,12 @@ mod tests {
                 .and_then(Value::as_str),
             Some("safe")
         );
-        assert_eq!(payload.pointer("/questions/1/options/0/description"), None);
+        assert_eq!(
+            payload
+                .pointer("/questions/1/options/0/description")
+                .and_then(Value::as_str),
+            Some("Keep changes narrow")
+        );
         assert_eq!(
             payload
                 .pointer("/questions/0/options/0/label")
@@ -12454,13 +12476,106 @@ mod tests {
 
     #[test]
     fn elicitation_titled_options_split_claude_description_fallback() {
-        let option =
-            elicitation_titled_option("Grid layout", "Grid layout \u{2014} Cards in columns");
+        let option = elicitation_described_option(
+            "Grid layout",
+            "Grid layout \u{2014} Cards in columns",
+            None,
+        );
 
         assert_eq!(option.label, "Grid layout");
         assert_eq!(option.value, "Grid layout");
         assert_eq!(option.description.as_deref(), Some("Cards in columns"));
         assert_eq!(option.preview, None);
+    }
+
+    #[test]
+    fn acp_form_elicitation_preserves_structured_option_descriptions() {
+        let schema = ElicitationSchema::new()
+            .property(
+                "scope",
+                StringPropertySchema::new()
+                    .title("Scope")
+                    .description("Choose a scope")
+                    .one_of(vec![
+                        EnumOption::new("safe", "Safe").description("Keep changes narrow"),
+                        EnumOption::new("wide", "Wide").description("Allow broader edits"),
+                    ]),
+                true,
+            )
+            .property(
+                "targets",
+                MultiSelectPropertySchema::titled(vec![
+                    EnumOption::new("tests", "Tests").description("Update coverage"),
+                    EnumOption::new("docs", "Docs").description("Update docs"),
+                ])
+                .title("Targets")
+                .description("Choose targets"),
+                false,
+            );
+
+        let (questions, _) = map_elicitation_form_questions(&schema);
+        let scope = questions
+            .iter()
+            .find(|question| question.id == "scope")
+            .expect("scope question");
+        let targets = questions
+            .iter()
+            .find(|question| question.id == "targets")
+            .expect("targets question");
+
+        let scope_options = scope.options.as_ref().expect("scope options");
+        assert_eq!(
+            scope_options[0].description.as_deref(),
+            Some("Keep changes narrow")
+        );
+        assert_eq!(
+            scope_options[1].description.as_deref(),
+            Some("Allow broader edits")
+        );
+
+        let target_options = targets.options.as_ref().expect("target options");
+        assert_eq!(
+            target_options[0].description.as_deref(),
+            Some("Update coverage")
+        );
+        assert_eq!(
+            target_options[1].description.as_deref(),
+            Some("Update docs")
+        );
+    }
+
+    #[test]
+    fn acp_form_elicitation_keeps_title_description_fallback_without_structured_description() {
+        let schema = ElicitationSchema::new().property(
+            "layout",
+            StringPropertySchema::new()
+                .title("Layout")
+                .one_of(vec![EnumOption::new(
+                    "Grid layout",
+                    "Grid layout \u{2014} Cards in columns",
+                )]),
+            true,
+        );
+
+        let (questions, _) = map_elicitation_form_questions(&schema);
+        let options = questions[0].options.as_ref().expect("layout options");
+
+        assert_eq!(options[0].label, "Grid layout");
+        assert_eq!(options[0].value, "Grid layout");
+        assert_eq!(options[0].description.as_deref(), Some("Cards in columns"));
+    }
+
+    #[test]
+    fn acp_form_elicitation_prefers_structured_description_over_title_fallback() {
+        let option = elicitation_described_option(
+            "Grid layout",
+            "Grid layout \u{2014} Cards in columns",
+            Some("Structured description"),
+        );
+
+        assert_eq!(option.label, "Grid layout");
+        assert_eq!(option.value, "Grid layout");
+        assert_eq!(option.description.as_deref(), Some("Structured description"));
     }
 
     #[test]
