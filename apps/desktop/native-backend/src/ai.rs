@@ -9,23 +9,24 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
     CancelNotification, ClientCapabilities, CompleteElicitationNotification, ContentBlock,
     ContentChunk, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
     ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
-    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
-    ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
-    ImageContent, Implementation, InitializeRequest, InitializeResponse, LogoutRequest, Meta,
-    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
-    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionInfoUpdate,
-    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionModeRequest, TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolKind,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationSchema,
+    ElicitationScope, ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource,
+    FileSystemCapabilities, ImageContent, Implementation, InitializeRequest, InitializeResponse,
+    LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionInfoUpdate, SessionModeState, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, TextResourceContents, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
@@ -145,7 +146,7 @@ struct RuntimeDefinition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpProtocolFlavor {
-    Current14,
+    Current,
     Legacy12,
 }
 
@@ -161,7 +162,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "codex",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: true,
     },
     RuntimeDefinition {
@@ -171,7 +172,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -191,7 +192,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "kilo",
         bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -201,7 +202,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "opencode",
         bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
 ];
@@ -3688,7 +3689,7 @@ fn start_acp_session(
         };
         runtime.block_on(async move {
             match flavor {
-                AcpProtocolFlavor::Current14 => {
+                AcpProtocolFlavor::Current => {
                     run_acp_actor(spec, start_mode, context, command_rx, created_tx).await;
                 }
                 AcpProtocolFlavor::Legacy12 => {
@@ -3737,7 +3738,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current14 => {
+            AcpProtocolFlavor::Current => {
                 runtime.block_on(run_acp_auth_inner(spec, auth_command))
             }
             AcpProtocolFlavor::Legacy12 => {
@@ -5443,7 +5444,7 @@ fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanU
 }
 
 fn map_elicitation_form_questions(
-    schema: &agent_client_protocol::schema::ElicitationSchema,
+    schema: &ElicitationSchema,
 ) -> (
     Vec<AiUserInputQuestionPayload>,
     HashMap<String, ElicitationFieldSpec>,
@@ -5470,7 +5471,7 @@ fn map_elicitation_form_questions(
                 .unwrap_or_default();
             (
                 AiUserInputQuestionPayload {
-                    id: id.clone(),
+                    id: id.to_string(),
                     custom_answer_id: None,
                     header,
                     question,
@@ -5548,7 +5549,13 @@ fn elicitation_question_parts(
                 .map(|items| {
                     items
                         .iter()
-                        .map(|item| elicitation_titled_option(&item.value, &item.title))
+                        .map(|item| {
+                            elicitation_described_option(
+                                &item.value,
+                                &item.title,
+                                item.description.as_deref(),
+                            )
+                        })
                         .collect::<Vec<_>>()
                 })
                 .or_else(|| {
@@ -5625,7 +5632,7 @@ fn elicitation_question_parts(
         ),
         ElicitationPropertySchema::Array(schema) => {
             let options = match &schema.items {
-                MultiSelectItems::Untitled(items) => items
+                MultiSelectItems::String(items) => items
                     .values
                     .iter()
                     .map(|value| elicitation_plain_option(value))
@@ -5633,7 +5640,13 @@ fn elicitation_question_parts(
                 MultiSelectItems::Titled(items) => items
                     .options
                     .iter()
-                    .map(|item| elicitation_titled_option(&item.value, &item.title))
+                    .map(|item| {
+                        elicitation_described_option(
+                            &item.value,
+                            &item.title,
+                            item.description.as_deref(),
+                        )
+                    })
                     .collect(),
                 _ => Vec::new(),
             };
@@ -5668,9 +5681,14 @@ fn elicitation_plain_option(value: &str) -> AiUserInputQuestionOptionPayload {
     }
 }
 
-fn elicitation_titled_option(value: &str, title: &str) -> AiUserInputQuestionOptionPayload {
-    let (label, description) = elicitation_option_label_and_description(value, title)
+fn elicitation_described_option(
+    value: &str,
+    title: &str,
+    description: Option<&str>,
+) -> AiUserInputQuestionOptionPayload {
+    let (label, fallback_description) = elicitation_option_label_and_description(value, title)
         .unwrap_or_else(|| (title.to_string(), None));
+    let description = description.map(str::to_string).or(fallback_description);
 
     AiUserInputQuestionOptionPayload {
         label,
@@ -6362,7 +6380,7 @@ fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
 fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
     runtime_definition(runtime_id)
         .map(|definition| definition.acp_protocol)
-        .unwrap_or(AcpProtocolFlavor::Current14)
+        .unwrap_or(AcpProtocolFlavor::Current)
 }
 
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
@@ -9248,14 +9266,15 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::{
-        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema,
-        CompleteElicitationNotification, ConfigOptionUpdate, ElicitationFormMode,
-        ElicitationSchema, ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta,
-        PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
-        StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
-        ToolKind, UnstructuredCommandInput,
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, AvailableCommandInput,
+        AvailableCommandsUpdate, BooleanPropertySchema, CompleteElicitationNotification,
+        ConfigOptionUpdate, Content, ElicitationFormMode, ElicitationSchema,
+        ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta, MultiSelectPropertySchema,
+        PermissionOptionKind, PlanEntry, PromptCapabilities, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigSelectOption, SessionInfoUpdate,
+        SessionNotification, SessionUpdate, StringPropertySchema, ToolCallContent, ToolCallId,
+        ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
     };
     use std::fs;
     use std::sync::mpsc;
@@ -12150,7 +12169,7 @@ mod tests {
     }
 
     #[test]
-    fn current_runtimes_keep_acp14_protocol() {
+    fn current_runtimes_keep_current_acp_protocol() {
         for runtime_id in [
             CLAUDE_RUNTIME_ID,
             CODEX_RUNTIME_ID,
@@ -12159,7 +12178,7 @@ mod tests {
         ] {
             assert_eq!(
                 acp_protocol_flavor(runtime_id),
-                AcpProtocolFlavor::Current14
+                AcpProtocolFlavor::Current
             );
         }
     }
@@ -12375,7 +12394,7 @@ mod tests {
                             .title("Scope")
                             .description("Choose a scope")
                             .one_of(vec![
-                                EnumOption::new("safe", "Safe"),
+                                EnumOption::new("safe", "Safe").description("Keep changes narrow"),
                                 EnumOption::new("wide", "Wide"),
                             ]),
                         true,
@@ -12428,7 +12447,12 @@ mod tests {
                 .and_then(Value::as_str),
             Some("safe")
         );
-        assert_eq!(payload.pointer("/questions/1/options/0/description"), None);
+        assert_eq!(
+            payload
+                .pointer("/questions/1/options/0/description")
+                .and_then(Value::as_str),
+            Some("Keep changes narrow")
+        );
         assert_eq!(
             payload
                 .pointer("/questions/0/options/0/label")
@@ -12452,13 +12476,106 @@ mod tests {
 
     #[test]
     fn elicitation_titled_options_split_claude_description_fallback() {
-        let option =
-            elicitation_titled_option("Grid layout", "Grid layout \u{2014} Cards in columns");
+        let option = elicitation_described_option(
+            "Grid layout",
+            "Grid layout \u{2014} Cards in columns",
+            None,
+        );
 
         assert_eq!(option.label, "Grid layout");
         assert_eq!(option.value, "Grid layout");
         assert_eq!(option.description.as_deref(), Some("Cards in columns"));
         assert_eq!(option.preview, None);
+    }
+
+    #[test]
+    fn acp_form_elicitation_preserves_structured_option_descriptions() {
+        let schema = ElicitationSchema::new()
+            .property(
+                "scope",
+                StringPropertySchema::new()
+                    .title("Scope")
+                    .description("Choose a scope")
+                    .one_of(vec![
+                        EnumOption::new("safe", "Safe").description("Keep changes narrow"),
+                        EnumOption::new("wide", "Wide").description("Allow broader edits"),
+                    ]),
+                true,
+            )
+            .property(
+                "targets",
+                MultiSelectPropertySchema::titled(vec![
+                    EnumOption::new("tests", "Tests").description("Update coverage"),
+                    EnumOption::new("docs", "Docs").description("Update docs"),
+                ])
+                .title("Targets")
+                .description("Choose targets"),
+                false,
+            );
+
+        let (questions, _) = map_elicitation_form_questions(&schema);
+        let scope = questions
+            .iter()
+            .find(|question| question.id == "scope")
+            .expect("scope question");
+        let targets = questions
+            .iter()
+            .find(|question| question.id == "targets")
+            .expect("targets question");
+
+        let scope_options = scope.options.as_ref().expect("scope options");
+        assert_eq!(
+            scope_options[0].description.as_deref(),
+            Some("Keep changes narrow")
+        );
+        assert_eq!(
+            scope_options[1].description.as_deref(),
+            Some("Allow broader edits")
+        );
+
+        let target_options = targets.options.as_ref().expect("target options");
+        assert_eq!(
+            target_options[0].description.as_deref(),
+            Some("Update coverage")
+        );
+        assert_eq!(
+            target_options[1].description.as_deref(),
+            Some("Update docs")
+        );
+    }
+
+    #[test]
+    fn acp_form_elicitation_keeps_title_description_fallback_without_structured_description() {
+        let schema = ElicitationSchema::new().property(
+            "layout",
+            StringPropertySchema::new()
+                .title("Layout")
+                .one_of(vec![EnumOption::new(
+                    "Grid layout",
+                    "Grid layout \u{2014} Cards in columns",
+                )]),
+            true,
+        );
+
+        let (questions, _) = map_elicitation_form_questions(&schema);
+        let options = questions[0].options.as_ref().expect("layout options");
+
+        assert_eq!(options[0].label, "Grid layout");
+        assert_eq!(options[0].value, "Grid layout");
+        assert_eq!(options[0].description.as_deref(), Some("Cards in columns"));
+    }
+
+    #[test]
+    fn acp_form_elicitation_prefers_structured_description_over_title_fallback() {
+        let option = elicitation_described_option(
+            "Grid layout",
+            "Grid layout \u{2014} Cards in columns",
+            Some("Structured description"),
+        );
+
+        assert_eq!(option.label, "Grid layout");
+        assert_eq!(option.value, "Grid layout");
+        assert_eq!(option.description.as_deref(), Some("Structured description"));
     }
 
     #[test]
@@ -14316,11 +14433,9 @@ mod tests {
         )
         .kind(ToolKind::Other)
         .status(ToolCallStatus::Completed)
-        .content(vec![ToolCallContent::Content(
-            agent_client_protocol::schema::Content::new(
-                "/Users/test/.codex/generated_images/session/ig-legacy.png",
-            ),
-        )])
+        .content(vec![ToolCallContent::Content(Content::new(
+            "/Users/test/.codex/generated_images/session/ig-legacy.png",
+        ))])
         .meta(Meta::from_iter([
             (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
             (ACP_STATUS_KIND_KEY.to_string(), json!("item_activity")),
@@ -16203,11 +16318,10 @@ mod tests {
 
     #[test]
     fn acp_initialize_response_auth_method_validation_matches_acp_ids() {
-        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
-            agent_client_protocol::schema::AuthMethod::Agent(
-                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
-            ),
-        ]);
+        let response =
+            InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![AuthMethod::Agent(
+                AuthMethodAgent::new("cached_token", "Cached token"),
+            )]);
 
         assert!(acp_initialize_response_has_auth_method(
             &response,
@@ -16222,11 +16336,8 @@ mod tests {
     #[test]
     fn acp_prompt_capabilities_copy_image_support_from_initialize_response() {
         let response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
-            agent_client_protocol::schema::AgentCapabilities::new().prompt_capabilities(
-                agent_client_protocol::schema::PromptCapabilities::new()
-                    .image(true)
-                    .embedded_context(true),
-            ),
+            AgentCapabilities::new()
+                .prompt_capabilities(PromptCapabilities::new().image(true).embedded_context(true)),
         );
 
         let capabilities = prompt_capabilities_from_initialize_response(&response);
@@ -16252,11 +16363,10 @@ mod tests {
         };
         let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
             .expect("Grok ACP process spec should resolve");
-        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
-            agent_client_protocol::schema::AuthMethod::Agent(
-                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
-            ),
-        ]);
+        let response =
+            InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![AuthMethod::Agent(
+                AuthMethodAgent::new("cached_token", "Cached token"),
+            )]);
 
         let error = validate_acp_auth_handshake_request(&spec, &response)
             .expect_err("Missing xai.api_key should be rejected");

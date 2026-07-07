@@ -132,7 +132,9 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
         }
         async unstable_createElicitation(params) {
             this.elicitations.push(params);
-            if (params.mode !== "form") {
+            // The `in` check also excludes the custom/future-mode variant, whose
+            // `mode: string` would otherwise survive the literal comparison.
+            if (params.mode !== "form" || !("requestedSchema" in params)) {
                 return { action: "decline" };
             }
             // Accept the first option of every choice field (skip the free-text one).
@@ -319,7 +321,9 @@ describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)("ACP subprocess integration"
         // ...built by our converter (indexed field key + free-text "Other" field),
         // which confirms our interception path produced it rather than some other
         // mechanism.
-        const properties = elicitation.mode === "form" ? Object.keys(elicitation.requestedSchema.properties ?? {}) : [];
+        const properties = elicitation.mode === "form" && "requestedSchema" in elicitation
+            ? Object.keys(elicitation.requestedSchema.properties ?? {})
+            : [];
         expect(properties).toContain("question_0");
         expect(properties).toContain("question_0_custom");
         // AskUserQuestion must NOT fall back to a generic permission prompt: no

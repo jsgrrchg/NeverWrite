@@ -4,7 +4,7 @@ const SESSION_ID = "session-1";
 /**
  * Build a question matching the SDK's (strict) AskUserQuestion schema while
  * keeping test sites terse. Option descriptions default to "" (the tool always
- * provides one); pass a description to exercise the "label — description" title.
+ * provides one); pass a description to exercise the enum option's description.
  */
 function mkQuestion(question, options, opts = {}) {
     return {
@@ -89,6 +89,11 @@ describe("createElicitationResponseToElicitResult", () => {
         expect(createElicitationResponseToElicitResult({ action: "decline" })).toEqual({ action: "decline" });
         expect(createElicitationResponseToElicitResult({ action: "cancel" })).toEqual({ action: "cancel" });
     });
+    it("maps a custom/future action to cancel", () => {
+        expect(createElicitationResponseToElicitResult({
+            action: "_zed/snooze",
+        })).toEqual({ action: "cancel" });
+    });
 });
 describe("extractAskUserQuestions", () => {
     const question = mkQuestion("Which?", [{ label: "A" }, { label: "B" }]);
@@ -140,21 +145,17 @@ describe("askUserQuestionsToCreateRequest", () => {
             title: "Library",
             description: undefined,
             oneOf: [
-                {
-                    const: "date-fns",
-                    title: "date-fns — Lightweight",
-                    // Structured description forwarded under `_meta` so clients can render
-                    // it as secondary text instead of parsing it out of the title.
-                    _meta: { "_claude/askUserQuestionOption": { description: "Lightweight" } },
-                },
-                // No description → no `_meta` emitted.
+                // The description travels in the enum option's first-class field; the
+                // title stays the clean label (no "label — description" flattening).
+                { const: "date-fns", title: "date-fns", description: "Lightweight" },
+                // No description → the field is omitted entirely.
                 { const: "luxon", title: "luxon" },
             ],
         });
         // The full question text is not used as a property key.
         expect(schema.properties?.["Which library?"]).toBeUndefined();
     });
-    it("forwards option description and preview under _meta for rich clients", () => {
+    it("carries descriptions structurally and forwards previews under _meta", () => {
         const questions = [
             mkQuestion("Which layout?", [
                 {
@@ -168,24 +169,22 @@ describe("askUserQuestionsToCreateRequest", () => {
         ];
         const schema = askUserQuestionsToCreateRequest(questions, SESSION_ID, undefined).requestedSchema;
         const oneOf = (schema.properties?.["question_0"]).oneOf;
-        // Both description and preview travel structurally; the title still flattens
-        // the description for clients that only read const/title.
+        // The description uses the enum option's own field; only the preview —
+        // which still has no structural slot — rides under `_meta`.
         expect(oneOf[0]).toEqual({
             const: "Grid",
-            title: "Grid — Cards in a responsive grid",
+            title: "Grid",
+            description: "Cards in a responsive grid",
             _meta: {
                 "_claude/askUserQuestionOption": {
-                    description: "Cards in a responsive grid",
                     preview: "```\n[ ] [ ] [ ]\n[ ] [ ] [ ]\n```",
                 },
             },
         });
-        // Description only → preview omitted from _meta.
-        expect(oneOf[1]._meta).toEqual({
-            "_claude/askUserQuestionOption": { description: "Stacked rows" },
-        });
-        // Neither → no _meta at all.
-        expect(oneOf[2]._meta).toBeUndefined();
+        // Description only → no _meta needed.
+        expect(oneOf[1]).toEqual({ const: "List", title: "List", description: "Stacked rows" });
+        // Neither → just the label.
+        expect(oneOf[2]).toEqual({ const: "Plain", title: "Plain" });
     });
     it("includes a per-question optional free-text custom-answer field", () => {
         const questions = [
@@ -299,6 +298,12 @@ describe("applyAskElicitationResponse", () => {
             action: "cancel",
         });
     });
+    it("returns cancel for a custom/future action it does not understand", () => {
+        const response = { action: "_zed/snooze" };
+        expect(applyAskElicitationResponse(response, toolInput, questions)).toEqual({
+            action: "cancel",
+        });
+    });
     it("omits answers for questions the user left unanswered", () => {
         const response = {
             action: "accept",
@@ -354,6 +359,9 @@ describe("refusalFallbackToCreateRequest", () => {
         expect(choice.type).toBe("string");
         expect(choice.oneOf.map((o) => o.const)).toEqual(["retry_fallback", "cancelled"]);
         expect(choice.oneOf[0].title).toContain("claude-opus-4-8");
+        // Each option explains its consequence in the description field.
+        expect(choice.oneOf[0].description).toContain("claude-opus-4-8");
+        expect(choice.oneOf[1].description).toBeTruthy();
     });
     it("omits the category marker and appends guidance when provided", () => {
         const request = refusalFallbackToCreateRequest({ ...prompt, apiRefusalCategory: null, guidanceText: "Consider rephrasing." }, SESSION_ID);

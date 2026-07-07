@@ -29,6 +29,39 @@ export function mcpElicitationToCreateRequest(request, sessionId) {
         requestedSchema: normalizeElicitationSchema(request.requestedSchema),
     };
 }
+/** A wire value allowed in elicitation form content. */
+function isElicitationContentValue(value) {
+    return (typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean" ||
+        (Array.isArray(value) && value.every((item) => typeof item === "string")));
+}
+/**
+ * Content of an accepted elicitation response.
+ *
+ * The response union includes a custom/future-action variant whose `action` is
+ * plain `string`, so a positive `=== "accept"` check can never narrow it away
+ * and `content` reads as `unknown`. Rather than asserting which union member
+ * this is, validate the values: the SDK's own wire validation has the same
+ * blind spot (an accept response with malformed content parses via the
+ * catch-all variant), so ill-typed values are dropped here either way.
+ */
+function acceptedElicitationContent(response) {
+    if (response.action !== "accept") {
+        return {};
+    }
+    const { content } = response;
+    if (!content || typeof content !== "object") {
+        return {};
+    }
+    const validated = {};
+    for (const [key, value] of Object.entries(content)) {
+        if (isElicitationContentValue(value)) {
+            validated[key] = value;
+        }
+    }
+    return validated;
+}
 /**
  * Map an ACP elicitation response back to the MCP `ElicitResult` the SDK expects
  * to hand back to the requesting server.
@@ -36,7 +69,7 @@ export function mcpElicitationToCreateRequest(request, sessionId) {
 export function createElicitationResponseToElicitResult(response) {
     switch (response.action) {
         case "accept":
-            return { action: "accept", content: response.content ?? {} };
+            return { action: "accept", content: acceptedElicitationContent(response) };
         case "decline":
             return { action: "decline" };
         case "cancel":
@@ -71,26 +104,12 @@ function questionCustomFieldKey(index) {
     return `question_${index}_custom`;
 }
 /**
- * `_meta` key under which a bridged enum option carries its structured
- * `description`/`preview`, since ACP's `EnumOption` has no field for either.
- * Namespaced like the agent's other `_meta` extensions (`_claude/...`).
+ * `_meta` key under which a bridged enum option carries its `preview`, the one
+ * option field ACP's `EnumOption` still has no slot for (descriptions are
+ * first-class as of schema 1.19). Namespaced like the agent's other `_meta`
+ * extensions (`_claude/...`).
  */
 const OPTION_META_KEY = "_claude/askUserQuestionOption";
-/**
- * Build the `_meta` payload that carries an option's structured `description`
- * and optional `preview` for clients that can render them as distinct fields.
- * Returns `undefined` when neither is present, so we don't emit an empty `_meta`.
- */
-function askUserQuestionOptionMeta(option) {
-    const detail = {};
-    if (option.description) {
-        detail.description = option.description;
-    }
-    if (option.preview) {
-        detail.preview = option.preview;
-    }
-    return Object.keys(detail).length > 0 ? { [OPTION_META_KEY]: detail } : undefined;
-}
 /**
  * Render the AskUserQuestion tool's questions as an ACP form elicitation.
  *
@@ -98,7 +117,8 @@ function askUserQuestionOptionMeta(option) {
  * question text, so the question text appears in exactly one place per field.
  * Single-select questions use a titled `oneOf` enum; multi-select questions use
  * an array with a titled `anyOf` item enum. The enum `const` is always the
- * option label, since that is what the tool records as the answer.
+ * option label, since that is what the tool records as the answer; an option's
+ * secondary text travels in the enum option's own `description` field.
  *
  * Each question is followed by its own optional free-text "custom answer" field
  * (`question_<n>_custom`), mirroring the CLI's per-question "Other" box: the
@@ -113,19 +133,16 @@ export function askUserQuestionsToCreateRequest(questions, sessionId, toolCallId
         const options = question.options.map((option) => {
             const enumOption = {
                 const: option.label,
-                // `title` stays a flattened "label — description" string so clients that
-                // only read `const`/`title` still surface the description. Clients that
-                // understand the `_meta` below should prefer its structured fields (and
-                // treat `const` as the clean label) rather than parsing this title.
-                title: option.description ? `${option.label} — ${option.description}` : option.label,
+                title: option.label,
             };
-            // The SDK option carries a `description` (secondary text) and an optional
-            // `preview` (mockups, code snippets, comparisons shown on focus). Neither
-            // has a structural slot in `EnumOption`, so forward them under ACP's
-            // reserved `_meta` extension point for clients that can render them.
-            const meta = askUserQuestionOptionMeta(option);
-            if (meta) {
-                enumOption._meta = meta;
+            if (option.description) {
+                enumOption.description = option.description;
+            }
+            // The SDK option's `preview` (mockups, code snippets, comparisons shown
+            // on focus) still has no structural slot in `EnumOption`, so forward it
+            // under ACP's reserved `_meta` extension point for clients that render it.
+            if (option.preview) {
+                enumOption._meta = { [OPTION_META_KEY]: { preview: option.preview } };
             }
             return enumOption;
         });
@@ -165,16 +182,17 @@ export function askUserQuestionsToCreateRequest(questions, sessionId, toolCallId
  * custom-answer field (`question_<n>_custom`) takes precedence over that
  * question's selection, since the user typed their own answer instead of
  * picking one. Decline yields empty answers (the model is told the user skipped
- * rather than the turn aborting); cancel aborts the tool call.
+ * rather than the turn aborting); cancel — and any custom/future action we
+ * don't understand — aborts the tool call.
  */
 export function applyAskElicitationResponse(response, toolInput, questions) {
-    if (response.action === "cancel") {
-        return { action: "cancel" };
-    }
     if (response.action === "decline") {
         return { action: "answered", updatedInput: { ...toolInput, answers: {} } };
     }
-    const content = response.content ?? {};
+    if (response.action !== "accept") {
+        return { action: "cancel" };
+    }
+    const content = acceptedElicitationContent(response);
     // Typed against the tool's own output schema so the answer/response shapes
     // stay in sync with what the built-in tool's call() expects to read back.
     const answers = {};
@@ -257,7 +275,7 @@ export function refusalFallbackToCreateRequest(prompt, sessionId) {
         mode: "form",
         sessionId,
         message: `${prompt.originalModel} declined this request${category}. ` +
-            `Retry with ${prompt.fallbackModel}? The session would continue on ${prompt.fallbackModel}.` +
+            `Retry with ${prompt.fallbackModel}?` +
             guidance,
         requestedSchema: {
             type: "object",
@@ -265,8 +283,16 @@ export function refusalFallbackToCreateRequest(prompt, sessionId) {
                 [REFUSAL_FALLBACK_CHOICE_KEY]: {
                     type: "string",
                     oneOf: [
-                        { const: RETRY_FALLBACK_RESULT, title: `Retry with ${prompt.fallbackModel}` },
-                        { const: KEEP_REFUSAL_RESULT, title: "Keep the refusal" },
+                        {
+                            const: RETRY_FALLBACK_RESULT,
+                            title: `Retry with ${prompt.fallbackModel}`,
+                            description: `The session continues on ${prompt.fallbackModel}.`,
+                        },
+                        {
+                            const: KEEP_REFUSAL_RESULT,
+                            title: "Keep the refusal",
+                            description: "You can send a new message.",
+                        },
                     ],
                 },
             },
@@ -281,9 +307,6 @@ export function refusalFallbackToCreateRequest(prompt, sessionId) {
  * switch the user didn't ask for.
  */
 export function refusalFallbackResultFromResponse(response) {
-    if (response.action !== "accept") {
-        return KEEP_REFUSAL_RESULT;
-    }
-    const choice = response.content?.[REFUSAL_FALLBACK_CHOICE_KEY];
+    const choice = acceptedElicitationContent(response)[REFUSAL_FALLBACK_CHOICE_KEY];
     return choice === RETRY_FALLBACK_RESULT ? RETRY_FALLBACK_RESULT : KEEP_REFUSAL_RESULT;
 }
