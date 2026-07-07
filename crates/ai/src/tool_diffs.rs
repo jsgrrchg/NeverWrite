@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     Diff, Meta, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use serde::Deserialize;
@@ -1104,7 +1104,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use agent_client_protocol::schema::{
+    use agent_client_protocol::schema::v1::{
         Content, Diff, Meta, ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate,
         ToolCallUpdateFields,
     };

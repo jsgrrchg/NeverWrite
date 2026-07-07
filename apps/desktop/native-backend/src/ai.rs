@@ -9,23 +9,24 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     AuthenticateRequest, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
     CancelNotification, ClientCapabilities, CompleteElicitationNotification, ContentBlock,
     ContentChunk, CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
     ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
-    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
-    ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource, FileSystemCapabilities,
-    ImageContent, Implementation, InitializeRequest, InitializeResponse, LogoutRequest, Meta,
-    MultiSelectItems, NewSessionRequest, PermissionOption, PermissionOptionKind, Plan,
-    PlanEntryPriority, PlanEntryStatus, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionConfigSelectOptions, SessionId, SessionInfoUpdate,
-    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionModeRequest, TextResourceContents, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolKind,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, ElicitationSchema,
+    ElicitationScope, ElicitationUrlCapabilities, EmbeddedResource, EmbeddedResourceResource,
+    FileSystemCapabilities, ImageContent, Implementation, InitializeRequest, InitializeResponse,
+    LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
+    PermissionOptionKind, Plan, PlanEntryPriority, PlanEntryStatus, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigSelectOption, SessionConfigSelectOptions, SessionId,
+    SessionInfoUpdate, SessionModeState, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, TextResourceContents, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use neverwrite_ai::{
@@ -145,7 +146,7 @@ struct RuntimeDefinition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AcpProtocolFlavor {
-    Current14,
+    Current,
     Legacy12,
 }
 
@@ -161,7 +162,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "codex",
         bin_env_var: "NEVERWRITE_CODEX_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: true,
     },
     RuntimeDefinition {
@@ -171,7 +172,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "claude",
         bin_env_var: "NEVERWRITE_CLAUDE_ACP_BIN",
         acp_args: NO_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -191,7 +192,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "kilo",
         bin_env_var: "NEVERWRITE_KILO_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
     RuntimeDefinition {
@@ -201,7 +202,7 @@ const RUNTIME_DEFINITIONS: &[RuntimeDefinition] = &[
         default_executable: "opencode",
         bin_env_var: "NEVERWRITE_OPENCODE_ACP_BIN",
         acp_args: SHELL_ACP_ARGS,
-        acp_protocol: AcpProtocolFlavor::Current14,
+        acp_protocol: AcpProtocolFlavor::Current,
         supports_native_resume: false,
     },
 ];
@@ -3688,7 +3689,7 @@ fn start_acp_session(
         };
         runtime.block_on(async move {
             match flavor {
-                AcpProtocolFlavor::Current14 => {
+                AcpProtocolFlavor::Current => {
                     run_acp_actor(spec, start_mode, context, command_rx, created_tx).await;
                 }
                 AcpProtocolFlavor::Legacy12 => {
@@ -3737,7 +3738,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current14 => {
+            AcpProtocolFlavor::Current => {
                 runtime.block_on(run_acp_auth_inner(spec, auth_command))
             }
             AcpProtocolFlavor::Legacy12 => {
@@ -5443,7 +5444,7 @@ fn map_plan_update(session_id: &str, plan: Plan, meta: Option<&Meta>) -> AiPlanU
 }
 
 fn map_elicitation_form_questions(
-    schema: &agent_client_protocol::schema::ElicitationSchema,
+    schema: &ElicitationSchema,
 ) -> (
     Vec<AiUserInputQuestionPayload>,
     HashMap<String, ElicitationFieldSpec>,
@@ -5470,7 +5471,7 @@ fn map_elicitation_form_questions(
                 .unwrap_or_default();
             (
                 AiUserInputQuestionPayload {
-                    id: id.clone(),
+                    id: id.to_string(),
                     custom_answer_id: None,
                     header,
                     question,
@@ -5625,7 +5626,7 @@ fn elicitation_question_parts(
         ),
         ElicitationPropertySchema::Array(schema) => {
             let options = match &schema.items {
-                MultiSelectItems::Untitled(items) => items
+                MultiSelectItems::String(items) => items
                     .values
                     .iter()
                     .map(|value| elicitation_plain_option(value))
@@ -6362,7 +6363,7 @@ fn runtime_definition(runtime_id: &str) -> Option<&'static RuntimeDefinition> {
 fn acp_protocol_flavor(runtime_id: &str) -> AcpProtocolFlavor {
     runtime_definition(runtime_id)
         .map(|definition| definition.acp_protocol)
-        .unwrap_or(AcpProtocolFlavor::Current14)
+        .unwrap_or(AcpProtocolFlavor::Current)
 }
 
 fn runtime_descriptors() -> Vec<AiRuntimeDescriptor> {
@@ -9248,11 +9249,12 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::{
-        AvailableCommandInput, AvailableCommandsUpdate, BooleanPropertySchema,
-        CompleteElicitationNotification, ConfigOptionUpdate, ElicitationFormMode,
-        ElicitationSchema, ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta,
-        PermissionOptionKind, PlanEntry, SessionConfigOption, SessionConfigOptionCategory,
+    use agent_client_protocol::schema::v1::{
+        AgentCapabilities, AuthMethod, AuthMethodAgent, AvailableCommandInput,
+        AvailableCommandsUpdate, BooleanPropertySchema, CompleteElicitationNotification,
+        ConfigOptionUpdate, Content, ElicitationFormMode, ElicitationSchema,
+        ElicitationSessionScope, ElicitationUrlMode, EnumOption, Meta, PermissionOptionKind,
+        PlanEntry, PromptCapabilities, SessionConfigOption, SessionConfigOptionCategory,
         SessionConfigSelectOption, SessionInfoUpdate, SessionNotification, SessionUpdate,
         StringPropertySchema, ToolCallContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
         ToolKind, UnstructuredCommandInput,
@@ -12150,7 +12152,7 @@ mod tests {
     }
 
     #[test]
-    fn current_runtimes_keep_acp14_protocol() {
+    fn current_runtimes_keep_current_acp_protocol() {
         for runtime_id in [
             CLAUDE_RUNTIME_ID,
             CODEX_RUNTIME_ID,
@@ -12159,7 +12161,7 @@ mod tests {
         ] {
             assert_eq!(
                 acp_protocol_flavor(runtime_id),
-                AcpProtocolFlavor::Current14
+                AcpProtocolFlavor::Current
             );
         }
     }
@@ -14316,11 +14318,9 @@ mod tests {
         )
         .kind(ToolKind::Other)
         .status(ToolCallStatus::Completed)
-        .content(vec![ToolCallContent::Content(
-            agent_client_protocol::schema::Content::new(
-                "/Users/test/.codex/generated_images/session/ig-legacy.png",
-            ),
-        )])
+        .content(vec![ToolCallContent::Content(Content::new(
+            "/Users/test/.codex/generated_images/session/ig-legacy.png",
+        ))])
         .meta(Meta::from_iter([
             (ACP_STATUS_EVENT_TYPE_KEY.to_string(), json!("status")),
             (ACP_STATUS_KIND_KEY.to_string(), json!("item_activity")),
@@ -16203,11 +16203,10 @@ mod tests {
 
     #[test]
     fn acp_initialize_response_auth_method_validation_matches_acp_ids() {
-        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
-            agent_client_protocol::schema::AuthMethod::Agent(
-                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
-            ),
-        ]);
+        let response =
+            InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![AuthMethod::Agent(
+                AuthMethodAgent::new("cached_token", "Cached token"),
+            )]);
 
         assert!(acp_initialize_response_has_auth_method(
             &response,
@@ -16222,11 +16221,8 @@ mod tests {
     #[test]
     fn acp_prompt_capabilities_copy_image_support_from_initialize_response() {
         let response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
-            agent_client_protocol::schema::AgentCapabilities::new().prompt_capabilities(
-                agent_client_protocol::schema::PromptCapabilities::new()
-                    .image(true)
-                    .embedded_context(true),
-            ),
+            AgentCapabilities::new()
+                .prompt_capabilities(PromptCapabilities::new().image(true).embedded_context(true)),
         );
 
         let capabilities = prompt_capabilities_from_initialize_response(&response);
@@ -16252,11 +16248,10 @@ mod tests {
         };
         let spec = acp_process_spec(GROK_RUNTIME_ID, &setup, std::env::current_dir().unwrap())
             .expect("Grok ACP process spec should resolve");
-        let response = InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![
-            agent_client_protocol::schema::AuthMethod::Agent(
-                agent_client_protocol::schema::AuthMethodAgent::new("cached_token", "Cached token"),
-            ),
-        ]);
+        let response =
+            InitializeResponse::new(ProtocolVersion::LATEST).auth_methods(vec![AuthMethod::Agent(
+                AuthMethodAgent::new("cached_token", "Cached token"),
+            )]);
 
         let error = validate_acp_auth_handshake_request(&spec, &response)
             .expect_err("Missing xai.api_key should be rejected");
