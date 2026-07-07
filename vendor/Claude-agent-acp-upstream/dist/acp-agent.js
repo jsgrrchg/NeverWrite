@@ -3837,6 +3837,9 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
     const registerHooks = options?.registerHooks !== false;
     const supportsTerminalOutput = options?.clientCapabilities?._meta?.["terminal_output"] === true;
     if (typeof content === "string") {
+        if (content.length === 0) {
+            return [];
+        }
         const update = {
             sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
             content: {
@@ -3863,13 +3866,15 @@ export function toAcpNotifications(content, role, sessionId, toolUseCache, clien
         switch (chunk.type) {
             case "text":
             case "text_delta":
-                update = {
-                    sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
-                    content: {
-                        type: "text",
-                        text: chunk.text,
-                    },
-                };
+                if (chunk.text.length > 0) {
+                    update = {
+                        sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
+                        content: {
+                            type: "text",
+                            text: chunk.text,
+                        },
+                    };
+                }
                 break;
             case "image":
                 update = {

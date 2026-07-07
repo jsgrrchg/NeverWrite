@@ -51,7 +51,8 @@ export declare function extractAskUserQuestions(input: Record<string, unknown>):
  * question text, so the question text appears in exactly one place per field.
  * Single-select questions use a titled `oneOf` enum; multi-select questions use
  * an array with a titled `anyOf` item enum. The enum `const` is always the
- * option label, since that is what the tool records as the answer.
+ * option label, since that is what the tool records as the answer; an option's
+ * secondary text travels in the enum option's own `description` field.
  *
  * Each question is followed by its own optional free-text "custom answer" field
  * (`question_<n>_custom`), mirroring the CLI's per-question "Other" box: the
@@ -76,7 +77,8 @@ export type AskUserQuestionOutcome = {
  * custom-answer field (`question_<n>_custom`) takes precedence over that
  * question's selection, since the user typed their own answer instead of
  * picking one. Decline yields empty answers (the model is told the user skipped
- * rather than the turn aborting); cancel aborts the tool call.
+ * rather than the turn aborting); cancel — and any custom/future action we
+ * don't understand — aborts the tool call.
  */
 export declare function applyAskElicitationResponse(response: CreateElicitationResponse, toolInput: Record<string, unknown>, questions: AskUserQuestion[]): AskUserQuestionOutcome;
 /**
