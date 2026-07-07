@@ -8869,6 +8869,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
             if (shouldIgnoreLateActivityForSession(get(), session_id)) {
                 return;
             }
+            if (delta.length === 0) {
+                return;
+            }
             const messageRole = normalizeRuntimeTextMessageRole(role);
             scheduleStaleStreamingCheck(session_id);
             set((state) => {

@@ -4351,6 +4351,46 @@ describe("chatStore", () => {
         ]);
     });
 
+    it("ignores empty assistant deltas without creating transcript messages", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const before = useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-empty",
+            delta: "",
+            role: "assistant",
+        });
+        flushDeltasSync();
+
+        const state = useChatStore.getState();
+        const after = state.sessionsById[activeSessionId]!;
+        expect(after.messages).toEqual(before.messages);
+        expect(after.messageOrder).toEqual(before.messageOrder);
+    });
+
+    it("ignores empty user-role deltas without creating runtime user echoes", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+        const before = useChatStore.getState().sessionsById[activeSessionId]!;
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "runtime-user-empty",
+            delta: "",
+            role: "user",
+        });
+        flushDeltasSync();
+
+        const state = useChatStore.getState();
+        const after = state.sessionsById[activeSessionId]!;
+        expect(after.messages).toEqual(before.messages);
+        expect(after.messageOrder).toEqual(before.messageOrder);
+    });
+
     it("creates runtime user text messages from user-role deltas", async () => {
         await useChatStore.getState().initialize();
 
@@ -4922,6 +4962,12 @@ describe("chatStore", () => {
             role: "assistant",
             turn_complete: false,
         });
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-empty-before-tool",
+            delta: "",
+            role: "assistant",
+        });
         useChatStore.getState().applyToolActivity({
             session_id: activeSessionId,
             tool_call_id: "tool-1",
@@ -4934,6 +4980,12 @@ describe("chatStore", () => {
             session_id: activeSessionId,
             message_id: "assistant-after-tool",
             delta: "After tool",
+            role: "assistant",
+        });
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-empty-after-tool",
+            delta: "",
             role: "assistant",
         });
         flushDeltasSync();
@@ -7775,6 +7827,54 @@ describe("chatStore", () => {
         const session = useChatStore.getState().sessionsById[activeSessionId]!;
         expect(session.status).toBe("idle");
         expect(session.visibleWorkCycleId).toBe(workCycleId);
+        expect(getVisibleBuffer(activeSessionId)).toMatchObject([
+            {
+                identityKey: "/vault/src/watcher.rs",
+                path: "/vault/src/watcher.rs",
+                diffBase: "old line",
+                currentText: "new line",
+            },
+        ]);
+    });
+
+    it("keeps the edited files buffer when an empty delta arrives before completion", async () => {
+        await useChatStore.getState().initialize();
+
+        const activeSessionId = getActiveSessionId();
+
+        useChatStore.getState().applyToolActivity({
+            session_id: activeSessionId,
+            tool_call_id: "tool-buffer-empty-delta",
+            title: "Edit watcher",
+            kind: "edit",
+            status: "completed",
+            target: "/vault/src/watcher.rs",
+            summary: "Updated watcher.rs",
+            diffs: [
+                {
+                    path: "/vault/src/watcher.rs",
+                    kind: "update",
+                    old_text: "old line",
+                    new_text: "new line",
+                },
+            ],
+        });
+
+        useChatStore.getState().applyMessageDelta({
+            session_id: activeSessionId,
+            message_id: "assistant-empty-before-complete",
+            delta: "",
+            role: "assistant",
+        });
+        useChatStore.getState().applyMessageCompleted({
+            session_id: activeSessionId,
+            message_id: "assistant-empty-before-complete",
+        });
+
+        const session = useChatStore.getState().sessionsById[activeSessionId]!;
+        expect(session.messages.some((message) => message.content === "")).toBe(
+            false,
+        );
         expect(getVisibleBuffer(activeSessionId)).toMatchObject([
             {
                 identityKey: "/vault/src/watcher.rs",
