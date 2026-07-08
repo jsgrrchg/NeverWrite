@@ -48,6 +48,7 @@ import {
     type VaultNoteChange,
 } from "../../../app/store/vaultStore";
 import { vaultInvoke } from "../../../app/utils/vaultInvoke";
+import { readSearchParam } from "../../../app/utils/safeBrowser";
 import {
     canonicalizeVaultScopedPath,
     isAbsoluteVaultPath,
@@ -395,6 +396,14 @@ function saveAutoContextPreference(
 
 function getAiStorageScopeKey(vaultPath: string | null) {
     return `${AI_STORAGE_SCOPE_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
+}
+
+function getEffectiveAiVaultPath() {
+    return useVaultStore.getState().vaultPath ?? readSearchParam("vault");
+}
+
+function getAiPreferenceVaultPath() {
+    return getEffectiveAiVaultPath();
 }
 
 function getLegacyVaultHistoryDismissedKey(vaultPath: string | null) {
@@ -1014,7 +1023,7 @@ async function ensureSessionAgentCatalogLoaded(
 
     if (!sessionHasAgentCatalog(session)) {
         const persisted = getPersistedHistoryFromCache(
-            session.vaultPath ?? useVaultStore.getState().vaultPath,
+            getSessionVaultPath(session),
             useChatStore.getState().aiStorageScope,
             session.historySessionId,
         );
@@ -3095,7 +3104,7 @@ function buildQueuedMessage(
     const composerPartsSnapshot = cloneComposerParts(composerParts);
     const content = serializeComposerParts(composerParts).trim();
     const prompt = serializeComposerPartsForAI(composerPartsSnapshot, {
-        vaultPath: useVaultStore.getState().vaultPath,
+        vaultPath: getSessionVaultPath(session),
     }).trim();
 
     const selectionAttachments: AIChatAttachment[] = composerPartsSnapshot
@@ -3305,7 +3314,7 @@ async function replaceEmptySessionForAdditionalRoots(
         return sessionId;
     }
 
-    const vaultPath = session.vaultPath ?? useVaultStore.getState().vaultPath;
+    const vaultPath = getSessionVaultPath(session);
     const additionalRoots = collectExternalAdditionalRoots(
         queuedItem.attachments,
         vaultPath ?? null,
@@ -4944,7 +4953,7 @@ function consolidateActionLogDiffs(
     if (!workCycleId || diffs.length === 0) return session;
     const actionLog = session.actionLog ?? emptyActionLogState();
     const currentFiles = getTrackedFilesForSession(actionLog);
-    const vaultPath = session.vaultPath ?? useVaultStore.getState().vaultPath;
+    const vaultPath = getSessionVaultPath(session);
     const normalizedDiffs = options?.normalized
         ? diffs
         : normalizeIncomingTrackedDiffs(currentFiles, diffs, vaultPath);
@@ -5313,8 +5322,7 @@ function applyUserEditToTrackedFileInSession(
     useChatStore.setState((state) => {
         const session = state.sessionsById[sessionId];
         if (!session?.actionLog) return state;
-        const vaultPath =
-            session.vaultPath ?? useVaultStore.getState().vaultPath;
+        const vaultPath = getSessionVaultPath(session);
 
         const files = {
             ...getAccumulatedTrackedFiles(session),
@@ -5718,7 +5726,7 @@ function stampSessionVaultPath(
 }
 
 function getSessionVaultPath(session: AIChatSession | null | undefined) {
-    return session?.vaultPath ?? useVaultStore.getState().vaultPath;
+    return session?.vaultPath ?? getEffectiveAiVaultPath();
 }
 
 function sessionMatchesVaultPath(
@@ -6893,7 +6901,7 @@ function persistCurrentSession(sessionId: string) {
 }
 
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
-    const vaultPath = useVaultStore.getState().vaultPath;
+    const vaultPath = getEffectiveAiVaultPath();
     if (!vaultPath || maxAgeDays <= 0) return 0;
     return aiPruneSessionHistories(
         vaultPath,
@@ -7042,9 +7050,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (limit <= 0) return true;
 
-        const vaultPath = session.vaultPath ?? useVaultStore.getState().vaultPath;
+        const vaultPath = getSessionVaultPath(session);
         if (!vaultPath) return false;
-        const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
+        const storageScope = get().aiStorageScope;
 
         set((state) => ({
             sessionsById: updateSessionById(state, sessionId, (current) => ({
@@ -7782,6 +7790,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
                           historyRetentionDays,
                       };
             });
+
+            if (!vaultPath || hasAiStorageScopePreference(vaultPath)) {
+                return;
+            }
+
+            void resolveInitialAiStorageScopeForVault(vaultPath).then(
+                (resolvedScope) => {
+                    if (
+                        resolvedScope === aiStorageScope ||
+                        getEffectiveAiVaultPath() !== vaultPath ||
+                        hasAiStorageScopePreference(vaultPath)
+                    ) {
+                        return;
+                    }
+
+                    set((state) => {
+                        if (state.aiStorageScope === resolvedScope) {
+                            return state;
+                        }
+
+                        _persistedHistoryCacheKey = null;
+                        _persistedHistoryCacheBySessionId.clear();
+                        return { aiStorageScope: resolvedScope };
+                    });
+                },
+            );
         },
 
         setSelectedRuntime: (runtimeId) => {
@@ -7923,7 +7957,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     runtimeConnectionByRuntimeId,
                 });
 
-                const vaultPath = useVaultStore.getState().vaultPath;
+                const vaultPath = getEffectiveAiVaultPath();
                 const aiStorageScope =
                     await resolveInitialAiStorageScopeForVault(vaultPath);
                 const historyRetentionDays =
@@ -8201,7 +8235,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const sessionIdsNeedingCatalog = new Set<string>();
             const restoredSessionIds: string[] = [];
             const restoredSessionIdSet = new Set<string>();
-            const vaultPath = useVaultStore.getState().vaultPath;
+            const vaultPath = getEffectiveAiVaultPath();
             const resolvedSessionIdByTabId = new Map<string, string>();
             const rememberRestoredSessionId = (sessionId: string) => {
                 if (restoredSessionIdSet.has(sessionId)) {
@@ -8319,23 +8353,32 @@ export const useChatStore = create<ChatStore>((set, get) => {
             let activeSession: AIChatSession | null =
                 get().sessionsById[activeSessionId] ?? null;
             if (activeSession) {
-                if (
-                    !isLiveRuntimeSession(activeSession) &&
-                    !activeSession.isResumingSession
-                ) {
-                    const resumedSessionId =
-                        await get().resumeSession(activeSessionId);
-                    activeSession =
-                        (resumedSessionId
-                            ? get().sessionsById[resumedSessionId]
-                            : null) ?? null;
+                if (!activeSession.isResumingSession) {
+                    if (activeSession.runtimeState === "persisted_only") {
+                        await get().ensureSessionTranscriptLoaded(
+                            activeSessionId,
+                            "latest",
+                        );
+                        activeSession =
+                            get().sessionsById[activeSessionId] ?? null;
+                    } else if (!isLiveRuntimeSession(activeSession)) {
+                        const resumedSessionId =
+                            await get().resumeSession(activeSessionId);
+                        activeSession =
+                            (resumedSessionId
+                                ? get().sessionsById[resumedSessionId]
+                                : null) ?? null;
+                    }
                 }
 
                 if (activeSession) {
                     await ensureSessionAgentCatalogLoaded(
                         activeSession.sessionId,
                     );
-                    if (isLiveRuntimeSession(activeSession)) {
+                    if (
+                        isLiveRuntimeSession(activeSession) ||
+                        activeSession.runtimeState === "persisted_only"
+                    ) {
                         await get().ensureSessionTranscriptLoaded(
                             activeSession.sessionId,
                             "latest",
@@ -8512,7 +8555,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         methodId: input.methodId,
                         runtimeId: targetRuntimeId,
                     },
-                    useVaultStore.getState().vaultPath,
+                    getEffectiveAiVaultPath(),
                 );
                 set((state) => ({
                     selectedRuntimeId: targetRuntimeId,
@@ -8572,7 +8615,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             set((state) => {
                 const allowUnknownSession =
                     options.allowUnknownSession === true;
-                const currentVaultPath = useVaultStore.getState().vaultPath;
+                const currentVaultPath = getEffectiveAiVaultPath();
                 const existing = state.sessionsById[session.sessionId];
                 const sessionVaultPath =
                     session.vaultPath ?? existing?.vaultPath ?? currentVaultPath;
@@ -9364,7 +9407,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let messageDiffs = payload.diffs;
                 let reviewVaultPath =
                     consolidated.vaultPath ??
-                    useVaultStore.getState().vaultPath;
+                    getSessionVaultPath(consolidated);
                 let reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 if (shouldConsolidate) {
                     consolidated = ensureActionLog(consolidated);
@@ -9373,7 +9416,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     reviewVaultPath =
                         consolidated.vaultPath ??
-                        useVaultStore.getState().vaultPath;
+                        getSessionVaultPath(consolidated);
                     messageDiffs = normalizeIncomingTrackedDiffs(
                         currentFiles,
                         payload.diffs ?? [],
@@ -9444,7 +9487,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const files = getAccumulatedTrackedFiles(updatedSession);
                 const vaultPath =
                     updatedSession.vaultPath ??
-                    useVaultStore.getState().vaultPath;
+                    getSessionVaultPath(updatedSession);
                 const scheduledIdentityKeys = new Set<string>();
                 for (const diff of payload.diffs ?? []) {
                     if (!diffCanBeTracked(diff)) {
@@ -9629,7 +9672,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 let messageDiffs = payload.diffs;
                 let reviewVaultPath =
                     sessionWithBuffer.vaultPath ??
-                    useVaultStore.getState().vaultPath;
+                    getSessionVaultPath(sessionWithBuffer);
                 let reviewDiffs = freezeMessageReviewDiffs(messageDiffs);
                 if (hasDiffs) {
                     sessionWithBuffer = ensureActionLog(sessionWithBuffer);
@@ -9638,7 +9681,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     reviewVaultPath =
                         sessionWithBuffer.vaultPath ??
-                        useVaultStore.getState().vaultPath;
+                        getSessionVaultPath(sessionWithBuffer);
                     messageDiffs = normalizeIncomingTrackedDiffs(
                         currentFiles,
                         payload.diffs,
@@ -9870,8 +9913,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         continue;
                     }
 
-                    const vaultPath =
-                        session.vaultPath ?? useVaultStore.getState().vaultPath;
+                    const vaultPath = getSessionVaultPath(session);
                     const currentFiles = getAccumulatedTrackedFiles(session);
                     let nextFiles: Record<string, TrackedFile> | null = null;
 
@@ -10095,7 +10137,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return get().activeSessionId;
                 }
 
-                const vaultPath = useVaultStore.getState().vaultPath;
+                const vaultPath = getSessionVaultPath(currentSession);
+                if (!vaultPath) {
+                    throw new Error("Open a vault before reconnecting a saved AI chat.");
+                }
                 const supportsNativeResume = runtimeSupportsCapability(
                     get().runtimes,
                     currentSession.runtimeId,
@@ -10372,6 +10417,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 if (existing.isPendingSessionCreation) {
                     return;
                 }
+                if (existing.runtimeState === "persisted_only") {
+                    await get().ensureSessionTranscriptLoaded(
+                        sessionId,
+                        "latest",
+                    );
+                    return;
+                }
                 if (!isLiveRuntimeSession(existing)) {
                     await get().resumeSession(sessionId);
                     return;
@@ -10385,7 +10437,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const persistedHistorySessionId =
                 getPersistedHistorySessionId(sessionId);
             if (persistedHistorySessionId) {
-                const vaultPath = useVaultStore.getState().vaultPath;
+                const vaultPath = getEffectiveAiVaultPath();
                 const persisted = getPersistedHistoryFromCache(
                     vaultPath,
                     get().aiStorageScope,
@@ -10399,7 +10451,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     );
                     if (restored) {
                         get().upsertSession(restored, true);
-                        await get().resumeSession(restored.sessionId);
+                        await get().ensureSessionTranscriptLoaded(
+                            restored.sessionId,
+                            "latest",
+                        );
                         return;
                     }
                 }
@@ -10418,7 +10473,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             } catch (error) {
                 const fallbackHistorySessionId =
                     getWorkspaceHistorySessionIdForSession(sessionId);
-                const vaultPath = useVaultStore.getState().vaultPath;
+                const vaultPath = getEffectiveAiVaultPath();
                 const persisted = fallbackHistorySessionId
                     ? getPersistedHistoryFromCache(
                           vaultPath,
@@ -10451,7 +10506,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             restored.sessionId,
                             restored.historySessionId,
                         );
-                    await get().resumeSession(restored.sessionId);
+                    await get().ensureSessionTranscriptLoaded(
+                        restored.sessionId,
+                        "latest",
+                    );
                     return;
                 }
 
@@ -12509,10 +12567,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     return provisionalSessionId ?? null;
                 }
 
-                const session = await aiCreateSession(
-                    nextRuntimeId,
-                    useVaultStore.getState().vaultPath,
-                );
+                const vaultPath = getEffectiveAiVaultPath();
+                if (!vaultPath) {
+                    markPendingSessionError(
+                        "Open a vault before starting an AI chat.",
+                    );
+                    return provisionalSessionId ?? null;
+                }
+
+                const session = await aiCreateSession(nextRuntimeId, vaultPath);
                 const migrated =
                     provisionalSessionId &&
                     migrateSessionLocalState(
@@ -12621,7 +12684,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         deleteSession: async (sessionId) => {
             const targetSession = get().sessionsById[sessionId];
             const vaultPath =
-                targetSession?.vaultPath ?? useVaultStore.getState().vaultPath;
+                targetSession?.vaultPath ?? getEffectiveAiVaultPath();
             const shouldCreateReplacementSession =
                 !targetSession ||
                 !isClaudeTerminalRuntimeId(targetSession.runtimeId);
@@ -12740,7 +12803,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         deleteAllSessions: async () => {
-            const vaultPath = useVaultStore.getState().vaultPath;
+            const vaultPath = getEffectiveAiVaultPath();
             const snapshotSessions = Object.values(get().sessionsById);
             _pendingStopBySessionId.clear();
             await Promise.all(
@@ -13092,7 +13155,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         toggleAutoContext: () => {
             const next = !get().autoContextEnabled;
             set({ autoContextEnabled: next });
-            saveAutoContextPreference(useVaultStore.getState().vaultPath, next);
+            saveAutoContextPreference(getAiPreferenceVaultPath(), next);
         },
 
         toggleRequireCmdEnterToSend: () => {
@@ -13144,19 +13207,13 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 _persistedHistoryCacheBySessionId.clear();
                 return { aiStorageScope: next };
             });
-            saveAiStorageScopePreference(
-                useVaultStore.getState().vaultPath,
-                next,
-            );
+            saveAiStorageScopePreference(getAiPreferenceVaultPath(), next);
         },
 
         setHistoryRetentionDays: async (days) => {
             const next = normalizeHistoryRetentionDays(days);
             set({ historyRetentionDays: next });
-            saveHistoryRetentionPreference(
-                useVaultStore.getState().vaultPath,
-                next,
-            );
+            saveHistoryRetentionPreference(getAiPreferenceVaultPath(), next);
 
             if (next <= 0) return;
             try {
@@ -13186,8 +13243,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const session = state.sessionsById[sessionId];
             if (!session) return;
 
-            const vaultPath =
-                session.vaultPath ?? useVaultStore.getState().vaultPath;
+            const vaultPath = getSessionVaultPath(session);
             if (!vaultPath) return;
             const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
 
@@ -13262,7 +13318,7 @@ let autoContextSyncTimer: number | null = null;
 
 export function hydrateChatStorePreferences() {
     const prefs = getNormalizedAiPreferences();
-    const vaultPath = useVaultStore.getState().vaultPath;
+    const vaultPath = getAiPreferenceVaultPath();
     useChatStore.setState({
         autoContextEnabled: loadAutoContextPreference(vaultPath),
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,
@@ -13292,7 +13348,7 @@ export function initializeChatStoreRuntime() {
             aiPrefsSyncTimer = window.setTimeout(() => {
                 aiPrefsSyncTimer = null;
                 const prefs = getNormalizedAiPreferences();
-                const vaultPath = useVaultStore.getState().vaultPath;
+                const vaultPath = getAiPreferenceVaultPath();
                 const historyRetentionDays =
                     loadHistoryRetentionPreference(vaultPath);
                 useChatStore.setState((state) =>
@@ -13318,7 +13374,7 @@ export function initializeChatStoreRuntime() {
             return;
         }
 
-        const vaultPath = useVaultStore.getState().vaultPath;
+        const vaultPath = getAiPreferenceVaultPath();
         if (
             event.key === getAutoContextStorageKey(vaultPath) ||
             event.key === getAiStorageScopeKey(vaultPath) ||
@@ -13331,9 +13387,7 @@ export function initializeChatStoreRuntime() {
                 autoContextSyncTimer = null;
                 useChatStore
                     .getState()
-                    .syncVaultScopedAiPreferences(
-                        useVaultStore.getState().vaultPath,
-                    );
+                    .syncVaultScopedAiPreferences(getAiPreferenceVaultPath());
             }, 80);
         }
     });
@@ -13358,7 +13412,7 @@ export function resetChatStore() {
     _persistedHistoryCacheKey = null;
     _persistedHistoryCacheBySessionId.clear();
     const prefs = getNormalizedAiPreferences();
-    const vaultPath = useVaultStore.getState().vaultPath;
+    const vaultPath = getAiPreferenceVaultPath();
     _queueDrainLocks.clear();
     _pendingStopBySessionId.clear();
     _pendingSessionPersistence.clear();

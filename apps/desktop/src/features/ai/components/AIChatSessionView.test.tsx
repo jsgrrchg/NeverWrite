@@ -19,6 +19,7 @@ const composerMockState = vi.hoisted(() => ({
 }));
 const messageListMockState = vi.hoisted(() => ({
     props: [] as Array<{
+        sessionId?: string | null;
         scrollToMessageId?: string | null;
         onScrollToMessageComplete?: () => void;
     }>,
@@ -28,6 +29,7 @@ const invokeMock = vi.mocked(invoke);
 
 vi.mock("./AIChatMessageList", () => ({
     AIChatMessageList: (props: {
+        sessionId?: string | null;
         scrollToMessageId?: string | null;
         onScrollToMessageComplete?: () => void;
     }) => {
@@ -190,6 +192,34 @@ describe("AIChatSessionView", () => {
         });
 
         expect(screen.getByText("Renamed workspace chat")).toBeInTheDocument();
+    });
+
+    it("resolves restored chat tabs by history id when the runtime session id is stale", () => {
+        const restored = {
+            ...createSession("persisted:history-1", "Recovered transcript"),
+            historySessionId: "history-1",
+            runtimeState: "persisted_only" as const,
+            isPersistedSession: true,
+        };
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                [restored.sessionId]: restored,
+            },
+            activeSessionId: restored.sessionId,
+        }));
+        useEditorStore.getState().openChat("runtime-session-stale", {
+            title: "Recovered transcript",
+            paneId: "primary",
+            historySessionId: "history-1",
+        });
+
+        renderComponent(<AIChatSessionView paneId="primary" />);
+
+        expect(screen.getByText("Recovered transcript")).toBeInTheDocument();
+        expect(messageListMockState.props.at(-1)).toMatchObject({
+            sessionId: "persisted:history-1",
+        });
     });
 
     it("blocks the composer for saved Gemini ACP chats", () => {

@@ -140,19 +140,23 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
     );
     const rootRef = useRef<HTMLDivElement>(null);
     const promptOutlineButtonRef = useRef<HTMLButtonElement>(null);
+    const transcriptHydrationAttemptKeyRef = useRef<string | null>(null);
 
     // Resolve sessionId from this column's ChatTab (stacked) or the pane's
     // active ChatTab (normal mode, when no explicit tabId is bound).
-    const sessionId = useEditorStore((state) => {
+    const chatTab = useEditorStore((state) => {
         const tab = tabId
             ? selectPaneTab(state, paneId, tabId)
             : selectEditorPaneActiveTab(state, paneId);
-        return tab && isChatTab(tab) ? tab.sessionId : null;
+        return tab && isChatTab(tab) ? tab : null;
     });
+    const requestedSessionId = chatTab?.sessionId ?? null;
+    const requestedHistorySessionId = chatTab?.historySessionId ?? null;
 
     // Actions ref — avoids subscribing to every action
     const chatActions = useRef(useChatStore.getState()).current;
     const refreshEntries = useVaultStore((state) => state.refreshEntries);
+    const aiStorageScope = useChatStore((state) => state.aiStorageScope);
 
     // Session data
     const {
@@ -166,8 +170,13 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
         screenshotRetentionSeconds,
     } = useChatStore(
         useShallow((state) => {
-            const s = sessionId
-                ? (state.sessionsById[sessionId] ?? null)
+            const s = requestedSessionId
+                ? (state.sessionsById[requestedSessionId] ??
+                  findSessionForHistorySelection(
+                      state.sessionsById,
+                      requestedHistorySessionId,
+                  ) ??
+                  null)
                 : null;
             const sid = s?.sessionId ?? null;
             const parent = s?.parentSessionId
@@ -200,6 +209,45 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
             };
         }),
     );
+    const sessionId = session?.sessionId ?? requestedSessionId;
+    const sessionRuntimeState = session?.runtimeState ?? null;
+    const sessionMessageCount = session?.messages.length ?? 0;
+    const sessionPersistedMessageCount = session?.persistedMessageCount ?? 0;
+    const sessionIsLoadingPersistedMessages = Boolean(
+        session?.isLoadingPersistedMessages,
+    );
+
+    useEffect(() => {
+        if (
+            !sessionId ||
+            sessionRuntimeState !== "persisted_only" ||
+            sessionMessageCount > 0 ||
+            sessionPersistedMessageCount <= 0 ||
+            sessionIsLoadingPersistedMessages
+        ) {
+            return;
+        }
+
+        const hydrationKey = [
+            sessionId,
+            sessionPersistedMessageCount,
+            aiStorageScope,
+        ].join(":");
+        if (transcriptHydrationAttemptKeyRef.current === hydrationKey) {
+            return;
+        }
+        transcriptHydrationAttemptKeyRef.current = hydrationKey;
+
+        void chatActions.ensureSessionTranscriptLoaded(sessionId, "latest");
+    }, [
+        aiStorageScope,
+        chatActions,
+        sessionId,
+        sessionIsLoadingPersistedMessages,
+        sessionMessageCount,
+        sessionPersistedMessageCount,
+        sessionRuntimeState,
+    ]);
 
     // Runtime resolution
     const runtimes = useChatStore((s) => s.runtimes);

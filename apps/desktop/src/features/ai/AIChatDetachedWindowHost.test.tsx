@@ -155,6 +155,52 @@ describe("AIChatDetachedWindowHost", () => {
         expect(loadSession).not.toHaveBeenCalled();
     });
 
+    it("hydrates persisted-only chats without reconnecting them", async () => {
+        useEditorStore.getState().hydrateTabs(
+            [
+                {
+                    id: "chat-tab-1",
+                    kind: "ai-chat",
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    title: "Saved chat",
+                },
+            ],
+            "chat-tab-1",
+        );
+
+        const initialize = vi.fn().mockResolvedValue(undefined);
+        const loadSession = vi.fn().mockResolvedValue(undefined);
+        const ensureSessionTranscriptLoaded = vi.fn().mockResolvedValue(true);
+        useChatStore.setState({
+            initialize,
+            loadSession,
+            ensureSessionTranscriptLoaded,
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    isResumingSession: false,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: null,
+                    messages: [],
+                } as never,
+            },
+        } as Partial<ReturnType<typeof useChatStore.getState>>);
+
+        renderComponent(<AIChatWorkspaceHost />);
+        await flushPromises();
+        await flushPromises();
+
+        expect(loadSession).not.toHaveBeenCalled();
+        expect(ensureSessionTranscriptLoaded).toHaveBeenCalledWith(
+            "persisted:history-1",
+            "latest",
+        );
+    });
+
     it("hydrates full transcript context for live chats with pending recovery", async () => {
         useEditorStore.getState().hydrateTabs(
             [

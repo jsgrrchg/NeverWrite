@@ -554,7 +554,7 @@ describe("chatStore", () => {
         vi.clearAllMocks();
         delete (globalThis as Record<string, unknown>)
             .__NEVERWRITE_FORCE_RUST_LINE_DIFFS__;
-        useVaultStore.setState({ vaultPath: null, notes: [] });
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         useEditorStore.setState({
             tabs: [],
             activeTabId: null,
@@ -810,6 +810,11 @@ describe("chatStore", () => {
                 ];
             }
             if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vaults/legacy",
+                    sessionId: "legacy-history",
+                    storageScope: "vault",
+                });
                 return {
                     session_id: "legacy-history",
                     total_messages: 1,
@@ -2631,7 +2636,7 @@ describe("chatStore", () => {
                         method_id: "grok-login",
                         runtimeId: "grok-acp",
                     },
-                    vaultPath: null,
+                    vaultPath: "/vault",
                 },
             }),
         );
@@ -3659,6 +3664,85 @@ describe("chatStore", () => {
                 type: "file",
                 filePath: "/vault/assets/chat/screenshot.png",
                 mimeType: "image/png",
+            }),
+        ]);
+    });
+
+    it("hydrates an active restored persisted-only workspace tab without reconnecting", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vault",
+                    sessionId: "history-persisted-active",
+                    storageScope: "device",
+                    startIndex: 0,
+                    limit: 1,
+                });
+                return {
+                    session_id: "history-persisted-active",
+                    total_messages: 1,
+                    start_index: 0,
+                    end_index: 1,
+                    messages: [
+                        {
+                            id: "persisted-message",
+                            role: "user",
+                            kind: "text",
+                            content: "Existing chat content",
+                            timestamp: 20,
+                        },
+                    ],
+                };
+            }
+
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().upsertSession(
+            {
+                ...createSessionWithTrackedFiles(
+                    "persisted:history-persisted-active",
+                    [],
+                ),
+                historySessionId: "history-persisted-active",
+                vaultPath: "/vault",
+                runtimeId: "codex-acp",
+                runtimeState: "persisted_only",
+                persistedMessageCount: 1,
+                loadedPersistedMessageStart: null,
+                isPersistedSession: true,
+            },
+            true,
+            { allowUnknownSession: true },
+        );
+
+        await useChatStore.getState().reconcileRestoredWorkspaceTabs(
+            [
+                {
+                    id: "tab-persisted-active",
+                    sessionId: "persisted:history-persisted-active",
+                    historySessionId: "history-persisted-active",
+                    runtimeId: "codex-acp",
+                },
+            ],
+            "tab-persisted-active",
+        );
+
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
+        expect(
+            useChatStore.getState().sessionsById[
+                "persisted:history-persisted-active"
+            ]?.messages,
+        ).toEqual([
+            expect.objectContaining({
+                id: "persisted-message",
+                content: "Existing chat content",
             }),
         ]);
     });
@@ -13515,6 +13599,67 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("loads an existing persisted-only session transcript without reconnecting", async () => {
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+        });
+
+        useChatStore.setState((state) => ({
+            ...state,
+            sessionsById: {
+                "persisted:history-1": {
+                    ...createSessionWithTrackedFiles("persisted:history-1", []),
+                    historySessionId: "history-1",
+                    runtimeState: "persisted_only",
+                    isPersistedSession: true,
+                    persistedMessageCount: 1,
+                    loadedPersistedMessageStart: null,
+                },
+            },
+            sessionOrder: ["persisted:history-1"],
+            activeSessionId: "persisted:history-1",
+        }));
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "history-1",
+                    total_messages: 1,
+                    start_index: 0,
+                    end_index: 1,
+                    messages: [
+                        {
+                            id: "saved-message",
+                            role: "assistant",
+                            kind: "text",
+                            content: "Saved answer",
+                            timestamp: 10,
+                        },
+                    ],
+                };
+            }
+            if (
+                command === "ai_load_session" ||
+                command === "ai_resume_runtime_session" ||
+                command === "ai_create_session"
+            ) {
+                throw new Error("opening saved history should not reconnect");
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore.getState().loadSession("persisted:history-1");
+
+        const session =
+            useChatStore.getState().sessionsById["persisted:history-1"];
+        expect(useChatStore.getState().activeSessionId).toBe(
+            "persisted:history-1",
+        );
+        expect(session?.runtimeState).toBe("persisted_only");
+        expect(session?.messages[0]?.content).toBe("Saved answer");
+    });
+
     it("does not send live runtime commands for persisted-only sessions", async () => {
         useChatStore.setState((state) => ({
             ...state,
@@ -18342,6 +18487,8 @@ describe("chatStore", () => {
     });
 
     it("resolves Grok review hunks without mutating parallel Codex or Kilo sessions", async () => {
+        useVaultStore.setState({ vaultPath: null, notes: [] });
+
         const codexFile = createTrackedFile(
             "/notes/codex.md",
             "codex before",
@@ -18452,6 +18599,8 @@ describe("chatStore", () => {
     });
 
     it("keeps move-only tracked files pending after accepting the last text hunk", async () => {
+        useVaultStore.setState({ vaultPath: null, notes: [] });
+
         const file = createTrackedFile(
             "/notes/file-renamed.md",
             "alpha\nbeta\ngamma",
@@ -18495,6 +18644,8 @@ describe("chatStore", () => {
     });
 
     it("resolveReviewHunks does not depend on the visual projection to accept hunks", async () => {
+        useVaultStore.setState({ vaultPath: null, notes: [] });
+
         const file = createTrackedFile(
             "notes/visual-independence.md",
             "alpha\nbeta\ngamma",
@@ -18539,6 +18690,8 @@ describe("chatStore", () => {
     });
 
     it("resolveReviewHunks resolves the expanded overlap closure returned by the canonical index", async () => {
+        useVaultStore.setState({ vaultPath: null, notes: [] });
+
         const file = createTrackedFile(
             "notes/overlap-closure.md",
             "one\ntwo\nthree\nfour",

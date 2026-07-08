@@ -2,11 +2,16 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { getAllWebviewWindows, listen, openUrl } from "@neverwrite/runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "../../app/store/settingsStore";
+import { useVaultStore } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
 import { SettingsPanel } from "./SettingsPanel";
 import { mockInvoke, renderComponent } from "../../test/test-utils";
 import { useAppUpdateStore } from "../updates/store";
 import { APP_ZOOM_STORAGE_KEY } from "../../app/utils/appZoom";
+import {
+    safeStorageGetItem,
+    safeStorageSetItem,
+} from "../../app/utils/safeStorage";
 
 const aiApiMocks = vi.hoisted(() => ({
     aiListRuntimes: vi.fn(async () => [
@@ -94,6 +99,14 @@ const aiApiMocks = vi.hoisted(() => ({
     aiCloseAuthTerminalSession: vi.fn(async () => undefined),
     aiWriteAuthTerminalSession: vi.fn(async () => undefined),
     aiResizeAuthTerminalSession: vi.fn(async () => undefined),
+    aiLoadSessionHistories: vi.fn(async () => []),
+    aiMigrateSessionHistories: vi.fn(async () => ({
+        histories_copied: 0,
+        histories_skipped: 0,
+        attachments_copied: 0,
+        attachments_skipped: 0,
+        failures: [],
+    })),
     listenToAiAuthTerminalStarted: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalOutput: vi.fn(async () => vi.fn()),
     listenToAiAuthTerminalExited: vi.fn(async () => vi.fn()),
@@ -150,6 +163,15 @@ function setNavigatorIdentity(userAgent: string, platform: string) {
 }
 
 beforeEach(() => {
+    vi.clearAllMocks();
+    aiApiMocks.aiLoadSessionHistories.mockResolvedValue([]);
+    aiApiMocks.aiMigrateSessionHistories.mockResolvedValue({
+        histories_copied: 0,
+        histories_skipped: 0,
+        attachments_copied: 0,
+        attachments_skipped: 0,
+        failures: [],
+    });
     getMockCurrentWindow().startDragging.mockClear();
     getMockCurrentWindow().toggleMaximize.mockClear();
     getMockCurrentWindow().close.mockClear();
@@ -159,6 +181,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    window.history.pushState(null, "", "/");
     setNavigatorIdentity(originalUserAgent, originalPlatform);
     localStorage.clear();
     mockInvoke().mockReset();
@@ -600,6 +623,163 @@ describe("SettingsPanel", () => {
 
         expect(useChatStore.getState().contextUsageBarEnabled).toBe(false);
         expect(toggle).toHaveAttribute("aria-checked", "false");
+    });
+
+    it("offers to move loaded vault AI chats when disabling vault storage", async () => {
+        const initializeMock = vi.fn(async () => ({
+            sessionInventoryLoaded: true,
+        }));
+        useChatStore.setState({
+            aiStorageScope: "vault",
+            initialize: initializeMock,
+            sessionsById: {
+                "persisted:history-1": {
+                    sessionId: "persisted:history-1",
+                    historySessionId: "history-1",
+                    vaultPath: "/vault",
+                    status: "idle",
+                    runtimeId: "codex-acp",
+                    modelId: "test-model",
+                    modeId: "default",
+                    models: [],
+                    modes: [],
+                    configOptions: [],
+                    messages: [],
+                    attachments: [],
+                    persistedMessageCount: 2,
+                    runtimeState: "persisted_only",
+                },
+            },
+        });
+        useVaultStore.setState({ vaultPath: "/vault" });
+        safeStorageSetItem("neverwrite.ai.storage-scope:/vault", "vault");
+        aiApiMocks.aiLoadSessionHistories.mockResolvedValueOnce([]);
+
+        renderComponent(<SettingsPanel onClose={() => {}} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+        const label = screen.getByText("Store AI chats inside this vault");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+
+        fireEvent.click(within(row as HTMLElement).getByRole("switch"));
+
+        expect(
+            await screen.findByText(
+                "Move existing vault AI chats to this device?",
+            ),
+        ).toBeInTheDocument();
+        expect(aiApiMocks.aiLoadSessionHistories).toHaveBeenCalledWith(
+            "/vault",
+            {
+                includeMessages: false,
+                storageScope: "vault",
+            },
+        );
+        expect(
+            safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
+        ).toBe("vault");
+
+        fireEvent.click(screen.getByRole("button", { name: "Move" }));
+
+        await waitFor(() =>
+            expect(aiApiMocks.aiMigrateSessionHistories).toHaveBeenCalledWith({
+                vaultPath: "/vault",
+                fromScope: "vault",
+                toScope: "device",
+                deleteSourceAfterCopy: true,
+                migrateAttachments: true,
+            }),
+        );
+        await waitFor(() =>
+            expect(
+                safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
+            ).toBe("device"),
+        );
+        expect(initializeMock).toHaveBeenCalledWith({
+            createDefaultSession: false,
+        });
+    });
+
+    it("uses the settings window vault URL when the vault store is not hydrated", async () => {
+        const initializeMock = vi.fn(async () => ({
+            sessionInventoryLoaded: true,
+        }));
+        window.history.pushState(
+            null,
+            "",
+            "/?window=settings&vault=%2Fvault",
+        );
+        useVaultStore.setState({ vaultPath: null });
+        useChatStore.setState({
+            aiStorageScope: "device",
+            initialize: initializeMock,
+            sessionsById: {},
+        });
+        safeStorageSetItem("neverwrite.ai.storage-scope:/vault", "vault");
+        aiApiMocks.aiLoadSessionHistories.mockResolvedValueOnce([
+            {
+                version: 1,
+                session_id: "history-from-url-vault",
+                runtime_id: "codex-acp",
+                model_id: "test-model",
+                mode_id: "default",
+                created_at: 1,
+                updated_at: 2,
+                message_count: 1,
+                messages: [],
+            },
+        ]);
+
+        renderComponent(<SettingsPanel onClose={() => {}} standalone />);
+
+        fireEvent.click(screen.getByRole("button", { name: "AI" }));
+        const label = screen.getByText("Store AI chats inside this vault");
+        const row = label.parentElement?.parentElement;
+        expect(row).not.toBeNull();
+        const toggle = within(row as HTMLElement).getByRole("switch");
+        await waitFor(() =>
+            expect(toggle).toHaveAttribute("aria-checked", "true"),
+        );
+
+        fireEvent.click(toggle);
+
+        expect(
+            await screen.findByRole("dialog", {
+                name: "Move existing vault AI chats to this device?",
+            }),
+        ).toBeInTheDocument();
+        expect(aiApiMocks.aiLoadSessionHistories).toHaveBeenCalledWith(
+            "/vault",
+            {
+                includeMessages: false,
+                storageScope: "vault",
+            },
+        );
+        expect(
+            safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
+        ).toBe("vault");
+
+        fireEvent.click(screen.getByRole("button", { name: "Move" }));
+
+        await waitFor(() =>
+            expect(aiApiMocks.aiMigrateSessionHistories).toHaveBeenCalledWith({
+                vaultPath: "/vault",
+                fromScope: "vault",
+                toScope: "device",
+                deleteSourceAfterCopy: true,
+                migrateAttachments: true,
+            }),
+        );
+        expect(
+            safeStorageGetItem("neverwrite.ai.storage-scope:/vault"),
+        ).toBe("device");
+        expect(
+            safeStorageGetItem("neverwrite.ai.storage-scope:__global__"),
+        ).toBeNull();
+        expect(initializeMock).toHaveBeenCalledWith({
+            createDefaultSession: false,
+        });
     });
 
     it("groups the font family selector and persists new bundled font options", () => {

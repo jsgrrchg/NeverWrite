@@ -23,6 +23,7 @@ import { useChatStore } from "./store/chatStore";
 import { useAiChatEventBridge } from "./useAiChatEventBridge";
 import { CLAUDE_TERMINAL_RUNTIME_ID } from "./utils/runtimeMetadata";
 import { openClaudeCodeTerminalWithContext } from "../terminal/claudeCodeTerminal";
+import { findSessionForHistorySelection } from "./sessionPresentation";
 
 function hasVisibleAiComposerDropZone(targetSessionId?: string) {
     const selector = targetSessionId
@@ -33,7 +34,16 @@ function hasVisibleAiComposerDropZone(targetSessionId?: string) {
 
 function getActiveEditorChatSessionId() {
     const activeTab = selectFocusedEditorTab(useEditorStore.getState());
-    return activeTab && isChatTab(activeTab) ? activeTab.sessionId : null;
+    if (!activeTab || !isChatTab(activeTab)) return null;
+    const sessionsById = useChatStore.getState().sessionsById;
+    return (
+        sessionsById[activeTab.sessionId]?.sessionId ??
+        findSessionForHistorySelection(
+            sessionsById,
+            activeTab.historySessionId,
+        )?.sessionId ??
+        activeTab.sessionId
+    );
 }
 
 function needsLiveSessionResumeContextHydration(session: AIChatSession) {
@@ -114,17 +124,35 @@ export function AIChatWorkspaceHost({
     initializeWithoutChatTabs = false,
 }: AIChatWorkspaceHostProps) {
     const vaultPath = useVaultStore((state) => state.vaultPath);
-    const { hasChatTabs, activeChatSessionId } = useEditorStore(
+    const { hasChatTabs, activeChatTabSessionId, activeChatTabHistoryId } =
+        useEditorStore(
+            useShallow((state) => {
+                const tabs = selectEditorWorkspaceTabs(state);
+                const activeTab = selectFocusedEditorTab(state);
+                return {
+                    hasChatTabs: tabs.some((tab) => isChatTab(tab)),
+                    activeChatTabSessionId:
+                        activeTab && isChatTab(activeTab)
+                            ? activeTab.sessionId
+                            : null,
+                    activeChatTabHistoryId:
+                        activeTab && isChatTab(activeTab)
+                            ? (activeTab.historySessionId ?? null)
+                            : null,
+                };
+            }),
+        );
+    const activeChatSessionId = useChatStore(
         useShallow((state) => {
-            const tabs = selectEditorWorkspaceTabs(state);
-            const activeTab = selectFocusedEditorTab(state);
-            return {
-                hasChatTabs: tabs.some((tab) => isChatTab(tab)),
-                activeChatSessionId:
-                    activeTab && isChatTab(activeTab)
-                        ? activeTab.sessionId
-                        : null,
-            };
+            if (!activeChatTabSessionId) return null;
+            return (
+                state.sessionsById[activeChatTabSessionId]?.sessionId ??
+                findSessionForHistorySelection(
+                    state.sessionsById,
+                    activeChatTabHistoryId,
+                )?.sessionId ??
+                activeChatTabSessionId
+            );
         }),
     );
     const activeChatSession = useChatStore((state) =>
@@ -245,10 +273,13 @@ export function AIChatWorkspaceHost({
                 return;
             }
 
-            if (latestNeedsLiveResumeContextHydration) {
+            if (
+                latestNeedsLiveResumeContextHydration ||
+                latestSession?.runtimeState === "persisted_only"
+            ) {
                 await chatActions.ensureSessionTranscriptLoaded(
                     activeChatSessionId,
-                    "full",
+                    latestNeedsLiveResumeContextHydration ? "full" : "latest",
                 );
             } else {
                 await chatActions.loadSession(activeChatSessionId);
