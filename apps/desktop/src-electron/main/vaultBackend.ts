@@ -1767,6 +1767,11 @@ export class ElectronVaultBackend {
             attachments_skipped: 0,
             failures: [] as string[],
         };
+        const pendingSourceCleanups: Array<{
+            source: string;
+            attachments: string[];
+            protectedAttachments: string[];
+        }> = [];
 
         let entries: string[] = [];
         try {
@@ -1819,26 +1824,11 @@ export class ElectronVaultBackend {
                         );
                     }
 
-                    await fs.rm(source, { recursive: true, force: true });
-
-                    if (migrateAttachments) {
-                        const protectedAttachmentSet = new Set(
-                            protectedAttachments,
-                        );
-                        const removableAttachments = sourceAttachments.filter(
-                            (sourceAttachment) =>
-                                !protectedAttachmentSet.has(sourceAttachment),
-                        );
-                        decrementAttachmentRefCounts(
-                            sourceAttachments,
-                            attachmentRefCounts,
-                        );
-                        await deleteUnreferencedAttachmentSources(
-                            removableAttachments,
-                            attachmentRefCounts,
-                            report,
-                        );
-                    }
+                    pendingSourceCleanups.push({
+                        source,
+                        attachments: sourceAttachments,
+                        protectedAttachments,
+                    });
                 }
                 continue;
             }
@@ -1860,22 +1850,38 @@ export class ElectronVaultBackend {
                     deleteSourceAfterCopy &&
                     report.failures.length === failureCountBeforeCopy
                 ) {
-                    await fs.rm(source, { recursive: true, force: true });
-                    if (migrateAttachments) {
-                        decrementAttachmentRefCounts(
-                            copiedSources,
-                            attachmentRefCounts,
-                        );
-                        await deleteUnreferencedAttachmentSources(
-                            copiedSources,
-                            attachmentRefCounts,
-                            report,
-                        );
-                    }
+                    pendingSourceCleanups.push({
+                        source,
+                        attachments: copiedSources,
+                        protectedAttachments: [],
+                    });
                 }
             } catch (error) {
                 report.failures.push(
                     error instanceof Error ? error.message : String(error),
+                );
+            }
+        }
+        if (deleteSourceAfterCopy && report.failures.length === 0) {
+            for (const cleanup of pendingSourceCleanups) {
+                await fs.rm(cleanup.source, { recursive: true, force: true });
+                if (!migrateAttachments) continue;
+
+                const protectedAttachmentSet = new Set(
+                    cleanup.protectedAttachments,
+                );
+                const removableAttachments = cleanup.attachments.filter(
+                    (sourceAttachment) =>
+                        !protectedAttachmentSet.has(sourceAttachment),
+                );
+                decrementAttachmentRefCounts(
+                    cleanup.attachments,
+                    attachmentRefCounts,
+                );
+                await deleteUnreferencedAttachmentSources(
+                    removableAttachments,
+                    attachmentRefCounts,
+                    report,
                 );
             }
         }

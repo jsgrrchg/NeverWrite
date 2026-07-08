@@ -716,6 +716,12 @@ struct AiAttachmentMigrationContext {
     to_scope: AiStorageScope,
 }
 
+struct PendingAiSourceCleanup {
+    session_id: String,
+    attachments: Vec<PathBuf>,
+    protected_destination_history: Option<PersistedSessionHistory>,
+}
+
 impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
         Self {
@@ -1076,6 +1082,7 @@ impl NativeBackend {
         };
         let mut source_attachment_ref_counts =
             build_ai_owned_attachment_source_ref_counts(&source_histories, &attachment_context);
+        let mut pending_source_cleanups: Vec<PendingAiSourceCleanup> = Vec::new();
 
         for mut history in source_histories {
             if !has_persisted_history_content_native(&history) {
@@ -1091,19 +1098,11 @@ impl NativeBackend {
                     } else {
                         Vec::new()
                     };
-                    delete_session_history_for_storage(&from_storage, &history.session_id)?;
-                    if migrate_attachments {
-                        decrement_attachment_ref_counts(
-                            &source_attachments,
-                            &mut source_attachment_ref_counts,
-                        );
-                        delete_unreferenced_source_attachments(
-                            &source_attachments,
-                            &source_attachment_ref_counts,
-                            Some(destination_history),
-                            &mut report,
-                        );
-                    }
+                    pending_source_cleanups.push(PendingAiSourceCleanup {
+                        session_id: history.session_id.clone(),
+                        attachments: source_attachments,
+                        protected_destination_history: Some(destination_history.clone()),
+                    });
                 }
                 continue;
             }
@@ -1123,16 +1122,26 @@ impl NativeBackend {
             report.histories_copied += 1;
 
             if delete_source_after_copy && report.failures.len() == failure_count_before_history {
-                delete_session_history_for_storage(&from_storage, &history.session_id)?;
+                pending_source_cleanups.push(PendingAiSourceCleanup {
+                    session_id: history.session_id.clone(),
+                    attachments: copied_attachments,
+                    protected_destination_history: None,
+                });
+            }
+        }
+
+        if delete_source_after_copy && report.failures.is_empty() {
+            for cleanup in pending_source_cleanups {
+                delete_session_history_for_storage(&from_storage, &cleanup.session_id)?;
                 if migrate_attachments {
                     decrement_attachment_ref_counts(
-                        &copied_attachments,
+                        &cleanup.attachments,
                         &mut source_attachment_ref_counts,
                     );
                     delete_unreferenced_source_attachments(
-                        &copied_attachments,
+                        &cleanup.attachments,
                         &source_attachment_ref_counts,
-                        None,
+                        cleanup.protected_destination_history.as_ref(),
                         &mut report,
                     );
                 }
@@ -4691,6 +4700,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(device_histories.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn ai_migration_keeps_all_sources_when_any_history_reports_failure() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "history": test_history("partial-success-session", None)
+            }),
+        )
+        .unwrap();
+        let saved = invoke(
+            &backend,
+            "ai_save_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "sessionId": "partial-failure-session",
+                "fileName": "pasted-image-partial-failure.png",
+                "bytes": [112, 110, 103]
+            }),
+        )
+        .unwrap();
+        let attachment_path = PathBuf::from(saved["path"].as_str().unwrap());
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "history": test_history("partial-failure-session", Some(&attachment_path))
+            }),
+        )
+        .unwrap();
+
+        let asset_dir = vault_dir.path().join("assets");
+        fs::create_dir_all(&asset_dir).unwrap();
+        fs::write(asset_dir.join("chat"), b"not a directory").unwrap();
+
+        let report = invoke(
+            &backend,
+            "ai_migrate_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "fromScope": "device",
+                "toScope": "vault",
+                "deleteSourceAfterCopy": true,
+                "migrateAttachments": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(report["histories_copied"], json!(2));
+        assert_eq!(report["attachments_skipped"], json!(1));
+        assert!(!report["failures"].as_array().unwrap().is_empty());
+        assert!(attachment_path.exists());
+
+        let device_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "includeMessages": false
+            }),
+        )
+        .unwrap();
+        assert_eq!(device_histories.as_array().unwrap().len(), 2);
     }
 
     #[test]

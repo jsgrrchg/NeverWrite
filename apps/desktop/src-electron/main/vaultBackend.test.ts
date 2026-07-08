@@ -328,6 +328,77 @@ describe("ElectronVaultBackend AI history migration", () => {
         });
     });
 
+    it("keeps source histories when a later migration step reports a failure", async () => {
+        const userDataPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-user-data-"),
+        );
+        electronAppMock.getPath.mockReturnValue(userDataPath);
+
+        const vaultPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-ai-migration-"),
+        );
+        const stableVaultPath = await fs.realpath(vaultPath);
+        const vaultKey = sha256Hex(stableVaultPath);
+        const sourceRoot = path.join(
+            userDataPath,
+            "ai",
+            "sessions",
+            vaultKey,
+            "sessions",
+        );
+        const sourceSuccessDir = path.join(sourceRoot, "session-success");
+        const sourceFailureDir = path.join(sourceRoot, "session-failure");
+        const attachmentPath = path.join(
+            userDataPath,
+            "ai",
+            "attachments",
+            vaultKey,
+            "session-failure",
+            "pasted-image-failure.png",
+        );
+
+        await fs.mkdir(sourceSuccessDir, { recursive: true });
+        await fs.mkdir(sourceFailureDir, { recursive: true });
+        await fs.mkdir(path.dirname(attachmentPath), { recursive: true });
+        await fs.writeFile(attachmentPath, "image-bytes");
+        await fs.writeFile(
+            path.join(sourceSuccessDir, "transcript.jsonl"),
+            `${JSON.stringify({ id: "message-success", content: "ok" })}\n`,
+        );
+        await fs.writeFile(
+            path.join(sourceFailureDir, "transcript.jsonl"),
+            `${JSON.stringify({
+                id: "message-failure",
+                attachments: [{ filePath: attachmentPath }],
+            })}\n`,
+        );
+
+        await fs.mkdir(path.join(vaultPath, "assets"), { recursive: true });
+        await fs.writeFile(path.join(vaultPath, "assets", "chat"), "not-dir");
+
+        const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
+        const report = (await backend.invoke("ai_migrate_session_histories", {
+            vaultPath,
+            fromScope: "device",
+            toScope: "vault",
+            deleteSourceAfterCopy: true,
+            migrateAttachments: true,
+        })) as {
+            histories_copied: number;
+            histories_skipped: number;
+            attachments_copied: number;
+            attachments_skipped: number;
+            failures: string[];
+        };
+
+        await expect(fs.stat(sourceSuccessDir)).resolves.toBeTruthy();
+        await expect(fs.stat(sourceFailureDir)).resolves.toBeTruthy();
+        await expect(fs.stat(attachmentPath)).resolves.toBeTruthy();
+        expect(report.histories_copied).toBe(2);
+        expect(report.attachments_skipped).toBe(1);
+        expect(report.failures.length).toBeGreaterThan(0);
+    });
+
     it("uses the real vault path for device AI attachment namespaces", async () => {
         const userDataPath = await fs.mkdtemp(
             path.join(os.tmpdir(), "neverwrite-user-data-"),
