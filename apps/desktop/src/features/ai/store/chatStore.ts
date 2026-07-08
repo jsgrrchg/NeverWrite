@@ -172,6 +172,7 @@ import { checkClaudeCodeInstalled } from "../../terminal/claudeCodeTerminal";
 
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
+export type AIStorageScope = "device" | "vault";
 type PersistedSessionHistorySummary = Omit<PersistedSessionHistory, "messages">;
 type RuntimeTextMessageRole = Extract<AIChatRole, "user" | "assistant">;
 let _persistedHistoryCacheVaultPath: string | null = null;
@@ -182,6 +183,8 @@ let _persistedHistoryCacheBySessionId = new Map<
 let _defaultRuntimePreferenceVersion = 0;
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
+const AI_STORAGE_SCOPE_KEY_PREFIX = "neverwrite.ai.storage-scope:";
+const AI_HISTORY_RETENTION_KEY_PREFIX = "neverwrite.ai.history-retention:";
 const TRANSCRIPT_PAGE_SIZE = 60;
 const TRACKED_PERSISTED_RECONCILE_DELAY_MS = 260;
 const SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID =
@@ -236,7 +239,6 @@ interface NormalizedAiPreferences {
     composerFontFamily: EditorFontFamily;
     chatFontFamily: EditorFontFamily;
     editDiffZoom: number;
-    historyRetentionDays: number;
     screenshotRetentionSeconds: number;
 }
 
@@ -248,7 +250,6 @@ const DEFAULT_AI_PREFERENCES: NormalizedAiPreferences = {
     composerFontFamily: "system",
     chatFontFamily: "system",
     editDiffZoom: 0.72,
-    historyRetentionDays: 0,
     screenshotRetentionSeconds: DEFAULT_SCREENSHOT_RETENTION_SECONDS,
 };
 
@@ -308,7 +309,6 @@ function aiPrefsEqual(
         | "composerFontFamily"
         | "chatFontFamily"
         | "editDiffZoom"
-        | "historyRetentionDays"
         | "screenshotRetentionSeconds"
     >,
     right: NormalizedAiPreferences,
@@ -321,7 +321,6 @@ function aiPrefsEqual(
         left.composerFontFamily === right.composerFontFamily &&
         left.chatFontFamily === right.chatFontFamily &&
         left.editDiffZoom === right.editDiffZoom &&
-        left.historyRetentionDays === right.historyRetentionDays &&
         left.screenshotRetentionSeconds === right.screenshotRetentionSeconds
     );
 }
@@ -360,6 +359,10 @@ function getAutoContextStorageKey(vaultPath: string | null) {
     }`;
 }
 
+function getVaultPreferenceScope(vaultPath: string | null) {
+    return normalizeVaultRoot(vaultPath) ?? AI_AUTO_CONTEXT_GLOBAL_SCOPE;
+}
+
 function loadAutoContextPreference(vaultPath: string | null) {
     try {
         const raw = safeStorageGetItem(getAutoContextStorageKey(vaultPath));
@@ -387,6 +390,79 @@ function saveAutoContextPreference(
     }
 }
 
+function getAiStorageScopeKey(vaultPath: string | null) {
+    return `${AI_STORAGE_SCOPE_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
+}
+
+function normalizeAiStorageScope(value: unknown): AIStorageScope {
+    return value === "vault" ? "vault" : "device";
+}
+
+function loadAiStorageScopePreference(vaultPath: string | null): AIStorageScope {
+    try {
+        return normalizeAiStorageScope(
+            safeStorageGetItem(getAiStorageScopeKey(vaultPath)),
+        );
+    } catch {
+        return "device";
+    }
+}
+
+function saveAiStorageScopePreference(
+    vaultPath: string | null,
+    scope: AIStorageScope,
+) {
+    try {
+        safeStorageSetItem(
+            getAiStorageScopeKey(vaultPath),
+            normalizeAiStorageScope(scope),
+        );
+    } catch {
+        // AI storage scope persistence is best-effort; default remains local.
+    }
+}
+
+function getHistoryRetentionStorageKey(vaultPath: string | null) {
+    return `${AI_HISTORY_RETENTION_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
+}
+
+function normalizeHistoryRetentionDays(days: unknown) {
+    return typeof days === "number" && Number.isFinite(days)
+        ? Math.max(0, Math.round(days))
+        : 0;
+}
+
+function parseHistoryRetentionDays(raw: string | null) {
+    if (raw == null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? normalizeHistoryRetentionDays(value) : null;
+}
+
+function loadHistoryRetentionPreference(vaultPath: string | null) {
+    try {
+        const raw = safeStorageGetItem(getHistoryRetentionStorageKey(vaultPath));
+        const parsed = parseHistoryRetentionDays(raw);
+        if (parsed != null) return parsed;
+    } catch {
+        return 0;
+    }
+
+    return normalizeHistoryRetentionDays(
+        loadAiPreferences().historyRetentionDays,
+    );
+}
+
+function saveHistoryRetentionPreference(vaultPath: string | null, days: number) {
+    try {
+        safeStorageSetItem(
+            getHistoryRetentionStorageKey(vaultPath),
+            String(normalizeHistoryRetentionDays(days)),
+        );
+    } catch {
+        // Retention persistence is best-effort and should not affect chat.
+    }
+}
+
 function getNormalizedAiPreferences(): NormalizedAiPreferences {
     const prefs = loadAiPreferences();
     const screenshotRetentionSeconds = normalizeScreenshotRetentionSeconds(
@@ -407,7 +483,6 @@ function getNormalizedAiPreferences(): NormalizedAiPreferences {
         composerFontFamily: normalizeEditorFontFamily(prefs.composerFontFamily),
         chatFontFamily: normalizeEditorFontFamily(prefs.chatFontFamily),
         editDiffZoom: prefs.editDiffZoom ?? 0.72,
-        historyRetentionDays: prefs.historyRetentionDays ?? 0,
         screenshotRetentionSeconds,
     };
 }
@@ -1372,6 +1447,7 @@ interface ChatStore {
     composerFontFamily: EditorFontFamily;
     chatFontFamily: EditorFontFamily;
     editDiffZoom: number;
+    aiStorageScope: AIStorageScope;
     historyRetentionDays: number;
     screenshotRetentionSeconds: number;
     composerPartsBySessionId: Record<string, AIComposerPart[]>;
@@ -1394,6 +1470,7 @@ interface ChatStore {
         activeTabId?: string | null,
     ) => Promise<void>;
     syncAutoContextForVault: (vaultPath: string | null) => void;
+    syncVaultScopedAiPreferences: (vaultPath: string | null) => void;
     setSelectedRuntime: (runtimeId: string | null) => void;
     setDefaultRuntime: (runtimeId: string | null) => void;
     getDefaultNewChatRuntimeId: () => string | null;
@@ -1585,6 +1662,7 @@ interface ChatStore {
     setComposerFontFamily: (fontFamily: EditorFontFamily) => void;
     setChatFontFamily: (fontFamily: EditorFontFamily) => void;
     setEditDiffZoom: (size: number) => void;
+    setAiStorageScope: (scope: AIStorageScope) => void;
     setHistoryRetentionDays: (days: number) => Promise<void>;
     setScreenshotRetentionSeconds: (seconds: number) => void;
     openNotePicker: () => void;
@@ -7542,7 +7620,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         composerFontFamily: DEFAULT_AI_PREFERENCES.composerFontFamily,
         chatFontFamily: DEFAULT_AI_PREFERENCES.chatFontFamily,
         editDiffZoom: DEFAULT_AI_PREFERENCES.editDiffZoom,
-        historyRetentionDays: DEFAULT_AI_PREFERENCES.historyRetentionDays,
+        aiStorageScope: "device",
+        historyRetentionDays: 0,
         screenshotRetentionSeconds:
             DEFAULT_AI_PREFERENCES.screenshotRetentionSeconds,
         composerPartsBySessionId: {},
@@ -7559,6 +7638,24 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 state.autoContextEnabled === next
                     ? state
                     : { autoContextEnabled: next },
+            );
+        },
+
+        syncVaultScopedAiPreferences: (vaultPath) => {
+            const autoContextEnabled = loadAutoContextPreference(vaultPath);
+            const aiStorageScope = loadAiStorageScopePreference(vaultPath);
+            const historyRetentionDays =
+                loadHistoryRetentionPreference(vaultPath);
+            set((state) =>
+                state.autoContextEnabled === autoContextEnabled &&
+                state.aiStorageScope === aiStorageScope &&
+                state.historyRetentionDays === historyRetentionDays
+                    ? state
+                    : {
+                          autoContextEnabled,
+                          aiStorageScope,
+                          historyRetentionDays,
+                      },
             );
         },
 
@@ -12857,10 +12954,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             saveAiPreferences({ editDiffZoom: next });
         },
 
+        setAiStorageScope: (scope) => {
+            const next = normalizeAiStorageScope(scope);
+            set({ aiStorageScope: next });
+            saveAiStorageScopePreference(
+                useVaultStore.getState().vaultPath,
+                next,
+            );
+        },
+
         setHistoryRetentionDays: async (days) => {
-            const next = Math.max(0, Math.round(days));
+            const next = normalizeHistoryRetentionDays(days);
             set({ historyRetentionDays: next });
-            saveAiPreferences({ historyRetentionDays: next });
+            saveHistoryRetentionPreference(
+                useVaultStore.getState().vaultPath,
+                next,
+            );
 
             if (next <= 0) return;
             try {
@@ -12963,10 +13072,9 @@ let autoContextSyncTimer: number | null = null;
 
 export function hydrateChatStorePreferences() {
     const prefs = getNormalizedAiPreferences();
+    const vaultPath = useVaultStore.getState().vaultPath;
     useChatStore.setState({
-        autoContextEnabled: loadAutoContextPreference(
-            useVaultStore.getState().vaultPath,
-        ),
+        autoContextEnabled: loadAutoContextPreference(vaultPath),
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,
         contextUsageBarEnabled: prefs.contextUsageBarEnabled,
         composerFontSize: prefs.composerFontSize,
@@ -12974,7 +13082,8 @@ export function hydrateChatStorePreferences() {
         composerFontFamily: prefs.composerFontFamily,
         chatFontFamily: prefs.chatFontFamily,
         editDiffZoom: prefs.editDiffZoom,
-        historyRetentionDays: prefs.historyRetentionDays,
+        aiStorageScope: loadAiStorageScopePreference(vaultPath),
+        historyRetentionDays: loadHistoryRetentionPreference(vaultPath),
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
     });
 }
@@ -12993,8 +13102,12 @@ export function initializeChatStoreRuntime() {
             aiPrefsSyncTimer = window.setTimeout(() => {
                 aiPrefsSyncTimer = null;
                 const prefs = getNormalizedAiPreferences();
+                const vaultPath = useVaultStore.getState().vaultPath;
+                const historyRetentionDays =
+                    loadHistoryRetentionPreference(vaultPath);
                 useChatStore.setState((state) =>
-                    aiPrefsEqual(state, prefs)
+                    aiPrefsEqual(state, prefs) &&
+                    state.historyRetentionDays === historyRetentionDays
                         ? state
                         : {
                               requireCmdEnterToSend:
@@ -13006,7 +13119,7 @@ export function initializeChatStoreRuntime() {
                               composerFontFamily: prefs.composerFontFamily,
                               chatFontFamily: prefs.chatFontFamily,
                               editDiffZoom: prefs.editDiffZoom,
-                              historyRetentionDays: prefs.historyRetentionDays,
+                              historyRetentionDays,
                               screenshotRetentionSeconds:
                                   prefs.screenshotRetentionSeconds,
                           },
@@ -13015,9 +13128,11 @@ export function initializeChatStoreRuntime() {
             return;
         }
 
+        const vaultPath = useVaultStore.getState().vaultPath;
         if (
-            event.key ===
-            getAutoContextStorageKey(useVaultStore.getState().vaultPath)
+            event.key === getAutoContextStorageKey(vaultPath) ||
+            event.key === getAiStorageScopeKey(vaultPath) ||
+            event.key === getHistoryRetentionStorageKey(vaultPath)
         ) {
             if (autoContextSyncTimer != null) {
                 window.clearTimeout(autoContextSyncTimer);
@@ -13026,7 +13141,7 @@ export function initializeChatStoreRuntime() {
                 autoContextSyncTimer = null;
                 useChatStore
                     .getState()
-                    .syncAutoContextForVault(
+                    .syncVaultScopedAiPreferences(
                         useVaultStore.getState().vaultPath,
                     );
             }, 80);
@@ -13037,7 +13152,7 @@ export function initializeChatStoreRuntime() {
             return;
         }
 
-        useChatStore.getState().syncAutoContextForVault(state.vaultPath);
+        useChatStore.getState().syncVaultScopedAiPreferences(state.vaultPath);
     });
 }
 
@@ -13053,6 +13168,7 @@ export function resetChatStore() {
     _persistedHistoryCacheVaultPath = null;
     _persistedHistoryCacheBySessionId.clear();
     const prefs = getNormalizedAiPreferences();
+    const vaultPath = useVaultStore.getState().vaultPath;
     _queueDrainLocks.clear();
     _pendingStopBySessionId.clear();
     _pendingSessionPersistence.clear();
@@ -13081,9 +13197,7 @@ export function resetChatStore() {
         selectedRuntimeId: null,
         isInitializing: false,
         notePickerOpen: false,
-        autoContextEnabled: loadAutoContextPreference(
-            useVaultStore.getState().vaultPath,
-        ),
+        autoContextEnabled: loadAutoContextPreference(vaultPath),
         requireCmdEnterToSend: prefs.requireCmdEnterToSend,
         contextUsageBarEnabled: prefs.contextUsageBarEnabled,
         composerFontSize: prefs.composerFontSize,
@@ -13091,7 +13205,8 @@ export function resetChatStore() {
         composerFontFamily: prefs.composerFontFamily,
         chatFontFamily: prefs.chatFontFamily,
         editDiffZoom: prefs.editDiffZoom,
-        historyRetentionDays: prefs.historyRetentionDays,
+        aiStorageScope: loadAiStorageScopePreference(vaultPath),
+        historyRetentionDays: loadHistoryRetentionPreference(vaultPath),
         screenshotRetentionSeconds: prefs.screenshotRetentionSeconds,
         composerPartsBySessionId: {},
         queuedMessagesBySessionId: {},

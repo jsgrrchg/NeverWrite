@@ -52,9 +52,19 @@ const invokeMock = vi.mocked(invoke);
 const openUrlMock = vi.mocked(openUrl);
 const AI_PREFS_KEY = "neverwrite.ai.preferences";
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
+const AI_STORAGE_SCOPE_KEY_PREFIX = "neverwrite.ai.storage-scope:";
+const AI_HISTORY_RETENTION_KEY_PREFIX = "neverwrite.ai.history-retention:";
 
 function getAutoContextKey(vaultPath: string | null) {
     return `${AI_AUTO_CONTEXT_KEY_PREFIX}${vaultPath ?? "__global__"}`;
+}
+
+function getAiStorageScopeKey(vaultPath: string | null) {
+    return `${AI_STORAGE_SCOPE_KEY_PREFIX}${vaultPath ?? "__global__"}`;
+}
+
+function getHistoryRetentionKey(vaultPath: string | null) {
+    return `${AI_HISTORY_RETENTION_KEY_PREFIX}${vaultPath ?? "__global__"}`;
 }
 
 function getVisibleBuffer(sessionId: string): TrackedFile[] {
@@ -757,6 +767,155 @@ describe("chatStore", () => {
 
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         expect(useChatStore.getState().autoContextEnabled).toBe(false);
+    });
+
+    it("defaults AI storage scope to device for a vault without a saved preference", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/new" });
+        resetChatStore();
+
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+    });
+
+    it("persists AI storage scope per vault path", () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        useChatStore.getState().setAiStorageScope("vault");
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(localStorage.getItem(getAiStorageScopeKey("/vaults/one"))).toBe(
+            "vault",
+        );
+        expect(localStorage.getItem(AI_PREFS_KEY)).toBeNull();
+    });
+
+    it("normalizes unknown AI storage scope values back to device", () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "shared");
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+    });
+
+    it("reloads AI storage scope when switching vaults", () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        localStorage.setItem(getAiStorageScopeKey("/vaults/two"), "device");
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+
+        useVaultStore.setState({ vaultPath: "/vaults/two" });
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+    });
+
+    it("persists chat history retention per vault and keeps vault values isolated", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        await useChatStore.getState().setHistoryRetentionDays(7);
+
+        expect(useChatStore.getState().historyRetentionDays).toBe(7);
+        expect(localStorage.getItem(getHistoryRetentionKey("/vaults/one"))).toBe(
+            "7",
+        );
+
+        useVaultStore.setState({ vaultPath: "/vaults/two" });
+        expect(useChatStore.getState().historyRetentionDays).toBe(0);
+
+        await useChatStore.getState().setHistoryRetentionDays(30);
+        expect(localStorage.getItem(getHistoryRetentionKey("/vaults/two"))).toBe(
+            "30",
+        );
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        expect(useChatStore.getState().historyRetentionDays).toBe(7);
+    });
+
+    it("falls back to legacy chat history retention when a vault value is invalid", () => {
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ historyRetentionDays: 14 }),
+        );
+        localStorage.setItem(getHistoryRetentionKey("/vaults/one"), "bad");
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        expect(useChatStore.getState().historyRetentionDays).toBe(14);
+    });
+
+    it("syncs legacy chat history retention storage events while no vault value exists", () => {
+        vi.useFakeTimers();
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        expect(useChatStore.getState().historyRetentionDays).toBe(0);
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ historyRetentionDays: 21 }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().historyRetentionDays).toBe(21);
+        vi.useRealTimers();
+    });
+
+    it("keeps vault chat history retention ahead of legacy storage events", () => {
+        vi.useFakeTimers();
+
+        localStorage.setItem(getHistoryRetentionKey("/vaults/one"), "7");
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+
+        localStorage.setItem(
+            AI_PREFS_KEY,
+            JSON.stringify({ historyRetentionDays: 21 }),
+        );
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: AI_PREFS_KEY,
+                newValue: localStorage.getItem(AI_PREFS_KEY),
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().historyRetentionDays).toBe(7);
+        vi.useRealTimers();
+    });
+
+    it("syncs active-vault AI storage scope storage events", () => {
+        vi.useFakeTimers();
+
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        window.dispatchEvent(
+            new StorageEvent("storage", {
+                key: getAiStorageScopeKey("/vaults/one"),
+                newValue: "vault",
+            }),
+        );
+
+        vi.advanceTimersByTime(80);
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        vi.useRealTimers();
     });
 
     it("restores persisted AI font families from preferences", () => {

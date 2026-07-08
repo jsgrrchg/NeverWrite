@@ -22,6 +22,7 @@ import {
     type RecentVault,
 } from "../../app/store/vaultStore";
 import { useChatStore } from "../ai/store/chatStore";
+import type { AIStorageScope } from "../ai/store/chatStore";
 import { useSpellcheckStore } from "../spellcheck/store";
 import { getShortcutSettingsEntries } from "../../app/shortcuts/registry";
 import {
@@ -3921,6 +3922,8 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
     const setHistoryRetentionDays = useChatStore(
         (s) => s.setHistoryRetentionDays,
     );
+    const aiStorageScope = useChatStore((s) => s.aiStorageScope);
+    const setAiStorageScope = useChatStore((s) => s.setAiStorageScope);
     const sendShortcut = formatPrimaryShortcut("Enter", getDesktopPlatform());
     const fontKeywords = EDITOR_FONT_FAMILY_OPTIONS.flatMap((option) => [
         option.value,
@@ -3941,11 +3944,20 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
         ],
     );
     const showChat = sectionHasSettingsSearchMatches(searchQuery, "Chat", [
+        [
+            "Store AI chats inside this vault",
+            "AI chat history and pasted AI attachments will sync or be shared with this vault. Keep this off for shared or cloud-synced vaults.",
+            "local",
+            "device",
+            "vault",
+            "sync",
+            "attachments",
+        ],
         ["Chat font family", "Font used for messages in the chat.", ...fontKeywords],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
         [
             "Chat history retention",
-            "How long saved chat histories stay on disk before they are automatically deleted.",
+            "How long saved chat histories stay in the selected AI storage location before they are automatically deleted.",
             "Forever",
             "1 day",
             "7 days",
@@ -3972,7 +3984,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             ],
             [
                 "Screenshot retention",
-                "How long pasted screenshots stay in the AI composer before they are removed automatically.",
+                "How long pasted screenshots stay in the AI composer draft before they are removed automatically.",
                 ...SCREENSHOT_RETENTION_KEYWORDS,
             ],
             [
@@ -4013,6 +4025,24 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Chat"
+                label="Store AI chats inside this vault"
+                description="AI chat history and pasted AI attachments will sync or be shared with this vault. Keep this off for shared or cloud-synced vaults."
+                keywords={["local", "device", "vault", "sync", "attachments"]}
+                control={
+                    <Toggle
+                        value={aiStorageScope === "vault"}
+                        onChange={(enabled) => {
+                            const next: AIStorageScope = enabled
+                                ? "vault"
+                                : "device";
+                            setAiStorageScope(next);
+                        }}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Chat"
                 label="Chat font family"
                 description="Font used for messages in the chat."
                 keywords={fontKeywords}
@@ -4044,7 +4074,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 searchQuery={searchQuery}
                 section="Chat"
                 label="Chat history retention"
-                description="How long saved chat histories stay on disk before they are automatically deleted."
+                description="How long saved chat histories stay in the selected AI storage location before they are automatically deleted."
                 keywords={["Forever", "1 day", "7 days", "30 days", "90 days", "1 year"]}
                 control={
                     <SelectField
@@ -4094,7 +4124,7 @@ function AISettings({ searchQuery }: { searchQuery: SettingsSearchQuery }) {
                 searchQuery={searchQuery}
                 section="Composer"
                 label="Screenshot retention"
-                description="How long pasted screenshots stay in the AI composer before they are removed automatically."
+                description="How long pasted screenshots stay in the AI composer draft before they are removed automatically."
                 keywords={SCREENSHOT_RETENTION_KEYWORDS}
                 control={
                     <SelectField
@@ -4600,6 +4630,12 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "accept",
         "reject",
         "Chat",
+        "Store AI chats inside this vault",
+        "local",
+        "device",
+        "vault",
+        "sync",
+        "attachments",
         "Chat font family",
         "Chat font size",
         "Chat history retention",
