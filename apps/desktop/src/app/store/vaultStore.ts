@@ -180,6 +180,7 @@ function hasMarkdownExtension(path: string) {
 const LAST_VAULT_KEY = "neverwrite:lastVaultPath";
 const RECENT_VAULTS_KEY = "neverwrite:recentVaults";
 const MAX_RECENT_VAULTS = 100;
+const AI_HISTORY_STORAGE_SCOPES = ["device", "vault"] as const;
 const OPEN_STATE_POLL_MS = 120;
 
 const IDLE_OPEN_STATE: VaultOpenState = {
@@ -405,14 +406,17 @@ export async function removeVaultFromList(path: string) {
         // Snapshot may not exist — that's fine
     }
 
-    // Delete AI session histories from disk
+    // Delete AI session histories from both storage roots.
     if (useVaultStore.getState().vaultPath === path) {
-        try {
-            await invoke("ai_delete_all_session_histories", {
-                vaultPath: path,
-            });
-        } catch {
-            // No histories or vault not open — that's fine
+        for (const storageScope of AI_HISTORY_STORAGE_SCOPES) {
+            try {
+                await invoke("ai_delete_all_session_histories", {
+                    vaultPath: path,
+                    storageScope,
+                });
+            } catch {
+                // No histories or vault not open — that's fine
+            }
         }
     }
 }
