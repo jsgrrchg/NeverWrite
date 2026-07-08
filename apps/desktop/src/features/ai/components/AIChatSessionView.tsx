@@ -40,6 +40,7 @@ import {
     type QueuedChatMessage,
 } from "../types";
 import {
+    loadAiStorageScopePreference,
     REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
     useChatStore,
 } from "../store/chatStore";
@@ -393,16 +394,33 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     String(now.getSeconds()).padStart(2, "0"),
                 ].join("");
                 const fileName = `pasted-image-${ts}.${ext}`;
+                const sessionVaultPath =
+                    session?.vaultPath ?? useVaultStore.getState().vaultPath;
+                const storageScope =
+                    loadAiStorageScopePreference(sessionVaultPath);
                 const saved = await vaultInvoke<{
                     path: string;
-                    relative_path: string;
+                    relative_path?: string;
                     file_name: string;
                     mime_type: string | null;
-                }>("save_vault_binary_file", {
-                    relativeDir: "assets/chat",
-                    fileName,
-                    bytes,
-                });
+                }>(
+                    storageScope === "device"
+                        ? "ai_save_attachment"
+                        : "save_vault_binary_file",
+                    storageScope === "device"
+                        ? {
+                              vaultPath: sessionVaultPath,
+                              sessionId,
+                              fileName,
+                              mimeType: file.type,
+                              bytes,
+                          }
+                        : {
+                              relativeDir: "assets/chat",
+                              fileName,
+                              bytes,
+                          },
+                );
                 const timeLabel = `Screenshot ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} hrs`;
                 const latestParts =
                     useChatStore.getState().composerPartsBySessionId[
@@ -414,15 +432,22 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     runtimeId,
                 );
                 if (!latestValidation.ok) {
-                    await moveVaultEntryToTrash(saved.relative_path).catch(
-                        (cleanupError) => {
-                            console.error(
-                                "[chat] Failed to remove rejected pasted image:",
-                                cleanupError,
-                            );
-                        },
-                    );
-                    await refreshEntries();
+                    const cleanup =
+                        storageScope === "device"
+                            ? vaultInvoke("ai_delete_attachment", {
+                                  vaultPath: sessionVaultPath,
+                                  path: saved.path,
+                              })
+                            : moveVaultEntryToTrash(saved.relative_path ?? "");
+                    await cleanup.catch((cleanupError) => {
+                        console.error(
+                            "[chat] Failed to remove rejected pasted image:",
+                            cleanupError,
+                        );
+                    });
+                    if (storageScope === "vault") {
+                        await refreshEntries();
+                    }
                     setImageAttachmentNotice(
                         imageAttachmentValidationMessage(
                             latestValidation.reason,
@@ -431,7 +456,9 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                     );
                     return;
                 }
-                await refreshEntries();
+                if (storageScope === "vault") {
+                    await refreshEntries();
+                }
                 chatActions.setComposerParts(
                     appendScreenshotPart(latestParts, {
                         filePath: saved.path,
@@ -447,7 +474,13 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 setImageAttachmentNotice("Image could not be attached");
             }
         },
-        [chatActions, refreshEntries, session?.runtimeId, sessionId],
+        [
+            chatActions,
+            refreshEntries,
+            session?.runtimeId,
+            session?.vaultPath,
+            sessionId,
+        ],
     );
 
     useEffect(() => {

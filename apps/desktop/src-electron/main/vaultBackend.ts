@@ -131,6 +131,59 @@ const openStates = new Map<string, VaultOpenState>();
 const snapshots = new Map<string, VaultSnapshot>();
 const revisions = new Map<string, number>();
 
+function sha256Hex(value: string) {
+    return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function sanitizeAiAttachmentDirName(value: string) {
+    const sanitized = value.replace(/[^A-Za-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+    return sanitized || "draft";
+}
+
+function sanitizeAiAttachmentFileName(fileName: string) {
+    const leaf = path.basename(fileName);
+    const sanitized = leaf
+        .replace(/[^A-Za-z0-9_.-]/g, "-")
+        .replace(/^[.-]+|[.-]+$/g, "");
+    if (!sanitized) {
+        throw new Error("Attachment file name is required");
+    }
+    return sanitized;
+}
+
+function aiAttachmentsRoot(vaultPath: string) {
+    const normalizedVaultPath = toAbsoluteVaultPath(vaultPath);
+    return path.join(
+        app.getPath("userData"),
+        "ai",
+        "attachments",
+        sha256Hex(normalizedVaultPath),
+    );
+}
+
+async function uniqueFilePath(dir: string, fileName: string) {
+    const candidate = path.join(dir, fileName);
+    try {
+        await fs.access(candidate);
+    } catch {
+        return candidate;
+    }
+
+    const parsed = path.parse(fileName);
+    for (let index = 1; index < 1000; index += 1) {
+        const next = path.join(
+            dir,
+            `${parsed.name}-${index}${parsed.ext}`,
+        );
+        try {
+            await fs.access(next);
+        } catch {
+            return next;
+        }
+    }
+    throw new Error("Could not allocate attachment file name");
+}
+
 const VAULT_EDITOR_COMMANDS = new Set([
     "ping",
     "open_vault",
@@ -145,6 +198,8 @@ const VAULT_EDITOR_COMMANDS = new Set([
     "read_vault_file",
     "save_vault_file",
     "save_vault_binary_file",
+    "ai_save_attachment",
+    "ai_delete_attachment",
     "read_note",
     "save_note",
     "create_note",
@@ -972,6 +1027,10 @@ export class ElectronVaultBackend {
                 return buildVaultFileDetail(String(args.vaultPath ?? ""), String(args.relativePath ?? args.relative_path ?? ""));
             case "save_vault_file":
                 return this.saveVaultFile(args);
+            case "ai_save_attachment":
+                return this.saveAiAttachment(args);
+            case "ai_delete_attachment":
+                return this.deleteAiAttachment(args);
             case "read_note":
                 return readNoteDetail(String(args.vaultPath ?? ""), String(args.noteId ?? args.note_id ?? ""));
             case "save_note":
@@ -1251,6 +1310,61 @@ export class ElectronVaultBackend {
             content,
         }));
         return detail;
+    }
+
+    async saveAiAttachment(args: Record<string, unknown>) {
+        const vaultPath = String(args.vaultPath ?? args.vault_path ?? "");
+        const sessionId = String(args.sessionId ?? args.session_id ?? "");
+        const fileName = sanitizeAiAttachmentFileName(
+            String(args.fileName ?? args.file_name ?? ""),
+        );
+        const bytes = Array.isArray(args.bytes)
+            ? Buffer.from(args.bytes as number[])
+            : Buffer.from([]);
+        const root = aiAttachmentsRoot(vaultPath);
+        const dir = path.join(root, sanitizeAiAttachmentDirName(sessionId));
+        const target = await uniqueFilePath(dir, fileName);
+
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, bytes);
+
+        return {
+            path: target,
+            relative_path: path.relative(root, target),
+            file_name: fileName,
+            mime_type:
+                typeof args.mimeType === "string"
+                    ? args.mimeType
+                    : typeof args.mime_type === "string"
+                      ? args.mime_type
+                      : null,
+        };
+    }
+
+    async deleteAiAttachment(args: Record<string, unknown>) {
+        const vaultPath = String(args.vaultPath ?? args.vault_path ?? "");
+        const target = String(args.path ?? "");
+        if (!target) return null;
+
+        const root = aiAttachmentsRoot(vaultPath);
+        const [canonicalRoot, canonicalTarget] = await Promise.all([
+            fs.realpath(root),
+            fs.realpath(target).catch((error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return null;
+                throw error;
+            }),
+        ]);
+        if (!canonicalTarget) return null;
+        const relative = path.relative(canonicalRoot, canonicalTarget);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+            throw new Error("Attachment path is outside AI app data");
+        }
+
+        const stat = await fs.stat(canonicalTarget);
+        if (stat.isFile()) {
+            await fs.unlink(canonicalTarget);
+        }
+        return null;
     }
 
     async saveNote(args: Record<string, unknown>) {

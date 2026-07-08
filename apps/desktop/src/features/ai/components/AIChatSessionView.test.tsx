@@ -562,6 +562,127 @@ describe("AIChatSessionView", () => {
         );
     });
 
+    it("stores pasted images in device app data by default without refreshing vault entries", async () => {
+        setupWorkspaceSession();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_save_attachment") {
+                return {
+                    path: "/app-data/ai/attachments/vault-hash/session-a/pasted-image.png",
+                    relative_path: "session-a/pasted-image.png",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_attachment",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                sessionId: "session-a",
+                fileName: expect.stringMatching(/^pasted-image-.*\.png$/),
+                mimeType: "image/png",
+                bytes: [0, 0, 0, 0],
+            }),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "save_vault_binary_file",
+            expect.anything(),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "list_vault_entries",
+            expect.anything(),
+        );
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    type: "screenshot",
+                    filePath:
+                        "/app-data/ai/attachments/vault-hash/session-a/pasted-image.png",
+                    mimeType: "image/png",
+                }),
+            ]),
+        );
+    });
+
+    it("stores pasted images in vault assets when vault scope is enabled", async () => {
+        setupWorkspaceSession();
+        useChatStore.getState().setAiStorageScope("vault");
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "save_vault_binary_file") {
+                return {
+                    path: "/vault/assets/chat/pasted-image.png",
+                    relative_path: "assets/chat/pasted-image.png",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "list_vault_entries") {
+                return [];
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "save_vault_binary_file",
+            expect.objectContaining({
+                relativeDir: "assets/chat",
+                fileName: expect.stringMatching(/^pasted-image-.*\.png$/),
+                bytes: [0, 0, 0, 0],
+            }),
+        );
+        expect(invokeMock).toHaveBeenCalledWith(
+            "list_vault_entries",
+            expect.anything(),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_save_attachment",
+            expect.anything(),
+        );
+        expect(
+            useChatStore.getState().composerPartsBySessionId["session-a"],
+        ).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    type: "screenshot",
+                    filePath: "/vault/assets/chat/pasted-image.png",
+                    mimeType: "image/png",
+                }),
+            ]),
+        );
+    });
+
     it("shows visible feedback for unsupported pasted image types", async () => {
         setupWorkspaceSession();
         renderComponent(<AIChatSessionView paneId="primary" />);
@@ -621,8 +742,9 @@ describe("AIChatSessionView", () => {
         );
     });
 
-    it("removes a pasted image file when the final attachment validation loses a race", async () => {
+    it("removes a vault pasted image file when the final attachment validation loses a race", async () => {
         setupWorkspaceSession();
+        useChatStore.getState().setAiStorageScope("vault");
         invokeMock.mockImplementation(async (command) => {
             if (command === "save_vault_binary_file") {
                 useChatStore.setState((state) => ({
@@ -682,5 +804,71 @@ describe("AIChatSessionView", () => {
         expect(
             useChatStore.getState().composerPartsBySessionId["session-a"],
         ).toHaveLength(MAX_IMAGE_ATTACHMENTS_PER_MESSAGE);
+    });
+
+    it("removes a device-local pasted image file when the final attachment validation loses a race", async () => {
+        setupWorkspaceSession();
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_save_attachment") {
+                useChatStore.setState((state) => ({
+                    ...state,
+                    composerPartsBySessionId: {
+                        "session-a": Array.from(
+                            { length: MAX_IMAGE_ATTACHMENTS_PER_MESSAGE },
+                            (_, index) => ({
+                                id: `shot-${index}`,
+                                type: "screenshot" as const,
+                                filePath: `/app-data/shot-${index}.png`,
+                                mimeType: "image/png",
+                                label: `Screenshot ${index}`,
+                            }),
+                        ),
+                    },
+                }));
+                return {
+                    path: "/app-data/ai/attachments/vault-hash/session-a/pasted-image.png",
+                    relative_path: "session-a/pasted-image.png",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "ai_delete_attachment") {
+                return undefined;
+            }
+            return undefined;
+        });
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_attachment",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                path: "/app-data/ai/attachments/vault-hash/session-a/pasted-image.png",
+            }),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "move_vault_entry_to_trash",
+            expect.anything(),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "list_vault_entries",
+            expect.anything(),
+        );
+        expect(screen.getByRole("status")).toHaveTextContent(
+            "Codex supports up to 12 images per message",
+        );
     });
 });

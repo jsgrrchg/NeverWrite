@@ -789,6 +789,8 @@ impl NativeBackend {
             }
             "save_vault_file" => self.save_vault_file(args),
             "save_vault_binary_file" => self.save_vault_binary_file(args),
+            "ai_save_attachment" => self.ai_save_attachment(args),
+            "ai_delete_attachment" => self.ai_delete_attachment(args),
             "copy_external_file_to_vault" => self.copy_external_file_to_vault(args),
             "read_note" => {
                 let state = self.state(&args)?;
@@ -1541,6 +1543,59 @@ impl NativeBackend {
         );
         self.emit_vault_change(change);
         Ok(json!(detail))
+    }
+
+    fn ai_save_attachment(&mut self, args: Value) -> Result<Value, String> {
+        let vault_path = required_string(&args, &["vaultPath", "vault_path"])?;
+        let session_id = required_string(&args, &["sessionId", "session_id"])?;
+        let file_name = required_string(&args, &["fileName", "file_name"])?;
+        let mime_type = optional_nullable_string(&args, &["mimeType", "mime_type"]);
+        let bytes = bytes_arg(&args, "bytes")?;
+        let vault_key = normalize_vault_path(&vault_path)?;
+        let file_name = sanitize_ai_attachment_file_name(&file_name)?;
+        let session_dir = sanitize_ai_attachment_dir_name(&session_id);
+        let root = resolve_ai_attachments_root(&vault_key, &app_data_dir());
+        let path = unique_file_path(&root.join(session_dir), &file_name)?;
+
+        fs::create_dir_all(
+            path.parent()
+                .ok_or_else(|| "Attachment path has no parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+
+        Ok(json!(SavedBinaryFileDetail {
+            path: path.to_string_lossy().to_string(),
+            relative_path: path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string(),
+            file_name,
+            mime_type,
+        }))
+    }
+
+    fn ai_delete_attachment(&mut self, args: Value) -> Result<Value, String> {
+        let vault_path = required_string(&args, &["vaultPath", "vault_path"])?;
+        let path = required_string(&args, &["path"])?;
+        let vault_key = normalize_vault_path(&vault_path)?;
+        let root = resolve_ai_attachments_root(&vault_key, &app_data_dir());
+        let target = PathBuf::from(path);
+        if !target.exists() {
+            return Ok(json!(null));
+        }
+        let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+        let canonical_target = target.canonicalize().map_err(|error| error.to_string())?;
+
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err("Attachment path is outside AI app data".to_string());
+        }
+        if canonical_target.is_file() {
+            fs::remove_file(canonical_target).map_err(|error| error.to_string())?;
+        }
+
+        Ok(json!(null))
     }
 
     fn copy_external_file_to_vault(&mut self, args: Value) -> Result<Value, String> {
@@ -2640,6 +2695,81 @@ fn resolve_ai_sessions_root(
     }
 }
 
+fn resolve_ai_attachments_root(normalized_vault_key: &str, app_data_root: &Path) -> PathBuf {
+    app_data_root
+        .join("ai")
+        .join("attachments")
+        .join(sha256_hex(normalized_vault_key.as_bytes()))
+}
+
+fn sanitize_ai_attachment_dir_name(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "draft".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn sanitize_ai_attachment_file_name(file_name: &str) -> Result<String, String> {
+    let leaf = Path::new(file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Attachment file name is required".to_string())?;
+    let sanitized: String = leaf
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches(['.', '-']);
+    if trimmed.is_empty() {
+        Err("Attachment file name is required".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn unique_file_path(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("file");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for index in 1..1000 {
+        let next_name = match extension {
+            Some(extension) if !extension.is_empty() => format!("{stem}-{index}.{extension}"),
+            _ => format!("{stem}-{index}"),
+        };
+        let next = dir.join(next_name);
+        if !next.exists() {
+            return Ok(next);
+        }
+    }
+
+    Err("Could not allocate attachment file name".to_string())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -3449,6 +3579,87 @@ mod tests {
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .is_some_and(|hash| hash.len() == 64));
+    }
+
+    #[test]
+    fn ai_attachment_commands_route_to_device_app_data() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let saved = invoke(
+            &backend,
+            "ai_save_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "sessionId": "session/a",
+                "fileName": "../pasted image.png",
+                "mimeType": "image/png",
+                "bytes": [137, 80, 78, 71]
+            }),
+        )
+        .unwrap();
+        let saved_path = PathBuf::from(saved["path"].as_str().unwrap());
+
+        assert!(saved_path.starts_with(app_data_dir.path()));
+        assert!(!saved_path.starts_with(vault_dir.path()));
+        assert!(saved_path.is_file());
+        assert_eq!(fs::read(&saved_path).unwrap(), vec![137, 80, 78, 71]);
+        assert_eq!(saved["file_name"].as_str(), Some("pasted-image.png"));
+        assert_eq!(saved["mime_type"].as_str(), Some("image/png"));
+        assert!(!vault_dir.path().join("assets").join("chat").exists());
+
+        invoke(
+            &backend,
+            "ai_delete_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "path": saved_path
+            }),
+        )
+        .unwrap();
+
+        assert!(!saved_path.exists());
+    }
+
+    #[test]
+    fn ai_delete_attachment_rejects_paths_outside_device_app_data() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let outside_file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside_file.path(), b"keep me").unwrap();
+
+        let result = invoke(
+            &backend,
+            "ai_delete_attachment",
+            json!({
+                "vaultPath": vault_path,
+                "path": outside_file.path()
+            }),
+        );
+
+        assert!(result.is_err());
+        assert!(outside_file.path().exists());
     }
 
     #[test]

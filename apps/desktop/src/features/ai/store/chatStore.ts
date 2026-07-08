@@ -398,7 +398,9 @@ function normalizeAiStorageScope(value: unknown): AIStorageScope {
     return value === "vault" ? "vault" : "device";
 }
 
-function loadAiStorageScopePreference(vaultPath: string | null): AIStorageScope {
+export function loadAiStorageScopePreference(
+    vaultPath: string | null,
+): AIStorageScope {
     try {
         return normalizeAiStorageScope(
             safeStorageGetItem(getAiStorageScopeKey(vaultPath)),
