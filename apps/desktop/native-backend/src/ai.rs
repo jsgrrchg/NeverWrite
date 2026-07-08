@@ -57,6 +57,7 @@ use serde_json::{json, Value};
 use tokio::{process::Command, runtime::Builder, sync::oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::app_paths::app_data_dir;
 use crate::RpcOutput;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -3738,9 +3739,7 @@ fn run_acp_auth_command(spec: AcpProcessSpec, auth_command: AcpAuthCommand) -> R
             }
         };
         let result = match flavor {
-            AcpProtocolFlavor::Current => {
-                runtime.block_on(run_acp_auth_inner(spec, auth_command))
-            }
+            AcpProtocolFlavor::Current => runtime.block_on(run_acp_auth_inner(spec, auth_command)),
             AcpProtocolFlavor::Legacy12 => {
                 runtime.block_on(run_acp12_auth_inner(spec, auth_command))
             }
@@ -7115,47 +7114,6 @@ fn home_dir() -> Option<PathBuf> {
     {
         std::env::var_os("HOME").map(PathBuf::from)
     }
-}
-
-fn app_data_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("NEVERWRITE_APP_DATA_DIR") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("NeverWrite");
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join("NeverWrite");
-        }
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
-            return PathBuf::from(xdg_data_home).join("NeverWrite");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("NeverWrite");
-        }
-    }
-
-    std::env::temp_dir().join("NeverWrite")
 }
 
 fn resolve_command_candidate(raw: &str, source: AiRuntimeBinarySource) -> ResolvedAcpCommand {
@@ -12176,10 +12134,7 @@ mod tests {
             KILO_RUNTIME_ID,
             OPENCODE_RUNTIME_ID,
         ] {
-            assert_eq!(
-                acp_protocol_flavor(runtime_id),
-                AcpProtocolFlavor::Current
-            );
+            assert_eq!(acp_protocol_flavor(runtime_id), AcpProtocolFlavor::Current);
         }
     }
 
@@ -12575,7 +12530,10 @@ mod tests {
 
         assert_eq!(option.label, "Grid layout");
         assert_eq!(option.value, "Grid layout");
-        assert_eq!(option.description.as_deref(), Some("Structured description"));
+        assert_eq!(
+            option.description.as_deref(),
+            Some("Structured description")
+        );
     }
 
     #[test]

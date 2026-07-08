@@ -175,7 +175,7 @@ const AI_RUNTIME_CACHE_KEY = "neverwrite.ai.runtime-catalog";
 export type AIStorageScope = "device" | "vault";
 type PersistedSessionHistorySummary = Omit<PersistedSessionHistory, "messages">;
 type RuntimeTextMessageRole = Extract<AIChatRole, "user" | "assistant">;
-let _persistedHistoryCacheVaultPath: string | null = null;
+let _persistedHistoryCacheKey: string | null = null;
 let _persistedHistoryCacheBySessionId = new Map<
     string,
     PersistedSessionHistorySummary
@@ -524,9 +524,13 @@ function saveRuntimeCatalogCache(
 
 function setPersistedHistoryCache(
     vaultPath: string | null,
+    storageScope: AIStorageScope,
     histories: PersistedSessionHistory[],
 ) {
-    _persistedHistoryCacheVaultPath = vaultPath ?? null;
+    _persistedHistoryCacheKey = getPersistedHistoryCacheKey(
+        vaultPath,
+        storageScope,
+    );
     _persistedHistoryCacheBySessionId = new Map(
         histories.map((history) => [
             history.session_id,
@@ -537,11 +541,15 @@ function setPersistedHistoryCache(
 
 function upsertPersistedHistoryCache(
     vaultPath: string | null,
+    storageScope: AIStorageScope,
     history: PersistedSessionHistory,
 ) {
     const summary = summarizePersistedHistory(history);
-    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
-        setPersistedHistoryCache(vaultPath, [history]);
+    if (
+        _persistedHistoryCacheKey !==
+        getPersistedHistoryCacheKey(vaultPath, storageScope)
+    ) {
+        setPersistedHistoryCache(vaultPath, storageScope, [history]);
         return;
     }
 
@@ -550,21 +558,31 @@ function upsertPersistedHistoryCache(
 
 function deletePersistedHistoryCacheEntry(
     vaultPath: string | null,
+    storageScope: AIStorageScope,
     historySessionId: string | null | undefined,
 ) {
     if (!historySessionId) {
         return;
     }
 
-    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+    if (
+        _persistedHistoryCacheKey !==
+        getPersistedHistoryCacheKey(vaultPath, storageScope)
+    ) {
         return;
     }
 
     _persistedHistoryCacheBySessionId.delete(historySessionId);
 }
 
-function clearPersistedHistoryCache(vaultPath: string | null) {
-    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+function clearPersistedHistoryCache(
+    vaultPath: string | null,
+    storageScope: AIStorageScope,
+) {
+    if (
+        _persistedHistoryCacheKey !==
+        getPersistedHistoryCacheKey(vaultPath, storageScope)
+    ) {
         return;
     }
 
@@ -573,17 +591,28 @@ function clearPersistedHistoryCache(vaultPath: string | null) {
 
 function getPersistedHistoryFromCache(
     vaultPath: string | null,
+    storageScope: AIStorageScope,
     historySessionId: string | null | undefined,
 ) {
     if (!historySessionId) {
         return null;
     }
 
-    if (_persistedHistoryCacheVaultPath !== (vaultPath ?? null)) {
+    if (
+        _persistedHistoryCacheKey !==
+        getPersistedHistoryCacheKey(vaultPath, storageScope)
+    ) {
         return null;
     }
 
     return _persistedHistoryCacheBySessionId.get(historySessionId) ?? null;
+}
+
+function getPersistedHistoryCacheKey(
+    vaultPath: string | null,
+    storageScope: AIStorageScope,
+) {
+    return `${vaultPath ?? ""}:${storageScope}`;
 }
 
 function getPersistedHistorySessionId(sessionId: string) {
@@ -917,6 +946,7 @@ async function ensureSessionAgentCatalogLoaded(
     if (!sessionHasAgentCatalog(session)) {
         const persisted = getPersistedHistoryFromCache(
             session.vaultPath ?? useVaultStore.getState().vaultPath,
+            useChatStore.getState().aiStorageScope,
             session.historySessionId,
         );
         if (persisted) {
@@ -3234,9 +3264,11 @@ async function replaceEmptySessionForAdditionalRoots(
             () => {},
         );
         if (vaultPath) {
+            const storageScope = useChatStore.getState().aiStorageScope;
             await aiDeleteSessionHistory(
                 vaultPath,
                 replacementSession.historySessionId,
+                storageScope,
             ).catch(() => {});
         }
         return sessionId;
@@ -3266,9 +3298,11 @@ async function replaceEmptySessionForAdditionalRoots(
     if (!migrated) {
         await aiDeleteRuntimeSession(migratedSession.sessionId).catch(() => {});
         if (vaultPath) {
+            const storageScope = useChatStore.getState().aiStorageScope;
             await aiDeleteSessionHistory(
                 vaultPath,
                 migratedSession.historySessionId,
+                storageScope,
             ).catch(() => {});
         }
         return sessionId;
@@ -3277,9 +3311,11 @@ async function replaceEmptySessionForAdditionalRoots(
     await persistSessionNow(migratedSession);
     await aiDeleteRuntimeSession(sessionId).catch(() => {});
     if (vaultPath) {
+        const storageScope = useChatStore.getState().aiStorageScope;
         await aiDeleteSessionHistory(
             vaultPath,
             latestSession.historySessionId,
+            storageScope,
         ).catch(() => {});
     }
 
@@ -6223,11 +6259,16 @@ async function persistSessionNow(session: AIChatSession) {
 
     const historyRetentionDays = useChatStore.getState().historyRetentionDays;
     try {
+        const storageScope = useChatStore.getState().aiStorageScope;
         const history = toPersistedHistory(session);
-        await aiSaveSessionHistory(vaultPath, history);
-        upsertPersistedHistoryCache(vaultPath, history);
+        await aiSaveSessionHistory(vaultPath, history, storageScope);
+        upsertPersistedHistoryCache(vaultPath, storageScope, history);
         if (historyRetentionDays > 0) {
-            await aiPruneSessionHistories(vaultPath, historyRetentionDays);
+            await aiPruneSessionHistories(
+                vaultPath,
+                historyRetentionDays,
+                storageScope,
+            );
         }
     } catch (error) {
         logWarn("chat-store", "Failed to persist session history", error);
@@ -6781,7 +6822,11 @@ function persistCurrentSession(sessionId: string) {
 async function pruneSessionHistoriesForCurrentVault(maxAgeDays: number) {
     const vaultPath = useVaultStore.getState().vaultPath;
     if (!vaultPath || maxAgeDays <= 0) return 0;
-    return aiPruneSessionHistories(vaultPath, maxAgeDays);
+    return aiPruneSessionHistories(
+        vaultPath,
+        maxAgeDays,
+        useChatStore.getState().aiStorageScope,
+    );
 }
 
 async function waitForPersistedTranscriptIdle(sessionId: string) {
@@ -6940,6 +6985,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 getRuntimeHistorySessionId(session),
                 startIndex,
                 limit,
+                useChatStore.getState().aiStorageScope,
             );
             if (!isPersistedHistoryPage(payload)) {
                 throw new Error(
@@ -7646,17 +7692,22 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const aiStorageScope = loadAiStorageScopePreference(vaultPath);
             const historyRetentionDays =
                 loadHistoryRetentionPreference(vaultPath);
-            set((state) =>
-                state.autoContextEnabled === autoContextEnabled &&
-                state.aiStorageScope === aiStorageScope &&
-                state.historyRetentionDays === historyRetentionDays
+            set((state) => {
+                if (state.aiStorageScope !== aiStorageScope) {
+                    _persistedHistoryCacheKey = null;
+                    _persistedHistoryCacheBySessionId.clear();
+                }
+
+                return state.autoContextEnabled === autoContextEnabled &&
+                    state.aiStorageScope === aiStorageScope &&
+                    state.historyRetentionDays === historyRetentionDays
                     ? state
                     : {
                           autoContextEnabled,
                           aiStorageScope,
                           historyRetentionDays,
-                      },
-            );
+                      };
+            });
         },
 
         setSelectedRuntime: (runtimeId) => {
@@ -7817,23 +7868,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             await aiPruneSessionHistories(
                                 vaultPath,
                                 retentionDays,
+                                get().aiStorageScope,
                             );
                         }
                         histories = (
                             await aiLoadSessionHistories(vaultPath, {
                                 includeMessages: false,
+                                storageScope: get().aiStorageScope,
                             })
                         ).filter(hasPersistedHistoryContent);
                         persistedBySessionId = new Map(
                             histories.map((h) => [h.session_id, h]),
                         );
-                        setPersistedHistoryCache(vaultPath, histories);
+                        setPersistedHistoryCache(
+                            vaultPath,
+                            get().aiStorageScope,
+                            histories,
+                        );
                     } catch {
                         // Disk histories unavailable, continue without them
-                        setPersistedHistoryCache(vaultPath, []);
+                        setPersistedHistoryCache(
+                            vaultPath,
+                            get().aiStorageScope,
+                            [],
+                        );
                     }
                 } else {
-                    setPersistedHistoryCache(null, []);
+                    setPersistedHistoryCache(null, get().aiStorageScope, []);
                 }
 
                 if (sessions.length || histories.length) {
@@ -8098,6 +8159,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
                     const persisted = getPersistedHistoryFromCache(
                         currentSession.vaultPath ?? vaultPath,
+                        get().aiStorageScope,
                         tab.historySessionId,
                     );
                     if (persisted) {
@@ -10223,6 +10285,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const vaultPath = useVaultStore.getState().vaultPath;
                 const persisted = getPersistedHistoryFromCache(
                     vaultPath,
+                    get().aiStorageScope,
                     persistedHistorySessionId,
                 );
                 if (persisted) {
@@ -10256,6 +10319,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const persisted = fallbackHistorySessionId
                     ? getPersistedHistoryFromCache(
                           vaultPath,
+                          get().aiStorageScope,
                           fallbackHistorySessionId,
                       )
                     : null;
@@ -12474,11 +12538,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 await aiDeleteRuntimeSession(sessionId).catch(() => {});
             }
             if (vaultPath) {
-                await aiDeleteSessionHistory(vaultPath, historySessionId).catch(
-                    () => {},
-                );
+                await aiDeleteSessionHistory(
+                    vaultPath,
+                    historySessionId,
+                    get().aiStorageScope,
+                ).catch(() => {});
             }
-            deletePersistedHistoryCacheEntry(vaultPath, historySessionId);
+            deletePersistedHistoryCacheEntry(
+                vaultPath,
+                get().aiStorageScope,
+                historySessionId,
+            );
             useEditorStore.getState().closeReview(sessionId);
             useEditorStore.getState().closeChat(sessionId);
             useChatTabsStore.getState().removeTabsForSession(sessionId);
@@ -12581,9 +12651,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
             );
             await aiDeleteRuntimeSessionsForVault(vaultPath).catch(() => {});
             if (vaultPath) {
-                await aiDeleteAllSessionHistories(vaultPath).catch(() => {});
+                await aiDeleteAllSessionHistories(
+                    vaultPath,
+                    get().aiStorageScope,
+                ).catch(() => {});
             }
-            clearPersistedHistoryCache(vaultPath);
+            clearPersistedHistoryCache(vaultPath, get().aiStorageScope);
             // Close all review and chat tabs before clearing sessions
             const editor = useEditorStore.getState();
             for (const sessionId of Object.keys(get().sessionsById)) {
@@ -12956,7 +13029,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         setAiStorageScope: (scope) => {
             const next = normalizeAiStorageScope(scope);
-            set({ aiStorageScope: next });
+            set((state) => {
+                if (state.aiStorageScope === next) {
+                    return state;
+                }
+                _persistedHistoryCacheKey = null;
+                _persistedHistoryCacheBySessionId.clear();
+                return { aiStorageScope: next };
+            });
             saveAiStorageScopePreference(
                 useVaultStore.getState().vaultPath,
                 next,
@@ -13011,6 +13091,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const newHistoryId = await aiForkSessionHistory(
                     vaultPath,
                     sourceHistoryId,
+                    state.aiStorageScope,
                 );
 
                 const forkedTitle = `${getSessionTitle(session)} (fork)`;
@@ -13165,7 +13246,7 @@ export function resetChatStore() {
     } catch {
         // ignore
     }
-    _persistedHistoryCacheVaultPath = null;
+    _persistedHistoryCacheKey = null;
     _persistedHistoryCacheBySessionId.clear();
     const prefs = getNormalizedAiPreferences();
     const vaultPath = useVaultStore.getState().vaultPath;

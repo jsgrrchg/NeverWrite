@@ -800,19 +800,22 @@ export async function listenToAiImageGeneration(
 export async function aiSaveSessionHistory(
     vaultPath: string,
     history: PersistedSessionHistory,
+    storageScope?: "device" | "vault",
 ): Promise<void> {
-    await invoke("ai_save_session_history", { vaultPath, history });
+    await invoke("ai_save_session_history", { vaultPath, history, storageScope });
 }
 
 export async function aiLoadSessionHistories(
     vaultPath: string,
     options?: {
         includeMessages?: boolean;
+        storageScope?: "device" | "vault";
     },
 ): Promise<PersistedSessionHistory[]> {
     return invoke<PersistedSessionHistory[]>("ai_load_session_histories", {
         vaultPath,
         includeMessages: options?.includeMessages ?? true,
+        storageScope: options?.storageScope,
     });
 }
 
@@ -821,12 +824,14 @@ export async function aiLoadSessionHistoryPage(
     sessionId: string,
     startIndex: number,
     limit: number,
+    storageScope?: "device" | "vault",
 ): Promise<PersistedSessionHistoryPage> {
     return invoke<PersistedSessionHistoryPage>("ai_load_session_history_page", {
         vaultPath,
         sessionId,
         startIndex,
         limit,
+        storageScope,
     });
 }
 
@@ -845,34 +850,40 @@ export interface SessionSearchResult {
 export async function aiSearchSessionContent(
     vaultPath: string,
     query: string,
+    storageScope?: "device" | "vault",
 ): Promise<SessionSearchResult[]> {
     return invoke<SessionSearchResult[]>("ai_search_session_content", {
         vaultPath,
         query,
+        storageScope,
     });
 }
 
 export async function aiForkSessionHistory(
     vaultPath: string,
     sourceSessionId: string,
+    storageScope?: "device" | "vault",
 ): Promise<string> {
     return invoke<string>("ai_fork_session_history", {
         vaultPath,
         sourceSessionId,
+        storageScope,
     });
 }
 
 export async function aiDeleteSessionHistory(
     vaultPath: string,
     sessionId: string,
+    storageScope?: "device" | "vault",
 ): Promise<void> {
-    await invoke("ai_delete_session_history", { vaultPath, sessionId });
+    await invoke("ai_delete_session_history", { vaultPath, sessionId, storageScope });
 }
 
 export async function aiDeleteAllSessionHistories(
     vaultPath: string,
+    storageScope?: "device" | "vault",
 ): Promise<void> {
-    await invoke("ai_delete_all_session_histories", { vaultPath });
+    await invoke("ai_delete_all_session_histories", { vaultPath, storageScope });
 }
 
 export async function aiDeleteRuntimeSession(sessionId: string): Promise<void> {
@@ -891,10 +902,12 @@ export async function aiDeleteRuntimeSessionsForVault(
 export async function aiPruneSessionHistories(
     vaultPath: string,
     maxAgeDays: number,
+    storageScope?: "device" | "vault",
 ): Promise<number> {
     return invoke<number>("ai_prune_session_histories", {
         vaultPath,
         maxAgeDays,
+        storageScope,
     });
 }
 

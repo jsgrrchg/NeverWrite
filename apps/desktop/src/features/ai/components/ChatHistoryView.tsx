@@ -45,6 +45,7 @@ export function ChatHistoryView({
         (s) => s.ensureSessionTranscriptLoaded,
     );
     const historyRetentionDays = useChatStore((s) => s.historyRetentionDays);
+    const aiStorageScope = useChatStore((s) => s.aiStorageScope);
     const setHistoryRetentionDays = useChatStore(
         (s) => s.setHistoryRetentionDays,
     );
@@ -344,6 +345,7 @@ export function ChatHistoryView({
                         onForkSession={forkSession}
                         onExportSession={handleExportSession}
                         onRenameSession={renameSession}
+                        storageScope={aiStorageScope}
                     />
                 </div>
 

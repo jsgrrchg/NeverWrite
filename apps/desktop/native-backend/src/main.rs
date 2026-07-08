@@ -10,10 +10,12 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod ai;
+mod app_paths;
 mod devtools;
 mod spellcheck;
 
 use ai::NativeAi;
+use app_paths::app_data_dir;
 use devtools::DevTerminalManager;
 use neverwrite_ai::persistence::{
     self, PersistedSessionHistory, PersistedSessionHistoryPage, SessionSearchResult,
@@ -31,6 +33,7 @@ use neverwrite_vault::{
 use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use spellcheck::SpellcheckState;
 
 const VAULT_CHANGE_ORIGIN_USER: &str = "user";
@@ -41,6 +44,7 @@ const DEFAULT_GRAPH_MAX_LINKS_GLOBAL: usize = 24_000;
 const DEFAULT_GRAPH_MAX_NODES_LOCAL: usize = 2_500;
 const DEFAULT_GRAPH_MAX_LINKS_LOCAL: usize = 12_000;
 const DEFAULT_LOCAL_GRAPH_HUB_NEIGHBOR_LIMIT: usize = 512;
+const AI_DEVICE_SESSIONS_DIR_NAME: &str = "sessions";
 
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
@@ -682,6 +686,18 @@ struct NativeBackend {
     event_tx: Sender<RpcOutput>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiStorageScope {
+    Vault,
+    Device,
+}
+
+struct AiSessionsStorage {
+    scope: AiStorageScope,
+    vault_root: PathBuf,
+    sessions_root: PathBuf,
+}
+
 impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
         Self {
@@ -964,75 +980,146 @@ impl NativeBackend {
         Ok((root, state.vault.root.clone()))
     }
 
+    fn required_ai_sessions_storage(&self, args: &Value) -> Result<AiSessionsStorage, String> {
+        let (vault_key, vault_root) = self.required_open_vault_root(args)?;
+        let scope = ai_storage_scope_arg(args)?;
+        let sessions_root =
+            resolve_ai_sessions_root(&vault_key, &vault_root, scope, &app_data_dir());
+        Ok(AiSessionsStorage {
+            scope,
+            vault_root,
+            sessions_root,
+        })
+    }
+
     fn ai_save_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let history: PersistedSessionHistory = serde_json::from_value(
             args.get("history")
                 .cloned()
                 .ok_or_else(|| "Missing argument: history".to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        persistence::save_session_history(&vault_root, &history)?;
+        match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::save_session_history(&storage.vault_root, &history)?
+            }
+            AiStorageScope::Device => {
+                persistence::save_session_history_in_storage_root(&storage.sessions_root, &history)?
+            }
+        }
         Ok(json!(null))
     }
 
     fn ai_load_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let include_messages = bool_arg(&args, "includeMessages")
             .or_else(|| bool_arg(&args, "include_messages"))
             .unwrap_or(true);
-        let histories: Vec<PersistedSessionHistory> =
-            persistence::load_all_session_histories(&vault_root, include_messages)?;
+        let histories: Vec<PersistedSessionHistory> = match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::load_all_session_histories(&storage.vault_root, include_messages)?
+            }
+            AiStorageScope::Device => persistence::load_all_session_histories_in_storage_root(
+                &storage.sessions_root,
+                include_messages,
+            )?,
+        };
         Ok(json!(histories))
     }
 
     fn ai_load_session_history_page(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let session_id = required_string(&args, &["sessionId", "session_id"])?;
         let start_index = required_usize(&args, &["startIndex", "start_index"])?;
         let limit = required_usize(&args, &["limit"])?;
-        let page: PersistedSessionHistoryPage =
-            persistence::load_session_history_page(&vault_root, &session_id, start_index, limit)?;
+        let page: PersistedSessionHistoryPage = match storage.scope {
+            AiStorageScope::Vault => persistence::load_session_history_page(
+                &storage.vault_root,
+                &session_id,
+                start_index,
+                limit,
+            )?,
+            AiStorageScope::Device => persistence::load_session_history_page_in_storage_root(
+                &storage.sessions_root,
+                &session_id,
+                start_index,
+                limit,
+            )?,
+        };
         Ok(json!(page))
     }
 
     fn ai_search_session_content(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let query = required_string(&args, &["query"])?;
-        let results: Vec<SessionSearchResult> =
-            persistence::search_session_content(&vault_root, &query)?;
+        let results: Vec<SessionSearchResult> = match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::search_session_content(&storage.vault_root, &query)?
+            }
+            AiStorageScope::Device => {
+                persistence::search_session_content_in_storage_root(&storage.sessions_root, &query)?
+            }
+        };
         Ok(json!(results))
     }
 
     fn ai_fork_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let source_session_id = required_string(&args, &["sourceSessionId", "source_session_id"])?;
-        Ok(json!(persistence::fork_session_history(
-            &vault_root,
-            &source_session_id
-        )?))
+        let forked_id = match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::fork_session_history(&storage.vault_root, &source_session_id)?
+            }
+            AiStorageScope::Device => persistence::fork_session_history_in_storage_root(
+                &storage.sessions_root,
+                &source_session_id,
+            )?,
+        };
+        Ok(json!(forked_id))
     }
 
     fn ai_delete_session_history(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let session_id = required_string(&args, &["sessionId", "session_id"])?;
-        persistence::delete_session_history(&vault_root, &session_id)?;
+        match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::delete_session_history(&storage.vault_root, &session_id)?
+            }
+            AiStorageScope::Device => persistence::delete_session_history_in_storage_root(
+                &storage.sessions_root,
+                &session_id,
+            )?,
+        }
         Ok(json!(null))
     }
 
     fn ai_delete_all_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
-        persistence::delete_all_session_histories(&vault_root)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
+        match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::delete_all_session_histories(&storage.vault_root)?
+            }
+            AiStorageScope::Device => {
+                persistence::delete_all_session_histories_in_storage_root(&storage.sessions_root)?
+            }
+        }
         Ok(json!(null))
     }
 
     fn ai_prune_session_histories(&self, args: Value) -> Result<Value, String> {
-        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let storage = self.required_ai_sessions_storage(&args)?;
         let max_age_days = required_u32(&args, &["maxAgeDays", "max_age_days"])?;
-        Ok(json!(persistence::prune_expired_session_histories(
-            &vault_root,
-            max_age_days
-        )?))
+        let deleted = match storage.scope {
+            AiStorageScope::Vault => {
+                persistence::prune_expired_session_histories(&storage.vault_root, max_age_days)?
+            }
+            AiStorageScope::Device => persistence::prune_expired_session_histories_in_storage_root(
+                &storage.sessions_root,
+                max_age_days,
+            )?,
+        };
+        Ok(json!(deleted))
     }
 
     fn ai_get_text_file_hash(&self, args: Value) -> Result<Value, String> {
@@ -2526,6 +2613,45 @@ fn normalize_vault_path(raw: &str) -> Result<String, String> {
         .to_string())
 }
 
+fn ai_storage_scope_arg(args: &Value) -> Result<AiStorageScope, String> {
+    match optional_nullable_string(args, &["storageScope", "storage_scope"])
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("vault") => Ok(AiStorageScope::Vault),
+        Some("device") => Ok(AiStorageScope::Device),
+        Some(scope) => Err(format!("Unsupported AI storage scope: {scope}")),
+    }
+}
+
+fn resolve_ai_sessions_root(
+    normalized_vault_key: &str,
+    vault_root: &Path,
+    scope: AiStorageScope,
+    app_data_root: &Path,
+) -> PathBuf {
+    match scope {
+        AiStorageScope::Vault => persistence::sessions_root_for_vault(vault_root),
+        AiStorageScope::Device => app_data_root
+            .join("ai")
+            .join(AI_DEVICE_SESSIONS_DIR_NAME)
+            .join(sha256_hex(normalized_vault_key.as_bytes()))
+            .join(AI_DEVICE_SESSIONS_DIR_NAME),
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
 fn required_string(args: &Value, names: &[&str]) -> Result<String, String> {
     optional_string(args, names).ok_or_else(|| format!("Missing argument: {}", names[0]))
 }
@@ -3244,6 +3370,60 @@ mod tests {
     }
 
     #[test]
+    fn ai_storage_scope_defaults_to_vault() {
+        assert_eq!(
+            ai_storage_scope_arg(&json!({})).unwrap(),
+            AiStorageScope::Vault
+        );
+        assert_eq!(
+            ai_storage_scope_arg(&json!({ "storageScope": null })).unwrap(),
+            AiStorageScope::Vault
+        );
+    }
+
+    #[test]
+    fn ai_storage_scope_rejects_unknown_values() {
+        assert!(ai_storage_scope_arg(&json!({ "storageScope": "shared" })).is_err());
+    }
+
+    #[test]
+    fn resolves_vault_ai_sessions_inside_vault_state_dir() {
+        let vault_root = PathBuf::from("/vaults/work");
+        let root = resolve_ai_sessions_root(
+            "/vaults/work",
+            &vault_root,
+            AiStorageScope::Vault,
+            Path::new("/app-data"),
+        );
+
+        assert_eq!(root, vault_root.join(".neverwrite").join("sessions"));
+    }
+
+    #[test]
+    fn resolves_device_ai_sessions_under_app_data_namespace() {
+        let vault_root = PathBuf::from("/vaults/work");
+        let app_data = PathBuf::from("/app-data/NeverWrite");
+        let root = resolve_ai_sessions_root(
+            "/vaults/work",
+            &vault_root,
+            AiStorageScope::Device,
+            &app_data,
+        );
+
+        assert!(root.starts_with(&app_data));
+        assert!(!root.starts_with(&vault_root));
+        assert_eq!(
+            root.file_name().and_then(|name| name.to_str()),
+            Some("sessions")
+        );
+        assert!(root
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .is_some_and(|hash| hash.len() == 64));
+    }
+
+    #[test]
     fn invokes_vault_editor_commands_without_electron() {
         let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
         let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
@@ -3588,7 +3768,10 @@ mod tests {
             .find(|note| note.get("id").and_then(Value::as_str) == Some("Notes/A"))
             .expect("note A present");
         assert_eq!(note_a.get("status").and_then(Value::as_str), Some("draft"));
-        assert_eq!(note_a.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            note_a.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
 
         // Editing the status produces a change event carrying the new value,
         // and the save_note RESPONSE carries it too. The response matters
@@ -3613,8 +3796,14 @@ mod tests {
             Some("article")
         );
         let change = recv_vault_change(&event_rx);
-        assert_eq!(change.get("status").and_then(Value::as_str), Some("published"));
-        assert_eq!(change.get("okf_type").and_then(Value::as_str), Some("article"));
+        assert_eq!(
+            change.get("status").and_then(Value::as_str),
+            Some("published")
+        );
+        assert_eq!(
+            change.get("okf_type").and_then(Value::as_str),
+            Some("article")
+        );
         assert_eq!(
             change
                 .get("note")

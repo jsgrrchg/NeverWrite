@@ -23,6 +23,7 @@ import {
 import { useVaultStore } from "../../../app/store/vaultStore";
 import type { AIChatSession, AIRuntimeOption } from "../types";
 import { HistorySessionCard } from "./HistorySessionCard";
+import type { AIStorageScope } from "../store/chatStore";
 
 interface HistorySessionListProps {
     sessions: AIChatSession[];
@@ -35,6 +36,7 @@ interface HistorySessionListProps {
     onForkSession: (sessionId: string) => void;
     onExportSession: (sessionId: string) => void;
     onRenameSession: (sessionId: string, newTitle: string | null) => void;
+    storageScope: AIStorageScope;
 }
 
 function groupByDate(
@@ -67,6 +69,7 @@ export function HistorySessionList({
     onForkSession,
     onExportSession,
     onRenameSession,
+    storageScope,
 }: HistorySessionListProps) {
     const [search, setSearch] = useState("");
     const [isSearchingContent, setIsSearchingContent] = useState(false);
@@ -121,6 +124,7 @@ export function HistorySessionList({
                 const results = await aiSearchSessionContent(
                     vaultPath,
                     query.trim(),
+                    storageScope,
                 );
                 setContentResults(results);
             } catch (err) {
@@ -130,7 +134,7 @@ export function HistorySessionList({
                 setIsSearchingContent(false);
             }
         },
-        [vaultPath],
+        [storageScope, vaultPath],
     );
 
     const clearSearch = useCallback(() => {
