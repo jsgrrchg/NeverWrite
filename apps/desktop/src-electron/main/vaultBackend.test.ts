@@ -263,6 +263,71 @@ describe("ElectronVaultBackend AI history migration", () => {
         });
     });
 
+    it("removes migrated source histories even when external attachments are skipped", async () => {
+        const userDataPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-user-data-"),
+        );
+        electronAppMock.getPath.mockReturnValue(userDataPath);
+
+        const vaultPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-ai-migration-"),
+        );
+        const stableVaultPath = await fs.realpath(vaultPath);
+        const vaultKey = sha256Hex(stableVaultPath);
+        const sourceRoot = path.join(
+            userDataPath,
+            "ai",
+            "sessions",
+            vaultKey,
+            "sessions",
+        );
+        const targetRoot = path.join(vaultPath, ".neverwrite", "sessions");
+        const sourceHistoryDir = path.join(sourceRoot, "session-external");
+        const targetHistoryDir = path.join(targetRoot, "session-external");
+        const externalAttachmentPath = path.join(
+            await fs.mkdtemp(path.join(os.tmpdir(), "neverwrite-external-")),
+            "external-image.png",
+        );
+
+        await fs.mkdir(sourceHistoryDir, { recursive: true });
+        await fs.writeFile(externalAttachmentPath, "external-image-bytes");
+        await fs.writeFile(
+            path.join(sourceHistoryDir, "transcript.jsonl"),
+            `${JSON.stringify({
+                id: "message-1",
+                attachments: [{ filePath: externalAttachmentPath }],
+            })}\n`,
+        );
+
+        const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
+        const report = (await backend.invoke("ai_migrate_session_histories", {
+            vaultPath,
+            fromScope: "device",
+            toScope: "vault",
+            deleteSourceAfterCopy: true,
+            migrateAttachments: true,
+        })) as {
+            histories_copied: number;
+            histories_skipped: number;
+            attachments_copied: number;
+            attachments_skipped: number;
+            failures: string[];
+        };
+
+        await expect(fs.stat(sourceHistoryDir)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        await expect(fs.stat(targetHistoryDir)).resolves.toBeTruthy();
+        await expect(fs.stat(externalAttachmentPath)).resolves.toBeTruthy();
+        expect(report).toMatchObject({
+            histories_copied: 1,
+            histories_skipped: 0,
+            attachments_copied: 0,
+            attachments_skipped: 1,
+            failures: [],
+        });
+    });
+
     it("uses the real vault path for device AI attachment namespaces", async () => {
         const userDataPath = await fs.mkdtemp(
             path.join(os.tmpdir(), "neverwrite-user-data-"),

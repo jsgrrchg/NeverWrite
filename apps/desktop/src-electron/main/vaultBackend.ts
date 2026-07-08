@@ -1844,8 +1844,6 @@ export class ElectronVaultBackend {
             }
             try {
                 const failureCountBeforeCopy = report.failures.length;
-                const skippedAttachmentCountBeforeCopy =
-                    report.attachments_skipped;
                 const copiedSources: string[] = [];
                 await fs.cp(source, target, { recursive: true });
                 if (migrateAttachments) {
@@ -1860,8 +1858,7 @@ export class ElectronVaultBackend {
                 report.histories_copied += 1;
                 if (
                     deleteSourceAfterCopy &&
-                    report.failures.length === failureCountBeforeCopy &&
-                    report.attachments_skipped === skippedAttachmentCountBeforeCopy
+                    report.failures.length === failureCountBeforeCopy
                 ) {
                     await fs.rm(source, { recursive: true, force: true });
                     if (migrateAttachments) {
