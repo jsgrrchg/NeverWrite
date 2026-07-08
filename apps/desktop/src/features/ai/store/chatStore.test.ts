@@ -470,6 +470,10 @@ async function defaultInvokeImplementation(command: string, args?: unknown) {
         return [];
     }
 
+    if (command === "ai_has_vault_session_histories") {
+        return false;
+    }
+
     if (command === "ai_load_session_history_page") {
         return {
             session_id: "history-1",
@@ -774,6 +778,73 @@ describe("chatStore", () => {
         resetChatStore();
 
         expect(useChatStore.getState().aiStorageScope).toBe("device");
+    });
+
+    it("initializes with vault storage when an unconfigured vault already has histories", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/legacy", notes: [] });
+        resetChatStore();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_has_vault_session_histories") {
+                return true;
+            }
+            if (command === "ai_load_session_histories") {
+                expect(args).toMatchObject({
+                    vaultPath: "/vaults/legacy",
+                    storageScope: "vault",
+                });
+                return [
+                    {
+                        version: 1,
+                        session_id: "legacy-history",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        title: "Legacy chat",
+                        preview: "From vault storage",
+                        message_count: 1,
+                        messages: [],
+                    },
+                ];
+            }
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "legacy-history",
+                    total_messages: 1,
+                    start_index: 0,
+                    end_index: 1,
+                    messages: [
+                        {
+                            id: "legacy-message",
+                            role: "user",
+                            kind: "text",
+                            content: "From vault storage",
+                            timestamp: 10,
+                        },
+                    ],
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .initialize({ createDefaultSession: false });
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(
+            localStorage.getItem(getAiStorageScopeKey("/vaults/legacy")),
+        ).toBeNull();
+        expect(useChatStore.getState().sessionOrder).toContain(
+            "persisted:legacy-history",
+        );
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
     });
 
     it("persists AI storage scope per vault path", () => {
@@ -12412,7 +12483,7 @@ describe("chatStore", () => {
         ).toHaveLength(3);
     });
 
-    it("resumes the active persisted history into a live ACP session", async () => {
+    it("loads the active persisted history without reconnecting it on startup", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [],
@@ -12467,13 +12538,20 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
 
         const state = useChatStore.getState();
-        expect(state.activeSessionId).toBe("codex-session-1");
-        expect(state.sessionsById["persisted:history-1"]).toBeUndefined();
-        const restored = state.sessionsById["codex-session-1"];
-        expect(restored?.isPersistedSession).toBe(false);
+        expect(state.activeSessionId).toBe("persisted:history-1");
+        const restored = state.sessionsById["persisted:history-1"];
+        expect(restored?.isPersistedSession).toBe(true);
+        expect(restored?.runtimeState).toBe("persisted_only");
         expect(restored?.historySessionId).toBe("history-1");
         expect(restored?.messages[0]?.content).toBe("Recovered from disk");
         expect(restored?.resumeContextPending).toBe(true);
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) =>
+                    command === "ai_create_session" ||
+                    command === "ai_resume_runtime_session",
+            ),
+        ).toBe(false);
         expect(restored?.models).toEqual([
             {
                 id: "test-model",
@@ -12539,13 +12617,11 @@ describe("chatStore", () => {
                 },
             ],
         });
-        expect(invokeMock).toHaveBeenCalledWith("ai_create_session", {
-            input: {
-                runtime_id: "codex-acp",
-                additional_roots: [],
-            },
-            vaultPath: "/vault",
-        });
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
     });
 
     it("sends saved transcript context when sending from a detached Codex session", async () => {
@@ -13656,27 +13732,18 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
 
         const state = useChatStore.getState();
-        expect(state.activeSessionId).toBe("claude-session-1");
-        expect(
-            state.sessionsById["persisted:history-claude-1"],
-        ).toBeUndefined();
-        expect(state.sessionsById["claude-session-1"]).toMatchObject({
+        expect(state.activeSessionId).toBe("persisted:history-claude-1");
+        expect(state.sessionsById["persisted:history-claude-1"]).toMatchObject({
             historySessionId: "history-claude-1",
             runtimeId: "claude-acp",
-            isPersistedSession: false,
-            resumeContextPending: false,
-        });
-        expect(invokeMock).toHaveBeenCalledWith("ai_resume_runtime_session", {
-            input: {
-                runtime_id: "claude-acp",
-                session_id: "history-claude-1",
-                additional_roots: [],
-            },
-            vaultPath: "/vault",
+            isPersistedSession: true,
+            runtimeState: "persisted_only",
         });
         expect(
             invokeMock.mock.calls.some(
-                ([command]) => command === "ai_create_session",
+                ([command]) =>
+                    command === "ai_create_session" ||
+                    command === "ai_resume_runtime_session",
             ),
         ).toBe(false);
     });
@@ -14294,7 +14361,7 @@ describe("chatStore", () => {
         await useChatStore.getState().initialize();
 
         const restored =
-            useChatStore.getState().sessionsById["codex-session-1"];
+            useChatStore.getState().sessionsById["persisted:history-1"];
         expect(restored?.messages[0]).toMatchObject({
             kind: "tool",
             content: "Updated watcher.rs",
@@ -14785,20 +14852,11 @@ describe("chatStore", () => {
         );
     });
 
-    it("marks a persisted session as resuming while reconnecting it to ACP", async () => {
+    it("does not reconnect persisted sessions while loading startup inventory", async () => {
         useVaultStore.setState({
             vaultPath: "/vault",
             notes: [],
         });
-
-        let resolveCreateSession:
-            | ((value: typeof sessionPayload) => void)
-            | null = null;
-        const createSessionPromise = new Promise<typeof sessionPayload>(
-            (resolve) => {
-                resolveCreateSession = resolve;
-            },
-        );
 
         invokeMock.mockImplementation(async (command) => {
             if (command === "ai_list_runtimes") return runtimePayload;
@@ -14830,7 +14888,9 @@ describe("chatStore", () => {
                     "initialize should not refetch a fully hydrated persisted transcript",
                 );
             }
-            if (command === "ai_create_session") return createSessionPromise;
+            if (command === "ai_create_session") {
+                throw new Error("startup inventory should not reconnect");
+            }
             return sessionPayload;
         });
 
@@ -14840,7 +14900,7 @@ describe("chatStore", () => {
         expect(
             useChatStore.getState().sessionsById["persisted:history-1"]
                 ?.isResumingSession,
-        ).toBe(true);
+        ).toBe(false);
         expect(
             useChatStore
                 .getState()
@@ -14849,15 +14909,14 @@ describe("chatStore", () => {
                         message.kind === "status" &&
                         message.content === "Reconnecting saved chat...",
                 ),
-        ).toBe(true);
+        ).toBe(false);
 
-        if (!resolveCreateSession) {
-            throw new Error("Missing create-session resolver");
-        }
-        (resolveCreateSession as (value: typeof sessionPayload) => void)(
-            sessionPayload,
-        );
         await initializePromise;
+        expect(
+            invokeMock.mock.calls.some(
+                ([command]) => command === "ai_create_session",
+            ),
+        ).toBe(false);
     });
 
     it("replaces persisted tab session ids when a saved chat is resumed", async () => {
@@ -14915,9 +14974,7 @@ describe("chatStore", () => {
         expect(useChatTabsStore.getState().tabs).toEqual([
             {
                 id: "tab-history-1",
-                sessionId: "codex-session-1",
-                historySessionId: "history-1",
-                runtimeId: "codex-acp",
+                sessionId: "persisted:history-1",
             },
         ]);
         expect(useChatTabsStore.getState().activeTabId).toBe("tab-history-1");

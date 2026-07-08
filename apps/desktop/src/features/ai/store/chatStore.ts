@@ -14,6 +14,7 @@ import {
     aiForkSessionHistory,
     aiGetTextFileHash,
     aiGetSetupStatus,
+    aiHasVaultSessionHistories,
     aiListSessions,
     aiListRuntimes,
     aiResumeRuntimeSession,
@@ -501,6 +502,23 @@ function loadAiHistoryStoragePreferences(vaultPath: string | null): {
         storageScope: loadAiStorageScopePreference(vaultPath),
         retentionDays: loadHistoryRetentionPreference(vaultPath),
     };
+}
+
+async function resolveInitialAiStorageScopeForVault(
+    vaultPath: string | null,
+): Promise<AIStorageScope> {
+    const savedScope = loadAiStorageScopePreference(vaultPath);
+    if (!vaultPath || hasAiStorageScopePreference(vaultPath)) {
+        return savedScope;
+    }
+
+    try {
+        return (await aiHasVaultSessionHistories(vaultPath))
+            ? "vault"
+            : savedScope;
+    } catch {
+        return savedScope;
+    }
 }
 
 function saveHistoryRetentionPreference(vaultPath: string | null, days: number) {
@@ -1009,6 +1027,10 @@ async function ensureSessionAgentCatalogLoaded(
             session =
                 useChatStore.getState().sessionsById[session.sessionId] ??
                 session;
+        }
+
+        if (session.runtimeState === "persisted_only") {
+            return sessionHasAgentCatalog(session) ? session.sessionId : null;
         }
 
         if (!isLiveRuntimeSession(session)) {
@@ -7902,6 +7924,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 });
 
                 const vaultPath = useVaultStore.getState().vaultPath;
+                const aiStorageScope =
+                    await resolveInitialAiStorageScopeForVault(vaultPath);
+                const historyRetentionDays =
+                    loadHistoryRetentionPreference(vaultPath);
+                set((state) => {
+                    if (
+                        state.aiStorageScope === aiStorageScope &&
+                        state.historyRetentionDays === historyRetentionDays
+                    ) {
+                        return state;
+                    }
+                    if (state.aiStorageScope !== aiStorageScope) {
+                        _persistedHistoryCacheKey = null;
+                        _persistedHistoryCacheBySessionId.clear();
+                    }
+                    return {
+                        aiStorageScope,
+                        historyRetentionDays,
+                    };
+                });
                 const sessions = await aiListSessions(vaultPath);
                 const hydratedRuntimes = hydrateRuntimesFromSessions(
                     runtimes,
@@ -7915,18 +7957,18 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 >();
                 if (vaultPath) {
                     try {
-                        const retentionDays = get().historyRetentionDays;
+                        const retentionDays = historyRetentionDays;
                         if (retentionDays > 0) {
                             await aiPruneSessionHistories(
                                 vaultPath,
                                 retentionDays,
-                                get().aiStorageScope,
+                                aiStorageScope,
                             );
                         }
                         histories = (
                             await aiLoadSessionHistories(vaultPath, {
                                 includeMessages: false,
-                                storageScope: get().aiStorageScope,
+                                storageScope: aiStorageScope,
                             })
                         ).filter(hasPersistedHistoryContent);
                         persistedBySessionId = new Map(
@@ -7934,19 +7976,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
                         );
                         setPersistedHistoryCache(
                             vaultPath,
-                            get().aiStorageScope,
+                            aiStorageScope,
                             histories,
                         );
                     } catch {
                         // Disk histories unavailable, continue without them
                         setPersistedHistoryCache(
                             vaultPath,
-                            get().aiStorageScope,
+                            aiStorageScope,
                             [],
                         );
                     }
                 } else {
-                    setPersistedHistoryCache(null, get().aiStorageScope, []);
+                    setPersistedHistoryCache(null, aiStorageScope, []);
                 }
 
                 if (sessions.length || histories.length) {
@@ -8082,7 +8124,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
                             get().sessionsById[nextActiveSessionId]!,
                         )
                     ) {
-                        await get().resumeSession(nextActiveSessionId);
+                        const nextActiveSession =
+                            get().sessionsById[nextActiveSessionId]!;
+                        if (nextActiveSession.runtimeState === "persisted_only") {
+                            await get().ensureSessionTranscriptLoaded(
+                                nextActiveSessionId,
+                                "latest",
+                            );
+                        } else {
+                            await get().resumeSession(nextActiveSessionId);
+                        }
                     } else if (nextActiveSessionId) {
                         await get().ensureSessionTranscriptLoaded(
                             nextActiveSessionId,
