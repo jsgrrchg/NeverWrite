@@ -99,7 +99,7 @@ const aiApiMocks = vi.hoisted(() => ({
     aiCloseAuthTerminalSession: vi.fn(async () => undefined),
     aiWriteAuthTerminalSession: vi.fn(async () => undefined),
     aiResizeAuthTerminalSession: vi.fn(async () => undefined),
-    aiLoadSessionHistories: vi.fn(async () => []),
+    aiLoadSessionHistories: vi.fn(async (): Promise<unknown[]> => []),
     aiMigrateSessionHistories: vi.fn(async () => ({
         histories_copied: 0,
         histories_skipped: 0,

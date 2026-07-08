@@ -1000,6 +1000,34 @@ describe("chatStore", () => {
         );
     });
 
+    it("clears stale sessions when the selected storage scope is empty", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "device");
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const staleSession = {
+            ...createSessionWithTrackedFiles("stale-session", []),
+            vaultPath: "/vaults/one",
+            historySessionId: "stale-history",
+            persistedMessageCount: 1,
+            runtimeState: "persisted_only" as const,
+        };
+        useChatStore.setState({
+            sessionsById: { [staleSession.sessionId]: staleSession },
+            sessionOrder: [staleSession.sessionId],
+            activeSessionId: staleSession.sessionId,
+        });
+        invokeMock.mockImplementation(defaultInvokeImplementation);
+
+        await useChatStore
+            .getState()
+            .initialize({ createDefaultSession: false });
+
+        expect(useChatStore.getState().aiStorageScope).toBe("device");
+        expect(useChatStore.getState().sessionsById).toEqual({});
+        expect(useChatStore.getState().sessionOrder).toEqual([]);
+        expect(useChatStore.getState().activeSessionId).toBeNull();
+    });
+
     it("prunes session history with the retention of the session vault", async () => {
         localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
         localStorage.setItem(getHistoryRetentionKey("/vaults/one"), "9");

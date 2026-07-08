@@ -8025,131 +8025,128 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     setPersistedHistoryCache(null, aiStorageScope, []);
                 }
 
-                if (sessions.length || histories.length) {
-                    set((state) => {
-                        const existingSessionByHistoryId = new Map(
-                            Object.values(state.sessionsById).flatMap(
-                                (session) =>
-                                    session.historySessionId
-                                        ? [
-                                              [
-                                                  session.historySessionId,
-                                                  session,
-                                              ] as const,
-                                          ]
-                                        : [],
-                            ),
+                const hasLoadedInventory = sessions.length > 0 || histories.length > 0;
+                set((state) => {
+                    const existingSessionByHistoryId = new Map(
+                        Object.values(state.sessionsById).flatMap((session) =>
+                            session.historySessionId
+                                ? [
+                                      [
+                                          session.historySessionId,
+                                          session,
+                                      ] as const,
+                                  ]
+                                : [],
+                        ),
+                    );
+                    const nextSessionsById = sessions.reduce<
+                        Record<string, AIChatSession>
+                    >((accumulator, session) => {
+                        const scopedSession = stampSessionVaultPath(
+                            session,
+                            vaultPath,
                         );
-                        const nextSessionsById = sessions.reduce<
-                            Record<string, AIChatSession>
-                        >((accumulator, session) => {
-                            const scopedSession = stampSessionVaultPath(
-                                session,
-                                vaultPath,
+                        const existing =
+                            state.sessionsById[scopedSession.sessionId] ??
+                            existingSessionByHistoryId.get(
+                                scopedSession.historySessionId,
                             );
-                            const existing =
-                                state.sessionsById[scopedSession.sessionId] ??
-                                existingSessionByHistoryId.get(
-                                    scopedSession.historySessionId,
-                                );
-                            let merged = mergeSession(existing, scopedSession);
-                            const persisted = persistedBySessionId.get(
-                                merged.historySessionId,
-                            );
-
-                            if (persisted) {
-                                merged = applyPersistedHistoryMetadata(
-                                    merged,
-                                    persisted,
-                                );
-                            }
-
-                            if (
-                                getSessionTranscriptLength(merged) === 0 &&
-                                persisted &&
-                                persisted.messages.length > 0
-                            ) {
-                                merged = replaceSessionTranscript(
-                                    {
-                                        ...merged,
-                                        loadedPersistedMessageStart: Math.max(
-                                            0,
-                                            getPersistedHistoryMessageCount(
-                                                persisted,
-                                            ) - persisted.messages.length,
-                                        ),
-                                    },
-                                    restoreMessagesFromHistory(persisted),
-                                );
-                            }
-
-                            accumulator[scopedSession.sessionId] = merged;
-                            return accumulator;
-                        }, {});
-
-                        const liveHistoryIds = new Set(
-                            Object.values(nextSessionsById).map(
-                                (session) => session.historySessionId,
-                            ),
+                        let merged = mergeSession(existing, scopedSession);
+                        const persisted = persistedBySessionId.get(
+                            merged.historySessionId,
                         );
 
-                        for (const history of histories) {
-                            if (liveHistoryIds.has(history.session_id))
-                                continue;
-                            const restored = createPersistedSession(
-                                history,
-                                hydratedRuntimes,
-                                vaultPath,
+                        if (persisted) {
+                            merged = applyPersistedHistoryMetadata(
+                                merged,
+                                persisted,
                             );
-                            if (!restored) continue;
-                            const existing =
-                                state.sessionsById[restored.sessionId] ??
-                                existingSessionByHistoryId.get(
-                                    restored.historySessionId,
-                                );
-                            nextSessionsById[restored.sessionId] =
-                                mergeSession(existing, restored);
                         }
 
-                        const nextSessionOrder =
-                            sortSessionIdsByRecency(nextSessionsById);
-                        const nextActiveSessionId =
-                            state.activeSessionId &&
-                            nextSessionsById[state.activeSessionId]
-                                ? state.activeSessionId
-                                : (nextSessionOrder[0] ?? null);
-                        const nextSelectedRuntimeId =
-                            (nextActiveSessionId
-                                ? nextSessionsById[nextActiveSessionId]
-                                      ?.runtimeId
-                                : null) ??
-                            state.selectedRuntimeId ??
-                            getDefaultRuntimeId(
-                                hydratedRuntimes,
-                                state.setupStatusByRuntimeId,
-                            );
-
-                        return {
-                            runtimes: hydratedRuntimes,
-                            sessionsById: nextSessionsById,
-                            sessionOrder: nextSessionOrder,
-                            activeSessionId: nextActiveSessionId,
-                            selectedRuntimeId: nextSelectedRuntimeId,
-                            composerPartsBySessionId: nextSessionOrder.reduce<
-                                Record<string, AIComposerPart[]>
-                            >(
-                                (accumulator, sessionId) => {
-                                    accumulator[sessionId] =
-                                        state.composerPartsBySessionId[
-                                            sessionId
-                                        ] ?? createEmptyComposerParts();
-                                    return accumulator;
+                        if (
+                            getSessionTranscriptLength(merged) === 0 &&
+                            persisted &&
+                            persisted.messages.length > 0
+                        ) {
+                            merged = replaceSessionTranscript(
+                                {
+                                    ...merged,
+                                    loadedPersistedMessageStart: Math.max(
+                                        0,
+                                        getPersistedHistoryMessageCount(
+                                            persisted,
+                                        ) - persisted.messages.length,
+                                    ),
                                 },
-                                { ...state.composerPartsBySessionId },
-                            ),
-                        };
-                    });
+                                restoreMessagesFromHistory(persisted),
+                            );
+                        }
 
+                        accumulator[scopedSession.sessionId] = merged;
+                        return accumulator;
+                    }, {});
+
+                    const liveHistoryIds = new Set(
+                        Object.values(nextSessionsById).map(
+                            (session) => session.historySessionId,
+                        ),
+                    );
+
+                    for (const history of histories) {
+                        if (liveHistoryIds.has(history.session_id)) continue;
+                        const restored = createPersistedSession(
+                            history,
+                            hydratedRuntimes,
+                            vaultPath,
+                        );
+                        if (!restored) continue;
+                        const existing =
+                            state.sessionsById[restored.sessionId] ??
+                            existingSessionByHistoryId.get(
+                                restored.historySessionId,
+                            );
+                        nextSessionsById[restored.sessionId] =
+                            mergeSession(existing, restored);
+                    }
+
+                    const nextSessionOrder =
+                        sortSessionIdsByRecency(nextSessionsById);
+                    const nextActiveSessionId =
+                        state.activeSessionId &&
+                        nextSessionsById[state.activeSessionId]
+                            ? state.activeSessionId
+                            : (nextSessionOrder[0] ?? null);
+                    const nextSelectedRuntimeId =
+                        (nextActiveSessionId
+                            ? nextSessionsById[nextActiveSessionId]?.runtimeId
+                            : null) ??
+                        state.selectedRuntimeId ??
+                        getDefaultRuntimeId(
+                            hydratedRuntimes,
+                            state.setupStatusByRuntimeId,
+                        );
+
+                    return {
+                        runtimes: hydratedRuntimes,
+                        sessionsById: nextSessionsById,
+                        sessionOrder: nextSessionOrder,
+                        activeSessionId: nextActiveSessionId,
+                        selectedRuntimeId: nextSelectedRuntimeId,
+                        composerPartsBySessionId: nextSessionOrder.reduce<
+                            Record<string, AIComposerPart[]>
+                        >(
+                            (accumulator, sessionId) => {
+                                accumulator[sessionId] =
+                                    state.composerPartsBySessionId[sessionId] ??
+                                    createEmptyComposerParts();
+                                return accumulator;
+                            },
+                            { ...state.composerPartsBySessionId },
+                        ),
+                    };
+                });
+
+                if (hasLoadedInventory) {
                     const nextActiveSessionId = get().activeSessionId;
                     if (
                         nextActiveSessionId &&

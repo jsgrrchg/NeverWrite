@@ -1074,6 +1074,8 @@ impl NativeBackend {
             from_scope,
             to_scope,
         };
+        let mut source_attachment_ref_counts =
+            build_ai_owned_attachment_source_ref_counts(&source_histories, &attachment_context);
 
         for mut history in source_histories {
             if !has_persisted_history_content_native(&history) {
@@ -1084,12 +1086,21 @@ impl NativeBackend {
             {
                 report.histories_skipped += 1;
                 if delete_source_after_copy {
+                    let source_attachments = if migrate_attachments {
+                        collect_ai_owned_attachment_sources(&history, &attachment_context)
+                    } else {
+                        Vec::new()
+                    };
                     delete_session_history_for_storage(&from_storage, &history.session_id)?;
                     if migrate_attachments {
-                        delete_duplicate_source_attachments(
-                            &history,
-                            destination_history,
-                            &attachment_context,
+                        decrement_attachment_ref_counts(
+                            &source_attachments,
+                            &mut source_attachment_ref_counts,
+                        );
+                        delete_unreferenced_source_attachments(
+                            &source_attachments,
+                            &source_attachment_ref_counts,
+                            Some(destination_history),
                             &mut report,
                         );
                     }
@@ -1113,15 +1124,17 @@ impl NativeBackend {
 
             if delete_source_after_copy && report.failures.len() == failure_count_before_history {
                 delete_session_history_for_storage(&from_storage, &history.session_id)?;
-                for source_path in copied_attachments {
-                    if let Err(error) = fs::remove_file(&source_path) {
-                        if error.kind() != io::ErrorKind::NotFound {
-                            report.failures.push(format!(
-                                "Failed to delete migrated attachment {}: {error}",
-                                source_path.to_string_lossy()
-                            ));
-                        }
-                    }
+                if migrate_attachments {
+                    decrement_attachment_ref_counts(
+                        &copied_attachments,
+                        &mut source_attachment_ref_counts,
+                    );
+                    delete_unreferenced_source_attachments(
+                        &copied_attachments,
+                        &source_attachment_ref_counts,
+                        None,
+                        &mut report,
+                    );
                 }
             }
         }
@@ -3256,59 +3269,108 @@ fn migrate_ai_owned_attachment(
     Ok(Some((canonical_source, target)))
 }
 
-fn delete_duplicate_source_attachments(
-    source_history: &PersistedSessionHistory,
-    destination_history: &PersistedSessionHistory,
+fn build_ai_owned_attachment_source_ref_counts(
+    histories: &[PersistedSessionHistory],
     context: &AiAttachmentMigrationContext,
-    report: &mut AiHistoryMigrationReport,
-) {
-    for message in &source_history.messages {
+) -> HashMap<PathBuf, usize> {
+    let mut counts = HashMap::new();
+    for history in histories {
+        for source in collect_ai_owned_attachment_sources(history, context) {
+            *counts.entry(source).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn collect_ai_owned_attachment_sources(
+    history: &PersistedSessionHistory,
+    context: &AiAttachmentMigrationContext,
+) -> Vec<PathBuf> {
+    let mut sources = Vec::new();
+    for message in &history.messages {
         let Some(attachments) = &message.attachments else {
             continue;
         };
-        delete_duplicate_source_attachment_paths(attachments, destination_history, context, report);
+        collect_ai_owned_attachment_sources_from_value(attachments, context, &mut sources);
     }
+    sources
 }
 
-fn delete_duplicate_source_attachment_paths(
+fn collect_ai_owned_attachment_sources_from_value(
     value: &Value,
-    destination_history: &PersistedSessionHistory,
     context: &AiAttachmentMigrationContext,
-    report: &mut AiHistoryMigrationReport,
+    output: &mut Vec<PathBuf>,
 ) {
     match value {
         Value::Array(items) => {
             for item in items {
-                delete_duplicate_source_attachment_paths(
-                    item,
-                    destination_history,
-                    context,
-                    report,
-                );
+                collect_ai_owned_attachment_sources_from_value(item, context, output);
             }
         }
         Value::Object(map) => {
             if let Some(Value::String(file_path)) = map.get("filePath") {
-                match resolve_ai_owned_attachment_source(file_path, context) {
-                    Ok(Some((source, _file_name))) => {
-                        if history_references_attachment_path(destination_history, &source) {
-                            return;
-                        }
-                        if let Err(error) = fs::remove_file(&source) {
-                            if error.kind() != io::ErrorKind::NotFound {
-                                report.failures.push(format!(
-                                    "Failed to delete migrated attachment {}: {error}",
-                                    source.to_string_lossy()
-                                ));
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => report.failures.push(error),
+                if let Ok(Some((source, _file_name))) =
+                    resolve_ai_owned_attachment_source(file_path, context)
+                {
+                    output.push(source);
+                }
+            }
+            for (key, child) in map {
+                if key != "filePath" {
+                    collect_ai_owned_attachment_sources_from_value(child, context, output);
                 }
             }
         }
         _ => {}
+    }
+}
+
+fn decrement_attachment_ref_counts(sources: &[PathBuf], counts: &mut HashMap<PathBuf, usize>) {
+    for source in sources {
+        match counts.get_mut(source) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+            }
+            Some(_) => {
+                counts.remove(source);
+            }
+            None => {}
+        }
+    }
+}
+
+fn delete_unreferenced_source_attachments(
+    sources: &[PathBuf],
+    remaining_source_ref_counts: &HashMap<PathBuf, usize>,
+    protected_destination_history: Option<&PersistedSessionHistory>,
+    report: &mut AiHistoryMigrationReport,
+) {
+    let mut unique_sources = sources.to_vec();
+    unique_sources.sort();
+    unique_sources.dedup();
+
+    for source in unique_sources {
+        if remaining_source_ref_counts
+            .get(&source)
+            .copied()
+            .unwrap_or(0)
+            > 0
+        {
+            continue;
+        }
+        if protected_destination_history
+            .is_some_and(|history| history_references_attachment_path(history, &source))
+        {
+            continue;
+        }
+        if let Err(error) = fs::remove_file(&source) {
+            if error.kind() != io::ErrorKind::NotFound {
+                report.failures.push(format!(
+                    "Failed to delete migrated attachment {}: {error}",
+                    source.to_string_lossy()
+                ));
+            }
+        }
     }
 }
 
@@ -4415,6 +4477,73 @@ mod tests {
         )
         .unwrap();
         assert_eq!(vault_histories.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn ai_migration_keeps_shared_attachment_until_all_source_histories_move() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_dir = vault_dir.path().join("assets").join("chat");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        let attachment_path = attachment_dir.join("pasted-image-shared-migration.png");
+        fs::write(&attachment_path, b"png").unwrap();
+
+        for session_id in ["shared-source-a", "shared-source-b"] {
+            invoke(
+                &backend,
+                "ai_save_session_history",
+                json!({
+                    "vaultPath": vault_path,
+                    "storageScope": "vault",
+                    "history": test_history(session_id, Some(&attachment_path))
+                }),
+            )
+            .unwrap();
+        }
+
+        let report = invoke(
+            &backend,
+            "ai_migrate_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "fromScope": "vault",
+                "toScope": "device",
+                "deleteSourceAfterCopy": true,
+                "migrateAttachments": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(report["histories_copied"], json!(2));
+        assert_eq!(report["attachments_copied"], json!(2));
+        assert_eq!(report["attachments_skipped"], json!(0));
+        assert_eq!(report["failures"], json!([]));
+        assert!(!attachment_path.exists());
+
+        let device_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "includeMessages": true
+            }),
+        )
+        .unwrap();
+        let histories = device_histories.as_array().unwrap();
+        assert_eq!(histories.len(), 2);
+        for history in histories {
+            let rewritten = history["messages"][0]["attachments"][0]["filePath"]
+                .as_str()
+                .unwrap();
+            assert!(rewritten.starts_with(&app_data_dir.path().to_string_lossy().to_string()));
+            assert!(Path::new(rewritten).is_file());
+        }
     }
 
     #[test]

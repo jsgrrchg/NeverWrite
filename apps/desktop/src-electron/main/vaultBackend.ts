@@ -221,7 +221,7 @@ async function rewriteAiAttachmentReferences(
             attachments_skipped: number;
             failures: string[];
         };
-        copiedSources: Set<string>;
+        copiedSources: string[];
     },
 ): Promise<unknown> {
     if (Array.isArray(value)) {
@@ -257,13 +257,50 @@ async function migrateAiOwnedAttachment(
             attachments_skipped: number;
             failures: string[];
         };
-        copiedSources: Set<string>;
+        copiedSources: string[];
+    },
+) {
+    const resolved = await resolveAiOwnedAttachmentSource(filePath, context);
+    if (!resolved) {
+        context.report.attachments_skipped += 1;
+        return null;
+    }
+    const { fileName, realSource } = resolved;
+
+    const targetDir =
+        context.toScope === "vault"
+            ? path.join(toAbsoluteVaultPath(context.vaultPath), "assets", "chat")
+            : path.join(aiAttachmentsRoot(context.vaultPath), "migrated");
+    const target = await uniqueFilePath(
+        targetDir,
+        sanitizeAiAttachmentFileName(fileName),
+    );
+
+    try {
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.copyFile(realSource, target);
+        context.report.attachments_copied += 1;
+        context.copiedSources.push(realSource);
+        return target;
+    } catch (error) {
+        context.report.attachments_skipped += 1;
+        context.report.failures.push(
+            error instanceof Error ? error.message : String(error),
+        );
+        return null;
+    }
+}
+
+async function resolveAiOwnedAttachmentSource(
+    filePath: string,
+    context: {
+        vaultPath: string;
+        fromScope: "device" | "vault";
     },
 ) {
     const source = path.resolve(filePath);
     const fileName = path.basename(source);
     if (!fileName.startsWith("pasted-image-")) {
-        context.report.attachments_skipped += 1;
         return null;
     }
 
@@ -280,31 +317,138 @@ async function migrateAiOwnedAttachment(
         !realSource ||
         !isPathInside(realSourceRoot, realSource)
     ) {
-        context.report.attachments_skipped += 1;
         return null;
     }
 
-    const targetDir =
-        context.toScope === "vault"
-            ? path.join(toAbsoluteVaultPath(context.vaultPath), "assets", "chat")
-            : path.join(aiAttachmentsRoot(context.vaultPath), "migrated");
-    const target = await uniqueFilePath(
-        targetDir,
-        sanitizeAiAttachmentFileName(fileName),
+    return { fileName, realSource };
+}
+
+async function collectAiOwnedAttachmentSourcesFromValue(
+    value: unknown,
+    context: {
+        vaultPath: string;
+        fromScope: "device" | "vault";
+    },
+    output: string[],
+): Promise<void> {
+    if (Array.isArray(value)) {
+        await Promise.all(
+            value.map((item) =>
+                collectAiOwnedAttachmentSourcesFromValue(item, context, output),
+            ),
+        );
+        return;
+    }
+    if (!value || typeof value !== "object") {
+        return;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (typeof record.filePath === "string") {
+        const resolved = await resolveAiOwnedAttachmentSource(
+            record.filePath,
+            context,
+        );
+        if (resolved) {
+            output.push(resolved.realSource);
+        }
+    }
+    await Promise.all(
+        Object.entries(record)
+            .filter(([key]) => key !== "filePath")
+            .map(([, child]) =>
+                collectAiOwnedAttachmentSourcesFromValue(
+                    child,
+                    context,
+                    output,
+                ),
+            ),
     );
+}
+
+async function collectAiHistoryAttachmentSources(
+    target: string,
+    context: {
+        vaultPath: string;
+        fromScope: "device" | "vault";
+    },
+    output: string[],
+): Promise<void> {
+    const stat = await fs.stat(target).catch(() => null);
+    if (!stat) return;
+    if (stat.isDirectory()) {
+        const entries = await fs.readdir(target).catch(() => []);
+        for (const entry of entries) {
+            await collectAiHistoryAttachmentSources(
+                path.join(target, entry),
+                context,
+                output,
+            );
+        }
+        return;
+    }
+    if (!stat.isFile() || !/\.(json|jsonl)$/i.test(target)) {
+        return;
+    }
+
+    const content = await fs.readFile(target, "utf8").catch(() => null);
+    if (content == null || !content.includes("\"filePath\"")) {
+        return;
+    }
+    if (/\.jsonl$/i.test(target)) {
+        for (const line of content.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            try {
+                const value = JSON.parse(line) as unknown;
+                await collectAiOwnedAttachmentSourcesFromValue(
+                    value,
+                    context,
+                    output,
+                );
+            } catch {
+                // Ignore malformed transcript lines while building cleanup guards.
+            }
+        }
+        return;
+    }
 
     try {
-        await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.copyFile(realSource, target);
-        context.report.attachments_copied += 1;
-        context.copiedSources.add(realSource);
-        return target;
-    } catch (error) {
-        context.report.attachments_skipped += 1;
-        context.report.failures.push(
-            error instanceof Error ? error.message : String(error),
-        );
-        return null;
+        const value = JSON.parse(content) as unknown;
+        await collectAiOwnedAttachmentSourcesFromValue(value, context, output);
+    } catch {
+        // Ignore malformed legacy files while building cleanup guards.
+    }
+}
+
+function decrementAttachmentRefCounts(
+    sources: string[],
+    counts: Map<string, number>,
+) {
+    for (const source of sources) {
+        const count = counts.get(source);
+        if (!count) continue;
+        if (count > 1) {
+            counts.set(source, count - 1);
+        } else {
+            counts.delete(source);
+        }
+    }
+}
+
+async function deleteUnreferencedAttachmentSources(
+    sources: string[],
+    counts: Map<string, number>,
+    report: { failures: string[] },
+) {
+    for (const source of [...new Set(sources)].sort()) {
+        if ((counts.get(source) ?? 0) > 0) {
+            continue;
+        }
+        await fs.rm(source, { force: true }).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") {
+                report.failures.push(error.message);
+            }
+        });
     }
 }
 
@@ -1620,6 +1764,24 @@ export class ElectronVaultBackend {
         } catch {
             return report;
         }
+        const attachmentRefCounts = new Map<string, number>();
+        if (migrateAttachments) {
+            const sourceAttachmentReferences: string[] = [];
+            for (const entry of entries) {
+                if (entry === ".DS_Store") continue;
+                await collectAiHistoryAttachmentSources(
+                    path.join(sourceRoot, entry),
+                    { vaultPath, fromScope },
+                    sourceAttachmentReferences,
+                );
+            }
+            for (const source of sourceAttachmentReferences) {
+                attachmentRefCounts.set(
+                    source,
+                    (attachmentRefCounts.get(source) ?? 0) + 1,
+                );
+            }
+        }
         await fs.mkdir(targetRoot, { recursive: true });
         for (const entry of entries) {
             if (entry === ".DS_Store") continue;
@@ -1636,7 +1798,7 @@ export class ElectronVaultBackend {
                 const failureCountBeforeCopy = report.failures.length;
                 const skippedAttachmentCountBeforeCopy =
                     report.attachments_skipped;
-                const copiedSources = new Set<string>();
+                const copiedSources: string[] = [];
                 await fs.cp(source, target, { recursive: true });
                 if (migrateAttachments) {
                     await rewriteAiHistoryAttachmentPaths(target, {
@@ -1654,13 +1816,15 @@ export class ElectronVaultBackend {
                     report.attachments_skipped === skippedAttachmentCountBeforeCopy
                 ) {
                     await fs.rm(source, { recursive: true, force: true });
-                    for (const copiedSource of copiedSources) {
-                        await fs.rm(copiedSource, { force: true }).catch(
-                            (error: NodeJS.ErrnoException) => {
-                                if (error.code !== "ENOENT") {
-                                    report.failures.push(error.message);
-                                }
-                            },
+                    if (migrateAttachments) {
+                        decrementAttachmentRefCounts(
+                            copiedSources,
+                            attachmentRefCounts,
+                        );
+                        await deleteUnreferencedAttachmentSources(
+                            copiedSources,
+                            attachmentRefCounts,
+                            report,
                         );
                     }
                 }
