@@ -57,6 +57,12 @@ import {
     pathsMatchVaultScoped,
 } from "../../../app/utils/vaultPaths";
 import {
+    getAiStorageScopeKey,
+    getHistoryRetentionStorageKey,
+    getLegacyVaultHistoryDismissedKey,
+    getVaultPreferenceScope,
+} from "../../../app/utils/aiVaultPreferenceKeys";
+import {
     appendSelectionMentionPart,
     createEmptyComposerParts,
     serializeComposerParts,
@@ -186,10 +192,6 @@ let _autoDetectedVaultStorageScopeKey: string | null = null;
 let _defaultRuntimePreferenceVersion = 0;
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
-const AI_STORAGE_SCOPE_KEY_PREFIX = "neverwrite.ai.storage-scope:";
-const AI_LEGACY_VAULT_HISTORY_DISMISSED_KEY_PREFIX =
-    "neverwrite.ai.legacy-vault-history-dismissed:";
-const AI_HISTORY_RETENTION_KEY_PREFIX = "neverwrite.ai.history-retention:";
 const TRANSCRIPT_PAGE_SIZE = 60;
 const TRACKED_PERSISTED_RECONCILE_DELAY_MS = 260;
 const SAVED_CHAT_RECONNECTING_STATUS_EVENT_ID =
@@ -364,10 +366,6 @@ function getAutoContextStorageKey(vaultPath: string | null) {
     }`;
 }
 
-function getVaultPreferenceScope(vaultPath: string | null) {
-    return normalizeVaultRoot(vaultPath) ?? AI_AUTO_CONTEXT_GLOBAL_SCOPE;
-}
-
 function loadAutoContextPreference(vaultPath: string | null) {
     try {
         const raw = safeStorageGetItem(getAutoContextStorageKey(vaultPath));
@@ -395,20 +393,12 @@ function saveAutoContextPreference(
     }
 }
 
-function getAiStorageScopeKey(vaultPath: string | null) {
-    return `${AI_STORAGE_SCOPE_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
-}
-
 function getEffectiveAiVaultPath() {
     return useVaultStore.getState().vaultPath ?? readSearchParam("vault");
 }
 
 function getAiPreferenceVaultPath() {
     return getEffectiveAiVaultPath();
-}
-
-function getLegacyVaultHistoryDismissedKey(vaultPath: string | null) {
-    return `${AI_LEGACY_VAULT_HISTORY_DISMISSED_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
 }
 
 function normalizeAiStorageScope(value: unknown): AIStorageScope {
@@ -473,10 +463,6 @@ function saveAiStorageScopePreference(
     } catch {
         // AI storage scope persistence is best-effort; default remains local.
     }
-}
-
-function getHistoryRetentionStorageKey(vaultPath: string | null) {
-    return `${AI_HISTORY_RETENTION_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
 }
 
 function normalizeHistoryRetentionDays(days: unknown) {

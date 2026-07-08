@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mockInvoke, setEditorTabs } from "../../test/test-utils";
+import { getAiVaultPreferenceStorageKeys } from "../utils/aiVaultPreferenceKeys";
 import { useBookmarkStore } from "./bookmarkStore";
 import { useEditorStore } from "./editorStore";
 import {
@@ -123,6 +124,28 @@ describe("vaultStore", () => {
                 { vaultPath: "/vault", storageScope: "vault" },
             ],
         ]);
+    });
+
+    it("clears AI vault-scoped preference keys when removing a vault from recents", async () => {
+        mockInvoke().mockResolvedValue(undefined);
+        const vaultPath = "/vault/";
+        const preferenceKeys = getAiVaultPreferenceStorageKeys(vaultPath);
+        const otherVaultKey = getAiVaultPreferenceStorageKeys("/other-vault")[0];
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([{ path: vaultPath, name: "Vault" }]),
+        );
+        localStorage.setItem(preferenceKeys[0], "vault");
+        localStorage.setItem(preferenceKeys[1], "true");
+        localStorage.setItem(preferenceKeys[2], "30");
+        localStorage.setItem(otherVaultKey, "device");
+
+        await removeVaultFromList(vaultPath);
+
+        for (const key of preferenceKeys) {
+            expect(localStorage.getItem(key)).toBeNull();
+        }
+        expect(localStorage.getItem(otherVaultKey)).toBe("device");
     });
 
     it("updates a note's status and okf_type when a change event arrives", () => {

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@neverwrite/runtime";
 import { perfCount, perfMeasure, perfNow } from "../utils/perfInstrumentation";
 import { getPathBaseName } from "../utils/path";
+import { getAiVaultPreferenceStorageKeys } from "../utils/aiVaultPreferenceKeys";
 import {
     safeStorageGetItem,
     safeStorageRemoveItem,
@@ -398,6 +399,9 @@ export async function removeVaultFromList(path: string) {
     safeStorageRemoveItem(`neverwrite:settings:${path}`);
     safeStorageRemoveItem(`neverwrite.chat.tabs:${path}`);
     safeStorageRemoveItem(`neverwrite:bookmarks:${path}`);
+    for (const key of getAiVaultPreferenceStorageKeys(path)) {
+        safeStorageRemoveItem(key);
+    }
 
     // Delete vault index snapshot from disk
     try {
