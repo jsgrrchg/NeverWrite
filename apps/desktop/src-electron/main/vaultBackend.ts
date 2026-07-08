@@ -161,6 +161,47 @@ function aiAttachmentsRoot(vaultPath: string) {
     );
 }
 
+function aiSessionsRoot(vaultPath: string, scope: "device" | "vault") {
+    const normalizedVaultPath = toAbsoluteVaultPath(vaultPath);
+    if (scope === "vault") {
+        return path.join(normalizedVaultPath, ".neverwrite", "sessions");
+    }
+    return path.join(
+        app.getPath("userData"),
+        "ai",
+        "sessions",
+        sha256Hex(normalizedVaultPath),
+        "sessions",
+    );
+}
+
+async function directoryHasEntries(dir: string) {
+    try {
+        const entries = await fs.readdir(dir);
+        return entries.some((entry) => entry !== ".DS_Store");
+    } catch {
+        return false;
+    }
+}
+
+async function countAiAttachmentReferences(target: string): Promise<number> {
+    const stat = await fs.stat(target).catch(() => null);
+    if (!stat) return 0;
+    if (stat.isDirectory()) {
+        const entries = await fs.readdir(target).catch(() => []);
+        let count = 0;
+        for (const entry of entries) {
+            count += await countAiAttachmentReferences(path.join(target, entry));
+        }
+        return count;
+    }
+    if (!stat.isFile() || !/\.(json|jsonl)$/i.test(target)) {
+        return 0;
+    }
+    const content = await fs.readFile(target, "utf8").catch(() => "");
+    return content.match(/"filePath"\s*:/g)?.length ?? 0;
+}
+
 async function uniqueFilePath(dir: string, fileName: string) {
     const candidate = path.join(dir, fileName);
     try {
@@ -200,6 +241,8 @@ const VAULT_EDITOR_COMMANDS = new Set([
     "save_vault_binary_file",
     "ai_save_attachment",
     "ai_delete_attachment",
+    "ai_has_vault_session_histories",
+    "ai_migrate_session_histories",
     "read_note",
     "save_note",
     "create_note",
@@ -1031,6 +1074,12 @@ export class ElectronVaultBackend {
                 return this.saveAiAttachment(args);
             case "ai_delete_attachment":
                 return this.deleteAiAttachment(args);
+            case "ai_has_vault_session_histories":
+                return directoryHasEntries(
+                    aiSessionsRoot(String(args.vaultPath ?? ""), "vault"),
+                );
+            case "ai_migrate_session_histories":
+                return this.migrateAiSessionHistories(args);
             case "read_note":
                 return readNoteDetail(String(args.vaultPath ?? ""), String(args.noteId ?? args.note_id ?? ""));
             case "save_note":
@@ -1365,6 +1414,70 @@ export class ElectronVaultBackend {
             await fs.unlink(canonicalTarget);
         }
         return null;
+    }
+
+    async migrateAiSessionHistories(args: Record<string, unknown>) {
+        const vaultPath = String(args.vaultPath ?? args.vault_path ?? "");
+        const fromScope = String(args.fromScope ?? args.from_scope ?? "");
+        const toScope = String(args.toScope ?? args.to_scope ?? "");
+        if (
+            (fromScope !== "device" && fromScope !== "vault") ||
+            (toScope !== "device" && toScope !== "vault") ||
+            fromScope === toScope
+        ) {
+            throw new Error("Invalid AI history migration scope");
+        }
+
+        const sourceRoot = aiSessionsRoot(vaultPath, fromScope);
+        const targetRoot = aiSessionsRoot(vaultPath, toScope);
+        const deleteSourceAfterCopy = Boolean(
+            args.deleteSourceAfterCopy ?? args.delete_source_after_copy,
+        );
+        const migrateAttachments =
+            args.migrateAttachments ?? args.migrate_attachments ?? true;
+        const report = {
+            histories_copied: 0,
+            histories_skipped: 0,
+            attachments_copied: 0,
+            attachments_skipped: 0,
+            failures: [] as string[],
+        };
+
+        let entries: string[] = [];
+        try {
+            entries = await fs.readdir(sourceRoot);
+        } catch {
+            return report;
+        }
+        await fs.mkdir(targetRoot, { recursive: true });
+        for (const entry of entries) {
+            if (entry === ".DS_Store") continue;
+            const source = path.join(sourceRoot, entry);
+            const target = path.join(targetRoot, entry);
+            try {
+                await fs.access(target);
+                report.histories_skipped += 1;
+                continue;
+            } catch {
+                // Target does not exist; copy below.
+            }
+            try {
+                const skippedAttachments = migrateAttachments
+                    ? await countAiAttachmentReferences(source)
+                    : 0;
+                await fs.cp(source, target, { recursive: true });
+                report.histories_copied += 1;
+                report.attachments_skipped += skippedAttachments;
+                if (deleteSourceAfterCopy && skippedAttachments === 0) {
+                    await fs.rm(source, { recursive: true, force: true });
+                }
+            } catch (error) {
+                report.failures.push(
+                    error instanceof Error ? error.message : String(error),
+                );
+            }
+        }
+        return report;
     }
 
     async saveNote(args: Record<string, unknown>) {

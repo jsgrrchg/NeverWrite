@@ -184,6 +184,8 @@ let _defaultRuntimePreferenceVersion = 0;
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
 const AI_STORAGE_SCOPE_KEY_PREFIX = "neverwrite.ai.storage-scope:";
+const AI_LEGACY_VAULT_HISTORY_DISMISSED_KEY_PREFIX =
+    "neverwrite.ai.legacy-vault-history-dismissed:";
 const AI_HISTORY_RETENTION_KEY_PREFIX = "neverwrite.ai.history-retention:";
 const TRANSCRIPT_PAGE_SIZE = 60;
 const TRACKED_PERSISTED_RECONCILE_DELAY_MS = 260;
@@ -394,6 +396,10 @@ function getAiStorageScopeKey(vaultPath: string | null) {
     return `${AI_STORAGE_SCOPE_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
 }
 
+function getLegacyVaultHistoryDismissedKey(vaultPath: string | null) {
+    return `${AI_LEGACY_VAULT_HISTORY_DISMISSED_KEY_PREFIX}${getVaultPreferenceScope(vaultPath)}`;
+}
+
 function normalizeAiStorageScope(value: unknown): AIStorageScope {
     return value === "vault" ? "vault" : "device";
 }
@@ -407,6 +413,39 @@ export function loadAiStorageScopePreference(
         );
     } catch {
         return "device";
+    }
+}
+
+export function hasAiStorageScopePreference(vaultPath: string | null): boolean {
+    try {
+        return safeStorageGetItem(getAiStorageScopeKey(vaultPath)) != null;
+    } catch {
+        return false;
+    }
+}
+
+export function loadLegacyVaultHistoryDismissal(vaultPath: string | null) {
+    try {
+        return (
+            safeStorageGetItem(getLegacyVaultHistoryDismissedKey(vaultPath)) ===
+            "true"
+        );
+    } catch {
+        return false;
+    }
+}
+
+export function saveLegacyVaultHistoryDismissal(
+    vaultPath: string | null,
+    dismissed: boolean,
+) {
+    try {
+        safeStorageSetItem(
+            getLegacyVaultHistoryDismissedKey(vaultPath),
+            String(dismissed),
+        );
+    } catch {
+        // Legacy-history prompts are advisory; avoid breaking chat flows.
     }
 }
 

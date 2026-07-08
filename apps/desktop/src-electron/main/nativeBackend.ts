@@ -76,6 +76,8 @@ const SUPPORTED_COMMANDS = new Set([
     "ai_respond_user_input",
     "ai_respond_url_elicitation",
     "ai_save_session_history",
+    "ai_has_vault_session_histories",
+    "ai_migrate_session_histories",
     "ai_load_session_histories",
     "ai_load_session_history_page",
     "ai_search_session_content",

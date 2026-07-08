@@ -698,6 +698,23 @@ struct AiSessionsStorage {
     sessions_root: PathBuf,
 }
 
+#[derive(Default, Serialize)]
+struct AiHistoryMigrationReport {
+    histories_copied: usize,
+    histories_skipped: usize,
+    attachments_copied: usize,
+    attachments_skipped: usize,
+    failures: Vec<String>,
+}
+
+struct AiAttachmentMigrationContext {
+    vault_root: PathBuf,
+    app_data_root: PathBuf,
+    vault_key: String,
+    from_scope: AiStorageScope,
+    to_scope: AiStorageScope,
+}
+
 impl NativeBackend {
     fn new(event_tx: Sender<RpcOutput>) -> Self {
         Self {
@@ -893,6 +910,8 @@ impl NativeBackend {
             }
             "ai_register_file_baseline" => self.ai.register_file_baseline(&args),
             "ai_save_session_history" => self.ai_save_session_history(args),
+            "ai_has_vault_session_histories" => self.ai_has_vault_session_histories(args),
+            "ai_migrate_session_histories" => self.ai_migrate_session_histories(args),
             "ai_load_session_histories" => self.ai_load_session_histories(args),
             "ai_load_session_history_page" => self.ai_load_session_history_page(args),
             "ai_search_session_content" => self.ai_search_session_content(args),
@@ -1011,6 +1030,93 @@ impl NativeBackend {
             }
         }
         Ok(json!(null))
+    }
+
+    fn ai_has_vault_session_histories(&self, args: Value) -> Result<Value, String> {
+        let (_vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let histories = persistence::load_all_session_histories(&vault_root, false)?;
+        Ok(json!(histories
+            .iter()
+            .any(has_persisted_history_content_native)))
+    }
+
+    fn ai_migrate_session_histories(&self, args: Value) -> Result<Value, String> {
+        let (vault_key, vault_root) = self.required_open_vault_root(&args)?;
+        let from_scope = required_ai_storage_scope_arg(&args, &["fromScope", "from_scope"])?;
+        let to_scope = required_ai_storage_scope_arg(&args, &["toScope", "to_scope"])?;
+        if from_scope == to_scope {
+            return Err("Migration source and destination scopes must differ.".to_string());
+        }
+        let delete_source_after_copy = bool_arg(&args, "deleteSourceAfterCopy")
+            .or_else(|| bool_arg(&args, "delete_source_after_copy"))
+            .unwrap_or(false);
+        let migrate_attachments = bool_arg(&args, "migrateAttachments")
+            .or_else(|| bool_arg(&args, "migrate_attachments"))
+            .unwrap_or(true);
+        let app_data_root = app_data_dir();
+        let from_storage =
+            ai_sessions_storage_for_scope(&vault_key, &vault_root, from_scope, &app_data_root);
+        let to_storage =
+            ai_sessions_storage_for_scope(&vault_key, &vault_root, to_scope, &app_data_root);
+        let mut report = AiHistoryMigrationReport::default();
+        let source_histories = load_session_histories_for_storage(&from_storage, true)?;
+        let destination_ids: HashSet<String> =
+            load_session_histories_for_storage(&to_storage, false)?
+                .into_iter()
+                .map(|history| history.session_id)
+                .collect();
+        let attachment_context = AiAttachmentMigrationContext {
+            vault_root: vault_root.clone(),
+            app_data_root: app_data_root.clone(),
+            vault_key: vault_key.clone(),
+            from_scope,
+            to_scope,
+        };
+
+        for mut history in source_histories {
+            if !has_persisted_history_content_native(&history) {
+                report.histories_skipped += 1;
+                continue;
+            }
+            if destination_ids.contains(&history.session_id) {
+                report.histories_skipped += 1;
+                continue;
+            }
+
+            let failure_count_before_history = report.failures.len();
+            let skipped_attachment_count_before_history = report.attachments_skipped;
+            let mut copied_attachments = Vec::new();
+            if migrate_attachments {
+                rewrite_history_attachment_paths(
+                    &mut history,
+                    &attachment_context,
+                    &mut copied_attachments,
+                    &mut report,
+                );
+            }
+            save_session_history_for_storage(&to_storage, &history)?;
+            verify_session_history_exists(&to_storage, &history.session_id)?;
+            report.histories_copied += 1;
+
+            if delete_source_after_copy
+                && report.failures.len() == failure_count_before_history
+                && report.attachments_skipped == skipped_attachment_count_before_history
+            {
+                delete_session_history_for_storage(&from_storage, &history.session_id)?;
+                for source_path in copied_attachments {
+                    if let Err(error) = fs::remove_file(&source_path) {
+                        if error.kind() != io::ErrorKind::NotFound {
+                            report.failures.push(format!(
+                                "Failed to delete migrated attachment {}: {error}",
+                                source_path.to_string_lossy()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(json!(report))
     }
 
     fn ai_load_session_histories(&self, args: Value) -> Result<Value, String> {
@@ -2679,6 +2785,100 @@ fn ai_storage_scope_arg(args: &Value) -> Result<AiStorageScope, String> {
     }
 }
 
+fn required_ai_storage_scope_arg(args: &Value, names: &[&str]) -> Result<AiStorageScope, String> {
+    match optional_nullable_string(args, names)
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("vault") => Ok(AiStorageScope::Vault),
+        Some("device") => Ok(AiStorageScope::Device),
+        Some(scope) => Err(format!("Unsupported AI storage scope: {scope}")),
+        None => Err(format!("Missing argument: {}", names[0])),
+    }
+}
+
+fn ai_sessions_storage_for_scope(
+    normalized_vault_key: &str,
+    vault_root: &Path,
+    scope: AiStorageScope,
+    app_data_root: &Path,
+) -> AiSessionsStorage {
+    AiSessionsStorage {
+        scope,
+        vault_root: vault_root.to_path_buf(),
+        sessions_root: resolve_ai_sessions_root(
+            normalized_vault_key,
+            vault_root,
+            scope,
+            app_data_root,
+        ),
+    }
+}
+
+fn load_session_histories_for_storage(
+    storage: &AiSessionsStorage,
+    include_messages: bool,
+) -> Result<Vec<PersistedSessionHistory>, String> {
+    match storage.scope {
+        AiStorageScope::Vault => {
+            persistence::load_all_session_histories(&storage.vault_root, include_messages)
+        }
+        AiStorageScope::Device => persistence::load_all_session_histories_in_storage_root(
+            &storage.sessions_root,
+            include_messages,
+        ),
+    }
+}
+
+fn save_session_history_for_storage(
+    storage: &AiSessionsStorage,
+    history: &PersistedSessionHistory,
+) -> Result<(), String> {
+    match storage.scope {
+        AiStorageScope::Vault => persistence::save_session_history(&storage.vault_root, history),
+        AiStorageScope::Device => {
+            persistence::save_session_history_in_storage_root(&storage.sessions_root, history)
+        }
+    }
+}
+
+fn delete_session_history_for_storage(
+    storage: &AiSessionsStorage,
+    session_id: &str,
+) -> Result<(), String> {
+    match storage.scope {
+        AiStorageScope::Vault => {
+            persistence::delete_session_history(&storage.vault_root, session_id)
+        }
+        AiStorageScope::Device => {
+            persistence::delete_session_history_in_storage_root(&storage.sessions_root, session_id)
+        }
+    }
+}
+
+fn verify_session_history_exists(
+    storage: &AiSessionsStorage,
+    session_id: &str,
+) -> Result<(), String> {
+    load_session_histories_for_storage(storage, false)?
+        .into_iter()
+        .any(|history| history.session_id == session_id)
+        .then_some(())
+        .ok_or_else(|| format!("Migrated session history was not readable: {session_id}"))
+}
+
+fn has_persisted_history_content_native(history: &PersistedSessionHistory) -> bool {
+    history.message_count.unwrap_or(history.messages.len()) > 0
+        || history
+            .title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty())
+        || history
+            .preview
+            .as_deref()
+            .is_some_and(|preview| !preview.trim().is_empty())
+}
+
 fn resolve_ai_sessions_root(
     normalized_vault_key: &str,
     vault_root: &Path,
@@ -2768,6 +2968,109 @@ fn unique_file_path(dir: &Path, file_name: &str) -> Result<PathBuf, String> {
     }
 
     Err("Could not allocate attachment file name".to_string())
+}
+
+fn rewrite_history_attachment_paths(
+    history: &mut PersistedSessionHistory,
+    context: &AiAttachmentMigrationContext,
+    copied_attachments: &mut Vec<PathBuf>,
+    report: &mut AiHistoryMigrationReport,
+) {
+    for message in &mut history.messages {
+        let Some(attachments) = message.attachments.as_mut() else {
+            continue;
+        };
+        rewrite_attachments_value_paths(attachments, context, copied_attachments, report);
+    }
+}
+
+fn rewrite_attachments_value_paths(
+    value: &mut Value,
+    context: &AiAttachmentMigrationContext,
+    copied_attachments: &mut Vec<PathBuf>,
+    report: &mut AiHistoryMigrationReport,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                rewrite_attachments_value_paths(item, context, copied_attachments, report);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(Value::String(file_path)) = map.get("filePath") {
+                match migrate_ai_owned_attachment(file_path, context) {
+                    Ok(Some((source, target))) => {
+                        map.insert(
+                            "filePath".to_string(),
+                            Value::String(target.to_string_lossy().to_string()),
+                        );
+                        copied_attachments.push(source);
+                        report.attachments_copied += 1;
+                    }
+                    Ok(None) => {
+                        report.attachments_skipped += 1;
+                    }
+                    Err(error) => {
+                        report.attachments_skipped += 1;
+                        report.failures.push(error);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn migrate_ai_owned_attachment(
+    file_path: &str,
+    context: &AiAttachmentMigrationContext,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let source = PathBuf::from(file_path);
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Attachment file name is invalid".to_string())?;
+    if !file_name.starts_with("pasted-image-") {
+        return Ok(None);
+    }
+
+    let source_root = match context.from_scope {
+        AiStorageScope::Vault => context.vault_root.join("assets").join("chat"),
+        AiStorageScope::Device => {
+            resolve_ai_attachments_root(&context.vault_key, &context.app_data_root)
+        }
+    };
+    let canonical_source_root = source_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let canonical_source = source.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical_source.starts_with(&canonical_source_root) {
+        return Ok(None);
+    }
+
+    let target = match context.to_scope {
+        AiStorageScope::Vault => unique_file_path(
+            &context.vault_root.join("assets").join("chat"),
+            &sanitize_ai_attachment_file_name(file_name)?,
+        )?,
+        AiStorageScope::Device => unique_file_path(
+            &resolve_ai_attachments_root(&context.vault_key, &context.app_data_root)
+                .join("migrated"),
+            &sanitize_ai_attachment_file_name(file_name)?,
+        )?,
+    };
+    fs::create_dir_all(
+        target
+            .parent()
+            .ok_or_else(|| "Attachment target path has no parent".to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::copy(&canonical_source, &target).map_err(|error| error.to_string())?;
+
+    Ok(Some((canonical_source, target)))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -3527,6 +3830,55 @@ mod tests {
         }
     }
 
+    fn test_backend_with_open_vault() -> (Arc<Mutex<NativeBackend>>, tempfile::TempDir, String) {
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+        (backend, vault_dir, vault_path)
+    }
+
+    fn test_history(session_id: &str, attachment_path: Option<&Path>) -> Value {
+        let attachments = attachment_path
+            .map(|path| {
+                json!([
+                    {
+                        "id": "shot-1",
+                        "type": "file",
+                        "noteId": null,
+                        "label": "Screenshot",
+                        "path": null,
+                        "filePath": path.to_string_lossy(),
+                        "mimeType": "image/png"
+                    }
+                ])
+            })
+            .unwrap_or_else(|| json!([]));
+        json!({
+            "version": 1,
+            "session_id": session_id,
+            "runtime_id": "test-runtime",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "additional_roots": [],
+            "created_at": 1,
+            "updated_at": 2,
+            "title": "Migrated chat",
+            "preview": "hello migration",
+            "messages": [
+                {
+                    "id": "msg-1",
+                    "role": "user",
+                    "kind": "text",
+                    "content": "hello migration",
+                    "timestamp": 1,
+                    "attachments": attachments
+                }
+            ]
+        })
+    }
+
     #[test]
     fn ai_storage_scope_defaults_to_vault() {
         assert_eq!(
@@ -3660,6 +4012,231 @@ mod tests {
 
         assert!(result.is_err());
         assert!(outside_file.path().exists());
+    }
+
+    #[test]
+    fn ai_migration_copies_vault_histories_and_rewrites_attachments_to_device() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_dir = vault_dir.path().join("assets").join("chat");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        let attachment_path = attachment_dir.join("pasted-image-legacy.png");
+        fs::write(&attachment_path, b"png").unwrap();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "history": test_history("vault-session", Some(&attachment_path))
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            invoke(
+                &backend,
+                "ai_has_vault_session_histories",
+                json!({ "vaultPath": vault_path })
+            )
+            .unwrap(),
+            json!(true)
+        );
+
+        let report = invoke(
+            &backend,
+            "ai_migrate_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "fromScope": "vault",
+                "toScope": "device",
+                "deleteSourceAfterCopy": false,
+                "migrateAttachments": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(report["histories_copied"], json!(1));
+        assert_eq!(report["attachments_copied"], json!(1));
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "includeMessages": true
+            }),
+        )
+        .unwrap();
+        let rewritten = histories[0]["messages"][0]["attachments"][0]["filePath"]
+            .as_str()
+            .unwrap();
+        assert!(rewritten.starts_with(&app_data_dir.path().to_string_lossy().to_string()));
+        assert!(Path::new(rewritten).is_file());
+        assert!(attachment_path.is_file());
+    }
+
+    #[test]
+    fn ai_migration_copies_device_histories_to_vault_and_deletes_source() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, _vault_dir, vault_path) = test_backend_with_open_vault();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "history": test_history("device-session", None)
+            }),
+        )
+        .unwrap();
+        let report = invoke(
+            &backend,
+            "ai_migrate_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "fromScope": "device",
+                "toScope": "vault",
+                "deleteSourceAfterCopy": true,
+                "migrateAttachments": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(report["histories_copied"], json!(1));
+        let vault_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "includeMessages": false
+            }),
+        )
+        .unwrap();
+        assert_eq!(vault_histories.as_array().unwrap().len(), 1);
+        let device_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "includeMessages": false
+            }),
+        )
+        .unwrap();
+        assert_eq!(device_histories.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn ai_migration_is_idempotent() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, _vault_dir, vault_path) = test_backend_with_open_vault();
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "history": test_history("idempotent-session", None)
+            }),
+        )
+        .unwrap();
+
+        for expected in [("histories_copied", 1), ("histories_skipped", 1)] {
+            let report = invoke(
+                &backend,
+                "ai_migrate_session_histories",
+                json!({
+                    "vaultPath": vault_path,
+                    "fromScope": "vault",
+                    "toScope": "device",
+                    "deleteSourceAfterCopy": false,
+                    "migrateAttachments": true
+                }),
+            )
+            .unwrap();
+            assert_eq!(report[expected.0], json!(expected.1));
+        }
+        let histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "includeMessages": false
+            }),
+        )
+        .unwrap();
+        assert_eq!(histories.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ai_migration_keeps_source_history_when_attachment_is_skipped() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+        let attachment_dir = vault_dir.path().join("assets").join("chat");
+        fs::create_dir_all(&attachment_dir).unwrap();
+        let attachment_path = attachment_dir.join("manual-image.png");
+        fs::write(&attachment_path, b"png").unwrap();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "history": test_history("skipped-attachment-session", Some(&attachment_path))
+            }),
+        )
+        .unwrap();
+        let report = invoke(
+            &backend,
+            "ai_migrate_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "fromScope": "vault",
+                "toScope": "device",
+                "deleteSourceAfterCopy": true,
+                "migrateAttachments": true
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(report["histories_copied"], json!(1));
+        assert_eq!(report["attachments_skipped"], json!(1));
+        let source_histories = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "includeMessages": false
+            }),
+        )
+        .unwrap();
+        assert_eq!(source_histories.as_array().unwrap().len(), 1);
     }
 
     #[test]

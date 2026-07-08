@@ -805,6 +805,30 @@ export async function aiSaveSessionHistory(
     await invoke("ai_save_session_history", { vaultPath, history, storageScope });
 }
 
+export interface AIHistoryMigrationReport {
+    histories_copied: number;
+    histories_skipped: number;
+    attachments_copied: number;
+    attachments_skipped: number;
+    failures: string[];
+}
+
+export async function aiHasVaultSessionHistories(
+    vaultPath: string,
+): Promise<boolean> {
+    return invoke<boolean>("ai_has_vault_session_histories", { vaultPath });
+}
+
+export async function aiMigrateSessionHistories(args: {
+    vaultPath: string;
+    fromScope: "device" | "vault";
+    toScope: "device" | "vault";
+    deleteSourceAfterCopy: boolean;
+    migrateAttachments: boolean;
+}): Promise<AIHistoryMigrationReport> {
+    return invoke<AIHistoryMigrationReport>("ai_migrate_session_histories", args);
+}
+
 export async function aiLoadSessionHistories(
     vaultPath: string,
     options?: {

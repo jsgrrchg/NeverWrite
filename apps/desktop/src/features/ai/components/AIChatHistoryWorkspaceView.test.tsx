@@ -1,8 +1,10 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useEditorStore } from "../../../app/store/editorStore";
+import { useVaultStore } from "../../../app/store/vaultStore";
 import { renderComponent } from "../../../test/test-utils";
 import { resetChatStore, useChatStore } from "../store/chatStore";
+import { aiHasVaultSessionHistories, aiMigrateSessionHistories } from "../api";
 import { exportChatSessionToVaultNote } from "../chatExport";
 import type { AIChatSession } from "../types";
 import { AIChatHistoryWorkspaceView } from "./AIChatHistoryWorkspaceView";
@@ -15,6 +17,20 @@ vi.mock("../chatExport", () => ({
         content: "# Exported",
     }),
 }));
+
+vi.mock("../api", () => ({
+    aiHasVaultSessionHistories: vi.fn().mockResolvedValue(false),
+    aiMigrateSessionHistories: vi.fn().mockResolvedValue({
+        histories_copied: 0,
+        histories_skipped: 0,
+        attachments_copied: 0,
+        attachments_skipped: 0,
+        failures: [],
+    }),
+}));
+
+const aiHasVaultSessionHistoriesMock = vi.mocked(aiHasVaultSessionHistories);
+const aiMigrateSessionHistoriesMock = vi.mocked(aiMigrateSessionHistories);
 
 function createSession(
     sessionId: string,
@@ -54,6 +70,12 @@ describe("AIChatHistoryWorkspaceView", () => {
     beforeEach(() => {
         resetChatStore();
         vi.clearAllMocks();
+        localStorage.clear();
+        useVaultStore.setState({
+            vaultPath: "/vault",
+            notes: [],
+            entries: [],
+        });
         useEditorStore.getState().hydrateWorkspace(
             [
                 {
@@ -298,5 +320,47 @@ describe("AIChatHistoryWorkspaceView", () => {
 
         expect(screen.queryByDisplayValue("Child execution")).toBeNull();
         expect(renameSession).not.toHaveBeenCalled();
+    });
+
+    it("shows the legacy vault history notice once and can move histories to device", async () => {
+        aiHasVaultSessionHistoriesMock.mockResolvedValue(true);
+        const initialize = vi.fn().mockResolvedValue(undefined);
+        useChatStore.setState((state) => ({
+            ...state,
+            initialize,
+            sessionsById: {},
+            sessionOrder: [],
+            aiStorageScope: "device",
+        }));
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+
+        expect(
+            await screen.findByText(
+                "AI chat history is currently stored in this vault.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Move to this device" }),
+        );
+
+        await waitFor(() => {
+            expect(aiMigrateSessionHistoriesMock).toHaveBeenCalledWith({
+                vaultPath: "/vault",
+                fromScope: "vault",
+                toScope: "device",
+                deleteSourceAfterCopy: true,
+                migrateAttachments: true,
+            });
+            expect(initialize).toHaveBeenCalled();
+        });
+        await waitFor(() => {
+            expect(
+                screen.queryByText(
+                    "AI chat history is currently stored in this vault.",
+                ),
+            ).toBeNull();
+        });
     });
 });
