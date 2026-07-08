@@ -1011,14 +1011,32 @@ impl NativeBackend {
     fn required_ai_sessions_storage(&self, args: &Value) -> Result<AiSessionsStorage, String> {
         let (vault_key, vault_root) = self.required_open_vault_root(args)?;
         let scope = ai_storage_scope_arg(args)?;
-        let sessions_root =
-            resolve_ai_sessions_root(&vault_key, &vault_root, scope, &app_data_dir());
-        Ok(AiSessionsStorage {
+        Ok(ai_sessions_storage_for_scope(
+            &vault_key,
+            &vault_root,
             scope,
-            vault_key,
-            vault_root,
-            sessions_root,
-        })
+            &app_data_dir(),
+        ))
+    }
+
+    fn required_ai_sessions_storage_for_existing_vault_path(
+        &self,
+        args: &Value,
+    ) -> Result<AiSessionsStorage, String> {
+        let vault_path = required_string(args, &["vaultPath", "vault_path"])?;
+        let vault_key = normalize_vault_path(&vault_path)?;
+        let vault_root = self
+            .vaults
+            .get(&vault_key)
+            .map(|state| state.vault.root.clone())
+            .unwrap_or_else(|| PathBuf::from(&vault_key));
+        let scope = ai_storage_scope_arg(args)?;
+        Ok(ai_sessions_storage_for_scope(
+            &vault_key,
+            &vault_root,
+            scope,
+            &app_data_dir(),
+        ))
     }
 
     fn ai_save_session_history(&self, args: Value) -> Result<Value, String> {
@@ -1251,7 +1269,7 @@ impl NativeBackend {
     }
 
     fn ai_delete_all_session_histories(&self, args: Value) -> Result<Value, String> {
-        let storage = self.required_ai_sessions_storage(&args)?;
+        let storage = self.required_ai_sessions_storage_for_existing_vault_path(&args)?;
         match storage.scope {
             AiStorageScope::Vault => {
                 persistence::delete_all_session_histories(&storage.vault_root)?
@@ -4347,6 +4365,66 @@ mod tests {
 
         assert!(result.is_err());
         assert!(outside_file.path().exists());
+    }
+
+    #[test]
+    fn ai_delete_all_session_histories_accepts_unopened_existing_vault() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+        let (backend, vault_dir, vault_path) = test_backend_with_open_vault();
+
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "vault",
+                "history": test_history("vault-session", None)
+            }),
+        )
+        .unwrap();
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "history": test_history("device-session", None)
+            }),
+        )
+        .unwrap();
+
+        let vault_key = normalize_vault_path(&vault_path).unwrap();
+        let vault_sessions_root = persistence::sessions_root_for_vault(vault_dir.path());
+        let device_sessions_root = resolve_ai_sessions_root(
+            &vault_key,
+            vault_dir.path(),
+            AiStorageScope::Device,
+            app_data_dir.path(),
+        );
+        assert!(vault_sessions_root.read_dir().unwrap().next().is_some());
+        assert!(device_sessions_root.read_dir().unwrap().next().is_some());
+
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let unopened_backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        for storage_scope in ["device", "vault"] {
+            invoke(
+                &unopened_backend,
+                "ai_delete_all_session_histories",
+                json!({
+                    "vaultPath": vault_path,
+                    "storageScope": storage_scope
+                }),
+            )
+            .unwrap();
+        }
+
+        assert!(vault_sessions_root.read_dir().unwrap().next().is_none());
+        assert!(device_sessions_root.read_dir().unwrap().next().is_none());
     }
 
     #[test]

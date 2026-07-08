@@ -100,6 +100,31 @@ describe("vaultStore", () => {
         ]);
     });
 
+    it("deletes both AI history storage scopes when removing an inactive vault from recents", async () => {
+        const invokeMock = mockInvoke().mockResolvedValue(undefined);
+        localStorage.setItem(
+            "neverwrite:recentVaults",
+            JSON.stringify([{ path: "/vault", name: "Vault" }]),
+        );
+        useVaultStore.setState({ vaultPath: "/other-vault" });
+
+        await removeVaultFromList("/vault");
+
+        const historyDeletes = invokeMock.mock.calls.filter(
+            ([command]) => command === "ai_delete_all_session_histories",
+        );
+        expect(historyDeletes).toEqual([
+            [
+                "ai_delete_all_session_histories",
+                { vaultPath: "/vault", storageScope: "device" },
+            ],
+            [
+                "ai_delete_all_session_histories",
+                { vaultPath: "/vault", storageScope: "vault" },
+            ],
+        ]);
+    });
+
     it("updates a note's status and okf_type when a change event arrives", () => {
         useVaultStore.setState({
             vaultPath: "/vault",

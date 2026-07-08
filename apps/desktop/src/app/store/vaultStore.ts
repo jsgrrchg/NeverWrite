@@ -407,16 +407,14 @@ export async function removeVaultFromList(path: string) {
     }
 
     // Delete AI session histories from both storage roots.
-    if (useVaultStore.getState().vaultPath === path) {
-        for (const storageScope of AI_HISTORY_STORAGE_SCOPES) {
-            try {
-                await invoke("ai_delete_all_session_histories", {
-                    vaultPath: path,
-                    storageScope,
-                });
-            } catch {
-                // No histories or vault not open — that's fine
-            }
+    for (const storageScope of AI_HISTORY_STORAGE_SCOPES) {
+        try {
+            await invoke("ai_delete_all_session_histories", {
+                vaultPath: path,
+                storageScope,
+            });
+        } catch {
+            // No histories or vault not open — that's fine
         }
     }
 }
