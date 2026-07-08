@@ -183,7 +183,8 @@ describe("ElectronVaultBackend AI history migration", () => {
         const vaultPath = await fs.mkdtemp(
             path.join(os.tmpdir(), "neverwrite-ai-migration-"),
         );
-        const vaultKey = sha256Hex(path.resolve(vaultPath));
+        const stableVaultPath = await fs.realpath(vaultPath);
+        const vaultKey = sha256Hex(stableVaultPath);
         const sourceRoot = path.join(
             userDataPath,
             "ai",
@@ -260,6 +261,33 @@ describe("ElectronVaultBackend AI history migration", () => {
             attachments_skipped: 0,
             failures: [],
         });
+    });
+
+    it("uses the real vault path for device AI attachment namespaces", async () => {
+        const userDataPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-user-data-"),
+        );
+        electronAppMock.getPath.mockReturnValue(userDataPath);
+
+        const realVaultPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-real-vault-"),
+        );
+        const linkRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-link-root-"),
+        );
+        const linkPath = path.join(linkRoot, "vault-link");
+        await fs.symlink(realVaultPath, linkPath, "dir");
+
+        const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
+        const saved = (await backend.invoke("ai_save_attachment", {
+            vaultPath: linkPath,
+            sessionId: "session-1",
+            fileName: "pasted-image-source.png",
+            bytes: [112, 110, 103],
+        })) as { path: string };
+
+        expect(saved.path).toContain(sha256Hex(await fs.realpath(realVaultPath)));
+        expect(saved.path).not.toContain(sha256Hex(path.resolve(linkPath)));
     });
 });
 

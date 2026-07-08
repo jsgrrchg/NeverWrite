@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -286,8 +287,19 @@ function sha256Hex(value: string) {
     return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function stableVaultKeyPath(vaultPath: string) {
+    const absolutePath = path.resolve(vaultPath);
+    try {
+        return realpathSync.native(absolutePath);
+    } catch {
+        return absolutePath;
+    }
+}
+
 function aiAttachmentRootCandidates(encodedVaultPath: string) {
-    const vaultPath = path.resolve(decodeBase64UrlSegment(encodedVaultPath));
+    const vaultPath = stableVaultKeyPath(
+        decodeBase64UrlSegment(encodedVaultPath),
+    );
     return [
         path.join(
             app.getPath("userData"),

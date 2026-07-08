@@ -81,22 +81,21 @@ function fileNameFromPath(path: string) {
     return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
-async function sha256Hex(value: string) {
-    const bytes = new TextEncoder().encode(value);
-    const digest = await window.crypto.subtle.digest("SHA-256", bytes);
-    return [...new Uint8Array(digest)]
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
+function isLocalAiAttachmentPreviewUrl(
+    previewUrl: string | null,
+    vaultPreviewUrl: string | null,
+) {
+    return !vaultPreviewUrl && previewUrl?.includes("/ai-attachment/") === true;
 }
 
-async function isDeviceLocalAttachmentForVault(
-    filePath: string,
-    vaultPath: string | null,
-) {
-    if (!vaultPath) return false;
-    const vaultKey = await sha256Hex(vaultPath);
-    const normalized = filePath.replace(/\\/g, "/");
-    return normalized.includes(`/ai/attachments/${vaultKey}/`);
+async function validateLocalAiAttachmentPreview(previewUrl: string | null) {
+    if (!previewUrl) return false;
+    try {
+        const response = await fetch(previewUrl, { cache: "no-store" });
+        return response.ok;
+    } catch {
+        return false;
+    }
 }
 
 function UserMessageAttachmentThumbnail({
@@ -106,7 +105,12 @@ function UserMessageAttachmentThumbnail({
     attachment: AIChatAttachment;
     vaultPath: string | null;
 }) {
-    const [loadFailed, setLoadFailed] = useState(false);
+    const [failedPreviewUrl, setFailedPreviewUrl] = useState<string | null>(
+        null,
+    );
+    const [validatedLocalPreviewUrl, setValidatedLocalPreviewUrl] = useState<
+        string | null
+    >(null);
     const [copied, setCopied] = useState(false);
     const filePath = attachment.filePath;
     if (!filePath) return null;
@@ -117,7 +121,11 @@ function UserMessageAttachmentThumbnail({
     );
     const previewUrl =
         vaultPreviewUrl ?? buildLocalAiAttachmentPreviewUrl(filePath, vaultPath);
-    const unavailable = !previewUrl || loadFailed;
+    const isLocalAiAttachmentPreview = isLocalAiAttachmentPreviewUrl(
+        previewUrl,
+        vaultPreviewUrl,
+    );
+    const unavailable = !previewUrl || failedPreviewUrl === previewUrl;
     const label = attachment.label || fileNameFromPath(filePath);
     const fileName = fileNameFromPath(filePath);
 
@@ -128,13 +136,24 @@ function UserMessageAttachmentThumbnail({
         });
     };
 
+    const ensureLocalAiAttachmentValidated = async () => {
+        if (!isLocalAiAttachmentPreview || !previewUrl) return false;
+        if (validatedLocalPreviewUrl === previewUrl) return true;
+
+        if (await validateLocalAiAttachmentPreview(previewUrl)) {
+            setValidatedLocalPreviewUrl(previewUrl);
+            return true;
+        }
+
+        setFailedPreviewUrl(previewUrl);
+        return false;
+    };
+
     const openInApp = async () => {
         const relativePath = toVaultRelativePath(filePath, vaultPath);
         if (!relativePath) {
-            if (await isDeviceLocalAttachmentForVault(filePath, vaultPath)) {
+            if (await ensureLocalAiAttachmentValidated()) {
                 void openPath(filePath);
-            } else {
-                setLoadFailed(true);
             }
             return;
         }
@@ -151,10 +170,13 @@ function UserMessageAttachmentThumbnail({
 
     const revealFile = async () => {
         const relativePath = toVaultRelativePath(filePath, vaultPath);
-        if (relativePath || (await isDeviceLocalAttachmentForVault(filePath, vaultPath))) {
+        if (
+            relativePath ||
+            (await ensureLocalAiAttachmentValidated())
+        ) {
             void revealItemInDir(filePath);
         } else {
-            setLoadFailed(true);
+            setFailedPreviewUrl(previewUrl);
         }
     };
 
@@ -194,7 +216,15 @@ function UserMessageAttachmentThumbnail({
                         draggable={false}
                         loading="lazy"
                         decoding="async"
-                        onError={() => setLoadFailed(true)}
+                        onLoad={() => {
+                            if (isLocalAiAttachmentPreview) {
+                                setValidatedLocalPreviewUrl(previewUrl);
+                            }
+                            if (failedPreviewUrl === previewUrl) {
+                                setFailedPreviewUrl(null);
+                            }
+                        }}
+                        onError={() => setFailedPreviewUrl(previewUrl)}
                         style={{ objectFit: "cover" }}
                     />
                 )}

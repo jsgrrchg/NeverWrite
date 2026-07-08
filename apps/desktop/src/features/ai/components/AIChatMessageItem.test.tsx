@@ -368,7 +368,7 @@ describe("AIChatMessageItem user image attachments", () => {
     it("renders device-local image attachments outside the active vault", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
         const filePath =
-            "/Users/test/Library/Application Support/NeverWrite/ai/attachments/27d33c883a0ee639bfd4331c771837a43407083ac5172d8aeefd14a0a48a9ca5/session/pasted-image.png";
+            "/Users/test/Library/Application Support/NeverWrite/ai/attachments/canonical-vault-key/session/pasted-image.png";
 
         renderMessage({
             id: "user:external-image",
@@ -393,6 +393,7 @@ describe("AIChatMessageItem user image attachments", () => {
         expect(image.getAttribute("src")).toContain(
             "neverwrite-file://localhost/ai-attachment/",
         );
+        fireEvent.load(image);
 
         fireEvent.click(screen.getByRole("button", { name: "Open" }));
         fireEvent.click(

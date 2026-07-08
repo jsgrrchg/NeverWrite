@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { app } from "electron";
@@ -152,7 +153,7 @@ function sanitizeAiAttachmentFileName(fileName: string) {
 }
 
 function aiAttachmentsRoot(vaultPath: string) {
-    const normalizedVaultPath = toAbsoluteVaultPath(vaultPath);
+    const normalizedVaultPath = toStableVaultKeyPath(vaultPath);
     return path.join(
         app.getPath("userData"),
         "ai",
@@ -162,7 +163,7 @@ function aiAttachmentsRoot(vaultPath: string) {
 }
 
 function aiSessionsRoot(vaultPath: string, scope: "device" | "vault") {
-    const normalizedVaultPath = toAbsoluteVaultPath(vaultPath);
+    const normalizedVaultPath = toStableVaultKeyPath(vaultPath);
     if (scope === "vault") {
         return path.join(normalizedVaultPath, ".neverwrite", "sessions");
     }
@@ -627,6 +628,15 @@ function toAbsoluteVaultPath(vaultPath: string) {
         throw new Error("Vault path is required.");
     }
     return path.resolve(vaultPath);
+}
+
+function toStableVaultKeyPath(vaultPath: string) {
+    const absolutePath = toAbsoluteVaultPath(vaultPath);
+    try {
+        return fsSync.realpathSync.native(absolutePath);
+    } catch {
+        return absolutePath;
+    }
 }
 
 function ensureRelativePath(relativePath: string, allowEmpty = false) {
