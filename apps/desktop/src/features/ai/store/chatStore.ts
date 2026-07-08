@@ -452,6 +452,16 @@ function loadHistoryRetentionPreference(vaultPath: string | null) {
     );
 }
 
+function loadAiHistoryStoragePreferences(vaultPath: string | null): {
+    storageScope: AIStorageScope;
+    retentionDays: number;
+} {
+    return {
+        storageScope: loadAiStorageScopePreference(vaultPath),
+        retentionDays: loadHistoryRetentionPreference(vaultPath),
+    };
+}
+
 function saveHistoryRetentionPreference(vaultPath: string | null, days: number) {
     try {
         safeStorageSetItem(
@@ -3264,7 +3274,7 @@ async function replaceEmptySessionForAdditionalRoots(
             () => {},
         );
         if (vaultPath) {
-            const storageScope = useChatStore.getState().aiStorageScope;
+            const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
             await aiDeleteSessionHistory(
                 vaultPath,
                 replacementSession.historySessionId,
@@ -3298,7 +3308,7 @@ async function replaceEmptySessionForAdditionalRoots(
     if (!migrated) {
         await aiDeleteRuntimeSession(migratedSession.sessionId).catch(() => {});
         if (vaultPath) {
-            const storageScope = useChatStore.getState().aiStorageScope;
+            const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
             await aiDeleteSessionHistory(
                 vaultPath,
                 migratedSession.historySessionId,
@@ -3311,7 +3321,7 @@ async function replaceEmptySessionForAdditionalRoots(
     await persistSessionNow(migratedSession);
     await aiDeleteRuntimeSession(sessionId).catch(() => {});
     if (vaultPath) {
-        const storageScope = useChatStore.getState().aiStorageScope;
+        const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
         await aiDeleteSessionHistory(
             vaultPath,
             latestSession.historySessionId,
@@ -6257,16 +6267,16 @@ async function persistSessionNow(session: AIChatSession) {
     if (!vaultPath) return;
     if (!hasPersistableSessionContent(session)) return;
 
-    const historyRetentionDays = useChatStore.getState().historyRetentionDays;
     try {
-        const storageScope = useChatStore.getState().aiStorageScope;
+        const { storageScope, retentionDays } =
+            loadAiHistoryStoragePreferences(vaultPath);
         const history = toPersistedHistory(session);
         await aiSaveSessionHistory(vaultPath, history, storageScope);
         upsertPersistedHistoryCache(vaultPath, storageScope, history);
-        if (historyRetentionDays > 0) {
+        if (retentionDays > 0) {
             await aiPruneSessionHistories(
                 vaultPath,
-                historyRetentionDays,
+                retentionDays,
                 storageScope,
             );
         }
@@ -6969,8 +6979,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         if (limit <= 0) return true;
 
-        const vaultPath = useVaultStore.getState().vaultPath;
+        const vaultPath = session.vaultPath ?? useVaultStore.getState().vaultPath;
         if (!vaultPath) return false;
+        const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
 
         set((state) => ({
             sessionsById: updateSessionById(state, sessionId, (current) => ({
@@ -6985,7 +6996,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 getRuntimeHistorySessionId(session),
                 startIndex,
                 limit,
-                useChatStore.getState().aiStorageScope,
+                storageScope,
             );
             if (!isPersistedHistoryPage(payload)) {
                 throw new Error(
@@ -12516,13 +12527,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
         },
 
         deleteSession: async (sessionId) => {
-            const vaultPath = useVaultStore.getState().vaultPath;
             const targetSession = get().sessionsById[sessionId];
+            const vaultPath =
+                targetSession?.vaultPath ?? useVaultStore.getState().vaultPath;
             const shouldCreateReplacementSession =
                 !targetSession ||
                 !isClaudeTerminalRuntimeId(targetSession.runtimeId);
             const historySessionId =
                 targetSession?.historySessionId ?? sessionId;
+            const storageScope = vaultPath
+                ? loadAiHistoryStoragePreferences(vaultPath).storageScope
+                : get().aiStorageScope;
             clearStaleStreamingCheck(sessionId);
             _pendingStopBySessionId.delete(sessionId);
             if (
@@ -12541,12 +12556,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 await aiDeleteSessionHistory(
                     vaultPath,
                     historySessionId,
-                    get().aiStorageScope,
+                    storageScope,
                 ).catch(() => {});
             }
             deletePersistedHistoryCacheEntry(
                 vaultPath,
-                get().aiStorageScope,
+                storageScope,
                 historySessionId,
             );
             useEditorStore.getState().closeReview(sessionId);
@@ -13079,8 +13094,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
             const session = state.sessionsById[sessionId];
             if (!session) return;
 
-            const vaultPath = useVaultStore.getState().vaultPath;
+            const vaultPath =
+                session.vaultPath ?? useVaultStore.getState().vaultPath;
             if (!vaultPath) return;
+            const { storageScope } = loadAiHistoryStoragePreferences(vaultPath);
 
             const sourceHistoryId =
                 session.historySessionId ||
@@ -13091,7 +13108,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
                 const newHistoryId = await aiForkSessionHistory(
                     vaultPath,
                     sourceHistoryId,
-                    state.aiStorageScope,
+                    storageScope,
                 );
 
                 const forkedTitle = `${getSessionTitle(session)} (fork)`;

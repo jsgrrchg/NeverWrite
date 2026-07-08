@@ -813,6 +813,159 @@ describe("chatStore", () => {
         expect(useChatStore.getState().aiStorageScope).toBe("vault");
     });
 
+    it("persists session history to device scope when the vault has no saved preference", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Hello",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().renameSession(session.sessionId, "Renamed");
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vaults/one",
+                storageScope: "device",
+            }),
+        );
+    });
+
+    it("persists session history to vault scope when enabled for that vault", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        useVaultStore.setState({ vaultPath: "/vaults/one" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Hello",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().renameSession(session.sessionId, "Renamed");
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vaults/one",
+                storageScope: "vault",
+            }),
+        );
+    });
+
+    it("routes persisted session operations through the session vault preferences", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        localStorage.setItem(getAiStorageScopeKey("/vaults/two"), "device");
+        useVaultStore.setState({ vaultPath: "/vaults/two" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            historySessionId: "history-one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Hello",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        invokeMock.mockClear();
+
+        await useChatStore.getState().deleteSession(session.sessionId);
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_session_history",
+            expect.objectContaining({
+                vaultPath: "/vaults/one",
+                sessionId: "history-one",
+                storageScope: "vault",
+            }),
+        );
+    });
+
+    it("prunes session history with the retention of the session vault", async () => {
+        localStorage.setItem(getAiStorageScopeKey("/vaults/one"), "vault");
+        localStorage.setItem(getHistoryRetentionKey("/vaults/one"), "9");
+        localStorage.setItem(getHistoryRetentionKey("/vaults/two"), "0");
+        useVaultStore.setState({ vaultPath: "/vaults/two" });
+        resetChatStore();
+        const session = {
+            ...createSessionWithTrackedFiles("session-one", []),
+            vaultPath: "/vaults/one",
+            messages: [
+                {
+                    id: "user-1",
+                    role: "user" as const,
+                    kind: "text" as const,
+                    content: "Hello",
+                    timestamp: 1,
+                },
+            ],
+        };
+        useChatStore.setState({
+            sessionsById: { [session.sessionId]: session },
+            sessionOrder: [session.sessionId],
+            activeSessionId: session.sessionId,
+        });
+        invokeMock.mockClear();
+
+        useChatStore.getState().renameSession(session.sessionId, "Renamed");
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_prune_session_histories",
+            expect.objectContaining({
+                vaultPath: "/vaults/one",
+                maxAgeDays: 9,
+                storageScope: "vault",
+            }),
+        );
+    });
+
     it("persists chat history retention per vault and keeps vault values isolated", async () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();
@@ -3767,12 +3920,12 @@ describe("chatStore", () => {
         expect(session.messages.at(-1)?.id).toBe("assistant:79");
         expect(invokeMock).toHaveBeenCalledWith(
             "ai_load_session_history_page",
-            {
+            expect.objectContaining({
                 vaultPath: "/vault",
                 sessionId: "codex-session-existing",
                 startIndex: 20,
                 limit: 60,
-            },
+            }),
         );
     });
 
@@ -13762,10 +13915,13 @@ describe("chatStore", () => {
         expect(invokeMock).toHaveBeenCalledWith("ai_delete_runtime_session", {
             sessionId: "claude-session-1",
         });
-        expect(invokeMock).toHaveBeenCalledWith("ai_delete_session_history", {
-            vaultPath: "/vault",
-            sessionId: "claude-session-1",
-        });
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_delete_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                sessionId: "claude-session-1",
+            }),
+        );
         expect(
             invokeMock.mock.calls.some(
                 ([command, args]) =>
@@ -14319,41 +14475,44 @@ describe("chatStore", () => {
         });
         await Promise.resolve();
 
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault",
-            history: expect.objectContaining({
-                runtime_id: "codex-acp",
-                models: acpModels,
-                modes: acpModes,
-                config_options: expect.arrayContaining([
-                    expect.objectContaining({
-                        id: "model",
-                        runtime_id: "codex-acp",
-                        category: "model",
-                        value: "test-model",
-                    }),
-                    expect.objectContaining({
-                        id: "reasoning_effort",
-                        runtime_id: "codex-acp",
-                        category: "reasoning",
-                        value: "medium",
-                    }),
-                ]),
-                messages: expect.arrayContaining([
-                    expect.objectContaining({
-                        kind: "tool",
-                        diffs: [
-                            {
-                                path: "/vault/src/watcher.rs",
-                                kind: "update",
-                                old_text: "old line",
-                                new_text: "new line",
-                            },
-                        ],
-                    }),
-                ]),
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    runtime_id: "codex-acp",
+                    models: acpModels,
+                    modes: acpModes,
+                    config_options: expect.arrayContaining([
+                        expect.objectContaining({
+                            id: "model",
+                            runtime_id: "codex-acp",
+                            category: "model",
+                            value: "test-model",
+                        }),
+                        expect.objectContaining({
+                            id: "reasoning_effort",
+                            runtime_id: "codex-acp",
+                            category: "reasoning",
+                            value: "medium",
+                        }),
+                    ]),
+                    messages: expect.arrayContaining([
+                        expect.objectContaining({
+                            kind: "tool",
+                            diffs: [
+                                {
+                                    path: "/vault/src/watcher.rs",
+                                    kind: "update",
+                                    old_text: "old line",
+                                    new_text: "new line",
+                                },
+                            ],
+                        }),
+                    ]),
+                }),
             }),
-        });
+        );
     });
 
     it("persists transcript windows with start_index and total message_count", async () => {
@@ -14403,18 +14562,21 @@ describe("chatStore", () => {
         });
         await Promise.resolve();
 
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault",
-            history: expect.objectContaining({
-                session_id: "history-windowed",
-                start_index: 60,
-                message_count: 82,
-                created_at: 10,
-                updated_at: expect.any(Number),
-                title: "Windowed chat",
-                preview: "Error: Trigger persistence",
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    session_id: "history-windowed",
+                    start_index: 60,
+                    message_count: 82,
+                    created_at: 10,
+                    updated_at: expect.any(Number),
+                    title: "Windowed chat",
+                    preview: "Error: Trigger persistence",
+                }),
             }),
-        });
+        );
     });
 
     it("does not persist the edited files buffer as part of session history", async () => {
@@ -15006,14 +15168,17 @@ describe("chatStore", () => {
         ]);
         expect(useChatStore.getState().activeSessionId).toBe(parent.sessionId);
         await Promise.resolve();
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault",
-            history: expect.objectContaining({
-                session_id: child.sessionId,
-                parent_session_id: parent.sessionId,
-                messages: [],
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    session_id: child.sessionId,
+                    parent_session_id: parent.sessionId,
+                    messages: [],
+                }),
             }),
-        });
+        );
     });
 
     it("persists background child tool activity even when the child is not open", async () => {
@@ -15056,20 +15221,23 @@ describe("chatStore", () => {
         });
         await Promise.resolve();
 
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault",
-            history: expect.objectContaining({
-                session_id: child.sessionId,
-                parent_session_id: parent.sessionId,
-                messages: expect.arrayContaining([
-                    expect.objectContaining({
-                        id: "tool:tool-background-edit",
-                        kind: "tool",
-                        content: "Editing notes/today.md",
-                    }),
-                ]),
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    session_id: child.sessionId,
+                    parent_session_id: parent.sessionId,
+                    messages: expect.arrayContaining([
+                        expect.objectContaining({
+                            id: "tool:tool-background-edit",
+                            kind: "tool",
+                            content: "Editing notes/today.md",
+                        }),
+                    ]),
+                }),
             }),
-        });
+        );
     });
 
     it("persists background child sessions to their own vault path", async () => {
@@ -15112,13 +15280,16 @@ describe("chatStore", () => {
         });
         await Promise.resolve();
 
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault-a",
-            history: expect.objectContaining({
-                session_id: child.sessionId,
-                parent_session_id: parent.sessionId,
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault-a",
+                history: expect.objectContaining({
+                    session_id: child.sessionId,
+                    parent_session_id: parent.sessionId,
+                }),
             }),
-        });
+        );
     });
 
     it("preserves a known child parent when a runtime update omits it", () => {
@@ -15234,14 +15405,17 @@ describe("chatStore", () => {
         useChatStore.getState().upsertSession(child);
         await Promise.resolve();
 
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault",
-            history: expect.objectContaining({
-                session_id: child.sessionId,
-                parent_session_id: parent.sessionId,
-                closed_at: "123",
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    session_id: child.sessionId,
+                    parent_session_id: parent.sessionId,
+                    closed_at: "123",
+                }),
             }),
-        });
+        );
     });
 
     it("clears queued child messages with a status note when the parent closes the subagent", async () => {
@@ -15318,20 +15492,23 @@ describe("chatStore", () => {
                 }),
             }),
         ]);
-        expect(invokeMock).toHaveBeenCalledWith("ai_save_session_history", {
-            vaultPath: "/vault",
-            history: expect.objectContaining({
-                session_id: child.sessionId,
-                closed_at: "123",
-                messages: expect.arrayContaining([
-                    expect.objectContaining({
-                        kind: "status",
-                        content:
-                            "Queued messages were cancelled because this subagent was closed by its parent thread.",
-                    }),
-                ]),
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vault",
+                history: expect.objectContaining({
+                    session_id: child.sessionId,
+                    closed_at: "123",
+                    messages: expect.arrayContaining([
+                        expect.objectContaining({
+                            kind: "status",
+                            content:
+                                "Queued messages were cancelled because this subagent was closed by its parent thread.",
+                        }),
+                    ]),
+                }),
             }),
-        });
+        );
     });
 
     it("restores composer state when closing a subagent with an edited queued message", () => {

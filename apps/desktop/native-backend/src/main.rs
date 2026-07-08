@@ -3344,6 +3344,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
+
+    static APP_DATA_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     fn invoke(
         backend: &Arc<Mutex<NativeBackend>>,
@@ -3421,6 +3449,161 @@ mod tests {
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .is_some_and(|hash| hash.len() == 64));
+    }
+
+    #[test]
+    fn ai_session_history_commands_route_to_device_scope() {
+        let _env_guard = APP_DATA_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let _app_data_env = EnvVarGuard::set_path("NEVERWRITE_APP_DATA_DIR", app_data_dir.path());
+
+        let (event_tx, _event_rx) = mpsc::channel::<RpcOutput>();
+        let backend = Arc::new(Mutex::new(NativeBackend::new(event_tx)));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault_path = vault_dir.path().to_string_lossy().to_string();
+        invoke(&backend, "start_open_vault", json!({ "path": vault_path })).unwrap();
+
+        let history = json!({
+            "version": 1,
+            "session_id": "device-session",
+            "runtime_id": "test-runtime",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "additional_roots": [],
+            "created_at": 1,
+            "updated_at": 2,
+            "title": "Device chat",
+            "preview": "hello device",
+            "messages": [
+                {
+                    "id": "msg-1",
+                    "role": "user",
+                    "kind": "text",
+                    "content": "hello from device storage",
+                    "timestamp": 1
+                }
+            ]
+        });
+        let device_args = json!({
+            "vaultPath": vault_path,
+            "storageScope": "device",
+            "history": history
+        });
+
+        invoke(&backend, "ai_save_session_history", device_args).unwrap();
+        assert!(!vault_dir
+            .path()
+            .join(".neverwrite")
+            .join("sessions")
+            .exists());
+
+        let loaded = invoke(
+            &backend,
+            "ai_load_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "includeMessages": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(loaded.as_array().unwrap().len(), 1);
+        assert_eq!(loaded[0]["session_id"], "device-session");
+
+        let page = invoke(
+            &backend,
+            "ai_load_session_history_page",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "sessionId": "device-session",
+                "startIndex": 0,
+                "limit": 1
+            }),
+        )
+        .unwrap();
+        assert_eq!(page["session_id"], "device-session");
+        assert_eq!(page["messages"][0]["content"], "hello from device storage");
+
+        let search = invoke(
+            &backend,
+            "ai_search_session_content",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "query": "device storage"
+            }),
+        )
+        .unwrap();
+        assert_eq!(search.as_array().unwrap().len(), 1);
+
+        let forked_id = invoke(
+            &backend,
+            "ai_fork_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "sourceSessionId": "device-session"
+            }),
+        )
+        .unwrap();
+        assert_ne!(forked_id.as_str().unwrap(), "device-session");
+
+        invoke(
+            &backend,
+            "ai_delete_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "sessionId": forked_id
+            }),
+        )
+        .unwrap();
+
+        let old_history = json!({
+            "version": 1,
+            "session_id": "old-device-session",
+            "runtime_id": "test-runtime",
+            "model_id": "test-model",
+            "mode_id": "default",
+            "additional_roots": [],
+            "created_at": 1,
+            "updated_at": 1,
+            "messages": [
+                {
+                    "id": "old-msg",
+                    "role": "assistant",
+                    "kind": "text",
+                    "content": "old",
+                    "timestamp": 1
+                }
+            ]
+        });
+        invoke(
+            &backend,
+            "ai_save_session_history",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "history": old_history
+            }),
+        )
+        .unwrap();
+
+        let pruned = invoke(
+            &backend,
+            "ai_prune_session_histories",
+            json!({
+                "vaultPath": vault_path,
+                "storageScope": "device",
+                "maxAgeDays": 1
+            }),
+        )
+        .unwrap();
+        assert_eq!(pruned.as_u64(), Some(2));
     }
 
     #[test]
