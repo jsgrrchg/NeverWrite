@@ -548,7 +548,7 @@ describe("SettingsPanel", () => {
         expect(screen.getByText("5 minutes")).toBeInTheDocument();
         expect(
             screen.getByText(
-                "How long pasted screenshots stay in the AI composer before they are removed automatically.",
+                "How long pasted screenshots stay in the AI composer draft before they are removed automatically.",
             ),
         ).toBeInTheDocument();
 
