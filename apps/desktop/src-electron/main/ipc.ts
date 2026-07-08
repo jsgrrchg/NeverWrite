@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import {
     ELECTRON_IPC,
     type IpcAppLogEnvelope,
@@ -281,6 +282,22 @@ function generatedImageRootCandidates() {
     return [...new Set(roots)];
 }
 
+function sha256Hex(value: string) {
+    return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function aiAttachmentRootCandidates(encodedVaultPath: string) {
+    const vaultPath = path.resolve(decodeBase64UrlSegment(encodedVaultPath));
+    return [
+        path.join(
+            app.getPath("userData"),
+            "ai",
+            "attachments",
+            sha256Hex(vaultPath),
+        ),
+    ];
+}
+
 function isPathInside(parent: string, child: string) {
     const relative = path.relative(parent, child);
     return (
@@ -292,6 +309,20 @@ function isPathInside(parent: string, child: string) {
 export async function resolveCodexGeneratedImagePreviewPath(
     encodedPath: string,
 ) {
+    return resolveLocalImagePreviewPath(encodedPath, generatedImageRootCandidates());
+}
+
+export async function resolveAiAttachmentPreviewPath(
+    encodedPath: string,
+    encodedVaultPath: string,
+) {
+    return resolveLocalImagePreviewPath(
+        encodedPath,
+        aiAttachmentRootCandidates(encodedVaultPath),
+    );
+}
+
+async function resolveLocalImagePreviewPath(encodedPath: string, roots: string[]) {
     const requestedPath = normalizeGeneratedImageInputPath(
         decodeBase64UrlSegment(encodedPath),
     );
@@ -309,7 +340,7 @@ export async function resolveCodexGeneratedImagePreviewPath(
         return null;
     }
 
-    for (const root of generatedImageRootCandidates()) {
+    for (const root of roots) {
         const realRoot = await fs.realpath(root).catch(() => null);
         if (realRoot && isPathInside(realRoot, realFilePath)) {
             return {
@@ -379,6 +410,29 @@ export function registerPreviewProtocolHandler() {
                     await resolveCodexGeneratedImagePreviewPath(
                         encodedVaultPath,
                     );
+                if (!resolved) {
+                    return new Response("Not found", { status: 404 });
+                }
+                if (resolved.status === 415 || !resolved.filePath) {
+                    return new Response("Unsupported media type", {
+                        status: 415,
+                    });
+                }
+
+                const data = await fs.readFile(resolved.filePath);
+                return new Response(new Uint8Array(data), {
+                    headers: {
+                        "content-type": resolved.mimeType,
+                        "cache-control": "no-store",
+                    },
+                });
+            }
+
+            if (scope === "ai-attachment" && encodedVaultPath && encodedRelativePath) {
+                const resolved = await resolveAiAttachmentPreviewPath(
+                    encodedRelativePath,
+                    encodedVaultPath,
+                );
                 if (!resolved) {
                     return new Response("Not found", { status: 404 });
                 }

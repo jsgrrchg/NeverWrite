@@ -74,6 +74,18 @@ export function buildCodexGeneratedImagePreviewUrl(absolutePath: string) {
     return `${FILE_PREVIEW_SCHEME}/codex-image/${encodeBase64Url(pathname)}${suffix}`;
 }
 
+export function buildLocalAiAttachmentPreviewUrl(
+    absolutePath: string,
+    vaultPath: string | null,
+) {
+    const { pathname, suffix } = splitPathSuffix(absolutePath);
+    if (!pathname.trim() || !vaultPath) {
+        return null;
+    }
+
+    return `${FILE_PREVIEW_SCHEME}/ai-attachment/${encodeBase64Url(vaultPath)}/${encodeBase64Url(pathname)}${suffix}`;
+}
+
 export function isGeneratedImagePath(path: string) {
     return path.includes("/.codex/generated_images/");
 }

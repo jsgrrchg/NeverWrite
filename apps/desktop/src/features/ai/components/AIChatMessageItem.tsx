@@ -53,6 +53,7 @@ import { useSettingsStore } from "../../../app/store/settingsStore";
 import { useVaultStore } from "../../../app/store/vaultStore";
 import { toVaultRelativePath } from "../../../app/utils/vaultPaths";
 import {
+    buildLocalAiAttachmentPreviewUrl,
     buildCodexGeneratedImagePreviewUrl,
     buildVaultPreviewUrlFromAbsolutePath,
 } from "../../../app/utils/filePreviewUrl";
@@ -80,6 +81,24 @@ function fileNameFromPath(path: string) {
     return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
+async function sha256Hex(value: string) {
+    const bytes = new TextEncoder().encode(value);
+    const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+}
+
+async function isDeviceLocalAttachmentForVault(
+    filePath: string,
+    vaultPath: string | null,
+) {
+    if (!vaultPath) return false;
+    const vaultKey = await sha256Hex(vaultPath);
+    const normalized = filePath.replace(/\\/g, "/");
+    return normalized.includes(`/ai/attachments/${vaultKey}/`);
+}
+
 function UserMessageAttachmentThumbnail({
     attachment,
     vaultPath,
@@ -92,7 +111,12 @@ function UserMessageAttachmentThumbnail({
     const filePath = attachment.filePath;
     if (!filePath) return null;
 
-    const previewUrl = buildVaultPreviewUrlFromAbsolutePath(filePath, vaultPath);
+    const vaultPreviewUrl = buildVaultPreviewUrlFromAbsolutePath(
+        filePath,
+        vaultPath,
+    );
+    const previewUrl =
+        vaultPreviewUrl ?? buildLocalAiAttachmentPreviewUrl(filePath, vaultPath);
     const unavailable = !previewUrl || loadFailed;
     const label = attachment.label || fileNameFromPath(filePath);
     const fileName = fileNameFromPath(filePath);
@@ -104,9 +128,16 @@ function UserMessageAttachmentThumbnail({
         });
     };
 
-    const openInApp = () => {
+    const openInApp = async () => {
         const relativePath = toVaultRelativePath(filePath, vaultPath);
-        if (!relativePath) return;
+        if (!relativePath) {
+            if (await isDeviceLocalAttachmentForVault(filePath, vaultPath)) {
+                void openPath(filePath);
+            } else {
+                setLoadFailed(true);
+            }
+            return;
+        }
         useEditorStore.getState().openFile(
             relativePath,
             fileName,
@@ -116,6 +147,15 @@ function UserMessageAttachmentThumbnail({
             "image",
             { contentTruncated: false },
         );
+    };
+
+    const revealFile = async () => {
+        const relativePath = toVaultRelativePath(filePath, vaultPath);
+        if (relativePath || (await isDeviceLocalAttachmentForVault(filePath, vaultPath))) {
+            void revealItemInDir(filePath);
+        } else {
+            setLoadFailed(true);
+        }
     };
 
     return (
@@ -188,13 +228,13 @@ function UserMessageAttachmentThumbnail({
                 <div className="flex flex-wrap items-center gap-1.5">
                     <ImageActionButton
                         icon="open"
-                        onClick={openInApp}
+                        onClick={() => void openInApp()}
                     >
                         Open
                     </ImageActionButton>
                     <ImageActionButton
                         icon="reveal"
-                        onClick={() => void revealItemInDir(filePath)}
+                        onClick={() => void revealFile()}
                     >
                         Reveal in Finder
                     </ImageActionButton>

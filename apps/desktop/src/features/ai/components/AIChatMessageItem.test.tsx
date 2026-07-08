@@ -365,8 +365,10 @@ describe("AIChatMessageItem user image attachments", () => {
         expect(screen.queryByText("guide.md")).not.toBeInTheDocument();
     });
 
-    it("shows a compact unavailable state for image paths outside the active vault", () => {
+    it("renders device-local image attachments outside the active vault", async () => {
         useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const filePath =
+            "/Users/test/Library/Application Support/NeverWrite/ai/attachments/27d33c883a0ee639bfd4331c771837a43407083ac5172d8aeefd14a0a48a9ca5/session/pasted-image.png";
 
         renderMessage({
             id: "user:external-image",
@@ -381,14 +383,61 @@ describe("AIChatMessageItem user image attachments", () => {
                     noteId: null,
                     label: "external.png",
                     path: null,
-                    filePath: "/outside/external.png",
+                    filePath,
                     mimeType: "image/png",
                 },
             ],
         });
 
-        expect(screen.getByText("Image unavailable")).toBeInTheDocument();
-        expect(screen.queryByRole("img")).not.toBeInTheDocument();
+        const image = screen.getByRole("img", { name: "external.png" });
+        expect(image.getAttribute("src")).toContain(
+            "neverwrite-file://localhost/ai-attachment/",
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Open" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+
+        await waitFor(() => expect(openPath).toHaveBeenCalledWith(filePath));
+        expect(revealItemInDir).toHaveBeenCalledWith(filePath);
+        expect(useEditorStore.getState().tabs).toEqual([]);
+    });
+
+    it("does not open device-local image paths outside the active vault namespace", async () => {
+        useVaultStore.setState({ vaultPath: "/vault", notes: [] });
+        const filePath =
+            "/Users/test/Library/Application Support/NeverWrite/ai/attachments/other-vault/session/pasted-image.png";
+
+        renderMessage({
+            id: "user:wrong-vault-image",
+            role: "user",
+            kind: "text",
+            content: "Inspect this",
+            timestamp: Date.now(),
+            attachments: [
+                {
+                    id: "attachment:wrong-vault-image",
+                    type: "file",
+                    noteId: null,
+                    label: "wrong-vault.png",
+                    path: null,
+                    filePath,
+                    mimeType: "image/png",
+                },
+            ],
+        });
+
+        fireEvent.click(screen.getByRole("button", { name: "Open" }));
+        fireEvent.click(
+            screen.getByRole("button", { name: "Reveal in Finder" }),
+        );
+
+        await waitFor(() =>
+            expect(screen.getByText("Image unavailable")).toBeInTheDocument(),
+        );
+        expect(openPath).not.toHaveBeenCalledWith(filePath);
+        expect(revealItemInDir).not.toHaveBeenCalledWith(filePath);
     });
 });
 
