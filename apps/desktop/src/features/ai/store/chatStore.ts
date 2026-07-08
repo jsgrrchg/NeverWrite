@@ -182,6 +182,7 @@ let _persistedHistoryCacheBySessionId = new Map<
     string,
     PersistedSessionHistorySummary
 >();
+let _autoDetectedVaultStorageScopeKey: string | null = null;
 let _defaultRuntimePreferenceVersion = 0;
 const AI_AUTO_CONTEXT_KEY_PREFIX = "neverwrite.ai.auto-context:";
 const AI_AUTO_CONTEXT_GLOBAL_SCOPE = "__global__";
@@ -464,6 +465,7 @@ function saveAiStorageScopePreference(
     scope: AIStorageScope,
 ) {
     try {
+        _autoDetectedVaultStorageScopeKey = null;
         safeStorageSetItem(
             getAiStorageScopeKey(vaultPath),
             normalizeAiStorageScope(scope),
@@ -508,9 +510,28 @@ function loadAiHistoryStoragePreferences(vaultPath: string | null): {
     retentionDays: number;
 } {
     return {
-        storageScope: loadAiStorageScopePreference(vaultPath),
+        storageScope: getEffectiveAiStorageScopeForVault(vaultPath),
         retentionDays: loadHistoryRetentionPreference(vaultPath),
     };
+}
+
+export function getEffectiveAiStorageScopeForVault(
+    vaultPath: string | null,
+): AIStorageScope {
+    const savedScope = loadAiStorageScopePreference(vaultPath);
+    const activeVaultPath = getEffectiveAiVaultPath();
+    if (
+        vaultPath &&
+        activeVaultPath &&
+        _autoDetectedVaultStorageScopeKey === getVaultPreferenceScope(vaultPath) &&
+        getVaultPreferenceScope(vaultPath) ===
+            getVaultPreferenceScope(activeVaultPath) &&
+        useChatStore.getState().aiStorageScope === "vault"
+    ) {
+        return "vault";
+    }
+
+    return savedScope;
 }
 
 async function resolveInitialAiStorageScopeForVault(
@@ -522,9 +543,16 @@ async function resolveInitialAiStorageScopeForVault(
     }
 
     try {
-        return (await aiHasVaultSessionHistories(vaultPath))
-            ? "vault"
-            : savedScope;
+        if ((await aiHasVaultSessionHistories(vaultPath)) === true) {
+            _autoDetectedVaultStorageScopeKey = getVaultPreferenceScope(vaultPath);
+            return "vault";
+        }
+        if (
+            _autoDetectedVaultStorageScopeKey === getVaultPreferenceScope(vaultPath)
+        ) {
+            _autoDetectedVaultStorageScopeKey = null;
+        }
+        return savedScope;
     } catch {
         return savedScope;
     }
@@ -6343,7 +6371,16 @@ async function persistSessionNow(session: AIChatSession) {
             loadAiHistoryStoragePreferences(vaultPath);
         const history = toPersistedHistory(session);
         await aiSaveSessionHistory(vaultPath, history, storageScope);
-        upsertPersistedHistoryCache(vaultPath, storageScope, history);
+        // Restored sessions may have had unsafe legacy metadata sanitized away.
+        // Do not reintroduce derived titles/previews into the in-memory cache.
+        const cacheHistory = session.isPersistedSession
+            ? {
+                  ...history,
+                  title: session.persistedTitle ?? undefined,
+                  preview: session.persistedPreview ?? undefined,
+              }
+            : history;
+        upsertPersistedHistoryCache(vaultPath, storageScope, cacheHistory);
         if (retentionDays > 0) {
             await aiPruneSessionHistories(
                 vaultPath,
@@ -7771,34 +7808,45 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
         syncVaultScopedAiPreferences: (vaultPath) => {
             const autoContextEnabled = loadAutoContextPreference(vaultPath);
-            const aiStorageScope = loadAiStorageScopePreference(vaultPath);
             const historyRetentionDays =
                 loadHistoryRetentionPreference(vaultPath);
-            set((state) => {
-                if (state.aiStorageScope !== aiStorageScope) {
-                    _persistedHistoryCacheKey = null;
-                    _persistedHistoryCacheBySessionId.clear();
-                }
+            const hasExplicitStorageScope =
+                !vaultPath || hasAiStorageScopePreference(vaultPath);
 
+            if (hasExplicitStorageScope) {
+                const aiStorageScope = loadAiStorageScopePreference(vaultPath);
+                set((state) => {
+                    if (state.aiStorageScope !== aiStorageScope) {
+                        _persistedHistoryCacheKey = null;
+                        _persistedHistoryCacheBySessionId.clear();
+                    }
+
+                    return state.autoContextEnabled === autoContextEnabled &&
+                        state.aiStorageScope === aiStorageScope &&
+                        state.historyRetentionDays === historyRetentionDays
+                        ? state
+                        : {
+                              autoContextEnabled,
+                              aiStorageScope,
+                              historyRetentionDays,
+                          };
+                });
+                return;
+            }
+
+            set((state) => {
                 return state.autoContextEnabled === autoContextEnabled &&
-                    state.aiStorageScope === aiStorageScope &&
                     state.historyRetentionDays === historyRetentionDays
                     ? state
                     : {
                           autoContextEnabled,
-                          aiStorageScope,
                           historyRetentionDays,
                       };
             });
 
-            if (!vaultPath || hasAiStorageScopePreference(vaultPath)) {
-                return;
-            }
-
             void resolveInitialAiStorageScopeForVault(vaultPath).then(
                 (resolvedScope) => {
                     if (
-                        resolvedScope === aiStorageScope ||
                         getEffectiveAiVaultPath() !== vaultPath ||
                         hasAiStorageScopePreference(vaultPath)
                     ) {
@@ -13408,6 +13456,7 @@ export function resetChatStore() {
     }
     _persistedHistoryCacheKey = null;
     _persistedHistoryCacheBySessionId.clear();
+    _autoDetectedVaultStorageScopeKey = null;
     const prefs = getNormalizedAiPreferences();
     const vaultPath = getAiPreferenceVaultPath();
     _queueDrainLocks.clear();

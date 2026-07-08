@@ -1787,12 +1787,50 @@ export class ElectronVaultBackend {
             if (entry === ".DS_Store") continue;
             const source = path.join(sourceRoot, entry);
             const target = path.join(targetRoot, entry);
-            try {
-                await fs.access(target);
+            const targetExists = await fs
+                .access(target)
+                .then(() => true)
+                .catch(() => false);
+            if (targetExists) {
                 report.histories_skipped += 1;
+                if (deleteSourceAfterCopy) {
+                    const sourceAttachments: string[] = [];
+                    const protectedAttachments: string[] = [];
+                    if (migrateAttachments) {
+                        await collectAiHistoryAttachmentSources(
+                            source,
+                            { vaultPath, fromScope },
+                            sourceAttachments,
+                        );
+                        await collectAiHistoryAttachmentSources(
+                            target,
+                            { vaultPath, fromScope },
+                            protectedAttachments,
+                        );
+                    }
+
+                    await fs.rm(source, { recursive: true, force: true });
+
+                    if (migrateAttachments) {
+                        const protectedAttachmentSet = new Set(
+                            protectedAttachments,
+                        );
+                        const removableAttachments = sourceAttachments.filter(
+                            (sourceAttachment) =>
+                                !protectedAttachmentSet.has(sourceAttachment),
+                        );
+                        decrementAttachmentRefCounts(
+                            sourceAttachments,
+                            attachmentRefCounts,
+                        );
+                        await deleteUnreferencedAttachmentSources(
+                            removableAttachments,
+                            attachmentRefCounts,
+                            report,
+                        );
+                    }
+                }
                 continue;
-            } catch {
-                // Target does not exist; copy below.
             }
             try {
                 const failureCountBeforeCopy = report.failures.length;

@@ -852,6 +852,104 @@ describe("chatStore", () => {
         ).toBe(false);
     });
 
+    it("persists with the auto-detected vault storage scope before a preference is saved", async () => {
+        useVaultStore.setState({ vaultPath: "/vaults/legacy", notes: [] });
+        resetChatStore();
+
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_has_vault_session_histories") {
+                return true;
+            }
+            if (command === "ai_load_session_histories") {
+                return [
+                    {
+                        version: 1,
+                        session_id: "legacy-history",
+                        runtime_id: "codex-acp",
+                        model_id: "test-model",
+                        mode_id: "default",
+                        created_at: 10,
+                        updated_at: 20,
+                        title: "Legacy chat",
+                        preview: "From vault storage",
+                        message_count: 1,
+                        messages: [],
+                    },
+                ];
+            }
+            if (command === "ai_load_session_history_page") {
+                return {
+                    session_id: "legacy-history",
+                    total_messages: 1,
+                    start_index: 0,
+                    end_index: 1,
+                    messages: [
+                        {
+                            id: "legacy-message",
+                            role: "user",
+                            kind: "text",
+                            content: "From vault storage",
+                            timestamp: 10,
+                        },
+                    ],
+                };
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        await useChatStore
+            .getState()
+            .initialize({ createDefaultSession: false });
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(
+            localStorage.getItem(getAiStorageScopeKey("/vaults/legacy")),
+        ).toBeNull();
+
+        invokeMock.mockClear();
+        useChatStore
+            .getState()
+            .renameSession("persisted:legacy-history", "Renamed legacy chat");
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "ai_save_session_history",
+            expect.objectContaining({
+                vaultPath: "/vaults/legacy",
+                storageScope: "vault",
+            }),
+        );
+    });
+
+    it("does not temporarily downgrade storage scope while vault history detection is pending", async () => {
+        const detection = createDeferred<boolean>();
+        useVaultStore.setState({ vaultPath: "/vaults/legacy", notes: [] });
+        resetChatStore();
+        useChatStore.setState({ aiStorageScope: "vault" });
+        useVaultStore.setState({ vaultPath: "/vaults/new", notes: [] });
+        invokeMock.mockImplementation(async (command, args) => {
+            if (command === "ai_has_vault_session_histories") {
+                expect(args).toMatchObject({ vaultPath: "/vaults/new" });
+                return detection.promise;
+            }
+            return defaultInvokeImplementation(command, args);
+        });
+
+        useChatStore.getState().syncVaultScopedAiPreferences("/vaults/new");
+        await Promise.resolve();
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+
+        detection.resolve(true);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(useChatStore.getState().aiStorageScope).toBe("vault");
+        expect(
+            localStorage.getItem(getAiStorageScopeKey("/vaults/new")),
+        ).toBeNull();
+    });
+
     it("persists AI storage scope per vault path", () => {
         useVaultStore.setState({ vaultPath: "/vaults/one" });
         resetChatStore();

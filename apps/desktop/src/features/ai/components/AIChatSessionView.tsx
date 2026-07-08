@@ -40,7 +40,7 @@ import {
     type QueuedChatMessage,
 } from "../types";
 import {
-    loadAiStorageScopePreference,
+    getEffectiveAiStorageScopeForVault,
     REMOVED_GEMINI_ACP_COMPOSER_MESSAGE,
     useChatStore,
 } from "../store/chatStore";
@@ -445,7 +445,7 @@ export function AIChatSessionView({ paneId, tabId }: AIChatSessionViewProps) {
                 const sessionVaultPath =
                     session?.vaultPath ?? useVaultStore.getState().vaultPath;
                 const storageScope =
-                    loadAiStorageScopePreference(sessionVaultPath);
+                    getEffectiveAiStorageScopeForVault(sessionVaultPath);
                 const saved = await vaultInvoke<{
                     path: string;
                     relative_path?: string;

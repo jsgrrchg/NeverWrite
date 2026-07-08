@@ -713,6 +713,59 @@ describe("AIChatSessionView", () => {
         );
     });
 
+    it("stores pasted images in vault assets when vault scope was auto-detected", async () => {
+        invokeMock.mockImplementation(async (command) => {
+            if (command === "ai_has_vault_session_histories") {
+                return true;
+            }
+            if (command === "save_vault_binary_file") {
+                return {
+                    path: "/vault/assets/chat/pasted-image.png",
+                    relative_path: "assets/chat/pasted-image.png",
+                    file_name: "pasted-image.png",
+                    mime_type: "image/png",
+                };
+            }
+            if (command === "list_vault_entries") {
+                return [];
+            }
+            return undefined;
+        });
+        useChatStore.getState().syncVaultScopedAiPreferences("/vault");
+        await waitFor(() =>
+            expect(useChatStore.getState().aiStorageScope).toBe("vault"),
+        );
+
+        setupWorkspaceSession();
+        renderComponent(<AIChatSessionView paneId="primary" />);
+        fireEvent.click(screen.getByTestId("paste-image"));
+
+        const file = {
+            size: 128,
+            type: "image/png",
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
+        } as unknown as File;
+
+        await act(async () => {
+            await (composerMockState.onPasteImage?.(file) as unknown as
+                | Promise<void>
+                | void);
+        });
+
+        expect(invokeMock).toHaveBeenCalledWith(
+            "save_vault_binary_file",
+            expect.objectContaining({
+                relativeDir: "assets/chat",
+                fileName: expect.stringMatching(/^pasted-image-.*\.png$/),
+                bytes: [0, 0, 0, 0],
+            }),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+            "ai_save_attachment",
+            expect.anything(),
+        );
+    });
+
     it("shows visible feedback for unsupported pasted image types", async () => {
         setupWorkspaceSession();
         renderComponent(<AIChatSessionView paneId="primary" />);

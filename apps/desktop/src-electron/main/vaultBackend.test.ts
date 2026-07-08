@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,7 @@ type VaultEntryForTest = {
 
 const electronAppMock = vi.hoisted(() => ({
     isPackaged: true,
+    getPath: vi.fn(() => "/tmp/neverwrite-test-user-data"),
 }));
 
 vi.mock("electron", () => ({
@@ -78,6 +80,10 @@ function createUpdater(): AppUpdaterBackend & {
         ),
         downloadAndInstallUpdate: vi.fn(() => Promise.resolve()),
     };
+}
+
+function sha256Hex(value: string) {
+    return crypto.createHash("sha256").update(value).digest("hex");
 }
 
 describe("ElectronVaultBackend updater routing", () => {
@@ -164,6 +170,96 @@ describe("ElectronVaultBackend vault classification", () => {
                 viewer_kind: "mermaid",
             });
         }
+    });
+});
+
+describe("ElectronVaultBackend AI history migration", () => {
+    it("removes source histories and unreferenced attachments when the target history already exists", async () => {
+        const userDataPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-user-data-"),
+        );
+        electronAppMock.getPath.mockReturnValue(userDataPath);
+
+        const vaultPath = await fs.mkdtemp(
+            path.join(os.tmpdir(), "neverwrite-ai-migration-"),
+        );
+        const vaultKey = sha256Hex(path.resolve(vaultPath));
+        const sourceRoot = path.join(
+            userDataPath,
+            "ai",
+            "sessions",
+            vaultKey,
+            "sessions",
+        );
+        const targetRoot = path.join(vaultPath, ".neverwrite", "sessions");
+        const sourceHistoryDir = path.join(sourceRoot, "session-existing");
+        const targetHistoryDir = path.join(targetRoot, "session-existing");
+        const attachmentPath = path.join(
+            userDataPath,
+            "ai",
+            "attachments",
+            vaultKey,
+            "session-existing",
+            "pasted-image-source.png",
+        );
+
+        await fs.mkdir(sourceHistoryDir, { recursive: true });
+        await fs.mkdir(targetHistoryDir, { recursive: true });
+        await fs.mkdir(path.dirname(attachmentPath), { recursive: true });
+        await fs.writeFile(attachmentPath, "image-bytes");
+        await fs.writeFile(
+            path.join(sourceHistoryDir, "transcript.jsonl"),
+            `${JSON.stringify({
+                id: "message-1",
+                attachments: [{ filePath: attachmentPath }],
+            })}\n`,
+        );
+        await fs.writeFile(
+            path.join(targetHistoryDir, "transcript.jsonl"),
+            `${JSON.stringify({
+                id: "message-1",
+                attachments: [
+                    {
+                        filePath: path.join(
+                            vaultPath,
+                            "assets",
+                            "chat",
+                            "pasted-image-source.png",
+                        ),
+                    },
+                ],
+            })}\n`,
+        );
+
+        const backend = new ElectronVaultBackend(vi.fn(), createUpdater(), null);
+        const report = (await backend.invoke("ai_migrate_session_histories", {
+            vaultPath,
+            fromScope: "device",
+            toScope: "vault",
+            deleteSourceAfterCopy: true,
+            migrateAttachments: true,
+        })) as {
+            histories_copied: number;
+            histories_skipped: number;
+            attachments_copied: number;
+            attachments_skipped: number;
+            failures: string[];
+        };
+
+        await expect(fs.stat(sourceHistoryDir)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        await expect(fs.stat(attachmentPath)).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        await expect(fs.stat(targetHistoryDir)).resolves.toBeTruthy();
+        expect(report).toMatchObject({
+            histories_copied: 0,
+            histories_skipped: 1,
+            attachments_copied: 0,
+            attachments_skipped: 0,
+            failures: [],
+        });
     });
 });
 
