@@ -139,10 +139,7 @@ export function ChatHistoryView({
             migrateAttachments: true,
         })
             .then(async (report) => {
-                const partial =
-                    report.failures.length > 0 ||
-                    report.attachments_skipped > 0;
-                if (partial) {
+                if (report.failures.length > 0) {
                     setLegacyVaultHistoryWarning(
                         "AI chats were copied, but the migration needs attention. Some attachments or cleanup steps could not be completed.",
                     );

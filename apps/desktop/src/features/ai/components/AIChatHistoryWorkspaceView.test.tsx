@@ -363,4 +363,51 @@ describe("AIChatHistoryWorkspaceView", () => {
             ).toBeNull();
         });
     });
+
+    it("dismisses the legacy vault history notice when only external attachments are skipped", async () => {
+        aiHasVaultSessionHistoriesMock.mockResolvedValue(true);
+        aiMigrateSessionHistoriesMock.mockResolvedValueOnce({
+            histories_copied: 1,
+            histories_skipped: 0,
+            attachments_copied: 0,
+            attachments_skipped: 1,
+            failures: [],
+        });
+        const initialize = vi.fn().mockResolvedValue(undefined);
+        useChatStore.setState((state) => ({
+            ...state,
+            initialize,
+            sessionsById: {},
+            sessionOrder: [],
+            aiStorageScope: "device",
+        }));
+
+        renderComponent(<AIChatHistoryWorkspaceView />);
+
+        expect(
+            await screen.findByText(
+                "AI chat history is currently stored in this vault.",
+            ),
+        ).toBeInTheDocument();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: "Move to this device" }),
+        );
+
+        await waitFor(() => {
+            expect(initialize).toHaveBeenCalled();
+        });
+        await waitFor(() => {
+            expect(
+                screen.queryByText(
+                    "AI chats were copied, but the migration needs attention. Some attachments or cleanup steps could not be completed.",
+                ),
+            ).toBeNull();
+            expect(
+                screen.queryByText(
+                    "AI chat history is currently stored in this vault.",
+                ),
+            ).toBeNull();
+        });
+    });
 });
