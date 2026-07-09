@@ -76,7 +76,7 @@ function upsertChange(
 }
 
 describe("vaultStore", () => {
-    it("deletes both AI history storage scopes when removing the active vault from recents", async () => {
+    it("deletes only local AI history when removing the active vault from recents", async () => {
         const invokeMock = mockInvoke().mockResolvedValue(undefined);
         localStorage.setItem(
             "neverwrite:recentVaults",
@@ -94,14 +94,10 @@ describe("vaultStore", () => {
                 "ai_delete_all_session_histories",
                 { vaultPath: "/vault", storageScope: "device" },
             ],
-            [
-                "ai_delete_all_session_histories",
-                { vaultPath: "/vault", storageScope: "vault" },
-            ],
         ]);
     });
 
-    it("deletes both AI history storage scopes when removing an inactive vault from recents", async () => {
+    it("deletes only local AI history when removing an inactive vault from recents", async () => {
         const invokeMock = mockInvoke().mockResolvedValue(undefined);
         localStorage.setItem(
             "neverwrite:recentVaults",
@@ -118,10 +114,6 @@ describe("vaultStore", () => {
             [
                 "ai_delete_all_session_histories",
                 { vaultPath: "/vault", storageScope: "device" },
-            ],
-            [
-                "ai_delete_all_session_histories",
-                { vaultPath: "/vault", storageScope: "vault" },
             ],
         ]);
     });
