@@ -48,17 +48,21 @@ That means the directory is intentionally reproducible, but not yet minimal.
   - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
   - latest upstream sync from `0.14.0` brought in 5 commits:
     `d9bf1c1`, `0c2d828`, `8aef91b`, `f67ca5f`, `863d433`
-  - OpenAI Codex Rust crates: `rust-v0.133.0` (`9474e5cfc4494b0ba319352aa86ce436c59e65c8`)
-  - vendor ACP SDK: `agent-client-protocol` `0.12.1`
-  - upstream snapshot includes `vendor/codex-utils-pty/` plus the matching
-    `[patch."https://github.com/openai/codex"]` entry required by the OpenAI Codex crate graph
+  - OpenAI Codex Rust crates: `rust-v0.144.0`
+    (`767822446c7a594caa19609ca435281a9ec67e0d`)
+  - vendor ACP SDK: `agent-client-protocol` `0.14.0`
+  - includes a local `vendor/codex-utils-pty/` snapshot at `0.144.0` plus the
+    matching `[patch."https://github.com/openai/codex"]` entry required by the
+    OpenAI Codex crate graph
   - local NeverWrite delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/Cargo.toml`
+    - `vendor/codex-acp/Cargo.lock`
     - `vendor/codex-acp/src/lib.rs`
     - `vendor/codex-acp/src/codex_agent.rs`
     - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
+    - `vendor/codex-acp/vendor/codex-utils-pty/`
 - `Claude-agent-acp-upstream/`
   - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.54.1`
   - upstream tag: `v0.54.1`
@@ -74,19 +78,60 @@ That means the directory is intentionally reproducible, but not yet minimal.
 
 ## Current Codex Delta
 
-The Codex vendor is no longer a raw upstream checkout.
+The Codex vendor is no longer a raw upstream checkout. Its runtime compatibility
+baseline is OpenAI Codex `rust-v0.144.0`, resolved to
+`767822446c7a594caa19609ca435281a9ec67e0d` in `Cargo.lock`.
 
 The remaining NeverWrite-specific delta exists to preserve desktop product behavior:
 
-- canonical `neverwrite*` ACP metadata for status, plan updates, diffs and `user_input_request`
+- canonical `neverwrite*` and `codexAcp*` ACP metadata for status, turn lifecycle,
+  plan updates, diffs, `user_input_request`, and child-session relationships
 - reconstruction of `unified_diff` into `old_text`, `new_text` and hunk metadata for inline review and edited-files flows
-- mode and approval-preset stability when Codex expands writable roots under `workspace-write`
-- custom slash-prompt expansion and Fast service-tier controls exposed to the desktop UI
-- session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
+- review-mode and review-finding adaptation while preserving inline review and
+  accept/reject flows
+- permission, mode, and approval-preset stability when Codex expands writable
+  roots under `workspace-write`
+- custom slash-prompt discovery and expansion without moving NeverWrite's prompt queue
+- model discovery through the 0.144 HTTP client policy, Fast service-tier controls,
+  and refreshed `ConfigOptionUpdate` values after successful model selection
+- session-config synchronization from Codex `SessionConfiguredEvent` and thread
+  snapshots, preserving model, provider, reasoning effort, service tier, and reviewer
+- 0.144 compatibility for authentication/keyring selection, async login, reload,
+  logout, and API-key flows without changing NeverWrite's credential policy
+- MCP transport compatibility, including 0.144 auth fields and legacy app-path
+  conversion, while retaining client-provided environment and approval settings
+- explicit `PathUri` boundaries: UI paths use runtime rendering helpers and
+  operational paths convert back to host-native paths
+- state DB lookup plus thread-store and installation-ID wiring used by list,
+  load, resume, fork, and child-thread registration
 - actor lifecycle behavior that does not keep the internal message channel alive after external senders disappear
 - subagent thread projection for collaboration events surfaced through the desktop ACP session
+- a local `codex-utils-pty` 0.144 snapshot with process-group signaling and
+  Windows input/ConPTY compatibility tests
 
-When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
+The 0.144 API shapes for deferred turn items and `SubAgentActivity` are handled
+exhaustively as localized no-ops. This baseline does not add their functional
+ACP projection. Specifically deferred work is:
+
+- `codex-code-mode-host` and release packaging in PR 2
+- `ItemStarted`/`ItemCompleted` activity projection for new `TurnItem` variants in PR 3
+- the 0.144 `SubAgentActivity` ACP contract in PR 4
+- native image generation outside this PR series
+
+The current bundle must not be treated as self-contained until the companion
+host and packaging work lands.
+
+When updating Codex again, treat upstream ACP commit
+`863d433fc91855d0b5427372bf635c894bf68cb6`, OpenAI Codex tag
+`rust-v0.144.0`, and the local PTY `0.144.0` snapshot as the comparison base.
+Review the bounded delta file by file instead of replacing the vendor tree.
+
+Canonical compatibility checks:
+
+```bash
+cargo check --locked --manifest-path vendor/codex-acp/Cargo.toml
+cargo test --locked --manifest-path vendor/codex-acp/Cargo.toml
+```
 
 The desktop backend now supports a mixed ACP world: current ACP integration for
 Claude, Codex, Kilo, and OpenCode, plus the vendored
