@@ -99,11 +99,79 @@ async function findSidecarPath() {
     );
 }
 
-function assertExecutableMode(stats, sidecarPath) {
+function assertExecutableMode(stats, executablePath, description) {
     if (process.platform === "win32") return;
     if ((stats.mode & 0o111) === 0) {
-        throw new Error(`Packaged sidecar is not executable: ${sidecarPath}`);
+        throw new Error(`Packaged ${description} is not executable: ${executablePath}`);
     }
+}
+
+async function findCodeModeHostPath(sidecarPath) {
+    const hostName =
+        process.platform === "win32"
+            ? "codex-code-mode-host.exe"
+            : "codex-code-mode-host";
+    const hostPath = path.join(path.dirname(sidecarPath), "binaries", hostName);
+
+    let stats;
+    try {
+        stats = await fs.stat(hostPath);
+    } catch (error) {
+        if (error?.code === "ENOENT") {
+            throw new Error(`Packaged Codex code-mode host is missing: ${hostPath}`);
+        }
+        throw new Error(
+            `Could not inspect packaged Codex code-mode host: ${hostPath}`,
+            { cause: error },
+        );
+    }
+    if (!stats.isFile()) {
+        throw new Error(`Packaged Codex code-mode host is not a file: ${hostPath}`);
+    }
+    assertExecutableMode(stats, hostPath, "Codex code-mode host");
+    return hostPath;
+}
+
+async function smokeCodeModeHost(hostPath) {
+    const child = spawn(hostPath, [], { stdio: ["pipe", "ignore", "pipe"] });
+    const stderrChunks = [];
+    let settled = false;
+
+    child.stderr.on("data", (chunk) => stderrChunks.push(String(chunk)));
+
+    await new Promise((resolve, reject) => {
+        const startupTimer = setTimeout(() => {
+            cleanup();
+            resolve();
+        }, Math.min(smokeTimeoutMs, 1_000));
+
+        function cleanup() {
+            if (settled) return;
+            settled = true;
+            clearTimeout(startupTimer);
+            child.stdin.end();
+            if (!child.killed) child.kill("SIGTERM");
+        }
+
+        child.on("error", (error) => {
+            if (settled) return;
+            cleanup();
+            reject(
+                new Error(`Packaged Codex code-mode host could not start: ${hostPath}`, {
+                    cause: error,
+                }),
+            );
+        });
+        child.on("exit", (code, signal) => {
+            if (settled) return;
+            cleanup();
+            reject(
+                new Error(
+                    `Packaged Codex code-mode host exited before startup (${code ?? signal ?? "unknown"}).${formatStderr(stderrChunks)}`,
+                ),
+            );
+        });
+    });
 }
 
 async function smokePing(sidecarPath) {
@@ -193,7 +261,10 @@ if (!stats.isFile()) {
     throw new Error(`Packaged sidecar path is not a file: ${sidecarPath}`);
 }
 
-assertExecutableMode(stats, sidecarPath);
+assertExecutableMode(stats, sidecarPath, "sidecar");
+const codeModeHostPath = await findCodeModeHostPath(sidecarPath);
+await smokeCodeModeHost(codeModeHostPath);
 await smokePing(sidecarPath);
 
+console.log(`Packaged Codex code-mode host started: ${codeModeHostPath}`);
 console.log(`Packaged native backend sidecar responded to ping: ${sidecarPath}`);

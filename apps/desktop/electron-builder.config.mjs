@@ -18,6 +18,7 @@ const MAC_ADDITIONAL_BINARY_MAGIC_NUMBERS = new Set([
 const DEFAULT_MAC_BINARY_RELATIVE_PATHS = [
     "neverwrite-native-backend",
     "binaries/codex-acp",
+    "binaries/codex-code-mode-host",
     "embedded/node/bin/node",
 ];
 
