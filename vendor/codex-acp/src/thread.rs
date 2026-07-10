@@ -27,10 +27,10 @@ use codex_apply_patch::parse_patch;
 use codex_core::{
     CodexThread,
     config::{Config, PermissionProfileSnapshot, set_project_trust_level},
-    review_format::format_review_findings_block,
     review_prompts::user_facing_hint,
 };
 use codex_features::Feature;
+use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
 use codex_models_manager::manager::{ModelsManager, RefreshStrategy};
 use codex_protocol::protocol::{
@@ -48,6 +48,7 @@ use codex_protocol::protocol::{
     TokenCountEvent, TurnAbortedEvent, TurnCompleteEvent, TurnStartedEvent, UserMessageEvent,
     ViewImageToolCallEvent, WarningEvent, WebSearchBeginEvent, WebSearchEndEvent,
 };
+use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
     approvals::{ElicitationRequest, ElicitationRequestEvent},
     config_types::{ServiceTier, TrustLevel},
@@ -276,14 +277,24 @@ impl ModelsManagerImpl for Arc<dyn ModelsManager> {
     ) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
         let model_id = model_id.clone();
         Box::pin(async move {
-            self.get_default_model(&model_id, RefreshStrategy::OnlineIfUncached)
-                .await
+            self.get_default_model(
+                &model_id,
+                true,
+                RefreshStrategy::OnlineIfUncached,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await
         })
     }
 
     fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<ModelPreset>> + Send + '_>> {
         Box::pin(async move {
-            ModelsManager::list_models(self.as_ref(), RefreshStrategy::OnlineIfUncached).await
+            ModelsManager::list_models(
+                self.as_ref(),
+                RefreshStrategy::OnlineIfUncached,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await
         })
     }
 }
@@ -1049,9 +1060,17 @@ fn turn_item_id(item: &TurnItem) -> &str {
         TurnItem::AgentMessage(item) => &item.id,
         TurnItem::Plan(item) => &item.id,
         TurnItem::Reasoning(item) => &item.id,
+        TurnItem::CommandExecution(item) => &item.id,
+        TurnItem::DynamicToolCall(item) => &item.id,
+        TurnItem::CollabAgentToolCall(item) => &item.id,
+        TurnItem::SubAgentActivity(item) => &item.id,
         TurnItem::WebSearch(item) => &item.id,
         TurnItem::ImageView(item) => &item.id,
+        TurnItem::Sleep(item) => &item.id,
+        TurnItem::Extension(item) => item.id(),
         TurnItem::ImageGeneration(item) => &item.id,
+        TurnItem::EnteredReviewMode(item) => &item.id,
+        TurnItem::ExitedReviewMode(item) => &item.id,
         TurnItem::FileChange(item) => &item.id,
         TurnItem::McpToolCall(item) => &item.id,
         TurnItem::ContextCompaction(item) => &item.id,
@@ -1072,7 +1091,10 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .or_else(|| item.raw_content.first().cloned()),
         ),
         TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
-        TurnItem::ImageView(item) => ("Viewing image", Some(item.path.display().to_string())),
+        TurnItem::ImageView(item) => (
+            "Viewing image",
+            Some(item.path.inferred_native_path_string()),
+        ),
         TurnItem::ImageGeneration(item) => (
             "Generating image",
             item.saved_path
@@ -1080,6 +1102,18 @@ fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
                 .map(|path| path.display().to_string())
                 .or_else(|| Some(item.result.clone())),
         ),
+        TurnItem::CommandExecution(item) => {
+            ("Running command", Some(item.command.iter().join(" ")))
+        }
+        TurnItem::DynamicToolCall(item) => ("Running tool", Some(item.tool.clone())),
+        TurnItem::CollabAgentToolCall(item) => {
+            ("Coordinating agents", Some(format!("{:?}", item.tool)))
+        }
+        TurnItem::SubAgentActivity(item) => ("Subagent activity", Some(format!("{:?}", item.kind))),
+        TurnItem::Sleep(item) => ("Waiting", Some(format!("{}ms", item.duration_ms))),
+        TurnItem::Extension(item) => ("Extension", Some(format!("{item:?}"))),
+        TurnItem::EnteredReviewMode(..) => ("Review mode active", None),
+        TurnItem::ExitedReviewMode(..) => ("Review mode complete", None),
         TurnItem::FileChange(..) => ("Editing files", None),
         TurnItem::McpToolCall(item) => ("Calling MCP tool", Some(item.tool.clone())),
         TurnItem::ContextCompaction(..) => ("Compacting context", None),
@@ -1861,6 +1895,14 @@ impl PromptState {
                         )
                         .await;
                     }
+                    TurnItem::CommandExecution(..)
+                    | TurnItem::DynamicToolCall(..)
+                    | TurnItem::CollabAgentToolCall(..)
+                    | TurnItem::SubAgentActivity(..)
+                    | TurnItem::Sleep(..)
+                    | TurnItem::Extension(..)
+                    | TurnItem::EnteredReviewMode(..)
+                    | TurnItem::ExitedReviewMode(..) => {}
                     other_item => {
                         let (title, detail) = describe_turn_item(&other_item);
                         self.send_status_tool_call(
@@ -2147,6 +2189,14 @@ impl PromptState {
                         )
                         .await;
                     }
+                    TurnItem::CommandExecution(..)
+                    | TurnItem::DynamicToolCall(..)
+                    | TurnItem::CollabAgentToolCall(..)
+                    | TurnItem::SubAgentActivity(..)
+                    | TurnItem::Sleep(..)
+                    | TurnItem::Extension(..)
+                    | TurnItem::EnteredReviewMode(..)
+                    | TurnItem::ExitedReviewMode(..) => {}
                     other_item => {
                         let (title, detail) = describe_turn_item(&other_item);
                         self.send_status_tool_call_update(
@@ -2247,7 +2297,7 @@ impl PromptState {
             }
             EventMsg::ViewImageToolCall(ViewImageToolCallEvent { call_id, path }) => {
                 info!("ViewImageToolCallEvent received");
-                let display_path = path.display().to_string();
+                let display_path = path.inferred_native_path_string();
                 client
                     .send_notification(
                         SessionUpdate::ToolCall(
@@ -2256,7 +2306,7 @@ impl PromptState {
                                 .content(vec![ToolCallContent::Content(Content::new(ContentBlock::ResourceLink(ResourceLink::new(display_path.clone(), display_path.clone())
                             )
                         )
-                    )]).locations(vec![ToolCallLocation::new(path)])))
+                    )]).locations(vec![ToolCallLocation::new(path.to_path_buf())])))
                     .await;
             }
             EventMsg::EnteredReviewMode(review_request) => {
@@ -2389,7 +2439,10 @@ impl PromptState {
             | EventMsg::CollabResumeBegin(..)
             | EventMsg::CollabResumeEnd(..)
             | EventMsg::CollabCloseBegin(..)
-            | EventMsg::CollabCloseEnd(..) => {}
+            | EventMsg::CollabCloseEnd(..)
+            | EventMsg::TurnModerationMetadata(..)
+            | EventMsg::SafetyBuffering(..)
+            | EventMsg::SubAgentActivity(..) => {}
 
             // Ignore these events
             EventMsg::AgentReasoningRawContent(..)
@@ -2454,6 +2507,7 @@ impl PromptState {
         let request_kind = match &request {
             ElicitationRequest::Form { .. } => "form",
             ElicitationRequest::Url { .. } => "url",
+            ElicitationRequest::OpenAiForm { .. } => "openai_form",
         };
 
         info!(
@@ -2605,7 +2659,7 @@ impl PromptState {
         client: &SessionClient,
         event: ExitedReviewModeEvent,
     ) -> Result<(), Error> {
-        let ExitedReviewModeEvent { review_output } = event;
+        let ExitedReviewModeEvent { review_output, .. } = event;
         let Some(ReviewOutputEvent {
             findings,
             overall_correctness: _,
@@ -2898,7 +2952,7 @@ impl PromptState {
             file_extension,
             locations,
             kind,
-        } = parse_command_tool_call(parsed_cmd, &cwd);
+        } = parse_command_tool_call(parsed_cmd, &cwd.to_path_buf());
         self.active_commands.insert(
             call_id.clone(),
             ActiveCommand {
@@ -3011,10 +3065,10 @@ impl PromptState {
             locations,
             terminal_output,
             kind,
-        } = parse_command_tool_call(parsed_cmd, &cwd);
+        } = parse_command_tool_call(parsed_cmd, &cwd.to_path_buf());
 
         // Snapshot candidate files before the command modifies them
-        let candidate_paths = extract_candidate_paths_from_command(&command, &cwd);
+        let candidate_paths = extract_candidate_paths_from_command(&command, &cwd.to_path_buf());
         let mut file_snapshots = HashMap::new();
         for path in candidate_paths {
             file_snapshots.insert(path.clone(), read_text_snapshot(&path));
@@ -3852,7 +3906,13 @@ impl<A: Auth> ThreadActor<A> {
                 response_tx,
             } => {
                 let result = self.handle_set_config_option(config_id, value).await;
+                let config_changed = result.is_ok();
+                // Complete the request before publishing derived options so callers never wait
+                // for a notification that describes state they have not observed as committed.
                 drop(response_tx.send(result));
+                if config_changed {
+                    self.maybe_emit_config_options_update().await;
+                }
             }
             ThreadMessage::Cancel { response_tx } => {
                 let result = self.handle_cancel().await;
@@ -4095,12 +4155,13 @@ impl<A: Auth> ThreadActor<A> {
             let current_effort = self
                 .config
                 .model_reasoning_effort
+                .as_ref()
                 .and_then(|effort| {
                     supported
                         .iter()
-                        .find_map(|e| (e.effort == effort).then_some(effort))
+                        .find_map(|e| (e.effort == *effort).then_some(e.effort.clone()))
                 })
-                .unwrap_or(preset.default_reasoning_effort);
+                .unwrap_or_else(|| preset.default_reasoning_effort.clone());
 
             let effort_select_options = supported
                 .iter()
@@ -4181,27 +4242,27 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         let effort_to_use = if let Some(preset) = preset {
-            if let Some(effort) = self.config.model_reasoning_effort
+            if let Some(effort) = self.config.model_reasoning_effort.as_ref()
                 && preset
                     .supported_reasoning_efforts
                     .iter()
-                    .any(|e| e.effort == effort)
+                    .any(|e| e.effort == *effort)
             {
-                Some(effort)
+                Some(effort.clone())
             } else {
-                Some(preset.default_reasoning_effort)
+                Some(preset.default_reasoning_effort.clone())
             }
         } else {
             // If the user selected a raw model string (not a known preset), don't invent a default.
             // Keep whatever was previously configured (or leave unset) so Codex can decide.
-            self.config.model_reasoning_effort
+            self.config.model_reasoning_effort.clone()
         };
 
         self.thread
             .submit(Op::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     model: Some(model_to_use.clone()),
-                    effort: Some(effort_to_use),
+                    effort: Some(effort_to_use.clone()),
                     ..Default::default()
                 },
             })
@@ -4241,7 +4302,7 @@ impl<A: Auth> ThreadActor<A> {
         self.thread
             .submit(Op::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
-                    effort: Some(Some(effort)),
+                    effort: Some(Some(effort.clone())),
                     ..Default::default()
                 },
             })
@@ -4309,7 +4370,6 @@ impl<A: Auth> ThreadActor<A> {
                 "compact" => op = Op::Compact,
                 "init" => {
                     op = Op::UserInput {
-                        environments: None,
                         items: vec![UserInput::Text {
                             text: INIT_COMMAND_PROMPT.into(),
                             text_elements: vec![],
@@ -4438,7 +4498,6 @@ impl<A: Auth> ThreadActor<A> {
                     .map_err(|e| Error::invalid_params().data(e.user_message()))?
                     {
                         op = Op::UserInput {
-                            environments: None,
                             items: vec![UserInput::Text {
                                 text: prompt,
                                 text_elements: vec![],
@@ -4450,7 +4509,6 @@ impl<A: Auth> ThreadActor<A> {
                         }
                     } else {
                         op = Op::UserInput {
-                            environments: None,
                             items,
                             final_output_json_schema: None,
                             responsesapi_client_metadata: None,
@@ -4462,7 +4520,6 @@ impl<A: Auth> ThreadActor<A> {
             }
         } else {
             op = Op::UserInput {
-                environments: None,
                 items,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
@@ -4842,7 +4899,9 @@ impl<A: Auth> ThreadActor<A> {
                     )
                     .await;
             }
-            ResponseItem::FunctionCallOutput { call_id, output } => {
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
                 self.client
                     .send_tool_call_completed(call_id.clone(), serde_json::to_value(output).ok())
                     .await;
@@ -4963,10 +5022,12 @@ impl<A: Auth> ThreadActor<A> {
                 status,
                 revised_prompt,
                 result,
+                ..
             } => {
                 self.client
                     .send_tool_call(completed_image_generation_tool_call(
-                        id.clone(),
+                        id.clone()
+                            .unwrap_or_else(|| generate_fallback_id("image_generation")),
                         status.clone(),
                         revised_prompt.clone(),
                         result.clone(),
@@ -5718,8 +5779,11 @@ fn extract_slash_command(content: &[UserInput]) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
 
-    use agent_client_protocol::schema::TextContent;
+    use agent_client_protocol::schema::{
+        SessionConfigKind, SessionConfigSelectOptions, TextContent,
+    };
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_features::Feature;
     use codex_protocol::config_types::ModeKind;
@@ -5773,7 +5837,6 @@ mod tests {
                     text: "Hi".to_string(),
                     text_elements: vec![]
                 }],
-                environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
@@ -5940,6 +6003,134 @@ mod tests {
             "service_tier config option should be hidden when Fast mode is unavailable: {options_json:?}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn config_option_change_emits_updated_options() -> anyhow::Result<()> {
+        let presets = all_model_presets();
+        let selected_preset = presets
+            .iter()
+            .find(|preset| preset.supported_reasoning_efforts.len() > 1)
+            .expect("a preset with multiple reasoning efforts should exist")
+            .clone();
+        let initial_preset = presets
+            .iter()
+            .find(|preset| {
+                preset.model != selected_preset.model
+                    && preset.supported_reasoning_efforts
+                        != selected_preset.supported_reasoning_efforts
+            })
+            .expect("two presets with different reasoning efforts should exist")
+            .clone();
+        let expected_efforts = selected_preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|effort| effort.effort.to_string())
+            .collect::<Vec<_>>();
+
+        let (_session_id, client, _thread, message_tx, actor_handle) =
+            setup_with_config(vec![], |config| {
+                config.model = Some(initial_preset.model.clone());
+                config.model_reasoning_effort =
+                    Some(initial_preset.default_reasoning_effort.clone());
+            })
+            .await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::SetConfigOption {
+            config_id: SessionConfigId::new("model"),
+            value: SessionConfigOptionValue::ValueId {
+                value: SessionConfigValueId::new(selected_preset.id.clone()),
+            },
+            response_tx,
+        })?;
+        response_rx.await??;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if client
+                    .notifications
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|notification| {
+                        matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_))
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        let updates = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ConfigOptionUpdate(update) => Some(update.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 1, "a successful selection emits one update");
+        let update = &updates[0];
+        let model_option = update
+            .config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "model")
+            .expect("model option should be present");
+        let SessionConfigKind::Select(model_select) = &model_option.kind else {
+            panic!("model option should be a select");
+        };
+        assert_eq!(model_select.current_value.0.as_ref(), selected_preset.model);
+
+        let reasoning_option = update
+            .config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "reasoning_effort")
+            .expect("reasoning effort option should be present");
+        let SessionConfigKind::Select(reasoning_select) = &reasoning_option.kind else {
+            panic!("reasoning effort option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(reasoning_options) = &reasoning_select.options
+        else {
+            panic!("reasoning effort options should be ungrouped");
+        };
+        let actual_efforts = reasoning_options
+            .iter()
+            .map(|option| option.value.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_efforts, expected_efforts);
+        assert!(expected_efforts.contains(&reasoning_select.current_value.to_string()));
+
+        let (failure_tx, failure_rx) = tokio::sync::oneshot::channel();
+        message_tx.send(ThreadMessage::SetConfigOption {
+            config_id: SessionConfigId::new("unsupported"),
+            value: SessionConfigOptionValue::ValueId {
+                value: SessionConfigValueId::new("invalid"),
+            },
+            response_tx: failure_tx,
+        })?;
+        assert!(failure_rx.await?.is_err());
+        let update_count = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notification| {
+                matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_))
+            })
+            .count();
+        assert_eq!(
+            update_count, 1,
+            "a failed selection must not emit an update"
+        );
+
+        drop(message_tx);
+        actor_handle.await?;
         Ok(())
     }
 
@@ -6163,7 +6354,6 @@ mod tests {
                     text: INIT_COMMAND_PROMPT.to_string(),
                     text_elements: vec![]
                 }],
-                environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
@@ -6453,7 +6643,6 @@ mod tests {
                     text: "Custom prompt with foo arg.".into(),
                     text_elements: vec![]
                 }],
-                environments: None,
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
@@ -7010,10 +7199,11 @@ mod tests {
 
         actor
             .replay_response_item(&ResponseItem::ImageGenerationCall {
-                id: "img-replay-1".to_string(),
+                id: Some("img-replay-1".to_string()),
                 status: "completed".to_string(),
                 revised_prompt: Some("A replayed prompt".to_string()),
                 result: "replayed-base64".to_string(),
+                internal_chat_message_metadata_passthrough: None,
             })
             .await;
 
@@ -7242,10 +7432,8 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     started_at_ms: 0,
                     command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
-                    cwd: cwd
-                        .clone()
-                        .try_into()
-                        .expect("current dir should be absolute"),
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
                     parsed_cmd: vec![ParsedCommand::Unknown {
                         cmd: "sh".to_string(),
                     }],
@@ -7290,7 +7478,8 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     completed_at_ms: 0,
                     command: vec!["sh".to_string(), "-c".to_string(), "echo".to_string()],
-                    cwd: cwd.try_into().expect("current dir should be absolute"),
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                        .expect("current dir should be representable as a path URI"),
                     parsed_cmd: vec![],
                     source: Default::default(),
                     interaction_input: None,
@@ -7432,9 +7621,14 @@ mod tests {
     impl ModelsManagerImpl for StubModelsManager {
         fn get_model(
             &self,
-            _model_id: &Option<String>,
+            model_id: &Option<String>,
         ) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
-            Box::pin(async { all_model_presets()[0].to_owned().id })
+            let model_id = model_id.clone();
+            // Mirror the runtime contract: an explicit configured model takes precedence over
+            // the catalog default. Tests for model changes rely on this distinction being real.
+            Box::pin(
+                async move { model_id.unwrap_or_else(|| all_model_presets()[0].to_owned().id) },
+            )
         }
 
         fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<ModelPreset>> + Send + '_>> {
@@ -7500,7 +7694,8 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "a".into()],
-                                cwd: cwd.clone().try_into().unwrap(),
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                                    .unwrap(),
                                 parsed_cmd: vec![ParsedCommand::Unknown {
                                     cmd: "echo a".into(),
                                 }],
@@ -7513,7 +7708,8 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "b".into()],
-                                cwd: cwd.clone().try_into().unwrap(),
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                                    .unwrap(),
                                 parsed_cmd: vec![ParsedCommand::Unknown {
                                     cmd: "echo b".into(),
                                 }],
@@ -7526,7 +7722,8 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "a".into()],
-                                cwd: cwd.clone().try_into().unwrap(),
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                                    .unwrap(),
                                 parsed_cmd: vec![],
                                 source: Default::default(),
                                 interaction_input: None,
@@ -7544,7 +7741,8 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "b".into()],
-                                cwd: cwd.clone().try_into().unwrap(),
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)
+                                    .unwrap(),
                                 parsed_cmd: vec![],
                                 source: Default::default(),
                                 interaction_input: None,
@@ -7643,13 +7841,22 @@ mod tests {
                         self.op_tx
                             .send(Event {
                                 id: id.to_string(),
-                                msg: EventMsg::EnteredReviewMode(review_request.clone()),
+                                msg: EventMsg::EnteredReviewMode(
+                                    codex_protocol::protocol::EnteredReviewModeEvent {
+                                        target: review_request.target.clone(),
+                                        user_facing_hint: review_request.user_facing_hint.clone(),
+                                        turn_id: Some(id.to_string()),
+                                        item_id: None,
+                                    },
+                                ),
                             })
                             .unwrap();
                         self.op_tx
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                                    turn_id: Some(id.to_string()),
+                                    item_id: None,
                                     review_output: Some(ReviewOutputEvent {
                                         findings: vec![],
                                         overall_correctness: String::new(),
