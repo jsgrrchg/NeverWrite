@@ -12,6 +12,10 @@ homepage = "https://github.com/zed-industries/codex-acp"
 name = "codex-acp"
 path = "src/main.rs"
 
+[[bin]]
+name = "codex-code-mode-host"
+path = "src/code_mode_host.rs"
+
 [lib]
 doctest = false
 name = "codex_acp"
@@ -23,6 +27,7 @@ anyhow = "1"
 clap = "4"
 codex-apply-patch = { git = "https://github.com/openai/codex", tag = "rust-v0.144.0" }
 codex-arg0 = { git = "https://github.com/openai/codex", tag = "rust-v0.144.0" }
+codex-code-mode-host = { git = "https://github.com/openai/codex", tag = "rust-v0.144.0" }
 codex-config = { git = "https://github.com/openai/codex", tag = "rust-v0.144.0" }
 codex-core = { git = "https://github.com/openai/codex", tag = "rust-v0.144.0" }
 codex-exec-server = { git = "https://github.com/openai/codex", tag = "rust-v0.144.0" }
