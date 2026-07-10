@@ -3906,7 +3906,13 @@ impl<A: Auth> ThreadActor<A> {
                 response_tx,
             } => {
                 let result = self.handle_set_config_option(config_id, value).await;
+                let config_changed = result.is_ok();
+                // Complete the request before publishing derived options so callers never wait
+                // for a notification that describes state they have not observed as committed.
                 drop(response_tx.send(result));
+                if config_changed {
+                    self.maybe_emit_config_options_update().await;
+                }
             }
             ThreadMessage::Cancel { response_tx } => {
                 let result = self.handle_cancel().await;
@@ -5773,8 +5779,11 @@ fn extract_slash_command(content: &[UserInput]) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
 
-    use agent_client_protocol::schema::TextContent;
+    use agent_client_protocol::schema::{
+        SessionConfigKind, SessionConfigSelectOptions, TextContent,
+    };
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_features::Feature;
     use codex_protocol::config_types::ModeKind;
@@ -5994,6 +6003,134 @@ mod tests {
             "service_tier config option should be hidden when Fast mode is unavailable: {options_json:?}"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn config_option_change_emits_updated_options() -> anyhow::Result<()> {
+        let presets = all_model_presets();
+        let selected_preset = presets
+            .iter()
+            .find(|preset| preset.supported_reasoning_efforts.len() > 1)
+            .expect("a preset with multiple reasoning efforts should exist")
+            .clone();
+        let initial_preset = presets
+            .iter()
+            .find(|preset| {
+                preset.model != selected_preset.model
+                    && preset.supported_reasoning_efforts
+                        != selected_preset.supported_reasoning_efforts
+            })
+            .expect("two presets with different reasoning efforts should exist")
+            .clone();
+        let expected_efforts = selected_preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|effort| effort.effort.to_string())
+            .collect::<Vec<_>>();
+
+        let (_session_id, client, _thread, message_tx, actor_handle) =
+            setup_with_config(vec![], |config| {
+                config.model = Some(initial_preset.model.clone());
+                config.model_reasoning_effort =
+                    Some(initial_preset.default_reasoning_effort.clone());
+            })
+            .await?;
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::SetConfigOption {
+            config_id: SessionConfigId::new("model"),
+            value: SessionConfigOptionValue::ValueId {
+                value: SessionConfigValueId::new(selected_preset.id.clone()),
+            },
+            response_tx,
+        })?;
+        response_rx.await??;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if client
+                    .notifications
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|notification| {
+                        matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_))
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        let updates = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ConfigOptionUpdate(update) => Some(update.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(updates.len(), 1, "a successful selection emits one update");
+        let update = &updates[0];
+        let model_option = update
+            .config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "model")
+            .expect("model option should be present");
+        let SessionConfigKind::Select(model_select) = &model_option.kind else {
+            panic!("model option should be a select");
+        };
+        assert_eq!(model_select.current_value.0.as_ref(), selected_preset.model);
+
+        let reasoning_option = update
+            .config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "reasoning_effort")
+            .expect("reasoning effort option should be present");
+        let SessionConfigKind::Select(reasoning_select) = &reasoning_option.kind else {
+            panic!("reasoning effort option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(reasoning_options) = &reasoning_select.options
+        else {
+            panic!("reasoning effort options should be ungrouped");
+        };
+        let actual_efforts = reasoning_options
+            .iter()
+            .map(|option| option.value.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_efforts, expected_efforts);
+        assert!(expected_efforts.contains(&reasoning_select.current_value.to_string()));
+
+        let (failure_tx, failure_rx) = tokio::sync::oneshot::channel();
+        message_tx.send(ThreadMessage::SetConfigOption {
+            config_id: SessionConfigId::new("unsupported"),
+            value: SessionConfigOptionValue::ValueId {
+                value: SessionConfigValueId::new("invalid"),
+            },
+            response_tx: failure_tx,
+        })?;
+        assert!(failure_rx.await?.is_err());
+        let update_count = client
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|notification| {
+                matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_))
+            })
+            .count();
+        assert_eq!(
+            update_count, 1,
+            "a failed selection must not emit an update"
+        );
+
+        drop(message_tx);
+        actor_handle.await?;
         Ok(())
     }
 
@@ -7484,9 +7621,14 @@ mod tests {
     impl ModelsManagerImpl for StubModelsManager {
         fn get_model(
             &self,
-            _model_id: &Option<String>,
+            model_id: &Option<String>,
         ) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
-            Box::pin(async { all_model_presets()[0].to_owned().id })
+            let model_id = model_id.clone();
+            // Mirror the runtime contract: an explicit configured model takes precedence over
+            // the catalog default. Tests for model changes rely on this distinction being real.
+            Box::pin(
+                async move { model_id.unwrap_or_else(|| all_model_presets()[0].to_owned().id) },
+            )
         }
 
         fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<ModelPreset>> + Send + '_>> {
