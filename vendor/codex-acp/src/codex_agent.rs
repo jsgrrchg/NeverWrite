@@ -20,10 +20,16 @@ use codex_core::{
     find_thread_path_by_id_str, init_state_db, resolve_installation_id, thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
-use codex_extension_api::empty_extension_registry;
+use codex_extension_api::{
+    LoadUserInstructionsFuture, LoadedUserInstructions, UserInstructionsProvider,
+    empty_extension_registry,
+};
 use codex_login::{
     CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR,
-    auth::{AuthManager, CodexAuth, read_codex_api_key_from_env, read_openai_api_key_from_env},
+    auth::{
+        AuthKeyringBackendKind, AuthManager, CodexAuth, read_codex_api_key_from_env,
+        read_openai_api_key_from_env,
+    },
 };
 use codex_protocol::{
     ThreadId,
@@ -46,6 +52,15 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::subagents;
 use crate::thread::Thread;
+
+#[derive(Debug, Default)]
+struct EmptyUserInstructionsProvider;
+
+impl UserInstructionsProvider for EmptyUserInstructionsProvider {
+    fn load_user_instructions(&self) -> LoadUserInstructionsFuture<'_> {
+        Box::pin(async { LoadedUserInstructions::default() })
+    }
+}
 
 /// The Codex implementation of the ACP Agent.
 ///
@@ -85,7 +100,10 @@ impl CodexAgent {
             config.codex_home.to_path_buf(),
             false,
             config.cli_auth_credentials_store_mode,
+            None,
             Some(config.chatgpt_base_url.clone()),
+            AuthKeyringBackendKind::default(),
+            None,
         )
         .await;
 
@@ -107,10 +125,12 @@ impl CodexAgent {
             SessionSource::Unknown,
             environment_manager,
             empty_extension_registry(),
+            Arc::new(EmptyUserInstructionsProvider),
             None,
             thread_store.clone(),
-            state_db.clone(),
+            None,
             installation_id,
+            None,
             None,
         ));
         Ok(Self {
@@ -444,6 +464,7 @@ impl CodexAgent {
                             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                             supports_parallel_tool_calls: false,
                             default_tools_approval_mode: None,
+                            auth: Default::default(),
                         },
                     );
                 }
@@ -468,7 +489,9 @@ impl CodexAgent {
                                     Some(env.into_iter().map(|env| (env.name, env.value)).collect())
                                 },
                                 env_vars: vec![],
-                                cwd: Some(cwd.to_path_buf()),
+                                cwd: Some(codex_utils_path_uri::LegacyAppPathString::from_path(
+                                    &cwd,
+                                )),
                             },
                             required: false,
                             enabled: true,
@@ -484,6 +507,7 @@ impl CodexAgent {
                             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
                             supports_parallel_tool_calls: false,
                             default_tools_approval_mode: None,
+                            auth: Default::default(),
                         },
                     );
                 }
@@ -510,7 +534,7 @@ impl CodexAgent {
             .map_err(Error::into_internal_error)?;
         config.model = Some(session_configured.model.clone());
         config.model_provider_id = session_configured.model_provider_id.clone();
-        config.model_reasoning_effort = session_configured.reasoning_effort;
+        config.model_reasoning_effort = session_configured.reasoning_effort.clone();
         config.service_tier = session_configured.service_tier.clone();
         config
             .permissions
@@ -533,10 +557,10 @@ impl CodexAgent {
         config: &mut Config,
         snapshot: &ThreadConfigSnapshot,
     ) -> Result<(), Error> {
-        config.cwd = snapshot.cwd.clone();
+        config.cwd = snapshot.cwd().clone();
         config.model = Some(snapshot.model.clone());
         config.model_provider_id = snapshot.model_provider_id.clone();
-        config.model_reasoning_effort = snapshot.reasoning_effort;
+        config.model_reasoning_effort = snapshot.reasoning_effort.clone();
         config.service_tier = snapshot.service_tier.clone();
         config
             .permissions
@@ -692,6 +716,8 @@ impl CodexAgent {
                     codex_login::auth::CLIENT_ID.to_string(),
                     None,
                     self.config.cli_auth_credentials_store_mode,
+                    AuthKeyringBackendKind::default(),
+                    None,
                 );
 
                 let server =
@@ -710,6 +736,7 @@ impl CodexAgent {
                     &self.config.codex_home,
                     &api_key,
                     self.config.cli_auth_credentials_store_mode,
+                    AuthKeyringBackendKind::default(),
                 )
                 .map_err(Error::into_internal_error)?;
             }
@@ -721,6 +748,7 @@ impl CodexAgent {
                     &self.config.codex_home,
                     &api_key,
                     self.config.cli_auth_credentials_store_mode,
+                    AuthKeyringBackendKind::default(),
                 )
                 .map_err(Error::into_internal_error)?;
             }
@@ -862,7 +890,7 @@ impl CodexAgent {
                 .map_err(|e| Error::internal_error().data(e.to_string()))?;
 
             match &history {
-                InitialHistory::Resumed(resumed) => resumed.history.clone(),
+                InitialHistory::Resumed(resumed) => resumed.history.clone().as_ref().clone(),
                 InitialHistory::Forked(items) => items.clone(),
                 InitialHistory::Cleared | InitialHistory::New => Vec::new(),
             }
@@ -881,6 +909,7 @@ impl CodexAgent {
             rollout_path,
             self.auth_manager.clone(),
             None,
+            false,
         ))
         .await
         .map_err(|e| Error::internal_error().data(e.to_string()))?;
@@ -940,6 +969,7 @@ impl CodexAgent {
                 cwd_filters: cwd.map(|cwd| vec![cwd]),
                 archived: false,
                 search_term: None,
+                relation_filter: None,
                 use_state_db_only: false,
             })
             .await

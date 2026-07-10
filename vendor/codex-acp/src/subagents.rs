@@ -367,10 +367,10 @@ fn session_created_meta(
     meta.insert(CODEX_ACP_MODEL_KEY.to_string(), json!(snapshot.model));
     meta.insert(
         CODEX_ACP_CWD_KEY.to_string(),
-        json!(snapshot.cwd.display().to_string()),
+        json!(snapshot.cwd().display().to_string()),
     );
 
-    if let Some(reasoning_effort) = snapshot.reasoning_effort {
+    if let Some(reasoning_effort) = snapshot.reasoning_effort.as_ref() {
         meta.insert(
             CODEX_ACP_REASONING_EFFORT_KEY.to_string(),
             json!(reasoning_effort),
@@ -601,22 +601,23 @@ mod tests {
         config_types::{ApprovalsReviewer, CollaborationMode, ModeKind, Settings},
         models::PermissionProfile,
         openai_models::ReasoningEffort,
-        protocol::AskForApproval,
+        protocol::{AskForApproval, ThreadHistoryMode, TurnEnvironmentSelections},
     };
 
     fn thread_snapshot(parent_thread_id: ThreadId) -> ThreadConfigSnapshot {
+        let cwd = std::env::current_dir()
+            .expect("current dir should be available")
+            .try_into()
+            .expect("current dir should be absolute");
         ThreadConfigSnapshot {
             model: "gpt-5.5".to_string(),
             model_provider_id: "openai".to_string(),
             service_tier: Some("fast".to_string()),
-            approval_policy: AskForApproval::OnFailure,
+            approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: ApprovalsReviewer::default(),
             permission_profile: PermissionProfile::default(),
             active_permission_profile: None,
-            cwd: std::env::current_dir()
-                .expect("current dir should be available")
-                .try_into()
-                .expect("current dir should be absolute"),
+            environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
             workspace_roots: Vec::new(),
             profile_workspace_roots: Vec::new(),
             ephemeral: false,
@@ -640,6 +641,9 @@ mod tests {
             }),
             parent_thread_id: Some(parent_thread_id),
             thread_source: None,
+            history_mode: ThreadHistoryMode::default(),
+            forked_from_thread_id: None,
+            originator: String::new(),
         }
     }
 
