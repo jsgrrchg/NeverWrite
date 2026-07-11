@@ -635,35 +635,77 @@ body.dragging-tab * {
     cursor: grabbing !important;
 }
 
-@keyframes devtools-terminal-cursor {
-    0%,
-    49% {
-        opacity: 1;
+@keyframes activity-rail-cube-orbit {
+    to {
+        transform: rotate(1turn);
     }
-    50%,
+}
+
+@keyframes activity-rail-cube-pulse {
+    0%,
     100% {
-        opacity: 0;
+        opacity: 0.28;
+        transform: scale(0.72);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1);
     }
 }
 
 .activity-rail-working-indicator {
-    display: inline-flex;
+    display: inline-grid;
     flex: 0 0 auto;
-    align-items: baseline;
-    gap: 1px;
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-    line-height: 16px;
+    place-items: center;
+    width: 16px;
+    height: 16px;
 }
 
-.activity-rail-working-cursor {
-    animation: devtools-terminal-cursor 850ms steps(1, end) infinite;
+.activity-rail-working-cubes {
+    position: relative;
+    display: block;
+    width: 12px;
+    height: 12px;
+    animation: activity-rail-cube-orbit 1.15s linear infinite;
+}
+
+.activity-rail-working-cube {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 1px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+    animation: activity-rail-cube-pulse 880ms ease-in-out infinite;
+}
+
+.activity-rail-working-cube:nth-child(1) {
+    top: 0;
+    left: 4px;
+    animation-delay: 0ms;
+}
+
+.activity-rail-working-cube:nth-child(2) {
+    top: 4px;
+    right: 0;
+    animation-delay: 110ms;
+}
+
+.activity-rail-working-cube:nth-child(3) {
+    bottom: 0;
+    left: 4px;
+    animation-delay: 220ms;
+}
+
+.activity-rail-working-cube:nth-child(4) {
+    top: 4px;
+    left: 0;
+    animation-delay: 330ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .activity-rail-working-cursor {
+    .activity-rail-working-cubes,
+    .activity-rail-working-cube {
         animation: none;
     }
 }

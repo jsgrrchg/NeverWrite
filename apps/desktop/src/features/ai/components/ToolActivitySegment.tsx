@@ -51,15 +51,21 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
     );
 }
 
-function WorkingTerminalIndicator() {
+function WorkingActivityIndicator() {
     return (
         <span
             aria-hidden="true"
             className="activity-rail-working-indicator"
             data-activity-rail-working-indicator="true"
         >
-            <span>{">"}</span>
-            <span className="activity-rail-working-cursor">_</span>
+            <span className="activity-rail-working-cubes">
+                {[0, 1, 2, 3].map((cube) => (
+                    <span
+                        className="activity-rail-working-cube"
+                        key={cube}
+                    />
+                ))}
+            </span>
         </span>
     );
 }
@@ -154,7 +160,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 type="button"
             >
                 <span className="flex min-w-0 flex-1 items-start gap-1.5">
-                    {isCurrentTurnTail ? <WorkingTerminalIndicator /> : null}
+                    {isCurrentTurnTail ? <WorkingActivityIndicator /> : null}
                     <span className="min-w-0 flex-1">
                         <span
                             className="block truncate text-[11px] font-medium leading-4"
