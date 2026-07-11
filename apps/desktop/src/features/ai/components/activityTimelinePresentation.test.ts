@@ -149,7 +149,7 @@ describe("buildActivityTimelineRows", () => {
             "groupable",
             "groupable",
             "standalone-change",
-            "standalone-unknown",
+            "groupable",
         ]);
         expect(segment.summary).toMatchObject({
             actionCount: 3,
@@ -204,7 +204,7 @@ describe("buildActivityTimelineRows", () => {
         });
     });
 
-    it("keeps mutating, failed, subagent, and unknown tools visible", () => {
+    it("keeps changes, failures, and subagent actions visible while routine tools collapse", () => {
         const messages = [
             createTool("tool-edit", {
                 meta: { status: "in_progress", tool: "edit" },
@@ -230,11 +230,104 @@ describe("buildActivityTimelineRows", () => {
             "standalone-change",
             "standalone-attention",
             "standalone-attention",
-            "standalone-unknown",
+            "groupable",
         ]);
         expect(segment.summary.isInProgress).toBe(true);
         expect(segment.summary.failureCount).toBe(1);
     });
+
+    it("joins routine status updates with surrounding activity", () => {
+        const callingMcp = createMessage("status:mcp", {
+            content: "binance_get_futures_usds_mark_price",
+            kind: "status",
+            meta: {
+                emphasis: "neutral",
+                status: "in_progress",
+                status_event: "item_activity",
+            },
+            role: "system",
+            title: "Calling MCP tool",
+        });
+        const mcpResult = createTool("tool:mcp-result", {
+            meta: { status: "completed", tool: "other" },
+            title: "Tool: codex_apps/binance_get_futures_usds_mark_price",
+        });
+        const subagentProgress = createMessage("status:subagent", {
+            kind: "status",
+            meta: {
+                emphasis: "neutral",
+                status: "completed",
+                status_event: "subagent_lifecycle",
+            },
+            role: "system",
+            title: "Mendel completed research",
+        });
+
+        const segment = getOnlySegment(
+            buildActivityTimelineRows([callingMcp, mcpResult, subagentProgress]),
+        );
+
+        expect(segment.entries.map((entry) => entry.message.id)).toEqual([
+            "status:mcp",
+            "tool:mcp-result",
+            "status:subagent",
+        ]);
+        expect(segment.entries.map((entry) => entry.policy)).toEqual([
+            "groupable",
+            "groupable",
+            "groupable",
+        ]);
+        expect(segment.summary.actionCount).toBe(1);
+    });
+
+    it("uses a complete headline for a status-only rail", () => {
+        const segment = getOnlySegment(
+            buildActivityTimelineRows([
+                createMessage("status:plan", {
+                    kind: "status",
+                    meta: {
+                        emphasis: "neutral",
+                        status: "completed",
+                        status_event: "item_activity",
+                    },
+                    role: "system",
+                    title: "Updating plan",
+                }),
+            ]),
+        );
+
+        expect(segment.summary.statusCount).toBe(1);
+        expect(getActivityTimelineSegmentHeadline(segment.summary)).toBe(
+            "Worked",
+        );
+    });
+
+    it.each(["turn_started", "session_recovery", "model_reroute", "review_mode"])(
+        "keeps %s status as a timeline boundary",
+        (statusEvent) => {
+            const boundary = createMessage(`status:${statusEvent}`, {
+                kind: "status",
+                meta: {
+                    emphasis: "neutral",
+                    status: "completed",
+                    status_event: statusEvent,
+                },
+                role: "system",
+            });
+
+            const rows = buildActivityTimelineRows([
+                createTool("tool-before"),
+                boundary,
+                createTool("tool-after"),
+            ]);
+
+            expect(rows.map((row) => row.kind)).toEqual([
+                "activity-segment",
+                "message",
+                "activity-segment",
+            ]);
+        },
+    );
 
     it("keeps segment identity stable when its trailing tool is updated", () => {
         const initialRows = buildActivityTimelineRows([

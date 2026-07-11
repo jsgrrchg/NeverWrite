@@ -46,10 +46,9 @@ const DETACHED_ACTIVITY_TIMELINE_SCOPE = "__detached_activity_timeline__";
 export type ActivityTimelineToolPolicy =
     | "groupable"
     | "standalone-change"
-    | "standalone-attention"
-    | "standalone-unknown";
+    | "standalone-attention";
 
-/** A rail entry may be a reasoning event or a runtime tool activity. */
+/** A rail entry may be reasoning, routine status, or a runtime tool activity. */
 export interface ActivityTimelineToolEntry {
     readonly message: AIChatMessage;
     readonly policy: ActivityTimelineToolPolicy;
@@ -74,6 +73,7 @@ export interface ActivityTimelineSegmentSummary {
     readonly latestTitle: string;
     readonly reasoningCount: number;
     readonly searchCount: number;
+    readonly statusCount: number;
     readonly startedAt: number;
     readonly updatedAt: number;
 }
@@ -130,6 +130,23 @@ function isFailedTool(message: AIChatMessage): boolean {
     return status === "cancelled" || status === "error" || status === "failed";
 }
 
+function getStatusEventKind(message: AIChatMessage): string {
+    return getMessageMetaString(message, "status_event")?.toLowerCase() ?? "";
+}
+
+function isRoutineStatusActivity(message: AIChatMessage): boolean {
+    if (message.kind !== "status") {
+        return false;
+    }
+
+    // These events describe work already represented by the conversation's
+    // activity stream. State changes and recovery notices remain boundaries.
+    return (
+        getStatusEventKind(message) === "item_activity" ||
+        getStatusEventKind(message) === "subagent_lifecycle"
+    );
+}
+
 function isInProgressTool(message: AIChatMessage): boolean {
     const status = getToolStatus(message);
     return (
@@ -155,8 +172,12 @@ function getEntryTitle(message: AIChatMessage): string {
     );
 }
 
-function isTimelineActivity(message: AIChatMessage) {
-    return message.kind === "thinking" || message.kind === "tool";
+export function isActivityTimelineEntry(message: AIChatMessage) {
+    return (
+        message.kind === "thinking" ||
+        message.kind === "tool" ||
+        isRoutineStatusActivity(message)
+    );
 }
 
 function getLatestToolEntry(
@@ -307,24 +328,24 @@ export function getActivityTimelineToolPolicy(
     if (message.kind === "thinking") {
         return "groupable";
     }
-    if (hasChangeData(message)) {
-        // Changes keep their own review surface instead of becoming a routine row.
-        return "standalone-change";
-    }
 
     if (isFailedTool(message) || message.toolAction != null) {
         return "standalone-attention";
     }
 
-    const kind = getToolKind(message);
-    if (
-        COMMAND_TOOL_KINDS.has(kind) ||
-        GROUPABLE_TOOL_KINDS.has(kind)
-    ) {
+    if (isRoutineStatusActivity(message)) {
         return "groupable";
     }
 
-    return "standalone-unknown";
+    if (hasChangeData(message)) {
+        // Changes keep their own review surface instead of becoming a routine row.
+        return "standalone-change";
+    }
+
+    // ACP providers use ToolKind::Other for MCP and extension tools. A
+    // successful unknown tool is still routine work; only failures and
+    // user-facing actions need to remain visible in a collapsed rail.
+    return "groupable";
 }
 
 export function buildActivityTimelineSegmentSummary(
@@ -344,6 +365,7 @@ export function buildActivityTimelineSegmentSummary(
     let failureCount = 0;
     let reasoningCount = 0;
     let searchCount = 0;
+    let statusCount = 0;
     let isInProgress = false;
     let updatedAt = firstEntry.message.timestamp;
 
@@ -351,6 +373,9 @@ export function buildActivityTimelineSegmentSummary(
         const { message, policy } = entry;
         if (message.kind === "thinking") {
             reasoningCount += 1;
+        }
+        if (message.kind === "status") {
+            statusCount += 1;
         }
         const kind = getToolKind(message);
         const target = getToolTarget(message);
@@ -402,6 +427,7 @@ export function buildActivityTimelineSegmentSummary(
         latestTitle: getEntryTitle((latestToolEntry ?? latestEntry).message),
         reasoningCount,
         searchCount,
+        statusCount,
         startedAt: firstEntry.message.timestamp,
         updatedAt,
     };
@@ -411,6 +437,10 @@ export function getActivityTimelineSegmentHeadline(
     summary: ActivityTimelineSegmentSummary,
     isCurrentTurnTail = false,
 ): string {
+    if (summary.actionCount === 0 && summary.reasoningCount === 0) {
+        return isCurrentTurnTail ? "Working" : "Worked";
+    }
+
     const details = [
         pluralize(summary.actionCount, "action"),
         summary.changedFileCount > 0
@@ -494,7 +524,7 @@ export function buildActivityTimelineRows(
     };
 
     for (const message of messages) {
-        if (isTimelineActivity(message)) {
+        if (isActivityTimelineEntry(message)) {
             segmentEntries.push({
                 message,
                 policy: getActivityTimelineToolPolicy(message),

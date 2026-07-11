@@ -57,6 +57,7 @@ import {
     ToolIcon,
     type ToolTargetContextMenuPayload,
 } from "./ToolActivityItem";
+import { isActivityTimelineEntry } from "./activityTimelinePresentation";
 import {
     useChatRowUiEntry,
     useStoredRowExpanded,
@@ -3204,6 +3205,9 @@ export const AIChatMessageItem = memo(function AIChatMessageItem({
     }
 
     if (message.kind === "status") {
+        if (isActivityTimelineEntry(message)) {
+            return <ToolActivityItem message={message} sessionId={sessionId} />;
+        }
         return <StatusMessage message={message} />;
     }
 

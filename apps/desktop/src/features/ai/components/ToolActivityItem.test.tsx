@@ -115,6 +115,22 @@ describe("ToolActivityItem", () => {
         ).toBeInTheDocument();
     });
 
+    it("recognizes MCP activity when ACP reports it as an other tool", () => {
+        const view = renderComponent(
+            <ToolActivityItem
+                message={createTool("tool:mcp-other", {
+                    meta: { status: "completed", tool: "other" },
+                    title: "Tool: codex_apps/binance_get_futures_usds_mark_price",
+                })}
+                sessionId="session-1"
+            />,
+        );
+
+        expect(
+            view.container.querySelector('[data-tool-activity-source="mcp"]'),
+        ).toBeInTheDocument();
+    });
+
     it("discloses command detail without changing the row identity", () => {
         const view = renderComponent(
             <ToolActivityItem

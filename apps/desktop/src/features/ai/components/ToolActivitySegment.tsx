@@ -93,9 +93,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const visibleEntries = expanded
         ? segment.entries
         : segment.entries.filter(
-              (entry) =>
-                  entry.policy === "standalone-attention" ||
-                  entry.policy === "standalone-unknown",
+              (entry) => entry.policy === "standalone-attention",
           );
     const activityState = isCurrentTurnTail ? "In progress" : "Completed";
     const accessibleChangeSummary = hasChanges
@@ -217,7 +215,9 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                     data-tool-activity-visibility={
                                         entry.policy === "groupable"
                                             ? "expanded-only"
-                                            : "always"
+                                            : entry.policy === "standalone-attention"
+                                              ? "always"
+                                              : "expanded-only"
                                     }
                                     key={entry.message.id}
                                     role="listitem"

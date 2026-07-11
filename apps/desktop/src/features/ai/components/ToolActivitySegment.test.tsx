@@ -257,4 +257,49 @@ describe("ToolActivitySegment", () => {
             document.querySelectorAll('[data-tool-activity-visibility="always"]'),
         ).toHaveLength(2);
     });
+
+    it("keeps routine MCP status and provider tools collapsed", () => {
+        const renderEntry = vi.fn((message: AIChatMessage) => (
+            <div data-child-activity={message.id}>{message.title}</div>
+        ));
+        const segment = createSegment([
+            {
+                content: "binance_get_futures_usds_mark_price",
+                id: "status:mcp",
+                kind: "status",
+                meta: {
+                    emphasis: "neutral",
+                    status: "in_progress",
+                    status_event: "item_activity",
+                },
+                role: "system",
+                timestamp: 1,
+                title: "Calling MCP tool",
+            },
+            createTool("tool:mcp", {
+                meta: { status: "completed", tool: "other" },
+                timestamp: 2,
+                title: "Tool: codex_apps/binance_get_futures_usds_mark_price",
+            }),
+        ]);
+
+        renderComponent(
+            <ToolActivitySegment
+                renderEntry={renderEntry}
+                segment={segment}
+                sessionId="session-1"
+            />,
+        );
+
+        expect(renderEntry).not.toHaveBeenCalled();
+
+        fireEvent.click(
+            screen.getByRole("button", { name: /show full activity/i }),
+        );
+
+        expect(renderEntry.mock.calls.map(([message]) => message.id)).toEqual([
+            "status:mcp",
+            "tool:mcp",
+        ]);
+    });
 });

@@ -251,6 +251,15 @@ function getActionLabel(toolKind: string) {
     return "Completed";
 }
 
+function isMcpActivity(message: AIChatMessage, toolKind: string) {
+    if (toolKind === "mcp" || toolKind.startsWith("mcp_")) {
+        return true;
+    }
+
+    const descriptor = `${message.title ?? ""}\n${message.content}`.toLowerCase();
+    return descriptor.includes("mcp") || descriptor.includes("codex_apps/");
+}
+
 function Chevron({ expanded }: { expanded: boolean }) {
     return (
         <svg
@@ -320,10 +329,14 @@ export function ToolActivityItem({
         ? canOpenAiEditedFileByAbsolutePath(target)
         : false;
     const isAttention = isFailed || message.toolAction != null;
-    const activitySource = toolKind === "mcp" || toolKind.startsWith("mcp_")
+    const isMcp = isMcpActivity(message, toolKind);
+    const displayKind = isMcp && !toolKind.startsWith("mcp") ? "mcp" : toolKind;
+    const activitySource = isMcp
         ? "mcp"
         : SEARCH_TOOL_KINDS.has(toolKind)
           ? "web"
+          : message.kind === "status"
+            ? "status"
           : "tool";
     const stateLabel = isFailed
         ? status === "cancelled"
@@ -375,7 +388,7 @@ export function ToolActivityItem({
                     data-tool-activity-operation-icon="true"
                     style={{ color: isFailed ? "#f87171" : undefined }}
                 >
-                    <ToolIcon kind={toolKind} />
+                    <ToolIcon kind={displayKind} />
                 </span>
                 {target ? (
                     <span
