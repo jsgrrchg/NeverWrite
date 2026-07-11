@@ -344,7 +344,7 @@ export function ToolActivityItem({
             : "Failed"
         : isInProgress
           ? "Running"
-          : isCompleted
+          : isCompleted && !target
             ? actionLabel
             : null;
 
@@ -389,70 +389,63 @@ export function ToolActivityItem({
                         data-tool-activity-operation-icon="true"
                         style={{ color: isFailed ? "#f87171" : undefined }}
                     >
-                        <ToolIcon kind={displayKind} />
-                    </span>
-                    <span
-                        aria-hidden="true"
-                        className="flex w-3.5 shrink-0 items-center justify-center"
-                        data-tool-activity-file-icon="true"
-                    >
                         {target ? (
                             <FileTypeIcon
                                 fileName={target}
                                 size={13}
                                 opacity={0.86}
                             />
-                        ) : null}
+                        ) : (
+                            <ToolIcon kind={displayKind} />
+                        )}
                     </span>
+                    <span
+                        aria-hidden="true"
+                        className="flex w-3.5 shrink-0 items-center justify-center"
+                        data-tool-activity-file-icon="true"
+                    />
                 </span>
-                <span
-                    className="min-w-0 flex-1 truncate font-medium"
-                    title={target ?? undefined}
-                    style={{
-                        color: target ? "var(--accent)" : "var(--text-primary)",
-                        cursor: canOpenTarget ? "pointer" : undefined,
-                        textDecoration: "none",
-                    }}
-                    onClick={
-                        canOpenTarget && target
-                            ? (event) => {
-                                  event.stopPropagation();
-                                  void openAiEditedFileByAbsolutePath(target);
-                              }
-                            : undefined
-                    }
-                    onContextMenu={
-                        canOpenTarget && target
-                            ? (event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  setContextMenu({
-                                      x: event.clientX,
-                                      y: event.clientY,
-                                      payload: { target },
-                                  });
-                              }
-                            : undefined
-                    }
-                    onMouseEnter={
-                        canOpenTarget
-                            ? (event) => {
-                                  event.currentTarget.style.textDecoration =
-                                      "underline";
-                              }
-                            : undefined
-                    }
-                    onMouseLeave={
-                        canOpenTarget
-                            ? (event) => {
-                                  event.currentTarget.style.textDecoration =
-                                      "none";
-                              }
-                            : undefined
-                    }
-                >
-                    {label}
-                </span>
+                {target ? (
+                    <>
+                        <span className="shrink-0 opacity-70">{actionLabel}</span>
+                        {canOpenTarget ? (
+                            <button
+                                className="min-w-0 flex-1 truncate text-left text-text-primary underline decoration-text-secondary/40 underline-offset-2 hover:decoration-current focus-visible:rounded-sm focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--accent)]"
+                                onClick={(event) => {
+                                    event.stopPropagation();
+                                    void openAiEditedFileByAbsolutePath(target);
+                                }}
+                                onContextMenu={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    setContextMenu({
+                                        x: event.clientX,
+                                        y: event.clientY,
+                                        payload: { target },
+                                    });
+                                }}
+                                title={target}
+                                type="button"
+                            >
+                                {shortTarget}
+                            </button>
+                        ) : (
+                            <span
+                                className="min-w-0 flex-1 truncate text-text-primary"
+                                title={target}
+                            >
+                                {shortTarget}
+                            </span>
+                        )}
+                    </>
+                ) : (
+                    <span
+                        className="min-w-0 flex-1 truncate font-medium"
+                        style={{ color: "var(--text-primary)" }}
+                    >
+                        {label}
+                    </span>
+                )}
                 {isInProgress ? (
                     <span
                         aria-label="Running"
